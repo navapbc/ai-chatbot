@@ -38,6 +38,9 @@ import type { ChatMessage } from '@/lib/types';
 import type { ChatModel } from '@/lib/ai/models';
 import type { VisibilityType } from '@/components/visibility-selector';
 
+import { tool } from 'ai';
+import { z } from 'zod';
+
 export const maxDuration = 60;
 
 let globalStreamContext: ResumableStreamContext | null = null;
@@ -149,8 +152,148 @@ export async function POST(request: Request) {
     const streamId = generateUUID();
     await createStreamId({ streamId, chatId: id });
 
-    const stream = createUIMessageStream({
-      execute: ({ writer: dataStream }) => {
+  // Create web automation tool that uses Mastra's streamVNext with AI SDK compatibility
+const webAutomationTool = tool({
+  description: 'Automate web tasks using browser automation, including taking screenshots, filling forms, and saving data to the database',
+  inputSchema: z.object({
+    instruction: z.string().describe('The web automation task to perform'),
+    url: z.string().optional().describe('The URL to navigate to (if needed)'),
+  }),
+  execute: async ({ instruction, url }) => {
+    try {
+      // Call the Mastra backend API for web automation using streamVNext
+      const mastraApiUrl = process.env.MASTRA_API_URL || 'http://localhost:4111';
+      const prompt = `${instruction}${url ? ` on ${url}` : ''}`;
+      
+      const response = await fetch(`${mastraApiUrl}/api/agents/webAutomationAgent/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-mastra-dev-playground': 'true', // Bypass auth for internal API calls
+        },
+        body: JSON.stringify({ 
+          messages: prompt,
+          memory: {
+            thread: { id: `chat-${id}` },
+            resource: session?.user?.id || 'anonymous'
+          },
+          temperature: 0.1,
+          maxSteps: 10
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Mastra API error: ${response.status} ${response.statusText}`, errorText);
+        throw new Error(`Mastra API error: ${response.status} ${response.statusText}`);
+      }
+
+      // Stream the response and collect the final result
+      let fullResult = '';
+      const reader = response.body?.getReader();
+      
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const chunk = new TextDecoder().decode(value);
+          const lines = chunk.split('\n');
+          
+          for (const line of lines) {
+            if (line.startsWith('0:')) {
+              // Handle text chunk from Mastra stream (format: 0:"text content")
+              try {
+                const textMatch = line.match(/^0:"(.*)"/);
+                if (textMatch) {
+                  fullResult += textMatch[1];
+                }
+              } catch (parseError) {
+                // Skip malformed lines
+              }
+            } else if (line.startsWith('e:')) {
+              // Handle finish event (format: e:{"finishReason":"stop","usage":{...}})
+              try {
+                const eventData = JSON.parse(line.slice(2));
+                if (eventData.finishReason) {
+                  break; // Stream is complete
+                }
+              } catch (parseError) {
+                // Skip malformed JSON lines
+              }
+            }
+          }
+        }
+      }
+      
+      return { result: fullResult || 'Web automation completed successfully.' };
+    } catch (error) {
+      console.error('Web automation error:', error);
+      return { 
+        result: `Web automation is currently unavailable. Error: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again later or contact support.` 
+      };
+    }
+  },
+});
+
+  const stream = createUIMessageStream({
+    execute: async ({ writer: dataStream }) => {
+      // Check if this is a web automation request
+      const lastMessage = uiMessages[uiMessages.length - 1];
+      const messageText = lastMessage?.parts?.find(part => part.type === 'text')?.text?.toLowerCase() || '';
+      
+      const isWebAutomationRequest = 
+        messageText.includes('screenshot') ||
+        messageText.includes('navigate') ||
+        messageText.includes('browser') ||
+        messageText.includes('website') ||
+        messageText.includes('web') ||
+        messageText.includes('automation') ||
+        messageText.includes('playwright') ||
+        messageText.includes('fill form') ||
+        messageText.includes('click');
+
+      if (isWebAutomationRequest) {
+        try {
+          // Use streamText but with web automation tool prominently featured
+          const result = streamText({
+            model: myProvider.languageModel(selectedChatModel),
+            system: `${systemPrompt({ selectedChatModel, requestHints })}
+
+You are enhanced with web automation capabilities. When users request web automation tasks like taking screenshots, navigating websites, or interacting with web pages, use the web-automation tool.`,
+            messages: convertToModelMessages(uiMessages),
+            stopWhen: stepCountIs(5),
+            experimental_activeTools: ['web-automation'],
+            experimental_transform: smoothStream({ chunking: 'word' }),
+            tools: {
+              'web-automation': webAutomationTool,
+            },
+            experimental_telemetry: {
+              isEnabled: isProductionEnvironment,
+              functionId: 'web-automation-enhanced-chat',
+            },
+          });
+
+          result.consumeStream();
+          dataStream.merge(result.toUIMessageStream({ sendReasoning: true }));
+        } catch (error) {
+          console.error('Web automation streaming error:', error);
+          // Fallback to regular chat with error message
+          const result = streamText({
+            model: myProvider.languageModel(selectedChatModel),
+            system: `${systemPrompt({ selectedChatModel, requestHints })} 
+
+Note: Web automation is currently unavailable due to a technical error. Please try again later.`,
+            messages: convertToModelMessages(uiMessages),
+            stopWhen: stepCountIs(5),
+            experimental_transform: smoothStream({ chunking: 'word' }),
+          });
+
+          result.consumeStream();
+          dataStream.merge(result.toUIMessageStream({ sendReasoning: true }));
+        }
+      } else {
+        // Use regular chat with enhanced tools including web automation
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
           system: systemPrompt({ selectedChatModel, requestHints }),
@@ -164,6 +307,7 @@ export async function POST(request: Request) {
                   'createDocument',
                   'updateDocument',
                   'requestSuggestions',
+                  'web-automation',
                 ],
           experimental_transform: smoothStream({ chunking: 'word' }),
           tools: {
@@ -174,6 +318,7 @@ export async function POST(request: Request) {
               session,
               dataStream,
             }),
+            'web-automation': webAutomationTool,
           },
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,
@@ -188,7 +333,8 @@ export async function POST(request: Request) {
             sendReasoning: true,
           }),
         );
-      },
+      }
+    },
       generateId: generateUUID,
       onFinish: async ({ messages }) => {
         await saveMessages({
