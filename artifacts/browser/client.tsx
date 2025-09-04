@@ -188,14 +188,25 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
 
     const disconnectFromBrowserStream = () => {
       if (wsRef.current) {
-        // Request streaming to stop
-        wsRef.current.send(JSON.stringify({
-          type: 'stop-streaming',
-          sessionId: metadata?.sessionId
-        }));
+        // Only send stop message if WebSocket is still open
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: 'stop-streaming',
+            sessionId: metadata?.sessionId
+          }));
+        }
         
         wsRef.current.close();
         wsRef.current = null;
+      }
+      
+      // Clear canvas to prevent stale frames
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
       }
       
       if (metadata) {
@@ -334,6 +345,12 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
 
 
     const handleBrowserFrame = (frame: BrowserFrame) => {
+      // Validate that this frame belongs to our current session
+      if (!metadata?.sessionId || frame.sessionId !== metadata.sessionId) {
+        console.warn(`Ignoring frame from different session: ${frame.sessionId}, expected: ${metadata?.sessionId}`);
+        return;
+      }
+
       // Update frame rate tracking
       frameCountRef.current++;
       const now = Date.now();
@@ -360,6 +377,16 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
       
       setLastFrame(frame.data);
     };
+
+    // Disconnect and clear when session ID changes (prevents stale connections)
+    useEffect(() => {
+      return () => {
+        // Clean up when sessionId changes
+        if (wsRef.current) {
+          disconnectFromBrowserStream();
+        }
+      };
+    }, [metadata?.sessionId]);
 
     // Auto-connect when artifact becomes current version or is first created
     useEffect(() => {
@@ -404,7 +431,7 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
     }
 
           return (
-        <div className="h-full flex flex-col">
+        <Card className="h-full flex flex-col">
           {/* Connection status indicator */}
           {metadata.isConnecting && (
             <div className="flex items-center justify-center py-2 text-sm text-muted-foreground bg-muted/30">
@@ -441,8 +468,9 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
             </div>
           )}
                    
-          {/* Main browser display area */}
-          <div className="flex-1 relative bg-gradient-to-br from-gray-50 to-gray-100 rounded-lg overflow-hidden shadow-inner border border-gray-200/50 m-4">
+          <CardContent className="flex-1 flex flex-col p-4">
+            {/* Main browser display area */}
+            <div className="flex-1 relative bg-gradient-to-br from-gray-50 to-gray-100 rounded-lg overflow-hidden shadow-inner border border-gray-200/50">
             {metadata.error ? (
               <div className="absolute inset-0 flex items-center justify-center bg-red-50 text-red-600">
                 <div className="text-center">
@@ -478,58 +506,61 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
                 </div>
               </div>
             ) : (
-              <div 
-                className="absolute inset-2 rounded-md overflow-hidden shadow-lg ring-1 ring-black/5"
-                tabIndex={metadata.controlMode === 'user' ? 0 : -1}
-                onKeyDown={metadata.controlMode === 'user' ? handleKeyboardInput : undefined}
-                onKeyUp={metadata.controlMode === 'user' ? handleKeyboardInput : undefined}
-                onClick={() => {
-                  if (metadata.controlMode === 'user' && !metadata.isFocused) {
-                    setMetadata(prev => ({ ...prev, isFocused: true }));
-                    toast.info('Browser view is now active. You can type and click.');
-                  }
-                }}
-              >
-                {metadata.controlMode === 'user' && !metadata.isFocused && (
-                  <div className="absolute inset-0 bg-black/30 flex items-center justify-center text-white z-10 pointer-events-none">
-                    <p className="text-lg font-semibold">Click to activate browser control</p>
-                  </div>
-                )}
-                <canvas
-                  ref={canvasRef}
-                  id="browser-artifact-canvas"
-                  width={1920}
-                  height={1080}
-                  className="w-full h-full object-contain"
-                  style={{ 
-                    imageRendering: 'auto',
-                    background: '#ffffff',
-                    cursor: metadata.controlMode === 'user' ? 'pointer' : 'default'
-                  }}
-                  onClick={handleCanvasInteraction}
-                  onMouseMove={handleCanvasInteraction}
-                  onWheel={handleCanvasInteraction}
-                  onContextMenu={(e) => {
-                    if (metadata.controlMode === 'user') {
-                      e.preventDefault(); // Allow right-click handling
+              <div className="absolute inset-2 rounded-md overflow-hidden shadow-lg ring-1 ring-black/5">
+                <div 
+                  tabIndex={metadata.controlMode === 'user' ? 0 : -1}
+                  onKeyDown={metadata.controlMode === 'user' ? handleKeyboardInput : undefined}
+                  onKeyUp={metadata.controlMode === 'user' ? handleKeyboardInput : undefined}
+                  onClick={() => {
+                    if (metadata.controlMode === 'user' && !metadata.isFocused) {
+                      setMetadata(prev => ({ ...prev, isFocused: true }));
+                      toast.info('Browser view is now active. You can type and click.');
                     }
                   }}
-                />
+                  className="relative w-full h-full"
+                >
+                  {metadata.controlMode === 'user' && !metadata.isFocused && (
+                    <div className="absolute inset-0 bg-black/30 flex items-center justify-center text-white z-10 pointer-events-none">
+                      <p className="text-lg font-semibold">Click to activate browser control</p>
+                    </div>
+                  )}
+                  <canvas
+                    ref={canvasRef}
+                    id="browser-artifact-canvas"
+                    width={1920}
+                    height={1080}
+                    className="w-full h-full object-contain"
+                    style={{ 
+                      imageRendering: 'auto',
+                      background: '#ffffff',
+                      cursor: metadata.controlMode === 'user' ? 'pointer' : 'default'
+                    }}
+                    onClick={handleCanvasInteraction}
+                    onMouseMove={handleCanvasInteraction}
+                    onWheel={handleCanvasInteraction}
+                    onContextMenu={(e) => {
+                      if (metadata.controlMode === 'user') {
+                        e.preventDefault(); // Allow right-click handling
+                      }
+                    }}
+                  />
+                </div>
               </div>
             )}
-          </div>
-          
-          {/* Status footer */}
-          {metadata.isConnected && (
-            <div className="px-4 pb-4 text-xs text-gray-500 flex justify-between">
-              <span>Session: {metadata.sessionId}</span>
-              <span className="flex items-center gap-1">
-                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                Live
-              </span>
             </div>
-          )}
-        </div>
+            
+            {/* Status footer */}
+            {metadata.isConnected && (
+              <div className="mt-2 text-xs text-gray-500 flex justify-between">
+                <span>Session: {metadata.sessionId}</span>
+                <span className="flex items-center gap-1">
+                  <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+                  Live
+                </span>
+              </div>
+            )}
+          </CardContent>
+        </Card>
     );
   },
 

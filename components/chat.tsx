@@ -22,7 +22,6 @@ import { useAutoResume } from '@/hooks/use-auto-resume';
 import { ChatSDKError } from '@/lib/errors';
 import type { Attachment, ChatMessage } from '@/lib/types';
 import { useDataStream } from './data-stream-provider';
-import { BrowserPanel } from './browser-panel';
 
 export function Chat({
   id,
@@ -50,7 +49,6 @@ export function Chat({
   const { setDataStream } = useDataStream();
 
   const [input, setInput] = useState<string>('');
-  const [browserPanelVisible, setBrowserPanelVisible] = useState<boolean>(false);
   const [browserSessionId, setBrowserSessionId] = useState<string>(id);
 
   const {
@@ -149,36 +147,29 @@ export function Chat({
     );
     
     if (hasBrowserToolCall) {
-      if (initialChatModel === 'web-automation-model') {
-        // For web-automation-model, create browser artifact (only if not manually dismissed)
-        if (!isArtifactVisible && !browserArtifactDismissed) {
-          const userMessage = messages.find(msg => msg.role === 'user');
-          const messageText = userMessage?.parts.find(part => part.type === 'text')?.text || 'Web Automation';
-          const title = `Browser: ${messageText.slice(0, 40)}${messageText.length > 40 ? '...' : ''}`;
-          
-          setArtifact({
-            documentId: generateUUID(),
-            content: `# ${title}\n\nBrowser automation session starting...`,
-            kind: 'browser',
-            title,
-            status: 'idle',
-            isVisible: true,
-            boundingBox: {
-              top: 0,
-              left: 0,
-              width: 0,
-              height: 0,
-            },
-          });
-        }
-      } else {
-        // For other models, use the old BrowserPanel
-        if (!browserPanelVisible) {
-          setBrowserPanelVisible(true);
-        }
+      // Always create browser artifact for any browser tool usage (only if not manually dismissed)
+      if (!isArtifactVisible && !browserArtifactDismissed) {
+        const userMessage = messages.find(msg => msg.role === 'user');
+        const messageText = userMessage?.parts.find(part => part.type === 'text')?.text || 'Web Automation';
+        const title = `Browser: ${messageText.slice(0, 40)}${messageText.length > 40 ? '...' : ''}`;
+        
+        setArtifact({
+          documentId: generateUUID(),
+          content: `# ${title}\n\nBrowser automation session starting...`,
+          kind: 'browser',
+          title,
+          status: 'idle',
+          isVisible: true,
+          boundingBox: {
+            top: 0,
+            left: 0,
+            width: 0,
+            height: 0,
+          },
+        });
       }
     }
-  }, [messages, browserPanelVisible, initialChatModel, isArtifactVisible, setArtifact, browserArtifactDismissed]);
+  }, [messages, isArtifactVisible, setArtifact, browserArtifactDismissed]);
 
   // Track when user manually closes the browser artifact
   useEffect(() => {
@@ -223,9 +214,9 @@ export function Chat({
 
   return (
     <>
-      <div className={`flex h-dvh bg-background ${browserPanelVisible ? 'flex-row' : 'flex-col'}`}>
+      <div className="flex h-dvh bg-background flex-col">
         {/* Chat Panel */}
-        <div className={`flex flex-col min-w-0 h-full ${browserPanelVisible ? 'w-1/2 border-r' : 'w-full'}`}>
+        <div className="flex flex-col min-w-0 h-full w-full">
           <ChatHeader
             chatId={id}
             selectedModelId={initialChatModel}
@@ -266,16 +257,6 @@ export function Chat({
           </div>
         </div>
 
-        {/* Browser Panel */}
-        {browserPanelVisible && (
-          <div className="w-1/2 flex flex-col">
-            <BrowserPanel
-              sessionId={browserSessionId}
-              isVisible={browserPanelVisible}
-              onToggle={setBrowserPanelVisible}
-            />
-          </div>
-        )}
       </div>
 
       <Artifact
