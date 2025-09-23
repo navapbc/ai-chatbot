@@ -123,7 +123,9 @@ RUN chmod +x /app/start.sh
 
 # Change ownership of the app directory and browser directory to the nextjs user
 RUN chown -R nextjs:nextjs /app && \
-    chown -R nextjs:nextjs /ms-playwright
+    chown -R nextjs:nextjs /ms-playwright && \
+    mkdir -p /app/artifacts && \
+    chown -R nextjs:nextjs /app/artifacts
 
 # Switch to non-root user
 USER nextjs
