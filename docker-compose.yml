@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  client-app:
+    build:
+      context: ..
+      dockerfile: client/Dockerfile
+    ports:
+      - "3000:3000"   # Next.js client
+      - "8932:8931"   # Playwright MCP server (for client web automation)
+      - "8933:8933"   # Browser streaming WebSocket
+    env_file:
+      - .env.local
+    volumes:
+      # Mount Google credentials if using local file
+      - ./vertex-ai-credentials.json:/app/vertex-ai-credentials.json:ro
+      
+      # Mount artifacts directory for local development (screenshots, traces)
+      - ./artifacts:/app/artifacts
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health", "||", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
