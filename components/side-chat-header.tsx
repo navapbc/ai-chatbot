@@ -61,7 +61,7 @@ function PureSideChatHeader({
             className="p-2 bg-white dark:bg-gray-800 rounded-full border border-purple-200 dark:border-purple-700 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors"
             title="New Chat"
           >
-            <Globe size={16} className="text-purple-600 dark:text-purple-400" />
+            <Globe size={16} className="text-gray-600 dark:text-gray-300" />
           </button>
           {onLogout && (
             <button
