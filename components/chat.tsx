@@ -23,7 +23,6 @@ import { ChatSDKError } from '@/lib/errors';
 import type { Attachment, ChatMessage } from '@/lib/types';
 import { useDataStream } from './data-stream-provider';
 import { BenefitApplicationsLanding } from './benefit-applications-landing';
-import { ConsentPage } from './consent-page';
 
 export function Chat({
   id,
@@ -51,7 +50,6 @@ export function Chat({
   const { setDataStream } = useDataStream();
 
   const [input, setInput] = useState<string>('');
-  const [hasConsented, setHasConsented] = useState<boolean>(false);
   
 
   const {
@@ -250,44 +248,8 @@ export function Chat({
     setMessages,
   });
 
-  // Special UI for web automation agent - show consent page first, then landing page
+  // Special UI for web automation agent - show landing page
   if (initialChatModel === 'web-automation-model' && messages.length === 0) {
-    // Show consent page first if not consented yet
-    if (!hasConsented) {
-      return (
-        <>
-          <div className="flex h-dvh bg-chat-background flex-col">
-            <ChatHeader
-              chatId={id}
-              selectedModelId={initialChatModel}
-              selectedVisibilityType={initialVisibilityType}
-              isReadonly={isReadonly}
-              session={session}
-            />
-            <ConsentPage onConsent={() => setHasConsented(true)} />
-          </div>
-        <Artifact
-          chatId={id}
-          input={input}
-          setInput={setInput}
-          status={status}
-          stop={stop}
-          attachments={attachments}
-          setAttachments={setAttachments}
-          sendMessage={sendMessage}
-          messages={messages}
-          setMessages={setMessages}
-          regenerate={regenerate}
-          votes={votes}
-          isReadonly={isReadonly}
-          selectedVisibilityType={visibilityType}
-          initialChatModel={initialChatModel}
-        />
-      </>
-    );
-    }
-    
-    // Show landing page after consent is given
     return (
       <>
         <div className="flex h-dvh bg-chat-background flex-col">

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-button';
 import { ArrowLeft, LogOut } from 'lucide-react';
@@ -11,11 +12,16 @@ interface ConsentPageProps {
 
 export function ConsentPage({ onConsent }: ConsentPageProps) {
   const [consentValue, setConsentValue] = useState<string>('');
+  const router = useRouter();
 
   const handleConsent = () => {
     if (consentValue === 'yes') {
       onConsent();
     }
+  };
+
+  const handleBack = () => {
+    router.push('/');
   };
 
   return (
@@ -24,17 +30,17 @@ export function ConsentPage({ onConsent }: ConsentPageProps) {
       <div className="bg-white h-[59px] w-full border-b border-gray-200">
         <div className="flex items-center justify-between h-full px-6">
           <p className="text-[16px] font-bold text-black">ASP</p>
-          {/* TODO: Add back in button. Not in scope for this sprint */}
-          {/* <Button variant="outline" size="sm" className="border-[#cac4d0] rounded-full gap-2">
-            <LogOut className="w-5 h-5 text-[#49454f]" />
-            Sign out
-          </Button> */}
         </div>
       </div>
 
       {/* Back Button */}
       <div className="absolute left-[23px] top-[104px]">
-        <Button variant="outline" size="sm" className="border-[#cac4d0] rounded-full px-4 py-2.5 h-12 gap-2">
+        <Button 
+          variant="outline" 
+          size="sm" 
+          className="border-[#cac4d0] rounded-full px-4 py-2.5 h-12 gap-2"
+          onClick={handleBack}
+        >
           <ArrowLeft className="w-5 h-5 text-[#49454f]" />
           Back
         </Button>
