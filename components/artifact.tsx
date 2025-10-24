@@ -335,7 +335,7 @@ function PureArtifact({
                   artifactKind={artifact.kind}
                   metadata={metadata}
                 />
-                <div className="flex-1 overflow-hidden">
+                <div className="flex-1 overflow-auto">
                   <ArtifactMessages
                     chatId={chatId}
                     status={status}
@@ -370,7 +370,7 @@ function PureArtifact({
           )}
 
           <motion.div
-            className="fixed dark:bg-muted bg-background h-dvh flex flex-col overflow-y-scroll md:border-l dark:border-zinc-700 border-zinc-200 pointer-events-auto"
+            className="fixed dark:bg-muted bg-background h-dvh flex flex-col overflow-y-auto md:border-l dark:border-zinc-700 border-zinc-200 pointer-events-auto"
             initial={
               isMobile
                 ? {
@@ -456,7 +456,7 @@ function PureArtifact({
               </div>
             )}
 
-            <div className="dark:bg-muted bg-background h-full overflow-y-scroll !max-w-full items-center px-4 py-4">
+            <div className="dark:bg-muted bg-background h-full overflow-y-auto !max-w-full items-center px-4 py-4">
               <artifactDefinition.content
                 title={artifact.title}
                 content={
