@@ -3,7 +3,7 @@ import NextAuth, { type DefaultSession } from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import Google from 'next-auth/providers/google';
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
-import { createGuestUser, getUser, upsertOAuthUser } from '@/lib/db/queries';
+import { getUser, upsertOAuthUser } from '@/lib/db/queries';
 import { authConfig } from './auth.config';
 import { DUMMY_PASSWORD } from '@/lib/constants';
 import type { DefaultJWT } from 'next-auth/jwt';
@@ -91,15 +91,6 @@ export const {
         if (!passwordsMatch) return null;
 
         return { ...user, type: 'regular' };
-      },
-    }),
-    Credentials({
-      id: 'guest',
-      name: 'guest',
-      credentials: {},
-      async authorize() {
-        const [guestUser] = await createGuestUser();
-        return { ...guestUser, type: 'guest' };
       },
     }),
   ],

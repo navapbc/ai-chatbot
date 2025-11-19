@@ -37,7 +37,7 @@ export function Chat({
   initialChatModel: string;
   initialVisibilityType: VisibilityType;
   isReadonly: boolean;
-  session: Session;
+  session: Session | null;
   autoResume: boolean;
 }) {
   const { visibilityType } = useChatVisibility({
@@ -64,29 +64,29 @@ export function Chat({
     messages: initialMessages,
     experimental_throttle: 100,
     generateId: generateUUID,
-    transport: new DefaultChatTransport({
-      api: initialChatModel === 'web-automation-model' ?
-        '/api/mastra-proxy' :
-        '/api/chat',
-      fetch: fetchWithErrorHandlers,
-      prepareSendMessagesRequest: initialChatModel !== 'web-automation-model' ?
-        ({ messages, id, body }) => ({
-          body: {
-            id,
-            message: messages.at(-1),
-            selectedChatModel: initialChatModel,
-            selectedVisibilityType: visibilityType,
-            ...body,
-          },
-        }) : ({ messages, id, body }) => ({
-          body: {
-            messages,
-            threadId: id,
-            resourceId: session.user.id,
-            ...body,
-          },
-        }),
-    }),
+      transport: new DefaultChatTransport({
+        api: initialChatModel === 'web-automation-model' ?
+          '/api/mastra-proxy' :
+          '/api/chat',
+        fetch: fetchWithErrorHandlers,
+        prepareSendMessagesRequest: initialChatModel !== 'web-automation-model' ?
+          ({ messages, id, body }) => ({
+            body: {
+              id,
+              message: messages.at(-1),
+              selectedChatModel: initialChatModel,
+              selectedVisibilityType: visibilityType,
+              ...body,
+            },
+          }) : ({ messages, id, body }) => ({
+            body: {
+              messages,
+              threadId: id,
+              resourceId: session?.user?.id,
+              ...body,
+            },
+          }),
+      }),
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
     },
@@ -260,6 +260,7 @@ export function Chat({
             setAttachments={setAttachments}
             messages={messages}
             setMessages={setMessages}
+            session={session}
           />
         </div>
         <Artifact

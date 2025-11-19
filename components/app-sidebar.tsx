@@ -76,7 +76,7 @@ export function AppSidebar({ user }: { user: User | undefined }) {
       </SidebarContent>
       
       <SidebarFooter className="absolute bottom-0 left-[26px] w-[214px]">
-        {user && <SidebarUserNav user={user} />}
+        <SidebarUserNav user={user} />
       </SidebarFooter>
     </Sidebar>
   );

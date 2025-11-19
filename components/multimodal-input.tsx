@@ -44,6 +44,7 @@ function PureMultimodalInput({
   selectedVisibilityType,
   showStopButton = true,
   placeholder = 'Write something...',
+  isDisabled = false,
 }: {
   chatId: string;
   input: string;
@@ -59,6 +60,7 @@ function PureMultimodalInput({
   selectedVisibilityType: VisibilityType;
   showStopButton?: boolean;
   placeholder?: string;
+  isDisabled?: boolean;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { width } = useWindowSize();
@@ -294,8 +296,9 @@ function PureMultimodalInput({
           placeholder={placeholder}
           value={input}
           onChange={handleInput}
+          disabled={isDisabled}
           className={cx(
-            'min-h-[24px] max-h-[calc(75dvh)] overflow-hidden resize-none rounded-2xl !text-base border-2 border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 focus:border-custom-purple dark:focus:border-custom-purple focus:ring-2 focus:ring-custom-purple/20 dark:focus:ring-custom-purple/30 focus:outline-none transition-colors pb-10',
+            'min-h-[24px] max-h-[calc(75dvh)] overflow-hidden resize-none rounded-2xl !text-base border-2 border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 focus:border-custom-purple dark:focus:border-custom-purple focus:ring-2 focus:ring-custom-purple/20 dark:focus:ring-custom-purple/30 focus:outline-none transition-colors pb-10 disabled:opacity-50 disabled:cursor-not-allowed',
             className,
           )}
           rows={2}
@@ -310,7 +313,7 @@ function PureMultimodalInput({
 
               if (status !== 'ready') {
                 toast.error('Please wait for the model to finish its response!');
-              } else {
+              } else if (!isDisabled) {
                 submitForm();
               }
             }
@@ -328,6 +331,7 @@ function PureMultimodalInput({
             submitForm={submitForm}
             uploadQueue={uploadQueue}
             status={status}
+            isDisabled={isDisabled}
           />
         </>
       </div>
@@ -406,24 +410,29 @@ function PureSendButton({
   input,
   uploadQueue,
   status,
+  isDisabled = false,
 }: {
   submitForm: () => void;
   input: string;
   uploadQueue: Array<string>;
   status: UseChatHelpers<ChatMessage>['status'];
+  isDisabled?: boolean;
 }) {
-  const isEnabled = input.length > 0 && uploadQueue.length === 0;
+  const isEnabled = input.length > 0 && uploadQueue.length === 0 && !isDisabled;
   const shouldShowWaitCursor = isEnabled && (status === 'submitted' || status === 'streaming');
   
   return (
     <Button
       data-testid="send-button"
-      className={`bg-custom-purple hover:bg-custom-purple/90 disabled:bg-gray-200 disabled:hover:bg-gray-200 dark:disabled:bg-gray-700 dark:disabled:hover:bg-gray-700 rounded-[100px] px-3 py-1.5 flex items-center gap-1 text-white disabled:text-gray-500 dark:disabled:text-gray-400 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors ${shouldShowWaitCursor ? 'cursor-wait' : ''}`}
+      className={`bg-custom-purple hover:bg-custom-purple/90 disabled:bg-gray-200 disabled:hover:bg-gray-200 dark:disabled:bg-gray-700 dark:disabled:hover:bg-gray-700 rounded-[100px] px-3 py-1.5 flex items-center gap-1 text-white disabled:text-gray-500 dark:disabled:text-gray-400 text-sm font-medium disabled:opacity-50 transition-colors ${shouldShowWaitCursor ? 'cursor-wait' : ''}`}
       onClick={(event) => {
         event.preventDefault();
-        submitForm();
+        if (!isDisabled) {
+          submitForm();
+        }
       }}
-      disabled={input.length === 0 || uploadQueue.length > 0}
+      disabled={input.length === 0 || uploadQueue.length > 0 || isDisabled}
+      disabledTooltip={isDisabled ? 'Log in to submit' : undefined}
     >
       <ArrowUpIcon size={20} />
       <span>Submit</span>
@@ -436,5 +445,6 @@ const SendButton = memo(PureSendButton, (prevProps, nextProps) => {
     return false;
   if (prevProps.input !== nextProps.input) return false;
   if (prevProps.status !== nextProps.status) return false;
+  if (prevProps.isDisabled !== nextProps.isDisabled) return false;
   return true;
 });
