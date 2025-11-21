@@ -389,14 +389,16 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
         if (ctx) {
           const img = new Image();
           img.onload = () => {
-            // Clear canvas and draw new frame
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            // Use requestAnimationFrame for smoother rendering
+            requestAnimationFrame(() => {
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            });
           };
           img.src = `data:image/jpeg;base64,${frame.data}`;
         }
       }
-      
+
       setLastFrame(frame.data);
     };
 
