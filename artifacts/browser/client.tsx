@@ -358,6 +358,10 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
         return;
       }
 
+      // Prevent default browser behavior for all keys in user control mode
+      // This ensures keys like Backspace don't navigate back in browser history
+      event.preventDefault();
+
       sendUserInput({
         type: event.type === 'keydown' ? 'keydown' : 'keyup',
         key: event.key,
