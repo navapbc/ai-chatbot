@@ -1,22 +1,13 @@
-import { cookies } from 'next/headers';
+import { cookies } from "next/headers";
+import Script from "next/script";
+import { Suspense } from "react";
+import { AppSidebar } from "@/components/app-sidebar";
+import { DataStreamProvider } from "@/components/data-stream-provider";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { auth } from "../(auth)/auth";
+import { LayoutHeader } from "@/components/layout-header";
 
-import { AppSidebar } from '@/components/app-sidebar';
-import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
-import { auth } from '../(auth)/auth';
-import Script from 'next/script';
-import { DataStreamProvider } from '@/components/data-stream-provider';
-import { LayoutHeader } from '@/components/layout-header';
-
-export const experimental_ppr = true;
-
-export default async function Layout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  const [session, cookieStore] = await Promise.all([auth(), cookies()]);
-  const isCollapsed = cookieStore.get('sidebar:state')?.value !== 'true';
-
+export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <>
       <Script
@@ -24,14 +15,25 @@ export default async function Layout({
         strategy="beforeInteractive"
       />
       <DataStreamProvider>
-        <SidebarProvider defaultOpen={!isCollapsed}>
-          <AppSidebar user={session?.user} />
-          <SidebarInset>
-            <LayoutHeader />
-            {children}
-          </SidebarInset>
-        </SidebarProvider>
+        <Suspense fallback={<div className="flex h-dvh" />}>
+          <SidebarWrapper>{children}</SidebarWrapper>
+        </Suspense>
       </DataStreamProvider>
     </>
+  );
+}
+
+async function SidebarWrapper({ children }: { children: React.ReactNode }) {
+  const [session, cookieStore] = await Promise.all([auth(), cookies()]);
+  const isCollapsed = cookieStore.get("sidebar_state")?.value !== "true";
+
+  return (
+    <SidebarProvider defaultOpen={!isCollapsed}>
+      <AppSidebar user={session?.user} />
+      <SidebarInset>
+        <LayoutHeader />
+        {children}
+      </SidebarInset>
+    </SidebarProvider>
   );
 }

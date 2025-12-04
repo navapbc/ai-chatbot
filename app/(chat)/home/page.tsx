@@ -25,6 +25,7 @@ export default function LandingPage() {
                     src={imgImage2}
                     fill
                     style={{ objectFit: 'cover' }}
+                    unoptimized
                   />
                 </div>
               </div>

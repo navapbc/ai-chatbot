@@ -2,8 +2,6 @@
 // Solves security issue: browsers block ws:// connections from HTTPS pages
 // This proxy accepts secure wss:// connections from the frontend and forwards to ws:// backend
 
-export const runtime = 'nodejs';
-
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const sessionId = url.searchParams.get('sessionId') || 'default';
