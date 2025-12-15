@@ -1,5 +1,5 @@
 import { Artifact } from '@/components/create-artifact';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { MonitorX, Loader2, RefreshCwIcon, Monitor, MousePointerClick, ClockFading, Maximize2, ArrowLeftIcon } from 'lucide-react';
@@ -83,9 +83,67 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
     const lastMoveEventRef = useRef<number>(0);
     const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
     const lastTouchRef = useRef<{ x: number; y: number } | null>(null);
+    const metadataRef = useRef(metadata);
 
-    const connectToBrowserStream = async () => {
-      if (!metadata?.sessionId) return;
+    // Keep metadataRef in sync with metadata
+    useEffect(() => {
+      metadataRef.current = metadata;
+    }, [metadata]);
+
+    const handleBrowserFrame = useCallback((frame: BrowserFrame) => {
+      // Update frame rate tracking
+      frameCountRef.current++;
+      const now = Date.now();
+      if (now - lastFrameTimeRef.current >= 1000) {
+        console.log(`[Browser Artifact] Browser frame rate: ${frameCountRef.current} FPS`);
+        frameCountRef.current = 0;
+        lastFrameTimeRef.current = now;
+      }
+
+      // Update the canvas with the new frame
+      const canvas = canvasRef.current;
+      if (!canvas) {
+        console.warn('[Browser Artifact] Canvas ref is null, skipping frame');
+        return;
+      }
+
+      const ctx = canvas.getContext('2d', { alpha: false });
+      if (!ctx) {
+        console.warn('[Browser Artifact] Could not get canvas context');
+        return;
+      }
+
+      const currentMetadata = metadataRef.current;
+      if (currentMetadata?.isFullscreen) {
+        canvas.style.touchAction = 'auto';
+      }
+
+      const img = new Image();
+      img.onload = () => {
+        // Double-check canvas is still available
+        if (canvas && ctx) {
+          try {
+            // Clear canvas and draw new frame
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          } catch (err) {
+            console.error('[Browser Artifact] Error drawing frame to canvas:', err);
+          }
+        }
+      };
+      img.onerror = (err) => {
+        console.error('[Browser Artifact] Failed to load browser frame image:', err);
+      };
+      img.src = `data:image/jpeg;base64,${frame.data}`;
+      
+      setLastFrame(frame.data);
+    }, []); // No dependencies - uses refs for everything
+
+    const connectToBrowserStream = useCallback(async () => {
+      if (!metadata?.sessionId) {
+        console.error('[Browser Artifact] No sessionId available for connection');
+        return;
+      }
 
       try {
         setMetadata({
@@ -96,40 +154,74 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
 
         // Fetch browser WebSocket proxy config from server (runtime config)
         let wsUrl: string;
+        let config: { proxyUrl?: string } = {};
+        
         try {
+          console.log('[Browser Artifact] Fetching WebSocket config from /api/browser-ws-config');
           const configRes = await fetch('/api/browser-ws-config');
-          const config = await configRes.json();
+          
+          if (!configRes.ok) {
+            console.error('[Browser Artifact] Failed to fetch WS config:', configRes.status, configRes.statusText);
+          } else {
+            config = await configRes.json();
+            console.log('[Browser Artifact] WebSocket config received:', JSON.stringify(config));
+          }
+        } catch (err) {
+          console.warn('[Browser Artifact] Failed to fetch browser WS config:', err);
+        }
 
-          if (config.proxyUrl) {
-            // Production: use dedicated proxy service
+        if (config.proxyUrl) {
+          // Production: use dedicated proxy service
+          try {
             const url = new URL(config.proxyUrl);
             const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
             wsUrl = `${protocol}//${url.host}?sessionId=${metadata.sessionId}`;
-          } else {
-            // Development: connect directly to localhost
+            console.log('[Browser Artifact] Using proxy URL:', wsUrl);
+          } catch (err) {
+            console.error('[Browser Artifact] Invalid proxy URL:', config.proxyUrl, err);
+            // Fallback to localhost for development
             wsUrl = `ws://localhost:8933?sessionId=${metadata.sessionId}`;
+            console.log('[Browser Artifact] Falling back to localhost');
           }
-        } catch (err) {
-          console.warn('Failed to fetch browser WS config, falling back to localhost:', err);
+        } else {
+          // Development or missing proxy config: connect directly to localhost
           wsUrl = `ws://localhost:8933?sessionId=${metadata.sessionId}`;
+          console.log('[Browser Artifact] No proxy URL configured, using localhost:', wsUrl);
         }
 
+        console.log('[Browser Artifact] Attempting WebSocket connection to:', wsUrl);
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
 
+        // Add connection timeout
+        const connectionTimeout = setTimeout(() => {
+          if (ws.readyState !== WebSocket.OPEN) {
+            console.error('[Browser Artifact] WebSocket connection timeout after 10s');
+            ws.close();
+            setMetadata((prev) => ({
+              ...prev,
+              error: 'Connection timeout - please check if browser streaming service is running',
+              isConnecting: false,
+            }));
+          }
+        }, 10000);
+
         ws.onopen = () => {
-          console.log('Connected to browser streaming service');
-          setMetadata({
-            ...metadata,
+          clearTimeout(connectionTimeout);
+          console.log('[Browser Artifact] ✓ Connected to browser streaming service');
+          setMetadata((prev) => ({
+            ...prev,
             isConnected: true,
             isConnecting: false,
-          });
+            error: undefined,
+          }));
           
           // Request streaming to start
           ws.send(JSON.stringify({
             type: 'start-streaming',
             sessionId: metadata.sessionId
           }));
+          console.log('[Browser Artifact] Sent start-streaming request for session:', metadata.sessionId);
         };
 
         ws.onmessage = (event) => {
@@ -142,15 +234,15 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
                 break;
                 
               case 'streaming-started':
-                console.log('Browser streaming started:', message.sessionId);
+                console.log('[Browser Artifact] Browser streaming started:', message.sessionId);
                 break;
                 
               case 'streaming-stopped':
-                console.log('Browser streaming stopped:', message.sessionId);
+                console.log('[Browser Artifact] Browser streaming stopped:', message.sessionId);
                 break;
                 
               case 'control-mode-changed':
-                console.log('Control mode changed to:', message.data?.mode);
+                console.log('[Browser Artifact] Control mode changed to:', message.data?.mode);
                 const newMode = message.data?.mode || 'agent';
                 setMetadata(prev => ({
                   ...prev,
@@ -161,7 +253,7 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
                 break;
                 
               case 'error':
-                console.error('Browser streaming error:', message.error);
+                console.error('[Browser Artifact] Browser streaming error:', message.error);
                 setMetadata(prev => ({
                   ...prev,
                   error: message.error,
@@ -170,49 +262,55 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
                 break;
                 
               default:
-                console.log('Unknown message type:', message.type);
+                console.log('[Browser Artifact] Unknown message type:', message.type);
             }
           } catch (err) {
-            console.error('Error parsing WebSocket message:', err);
+            console.error('[Browser Artifact] Error parsing WebSocket message:', err);
           }
         };
 
-        ws.onclose = () => {
-          console.log('Disconnected from browser streaming service');
-          setMetadata({
-            ...metadata,
+        ws.onclose = (event) => {
+          clearTimeout(connectionTimeout);
+          console.log('[Browser Artifact] Disconnected from browser streaming service', {
+            code: event.code,
+            reason: event.reason,
+            wasClean: event.wasClean
+          });
+          setMetadata((prev) => ({
+            ...prev,
             isConnected: false,
             isConnecting: false,
-          });
+          }));
           wsRef.current = null;
         };
 
         ws.onerror = (error) => {
-          console.error('WebSocket error:', error);
-          setMetadata({
-            ...metadata,
-            error: 'WebSocket connection error',
+          clearTimeout(connectionTimeout);
+          console.error('[Browser Artifact] WebSocket error:', error);
+          setMetadata((prev) => ({
+            ...prev,
+            error: 'WebSocket connection error - browser streaming service may not be available',
             isConnecting: false,
-          });
+          }));
         };
 
       } catch (err) {
-        console.error('Failed to connect to browser stream:', err);
-        setMetadata({
-          ...metadata,
+        console.error('[Browser Artifact] Failed to connect to browser stream:', err);
+        setMetadata((prev) => ({
+          ...prev,
           error: err instanceof Error ? err.message : 'Connection failed',
           isConnecting: false,
-        });
+        }));
       }
-    };
+    }, [metadata?.sessionId, handleBrowserFrame]);
 
-    const disconnectFromBrowserStream = () => {
+    const disconnectFromBrowserStream = useCallback(() => {
       if (wsRef.current) {
         const currentSessionId = metadata?.sessionId;
         
         // Request streaming to stop (but keep Chrome alive)
         if (currentSessionId && wsRef.current.readyState === WebSocket.OPEN) {
-          console.log(`Requesting stop-streaming for session: ${currentSessionId} (Chrome remains alive)`);
+          console.log(`[Browser Artifact] Requesting stop-streaming for session: ${currentSessionId} (Chrome remains alive)`);
           wsRef.current.send(JSON.stringify({
             type: 'stop-streaming',
             sessionId: currentSessionId
@@ -230,21 +328,21 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
         });
       }
       setLastFrame(null);
-    };
+    }, [metadata, setMetadata]);
 
-    const switchControlMode = (mode: 'agent' | 'user') => {
+    const switchControlMode = useCallback((mode: 'agent' | 'user') => {
       if (!metadata?.sessionId || !wsRef.current) {
         toast.error('Not connected to browser session');
-        console.error('Cannot switch control mode - missing sessionId or WebSocket connection');
+        console.error('[Browser Artifact] Cannot switch control mode - missing sessionId or WebSocket connection');
         return;
       }
 
-      console.log(`Switching control mode to: ${mode} for session: ${metadata.sessionId}`);
-      console.log('WebSocket readyState:', wsRef.current.readyState);
+      console.log(`[Browser Artifact] Switching control mode to: ${mode} for session: ${metadata.sessionId}`);
+      console.log('[Browser Artifact] WebSocket readyState:', wsRef.current.readyState);
 
       if (wsRef.current.readyState !== WebSocket.OPEN) {
         toast.error('WebSocket connection is not open');
-        console.error('WebSocket is not in OPEN state:', wsRef.current.readyState);
+        console.error('[Browser Artifact] WebSocket is not in OPEN state:', wsRef.current.readyState);
         return;
       }
 
@@ -276,10 +374,10 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
         }));
       }
 
-      console.log(`Control mode switch message sent for ${mode}`);
-    };
+      console.log(`[Browser Artifact] Control mode switch message sent for ${mode}`);
+    }, [metadata?.sessionId, stop, isMobile, setMetadata]);
 
-    const sendUserInput = (inputData: any) => {
+    const sendUserInput = useCallback((inputData: any) => {
       if (!metadata?.sessionId || !wsRef.current) return;
       if (metadata.controlMode !== 'user') return;
 
@@ -288,7 +386,7 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
         sessionId: metadata.sessionId,
         data: inputData
       }));
-    };
+    }, [metadata?.sessionId, metadata?.controlMode]);
 
     const handleCanvasInteraction = (event: React.MouseEvent | React.KeyboardEvent | React.WheelEvent | React.TouchEvent) => {
       if (metadata?.controlMode !== 'user' || !metadata.isFocused) return;
@@ -483,45 +581,14 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
       });
     };
 
-    const handleBrowserFrame = (frame: BrowserFrame) => {
-      // Update frame rate tracking
-      frameCountRef.current++;
-      const now = Date.now();
-      if (now - lastFrameTimeRef.current >= 1000) {
-        console.log(`Browser frame rate: ${frameCountRef.current} FPS`);
-        frameCountRef.current = 0;
-        lastFrameTimeRef.current = now;
-      }
-
-      // Update the canvas with the new frame
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const ctx = canvas.getContext('2d');
-        if (metadata?.isFullscreen) {
-          console.log('Setting touch action to auto');
-          canvas.style.touchAction = 'auto';
-        }
-        if (ctx) {
-          const img = new Image();
-          img.onload = () => {
-            // Clear canvas and draw new frame
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          };
-          img.src = `data:image/jpeg;base64,${frame.data}`;
-        }
-      }
-      
-      setLastFrame(frame.data);
-    };
-
     // Auto-connect when artifact becomes current version or is first created
     useEffect(() => {
       if (metadata && !metadata.isConnected && !metadata.isConnecting) {
         // Auto-connect when artifact is visible and not already connected
+        console.log('[Browser Artifact] Auto-connecting to browser stream');
         connectToBrowserStream();
       }
-    }, [isCurrentVersion, metadata?.sessionId]);
+    }, [isCurrentVersion, metadata?.sessionId, metadata?.isConnected, metadata?.isConnecting, connectToBrowserStream]);
 
     // Redraw canvas when control mode changes (in case canvas was cleared during re-render)
     useEffect(() => {
