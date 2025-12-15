@@ -1,13 +1,16 @@
 import { cookies } from "next/headers";
 import Script from "next/script";
-import { Suspense } from "react";
+// import { Suspense } from "react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { DataStreamProvider } from "@/components/data-stream-provider";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { auth } from "../(auth)/auth";
-import { LayoutHeader } from "@/components/layout-header";
 
-export default function Layout({ children }: { children: React.ReactNode }) {
+export default function Layout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <>
       <Script
@@ -15,9 +18,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         strategy="beforeInteractive"
       />
       <DataStreamProvider>
-        <Suspense fallback={<div className="flex h-dvh" />}>
-          <SidebarWrapper>{children}</SidebarWrapper>
-        </Suspense>
+        <SidebarWrapper>{children}</SidebarWrapper>
       </DataStreamProvider>
     </>
   );
@@ -30,10 +31,7 @@ async function SidebarWrapper({ children }: { children: React.ReactNode }) {
   return (
     <SidebarProvider defaultOpen={!isCollapsed}>
       <AppSidebar user={session?.user} />
-      <SidebarInset>
-        <LayoutHeader />
-        {children}
-      </SidebarInset>
+      <SidebarInset>{children}</SidebarInset>
     </SidebarProvider>
   );
 }
