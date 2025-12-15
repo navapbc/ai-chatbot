@@ -40,7 +40,7 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
   
   initialize: async ({ documentId, setMetadata }) => {
     // Initialize with a unique session ID based on document ID
-    const sessionId = `browser-${documentId}-${Date.now()}`;
+    const sessionId = `browser-${documentId}-${crypto.randomUUID()}`;
 
     setMetadata({
       sessionId,
@@ -88,11 +88,11 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
       if (!metadata?.sessionId) return;
 
       try {
-        setMetadata({
-          ...metadata,
+        setMetadata(prev => ({
+          ...prev,
           isConnecting: true,
           error: undefined,
-        });
+        }));
 
         // Fetch browser WebSocket proxy config from server (runtime config)
         let wsUrl: string;
@@ -119,11 +119,11 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
 
         ws.onopen = () => {
           console.log('Connected to browser streaming service');
-          setMetadata({
-            ...metadata,
+          setMetadata(prev => ({
+            ...prev,
             isConnected: true,
             isConnecting: false,
-          });
+          }));
           
           // Request streaming to start
           ws.send(JSON.stringify({
@@ -179,30 +179,30 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
 
         ws.onclose = () => {
           console.log('Disconnected from browser streaming service');
-          setMetadata({
-            ...metadata,
+          setMetadata(prev => ({
+            ...prev,
             isConnected: false,
             isConnecting: false,
-          });
+          }));
           wsRef.current = null;
         };
 
         ws.onerror = (error) => {
           console.error('WebSocket error:', error);
-          setMetadata({
-            ...metadata,
+          setMetadata(prev => ({
+            ...prev,
             error: 'WebSocket connection error',
             isConnecting: false,
-          });
+          }));
         };
 
       } catch (err) {
         console.error('Failed to connect to browser stream:', err);
-        setMetadata({
-          ...metadata,
+        setMetadata(prev => ({
+          ...prev,
           error: err instanceof Error ? err.message : 'Connection failed',
           isConnecting: false,
-        });
+        }));
       }
     };
 
@@ -223,11 +223,11 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
       }
       
       if (metadata) {
-        setMetadata({
-          ...metadata,
+        setMetadata(prev => ({
+          ...prev,
           isConnected: false,
           error: undefined,
-        });
+        }));
       }
       setLastFrame(null);
     };
@@ -517,11 +517,18 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
 
     // Auto-connect when artifact becomes current version or is first created
     useEffect(() => {
-      if (metadata && !metadata.isConnected && !metadata.isConnecting) {
-        // Auto-connect when artifact is visible and not already connected
-        connectToBrowserStream();
-      }
-    }, [isCurrentVersion, metadata?.sessionId]);
+      if (!metadata) return;
+      if (!isCurrentVersion) return; // optional but usually correct
+      if (metadata.isConnected || metadata.isConnecting) return;
+    
+      connectToBrowserStream();
+    }, [
+      isCurrentVersion,
+      metadata?.sessionId,
+      metadata?.isConnected,
+      metadata?.isConnecting,
+    ]);
+    
 
     // Redraw canvas when control mode changes (in case canvas was cleared during re-render)
     useEffect(() => {

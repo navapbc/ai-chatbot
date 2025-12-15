@@ -62,7 +62,7 @@ function PureSideChatHeader({
           new Date(),
           { addSuffix: true }
         )}` : artifactKind === 'browser' && metadata?.sessionId ? `Session started ${formatDistance(
-          new Date(parseInt(metadata.sessionId.split('-').pop() || '0')),
+          sessionStartTime || new Date(),
           new Date(),
           { addSuffix: true }
         )}` : 'Session started'}
