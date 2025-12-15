@@ -7,10 +7,18 @@ import { getChatById, getMessagesByChatId } from '@/lib/db/queries';
 import { DataStreamHandler } from '@/components/data-stream-handler';
 import { DEFAULT_CHAT_MODEL } from '@/lib/ai/models';
 import { convertToUIMessages } from '@/lib/utils';
+import { Suspense } from 'react';
 
-export default async function Page(props: { params: Promise<{ id: string }> }) {
-  const params = await props.params;
-  const { id } = params;
+export default function Page(props: { params: Promise<{ id: string }> }) {
+  return (
+    <Suspense fallback={<div className="flex h-dvh" />}>
+      <ChatPage params={props.params} />
+    </Suspense>
+  );
+}
+
+async function ChatPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const chat = await getChatById({ id });
 
   if (!chat) {
