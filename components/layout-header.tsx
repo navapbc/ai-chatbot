@@ -28,7 +28,6 @@ export function LayoutHeader() {
 
   const handleNewChat = () => {
     interceptNavigation(() => {
-      closeArtifact(setArtifact);
       router.push('/');
       router.refresh();
     });

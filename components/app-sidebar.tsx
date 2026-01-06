@@ -37,7 +37,6 @@ export function AppSidebar({ user }: { user: User | undefined }) {
   const handleHomeClick = (e: React.MouseEvent) => {
     e.preventDefault();
     interceptNavigation(() => {
-      closeArtifact(setArtifact);
       setOpenMobile(false);
       router.push('/home');
     });
@@ -46,7 +45,6 @@ export function AppSidebar({ user }: { user: User | undefined }) {
   const handleNewChatClick = () => {
     interceptNavigation(() => {
       setOpenMobile(false);
-      closeArtifact(setArtifact);
       router.push('/');
       router.refresh();
     });

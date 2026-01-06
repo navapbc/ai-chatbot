@@ -58,7 +58,6 @@ const PureChatItem = ({
     e.preventDefault();
     interceptNavigation(() => {
       setOpenMobile(false);
-      closeArtifact(setArtifact);
       router.push(`/chat/${chat.id}`);
     });
   };

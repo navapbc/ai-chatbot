@@ -155,16 +155,10 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
                 
               case 'streaming-started':
                 console.log('Browser streaming started:', message.sessionId);
-                if (message.reconnected) {
-                  console.log('Reconnected to existing browser session');
-                }
                 break;
                 
               case 'streaming-stopped':
                 console.log('Browser streaming stopped:', message.sessionId);
-                if (message.canResume) {
-                  console.log('Session paused - can resume within 2 minutes');
-                }
                 break;
                 
               case 'control-mode-changed':
