@@ -177,22 +177,13 @@ export function Chat({
         const partType = (part as any).type;
         const toolName = (part as any).toolName;
 
-        // Check for tool-call type with browser-related toolName
-        // Supports: browser_navigate, playwright_browser_*, mcp_playwright_browser_*, playwright.browser_*
-        if (partType === 'tool-call' &&
-            (toolName?.startsWith('browser_') ||
-             toolName?.startsWith('playwright_browser') ||
-             toolName?.startsWith('mcp_playwright_browser') ||
-             toolName?.startsWith('playwright.browser_') ||
-             toolName?.includes('_browser_'))) {
+        // Check for browser tools: browser_navigate, browser_act, browser_extract, etc.
+        if (partType === 'tool-call' && toolName?.startsWith('browser_')) {
           return true;
         }
 
         // Check for tool- prefixed types (how tools appear in message parts)
-        if (partType?.startsWith('tool-browser_') ||
-            partType?.startsWith('tool-playwright_browser') ||
-            partType?.startsWith('tool-mcp_playwright_browser') ||
-            partType?.startsWith('tool-playwright.browser_')) {
+        if (partType?.startsWith('tool-browser_')) {
           return true;
         }
 
@@ -231,17 +222,9 @@ export function Chat({
           const partType = (part as any).type;
           const toolName = (part as any).toolName;
 
-          // Supports: browser_navigate, playwright_browser_*, mcp_playwright_browser_*, playwright.browser_*
-          return (partType === 'tool-call' &&
-                  (toolName?.startsWith('browser_') ||
-                   toolName?.startsWith('playwright_browser') ||
-                   toolName?.startsWith('mcp_playwright_browser') ||
-                   toolName?.startsWith('playwright.browser_') ||
-                   toolName?.includes('_browser_'))) ||
-                 (partType?.startsWith('tool-browser_') ||
-                  partType?.startsWith('tool-playwright_browser') ||
-                  partType?.startsWith('tool-mcp_playwright_browser') ||
-                  partType?.startsWith('tool-playwright.browser_'));
+          // Check for browser tools
+          return (partType === 'tool-call' && toolName?.startsWith('browser_')) ||
+                 partType?.startsWith('tool-browser_');
         })
       );
 

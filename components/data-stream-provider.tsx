@@ -9,6 +9,9 @@ interface DataStreamContextValue {
   setDataStream: React.Dispatch<
     React.SetStateAction<DataUIPart<CustomUIDataTypes>[]>
   >;
+  // Browserbase Live View URL (set from response header)
+  liveViewUrl: string | null;
+  setLiveViewUrl: React.Dispatch<React.SetStateAction<string | null>>;
 }
 
 const DataStreamContext = createContext<DataStreamContextValue | null>(null);
@@ -21,8 +24,12 @@ export function DataStreamProvider({
   const [dataStream, setDataStream] = useState<DataUIPart<CustomUIDataTypes>[]>(
     [],
   );
+  const [liveViewUrl, setLiveViewUrl] = useState<string | null>(null);
 
-  const value = useMemo(() => ({ dataStream, setDataStream }), [dataStream]);
+  const value = useMemo(
+    () => ({ dataStream, setDataStream, liveViewUrl, setLiveViewUrl }),
+    [dataStream, liveViewUrl]
+  );
 
   return (
     <DataStreamContext.Provider value={value}>

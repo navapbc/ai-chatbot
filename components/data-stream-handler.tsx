@@ -6,7 +6,7 @@ import { initialArtifactData, useArtifact } from '@/hooks/use-artifact';
 import { useDataStream } from './data-stream-provider';
 
 export function DataStreamHandler() {
-  const { dataStream } = useDataStream();
+  const { dataStream, setLiveViewUrl } = useDataStream();
 
   const { artifact, setArtifact, setMetadata } = useArtifact();
   const lastProcessedIndex = useRef(-1);
@@ -18,6 +18,13 @@ export function DataStreamHandler() {
     lastProcessedIndex.current = dataStream.length - 1;
 
     newDeltas.forEach((delta) => {
+      // Handle Browserbase Live View URL from backend
+      if (delta.type === 'data-liveViewUrl') {
+        console.log('[DataStreamHandler] Received liveViewUrl:', delta.data);
+        setLiveViewUrl(delta.data as string);
+        return;
+      }
+
       const artifactDefinition = artifactDefinitions.find(
         (artifactDefinition) => artifactDefinition.kind === artifact.kind,
       );
@@ -75,7 +82,7 @@ export function DataStreamHandler() {
         }
       });
     });
-  }, [dataStream, setArtifact, setMetadata, artifact]);
+  }, [dataStream, setArtifact, setMetadata, setLiveViewUrl, artifact]);
 
   return null;
 }
