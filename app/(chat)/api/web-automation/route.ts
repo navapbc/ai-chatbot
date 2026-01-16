@@ -6,7 +6,6 @@ import {
   tool,
   stepCountIs,
 } from 'ai';
-import { openai } from '@ai-sdk/openai';
 import { z } from 'zod';
 import { auth, type UserType } from '@/app/(auth)/auth';
 import { entitlementsByUserType } from '@/lib/ai/entitlements';
@@ -98,12 +97,12 @@ function createBrowserTools(sessionId: string) {
           const page = stagehand.context.pages()[0];
           await page.waitForLoadState('domcontentloaded');
 
-          const result = await stagehand.extract({
+          const result = await stagehand.extract(
             instruction,
-            schema: z.object({
+            z.object({
               content: z.string().describe('The extracted content'),
-            }),
-          });
+            })
+          );
           console.log('[browser_extract] Raw result:', JSON.stringify(result, null, 2));
           return { success: true, data: result.content || JSON.stringify(result) };
         } catch (error: unknown) {
@@ -126,7 +125,7 @@ function createBrowserTools(sessionId: string) {
           const page = stagehand.context.pages()[0];
           await page.waitForLoadState('domcontentloaded');
 
-          const result = await stagehand.observe({ instruction });
+          const result = await stagehand.observe(instruction);
           console.log('[browser_observe] Raw result:', JSON.stringify(result, null, 2));
 
           if (!result || result.length === 0) {
@@ -299,29 +298,44 @@ export async function POST(request: Request) {
     const streamId = generateUUID();
     await createStreamId({ streamId, chatId });
 
-    // Create Stagehand session FIRST to get liveViewUrl
-    console.log(`[WebAutomation] Creating Stagehand session...`);
-    const stagehand = new Stagehand({
-      env: 'BROWSERBASE',
-      apiKey: process.env.BROWSERBASE_API_KEY,
-      projectId: process.env.BROWSERBASE_PROJECT_ID!,
-      llmClient: {
-        type: 'aisdk',
-        model: google('gemini-3-pro-preview'),
-      } as any,
-      verbose: 2,
-      disablePino: true,
-      logger: (logLine) => {
-        console.log(`[Stagehand] ${logLine.category || ''}: ${logLine.message}`, logLine.auxiliary || '');
-      },
-    });
+    // Check if we have an existing session to reuse
+    let existingSession = activeSessions.get(sessionId);
+    let liveViewUrl: string;
 
-    await stagehand.init();
-    const liveViewUrl = stagehand.browserbaseDebugURL || '';
-    console.log(`[WebAutomation] Stagehand initialized with liveViewUrl: ${liveViewUrl}`);
+    if (existingSession) {
+      console.log(`[WebAutomation] Reusing existing Stagehand session: ${sessionId}`);
+      liveViewUrl = existingSession.liveViewUrl;
+    } else {
+      // Create new Stagehand session
+      console.log(`[WebAutomation] Creating new Stagehand session...`);
+      const stagehand = new Stagehand({
+        env: 'BROWSERBASE',
+        apiKey: process.env.BROWSERBASE_API_KEY,
+        projectId: process.env.BROWSERBASE_PROJECT_ID!,
+        browserbaseSessionCreateParams: {
+          projectId: process.env.BROWSERBASE_PROJECT_ID!,
+          keepAlive: true,
+        },
+        llmClient: {
+          type: 'aisdk',
+          model: google('gemini-3-pro-preview'),
+        } as any,
+        verbose: 2,
+        disablePino: true,
+        logger: (logLine) => {
+          console.log(`[Stagehand] ${logLine.category || ''}: ${logLine.message}`, logLine.auxiliary || '');
+        },
+      });
 
-    // Store session
-    activeSessions.set(sessionId, { stagehand, liveViewUrl });
+      await stagehand.init();
+      // Add navbar=false to hide the Browserbase UI chrome
+      const rawUrl = stagehand.browserbaseDebugURL || '';
+      liveViewUrl = rawUrl ? `${rawUrl}${rawUrl.includes('?') ? '&' : '?'}navbar=false` : '';
+      console.log(`[WebAutomation] Stagehand initialized with liveViewUrl: ${liveViewUrl}`);
+
+      // Store session
+      activeSessions.set(sessionId, { stagehand, liveViewUrl });
+    }
 
     // Create browser tools for this session
     const browserTools = createBrowserTools(sessionId);
@@ -338,9 +352,9 @@ export async function POST(request: Request) {
 
         // Now run the AI with browser tools
         const result = streamText({
-          model: openai('gpt-4o'),
+          model: google('gemini-3-flash-preview'),
           system: webAutomationSystemPrompt,
-          messages: convertToModelMessages(allMessages),
+          messages: await convertToModelMessages(allMessages),
           tools: browserTools,
           stopWhen: stepCountIs(50),
           experimental_telemetry: {
@@ -370,8 +384,9 @@ export async function POST(request: Request) {
             chatId,
           })),
         });
-        // Clean up session
-        await closeSession(sessionId!);
+        // Don't close session - keepAlive is enabled for follow-up requests
+        // Session will be reused or closed explicitly via DELETE endpoint
+        console.log(`[WebAutomation] Stream finished, session ${sessionId} kept alive for follow-up requests`);
       },
       onError: (error: unknown) => {
         console.error('[WebAutomation] Stream error:', error);

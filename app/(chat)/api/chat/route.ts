@@ -158,11 +158,11 @@ export async function POST(request: Request) {
 
     // Default handling for other models
     const stream = createUIMessageStream({
-      execute: ({ writer: dataStream }) => {
+      execute: async ({ writer: dataStream }) => {
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
           system: systemPrompt({ selectedChatModel, requestHints }),
-          messages: convertToModelMessages(uiMessages),
+          messages: await convertToModelMessages(uiMessages),
           stopWhen: stepCountIs(50),
           experimental_activeTools:
             selectedChatModel === 'chat-model-reasoning'

@@ -58,7 +58,7 @@
     "@vercel/postgres": "^0.10.0",
     "@vitejs/plugin-react": "^5.0.4",
     "@vitest/browser": "^3.2.4",
-    "ai": "5.0.26",
+    "ai": "6.0.37",
     "bcrypt-ts": "^5.0.2",
     "class-variance-authority": "^0.7.0",
     "classnames": "^2.5.1",
