@@ -1,8 +1,8 @@
 'use client';
 
-import useSWR from 'swr';
+import useSWR, { useSWRConfig } from 'swr';
 import { UIArtifact } from '@/components/artifact';
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useSyncExternalStore } from 'react';
 
 export const initialArtifactData: UIArtifact = {
   documentId: 'init',
@@ -78,10 +78,13 @@ export function useArtifact() {
     [setLocalArtifact],
   );
 
+  const metadataKey = artifact.documentId && artifact.documentId !== 'init'
+    ? `artifact-metadata-${artifact.documentId}`
+    : null;
+
   const { data: localArtifactMetadata, mutate: setLocalArtifactMetadata } =
     useSWR<any>(
-      () =>
-        artifact.documentId ? `artifact-metadata-${artifact.documentId}` : null,
+      metadataKey,
       null,
       {
         fallbackData: null,

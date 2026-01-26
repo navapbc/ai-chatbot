@@ -38,7 +38,10 @@ import { ChatSDKError } from '@/lib/errors';
 import type { ChatMessage } from '@/lib/types';
 import type { ChatModel } from '@/lib/ai/models';
 import type { VisibilityType } from '@/components/visibility-selector';
-// Mastra import removed - web automation now uses chatRoute
+import { getOrCreateBrowserSession, deleteBrowserSession } from '@/lib/browser/kernel-service';
+import { createBrowserTools } from '@/lib/ai/tools/browser-tools';
+import { apricotTools } from '@/lib/ai/tools/apricot-tools';
+import { webAutomationPrompt } from '@/lib/ai/prompts/web-automation';
 
 export const maxDuration = 300; // 5 minutes for web automation tasks
 
@@ -151,9 +154,98 @@ export async function POST(request: Request) {
     const streamId = generateUUID();
     await createStreamId({ streamId, chatId: id });
 
-    // Web automation model is now handled by Mastra chatRoute
+    // Web automation model uses AI SDK agent with browser tools
     if (selectedChatModel === 'web-automation-model') {
-      return new ChatSDKError('bad_request:api', 'Web automation model should use Mastra chatRoute').toResponse();
+      const browserSession = await getOrCreateBrowserSession(id);
+
+      const stream = createUIMessageStream<ChatMessage>({
+        execute: ({ writer: dataStream }) => {
+          // Establish document ID first (required for metadata storage)
+          dataStream.write({
+            type: 'data-id',
+            data: id,
+            transient: true,
+          });
+
+          // Signal browser artifact creation
+          dataStream.write({
+            type: 'data-kind',
+            data: 'browser',
+            transient: true,
+          });
+
+          // Send session info for the browser artifact
+          dataStream.write({
+            type: 'data-browserSession',
+            data: { type: 'browser-session', sessionId: browserSession.sessionId, liveViewUrl: browserSession.liveViewUrl },
+            transient: true,
+          });
+
+          const browserToolProps = { session, browserSession, dataStream };
+          const browserTools = createBrowserTools(browserToolProps);
+
+          const result = streamText({
+            model: myProvider.languageModel('web-automation-model'),
+            system: webAutomationPrompt,
+            messages: convertToModelMessages(uiMessages),
+            stopWhen: stepCountIs(50),
+            tools: {
+              ...browserTools,
+              ...apricotTools,
+            },
+            onStepFinish: ({ toolCalls, toolResults, finishReason, text }) => {
+              // Log step progress for debugging
+              console.log('[web-automation step]', {
+                toolCalls: toolCalls?.length || 0,
+                toolResults: toolResults?.length || 0,
+                finishReason,
+                textLength: text?.length || 0,
+              });
+            },
+            experimental_telemetry: {
+              isEnabled: isProductionEnvironment,
+              functionId: 'web-automation-agent',
+            },
+          });
+
+          result.consumeStream();
+
+          dataStream.merge(
+            result.toUIMessageStream({
+              sendReasoning: true,
+            }),
+          );
+        },
+        generateId: generateUUID,
+        onFinish: async ({ messages }) => {
+          console.log('[web-automation onFinish] message count:', messages.length, 'parts:', messages.map(m => ({ role: m.role, partTypes: m.parts?.map((p: any) => p.type) })));
+          await saveMessages({
+            messages: messages.map((message) => ({
+              id: message.id,
+              role: message.role,
+              parts: message.parts,
+              createdAt: new Date(),
+              attachments: [],
+              chatId: id,
+            })),
+          });
+        },
+        onError: () => {
+          return 'Browser automation error occurred';
+        },
+      });
+
+      const streamContext = getStreamContext();
+
+      if (streamContext) {
+        return new Response(
+          await streamContext.resumableStream(streamId, () =>
+            stream.pipeThrough(new JsonToSseTransformStream()),
+          ),
+        );
+      } else {
+        return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
+      }
     }
 
     // Default handling for other models
@@ -258,6 +350,13 @@ export async function DELETE(request: Request) {
 
   if (chat.userId !== session.user.id) {
     return new ChatSDKError('forbidden:chat').toResponse();
+  }
+
+  // Clean up browser session if one exists for this chat
+  try {
+    await deleteBrowserSession(id);
+  } catch (error) {
+    console.error('Failed to delete browser session:', error);
   }
 
   const deletedChat = await deleteChatById({ id });

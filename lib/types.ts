@@ -30,6 +30,18 @@ export type ChatTools = {
   requestSuggestions: requestSuggestionsTool;
 };
 
+export type BrowserSessionData = {
+  type: 'browser-session';
+  sessionId: string;
+  liveViewUrl: string;
+};
+
+export type BrowserActionData = {
+  type: 'browser-action';
+  action: string;
+  [key: string]: any;
+};
+
 export type CustomUIDataTypes = {
   textDelta: string;
   imageDelta: string;
@@ -42,6 +54,8 @@ export type CustomUIDataTypes = {
   kind: ArtifactKind;
   clear: null;
   finish: null;
+  browserSession: BrowserSessionData;
+  browserAction: BrowserActionData;
 };
 
 export type ChatMessage = UIMessage<

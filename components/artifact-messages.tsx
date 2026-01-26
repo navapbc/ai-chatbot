@@ -83,15 +83,11 @@ function areEqual(
   prevProps: ArtifactMessagesProps,
   nextProps: ArtifactMessagesProps,
 ) {
-  if (
-    prevProps.artifactStatus === 'streaming' &&
-    nextProps.artifactStatus === 'streaming'
-  )
-    return true;
+  // Always re-render when messages change - needed for browser artifact streaming
+  if (prevProps.messages.length !== nextProps.messages.length) return false;
+  if (!equal(prevProps.messages, nextProps.messages)) return false;
 
   if (prevProps.status !== nextProps.status) return false;
-  if (prevProps.status && nextProps.status) return false;
-  if (prevProps.messages.length !== nextProps.messages.length) return false;
   if (!equal(prevProps.votes, nextProps.votes)) return false;
 
   return true;

@@ -33,7 +33,7 @@ export const myProvider = isTestEnvironment
         }),
         'title-model': openai('gpt-4o-mini'),
         'artifact-model': openai('gpt-4o'),
-        // 'web-automation-model' is handled by Mastra agent, not this provider
+        'web-automation-model': openai('gpt-4o'),
       },
       imageModels: {
         'small-model': openai.image('dall-e-3'),

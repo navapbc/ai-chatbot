@@ -57,36 +57,27 @@ export function Chat({
     setMessages,
     sendMessage,
     status,
-    stop: originalStop,
+    stop,
     regenerate,
     resumeStream,
   } = useChat<ChatMessage>({
     id,
     messages: initialMessages,
-    experimental_throttle: 100,
+    // Reduced throttle for more responsive streaming (especially for tool calls)
+    experimental_throttle: initialChatModel === 'web-automation-model' ? 50 : 100,
     generateId: generateUUID,
     transport: new DefaultChatTransport({
-      api: initialChatModel === 'web-automation-model' ?
-        '/api/mastra-proxy' :
-        '/api/chat',
+      api: '/api/chat',
       fetch: fetchWithErrorHandlers,
-      prepareSendMessagesRequest: initialChatModel !== 'web-automation-model' ?
-        ({ messages, id, body }) => ({
-          body: {
-            id,
-            message: messages.at(-1),
-            selectedChatModel: initialChatModel,
-            selectedVisibilityType: visibilityType,
-            ...body,
-          },
-        }) : ({ messages, id, body }) => ({
-          body: {
-            messages,
-            threadId: id,
-            resourceId: session.user.id,
-            ...body,
-          },
-        }),
+      prepareSendMessagesRequest: ({ messages, id, body }) => ({
+        body: {
+          id,
+          message: messages.at(-1),
+          selectedChatModel: initialChatModel,
+          selectedVisibilityType: visibilityType,
+          ...body,
+        },
+      }),
     }),
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
@@ -102,7 +93,6 @@ export function Chat({
           description: error.message,
         });
       } else {
-        // Handle other errors (like quota errors from Mastra)
         toast({
           type: 'error',
           description: error?.message || 'An error occurred. Please try again.',
@@ -110,31 +100,6 @@ export function Chat({
       }
     },
   });
-
-  // Custom stop function that sends stopChat action for web automation
-  const stop = async () => {
-    // Always call the original stop to abort the stream
-    originalStop();
-
-    // For web automation model, also send stopChat action to backend
-    if (initialChatModel === 'web-automation-model') {
-      try {
-        await fetch('/api/mastra-proxy', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ 
-            action: 'stopChat',
-            threadId: id,
-            resourceId: session.user.id,
-          }),
-        });
-      } catch (error) {
-        console.error('Error sending stopChat action:', error);
-      }
-    }
-  };
 
   const [hasAppendedQuery, setHasAppendedQuery] = useState(false);
 
@@ -178,21 +143,13 @@ export function Chat({
         const toolName = (part as any).toolName;
 
         // Check for tool-call type with browser-related toolName
-        // Supports: browser_navigate, playwright_browser_*, mcp_playwright_browser_*, playwright.browser_*
-        if (partType === 'tool-call' &&
-            (toolName?.startsWith('browser_') ||
-             toolName?.startsWith('playwright_browser') ||
-             toolName?.startsWith('mcp_playwright_browser') ||
-             toolName?.startsWith('playwright.browser_') ||
-             toolName?.includes('_browser_'))) {
+        // AI SDK browser tools: browserNavigate, browserClick, browserSnapshot, etc.
+        if (partType === 'tool-call' && toolName?.startsWith('browser')) {
           return true;
         }
 
         // Check for tool- prefixed types (how tools appear in message parts)
-        if (partType?.startsWith('tool-browser_') ||
-            partType?.startsWith('tool-playwright_browser') ||
-            partType?.startsWith('tool-mcp_playwright_browser') ||
-            partType?.startsWith('tool-playwright.browser_')) {
+        if (partType?.startsWith('tool-browser')) {
           return true;
         }
 
@@ -231,17 +188,9 @@ export function Chat({
           const partType = (part as any).type;
           const toolName = (part as any).toolName;
 
-          // Supports: browser_navigate, playwright_browser_*, mcp_playwright_browser_*, playwright.browser_*
-          return (partType === 'tool-call' &&
-                  (toolName?.startsWith('browser_') ||
-                   toolName?.startsWith('playwright_browser') ||
-                   toolName?.startsWith('mcp_playwright_browser') ||
-                   toolName?.startsWith('playwright.browser_') ||
-                   toolName?.includes('_browser_'))) ||
-                 (partType?.startsWith('tool-browser_') ||
-                  partType?.startsWith('tool-playwright_browser') ||
-                  partType?.startsWith('tool-mcp_playwright_browser') ||
-                  partType?.startsWith('tool-playwright.browser_'));
+          // AI SDK browser tools: browserNavigate, browserClick, browserSnapshot, etc.
+          return (partType === 'tool-call' && toolName?.startsWith('browser')) ||
+                 partType?.startsWith('tool-browser');
         })
       );
 

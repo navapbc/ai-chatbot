@@ -35,9 +35,29 @@ interface ToolIconProps {
 // Icon mapping for tool actions
 const getToolIcon = (toolName: string) => {
   const cleanToolName = toolName.replace('tool-', '');
-  
+
   const iconMap: Record<string, React.ComponentType<any>> = {
-    // New toolset format (browser_*)
+    // agent-browser tools (camelCase format)
+    'browserNavigate': Globe,
+    'browserClick': MousePointer,
+    'browserType': Type,
+    'browserFill': FileText,
+    'browserSelect': CheckSquare,
+    'browserScreenshot': Camera,
+    'browserSnapshot': Monitor,
+    'browserWait': Clock,
+    'browserHover': Move,
+    'browserScroll': Move,
+    'browserPress': Keyboard,
+    'browserCheck': CheckSquare,
+    'browserUncheck': X,
+    'browserBack': ArrowLeft,
+    'browserForward': Globe,
+    'browserReload': Globe,
+    'browserGetText': FileText,
+    'browserGetUrl': Globe,
+    'browserGetTitle': FileText,
+    // Legacy underscore format (browser_*)
     'browser_navigate': Globe,
     'browser_click': MousePointer,
     'browser_type': Type,
@@ -59,30 +79,15 @@ const getToolIcon = (toolName: string) => {
     'browser_file_upload': Upload,
     'browser_install': Download,
     'browser_navigate_back': ArrowLeft,
-    // Legacy format (playwright_browser_*)
-    'playwright_browser_navigate': Globe,
-    'playwright_browser_click': MousePointer,
-    'playwright_browser_type': Type,
-    'playwright_browser_fill_form': FileText,
-    'playwright_browser_select_option': CheckSquare,
-    'playwright_browser_take_screenshot': Camera,
-    'playwright_browser_snapshot': Monitor,
-    'playwright_browser_wait_for': Clock,
-    'playwright_browser_hover': Move,
-    'playwright_browser_drag': Move,
-    'playwright_browser_press_key': Keyboard,
-    'playwright_browser_evaluate': Code,
-    'playwright_browser_close': X,
-    'playwright_browser_resize': Maximize2,
-    'playwright_browser_tabs': PanelLeft,
-    'playwright_browser_console_messages': MessageSquare,
-    'playwright_browser_network_requests': Network,
-    'playwright_browser_handle_dialog': MessageCircle,
-    'playwright_browser_file_upload': Upload,
-    'playwright_browser_install': Download,
-    'playwright_browser_navigate_back': ArrowLeft,
-    // Database tools
+    // Database/Apricot tools
     'search-participants-by-name': Search,
+    'searchApricotUsersByName': Search,
+    'getUsersFromApricot': Database,
+    'getApricotUserById': Database,
+    'getApricotRecordById': Database,
+    'getFormsFromApricot': FileText,
+    'getApricotFormById': FileText,
+    'testApricotAuth': Network,
     'get-participant-with-household': Database,
     'updateWorkingMemory': Brain,
   };
@@ -96,70 +101,95 @@ export const ToolIcon = ({ toolName, size = 12, className = "text-gray-500 flex-
   return <IconComponent size={size} className={className} />;
 };
 
+// Helper to truncate URLs for display
+const truncateUrl = (url: string, maxLength = 40) => {
+  if (!url || url.length <= maxLength) return url;
+  try {
+    const parsed = new URL(url);
+    const domain = parsed.hostname.replace('www.', '');
+    const path = parsed.pathname;
+    if (domain.length + path.length <= maxLength) {
+      return domain + path;
+    }
+    return domain + (path.length > 10 ? path.slice(0, 10) + '...' : path);
+  } catch {
+    return url.slice(0, maxLength) + '...';
+  }
+};
+
 // Helper function to get tool display name with icon
 export const getToolDisplayInfo = (toolName: string, input?: any): { text: string; icon: React.ComponentType<any> } => {
   const toolMappings: Record<string, (input?: any) => string> = {
-    // New toolset format (browser_*)
-    'browser_navigate': (input) => input?.url ? `Navigated to ${input.url}` : 'Navigated to page',
-    'browser_click': (input) => input?.element ? `Clicked on ${input.element}` : 'Clicked element',
-    'browser_type': (input) => input?.text ? `Typed "${input.text}"` : 'Typed text',
-    'browser_fill_form': () => 'Filled form fields',
-    'browser_select_option': (input) => input?.values ? `Selected "${input.values.join(', ')}"` : 'Selected option',
-    'browser_take_screenshot': () => 'Took screenshot',
-    'browser_snapshot': () => 'Captured page snapshot',
-    'browser_wait_for': (input) => input?.text ? `Waited for "${input.text}"` : 'Waited for element',
-    'browser_hover': (input) => input?.element ? `Hovered over ${input.element}` : 'Hovered over element',
-    'browser_drag': () => 'Performed drag and drop',
-    'browser_press_key': (input) => input?.key ? `Pressed key "${input.key}"` : 'Pressed key',
-    'browser_evaluate': () => 'Executed JavaScript',
-    'browser_close': () => 'Closed browser',
-    'browser_resize': () => 'Resized browser window',
-    'browser_tabs': () => 'Managed browser tabs',
-    'browser_console_messages': () => 'Retrieved console messages',
-    'browser_network_requests': () => 'Retrieved network requests',
-    'browser_handle_dialog': () => 'Handled dialog',
-    'browser_file_upload': () => 'Uploaded files',
-    'browser_install': () => 'Installed browser',
-    'browser_navigate_back': () => 'Navigated back',
-    // Legacy format (playwright_browser_*)
-    'playwright_browser_navigate': (input) => input?.url ? `Navigated to ${input.url}` : 'Navigated to page',
-    'playwright_browser_click': (input) => input?.element ? `Clicked on ${input.element}` : 'Clicked element',
-    'playwright_browser_type': (input) => input?.text ? `Typed "${input.text}"` : 'Typed text',
-    'playwright_browser_fill_form': () => 'Filled form fields',
-    'playwright_browser_select_option': (input) => input?.values ? `Selected "${input.values.join(', ')}"` : 'Selected option',
-    'playwright_browser_take_screenshot': () => 'Took screenshot',
-    'playwright_browser_snapshot': () => 'Captured page snapshot',
-    'playwright_browser_wait_for': (input) => input?.text ? `Waited for "${input.text}"` : 'Waited for element',
-    'playwright_browser_hover': (input) => input?.element ? `Hovered over ${input.element}` : 'Hovered over element',
-    'playwright_browser_drag': () => 'Performed drag and drop',
-    'playwright_browser_press_key': (input) => input?.key ? `Pressed key "${input.key}"` : 'Pressed key',
-    'playwright_browser_evaluate': () => 'Executed JavaScript',
-    'playwright_browser_close': () => 'Closed browser',
-    'playwright_browser_resize': () => 'Resized browser window',
-    'playwright_browser_tabs': () => 'Managed browser tabs',
-    'playwright_browser_console_messages': () => 'Retrieved console messages',
-    'playwright_browser_network_requests': () => 'Retrieved network requests',
-    'playwright_browser_handle_dialog': () => 'Handled dialog',
-    'playwright_browser_file_upload': () => 'Uploaded files',
-    'playwright_browser_install': () => 'Installed browser',
-    'playwright_browser_navigate_back': () => 'Navigated back',
-    // Database tools
-    'search-participants-by-name': (input) => input?.name ? `Searched for participant "${input.name}"` : 'Searched for participant',
-    'get-participant-with-household': () => 'Retrieved participant data',
-    'updateWorkingMemory': () => 'Updated working memory',
+    // agent-browser tools (camelCase format)
+    'browserNavigate': (input) => input?.url ? `Opening ${truncateUrl(input.url)}` : 'Opening page',
+    'browserClick': (input) => input?.ref ? `Clicking ${input.ref}` : 'Clicking element',
+    'browserType': (input) => input?.text ? `Typing "${input.text.slice(0, 30)}${input.text.length > 30 ? '...' : ''}"` : 'Typing text',
+    'browserFill': (input) => input?.text ? `Filling "${input.text.slice(0, 20)}${input.text.length > 20 ? '...' : ''}"` : 'Filling field',
+    'browserSelect': (input) => input?.value ? `Selecting "${input.value}"` : 'Selecting option',
+    'browserScreenshot': () => 'Taking screenshot',
+    'browserSnapshot': () => 'Reading page',
+    'browserWait': (input) => input?.target ? `Waiting for ${input.target}` : 'Waiting',
+    'browserHover': (input) => input?.ref ? `Hovering ${input.ref}` : 'Hovering element',
+    'browserScroll': (input) => input?.direction ? `Scrolling ${input.direction}` : 'Scrolling',
+    'browserPress': (input) => input?.key ? `Pressing ${input.key}` : 'Pressing key',
+    'browserCheck': (input) => input?.ref ? `Checking ${input.ref}` : 'Checking checkbox',
+    'browserUncheck': (input) => input?.ref ? `Unchecking ${input.ref}` : 'Unchecking checkbox',
+    'browserBack': () => 'Going back',
+    'browserForward': () => 'Going forward',
+    'browserReload': () => 'Reloading page',
+    'browserGetText': (input) => input?.ref ? `Reading text from ${input.ref}` : 'Reading text',
+    'browserGetUrl': () => 'Getting URL',
+    'browserGetTitle': () => 'Getting title',
+    // Legacy underscore format (browser_*)
+    'browser_navigate': (input) => input?.url ? `Opening ${truncateUrl(input.url)}` : 'Opening page',
+    'browser_click': (input) => input?.element ? `Clicking ${input.element}` : 'Clicking element',
+    'browser_type': (input) => input?.text ? `Typing "${input.text.slice(0, 30)}"` : 'Typing text',
+    'browser_fill_form': () => 'Filling form',
+    'browser_select_option': (input) => input?.values ? `Selecting "${input.values.join(', ')}"` : 'Selecting option',
+    'browser_take_screenshot': () => 'Taking screenshot',
+    'browser_snapshot': () => 'Reading page',
+    'browser_wait_for': (input) => input?.text ? `Waiting for "${input.text}"` : 'Waiting',
+    'browser_hover': (input) => input?.element ? `Hovering ${input.element}` : 'Hovering element',
+    'browser_drag': () => 'Dragging',
+    'browser_press_key': (input) => input?.key ? `Pressing ${input.key}` : 'Pressing key',
+    'browser_evaluate': () => 'Running script',
+    'browser_close': () => 'Closing browser',
+    'browser_resize': () => 'Resizing window',
+    'browser_tabs': () => 'Managing tabs',
+    'browser_console_messages': () => 'Reading console',
+    'browser_network_requests': () => 'Checking network',
+    'browser_handle_dialog': () => 'Handling dialog',
+    'browser_file_upload': () => 'Uploading file',
+    'browser_install': () => 'Installing browser',
+    'browser_navigate_back': () => 'Going back',
+    // Database/Apricot tools
+    'search-participants-by-name': (input) => input?.name ? `Searching "${input.name}"` : 'Searching participants',
+    'searchApricotUsersByName': (input) => input?.name ? `Searching "${input.name}"` : 'Searching users',
+    'getUsersFromApricot': () => 'Loading users',
+    'getApricotUserById': (input) => input?.userId ? `Loading user ${input.userId}` : 'Loading user',
+    'getApricotRecordById': (input) => input?.recordId ? `Loading record ${input.recordId}` : 'Loading record',
+    'getFormsFromApricot': () => 'Loading forms',
+    'getApricotFormById': (input) => input?.formId ? `Loading form ${input.formId}` : 'Loading form',
+    'testApricotAuth': () => 'Testing auth',
+    'get-participant-with-household': () => 'Loading participant data',
+    'updateWorkingMemory': () => 'Updated memory',
   };
 
   const cleanToolName = toolName.replace('tool-', '');
   const mapper = toolMappings[cleanToolName];
-  
+
   let text: string;
   if (mapper) {
     text = mapper(input);
   } else {
-    // Fallback: convert kebab-case to readable format
-    text = cleanToolName.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    // Fallback: convert camelCase or kebab-case to readable format
+    text = cleanToolName
+      .replace(/([A-Z])/g, ' $1') // camelCase
+      .replace(/-/g, ' ') // kebab-case
+      .replace(/\b\w/g, l => l.toUpperCase())
+      .trim();
   }
-  
+
   return {
     text,
     icon: getToolIcon(toolName)
