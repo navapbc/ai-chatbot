@@ -1,9 +1,23 @@
+# Node modules (will be installed in container)
 node_modules/
+
+# Build outputs (will be built in container)
 .next/
 out/
 dist/
+
+# Environment files (provided at runtime)
 .env.local
 .env*.local
+
+# Logs
 *.log
+
+# Test files (not needed in production container)
+__tests__/
+*.test.*
+*.spec.*
 coverage/
+
+# OS files
 .DS_Store
