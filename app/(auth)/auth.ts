@@ -106,11 +106,13 @@ export const {
           return false;
         }
 
-        await upsertOAuthUser({
+        const dbUser = await upsertOAuthUser({
           email: user.email!,
           name: user.name,
           image: user.image,
         });
+        // Use the DB-generated user ID, not the OAuth provider's sub claim
+        user.id = dbUser.id;
       }
       return true;
     },
