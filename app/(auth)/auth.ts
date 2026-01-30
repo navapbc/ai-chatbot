@@ -72,11 +72,14 @@ export const {
       name: 'credentials',
       credentials: {
         email: { label: 'Email', type: 'email' },
-        password: { label: 'Password', type: 'password' }
+        password: { label: 'Password', type: 'password' },
+        previewAuth: { label: 'Preview Auth', type: 'text' }
       },
-      async authorize({ email, password }: any) {
+      async authorize({ email, password, previewAuth }: any) {
         // Preview mode: accept any non-empty email/password
-        if (isPreviewAuthMode) {
+        // Enabled via env var OR previewAuth flag from client
+        const previewAuthEnabled = isPreviewAuthMode || previewAuth === 'true';
+        if (previewAuthEnabled) {
           if (!email || !password) {
             return null;
           }

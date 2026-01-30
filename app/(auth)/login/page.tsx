@@ -7,8 +7,8 @@ import { signIn } from 'next-auth/react';
 import { MicrosoftLogo } from '@/components/icons/MicrosoftLogo';
 import { GoogleLogo } from '@/components/icons/GoogleLogo';
 
-// Check if preview auth mode is enabled (client-side env var)
-const isPreviewAuthMode = process.env.NEXT_PUBLIC_PREVIEW_AUTH_MODE === 'true';
+// Check if preview auth mode is enabled via environment variable
+const isPreviewAuthModeEnv = process.env.NEXT_PUBLIC_PREVIEW_AUTH_MODE === 'true';
 
 function ErrorHandler() {
   const router = useRouter();
@@ -37,6 +37,10 @@ function LoginContent() {
 
   // Use callbackUrl from URL params, default to /home
   const callbackUrl = searchParams.get('callbackUrl') || '/home';
+
+  // Check if preview auth mode is enabled via env var OR url param (?previewAuth=true)
+  const previewAuthParam = searchParams.get('previewAuth') === 'true';
+  const isPreviewAuthMode = isPreviewAuthModeEnv || previewAuthParam;
 
   const handleGoogleLogin = async () => {
     setLoadingMethod('google');
@@ -78,6 +82,7 @@ function LoginContent() {
       const result = await signIn('credentials', {
         email,
         password,
+        previewAuth: previewAuthParam ? 'true' : 'false',
         callbackUrl,
         redirect: false,
       });
