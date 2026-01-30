@@ -7,6 +7,9 @@ import { signIn } from 'next-auth/react';
 import { MicrosoftLogo } from '@/components/icons/MicrosoftLogo';
 import { GoogleLogo } from '@/components/icons/GoogleLogo';
 
+// Check if preview auth mode is enabled (client-side env var)
+const isPreviewAuthMode = process.env.NEXT_PUBLIC_PREVIEW_AUTH_MODE === 'true';
+
 function ErrorHandler() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -28,7 +31,9 @@ function ErrorHandler() {
 
 function LoginContent() {
   const searchParams = useSearchParams();
-  const [loadingMethod, setLoadingMethod] = useState<'microsoft' | 'google' | null>(null);
+  const [loadingMethod, setLoadingMethod] = useState<'microsoft' | 'google' | 'credentials' | null>(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
   // Use callbackUrl from URL params, default to /home
   const callbackUrl = searchParams.get('callbackUrl') || '/home';
@@ -59,6 +64,105 @@ function LoginContent() {
     }
   };
 
+  const handlePreviewLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || !password) {
+      toast({
+        type: 'error',
+        description: 'Please enter both email and password',
+      });
+      return;
+    }
+    setLoadingMethod('credentials');
+    try {
+      const result = await signIn('credentials', {
+        email,
+        password,
+        callbackUrl,
+        redirect: false,
+      });
+      if (result?.error) {
+        toast({
+          type: 'error',
+          description: 'Failed to sign in',
+        });
+        setLoadingMethod(null);
+      } else if (result?.url) {
+        window.location.href = result.url;
+      }
+    } catch (error) {
+      toast({
+        type: 'error',
+        description: 'Failed to sign in',
+      });
+      setLoadingMethod(null);
+    }
+  };
+
+  // Preview auth mode: show email/password form
+  if (isPreviewAuthMode) {
+    return (
+      <div className="bg-chat-background relative size-full min-h-screen">
+        <div className="absolute bg-card border border-border border-solid left-1/2 rounded-[10px] top-[200px] -translate-x-1/2 w-[414px] p-8">
+          <div className="flex flex-col gap-4 items-center">
+            <p className="font-source-serif leading-normal not-italic text-[32px] text-center text-card-foreground tracking-[0.16px]">
+              Welcome
+            </p>
+            <p className="font-inter font-normal leading-normal not-italic text-[14px] text-center text-muted-foreground tracking-[0.07px]">
+              Sign in to access the Form-Filling Assistant
+            </p>
+            <span className="inline-block bg-yellow-100 text-yellow-800 px-3 py-1 rounded text-xs font-semibold">
+              Preview Environment
+            </span>
+
+            <form onSubmit={handlePreviewLogin} className="w-full flex flex-col gap-4 mt-2">
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="email" className="text-sm font-medium text-card-foreground">
+                  Email
+                </label>
+                <input
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="Enter any email"
+                  className="w-full px-3 py-2 border border-border rounded-md bg-background text-card-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="password" className="text-sm font-medium text-card-foreground">
+                  Password
+                </label>
+                <input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Enter any password"
+                  className="w-full px-3 py-2 border border-border rounded-md bg-background text-card-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  required
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loadingMethod !== null}
+                className="w-full py-2 px-4 bg-primary text-primary-foreground rounded-md font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {loadingMethod === 'credentials' ? 'Signing in...' : 'Sign In'}
+              </button>
+            </form>
+
+            <p className="text-xs text-muted-foreground text-center mt-2">
+              Enter any email and password to access the preview environment.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Production auth mode: show OAuth buttons
   return (
     <div className="bg-chat-background relative size-full min-h-screen">
       <div className="absolute bg-card border border-border border-solid h-[260px] left-1/2 rounded-[10px] top-[257px] -translate-x-1/2 w-[414px]">
@@ -69,9 +173,10 @@ function LoginContent() {
           <p className="font-inter font-normal leading-normal min-w-full not-italic relative shrink-0 text-[14px] text-center text-muted-foreground tracking-[0.07px]">
             Sign in to access the Form-Filling Assistant
           </p>
-          
+
           {/* Microsoft Login Button */}
           <button
+            type="button"
             onClick={handleMicrosoftLogin}
             disabled={loadingMethod !== null}
             className="border border-border border-solid box-border content-stretch flex gap-[8px] items-center justify-center min-h-[36px] px-[16px] py-[7.5px] relative rounded-[8px] shrink-0 w-full hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors bg-card"
@@ -88,6 +193,7 @@ function LoginContent() {
 
           {/* Google Login Button */}
           <button
+            type="button"
             onClick={handleGoogleLogin}
             disabled={loadingMethod !== null}
             className="border border-border border-solid box-border content-stretch flex gap-[8px] items-center justify-center min-h-[36px] px-[16px] py-[7.5px] relative rounded-[8px] shrink-0 w-full hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors bg-card"

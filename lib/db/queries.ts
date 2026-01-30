@@ -141,6 +141,33 @@ export async function upsertOAuthUser({
   }
 }
 
+// Create or get a preview user (for preview environments with mock auth)
+export async function createPreviewUser(email: string): Promise<User> {
+  try {
+    const [existingUser] = await getUser(email);
+
+    if (existingUser) {
+      return existingUser;
+    }
+
+    // Create new preview user (no password)
+    const [newUser] = await db.insert(user).values({
+      email,
+      name: email.split('@')[0], // Use email prefix as name
+      password: null,
+      emailVerified: new Date(),
+    }).returning();
+
+    return newUser;
+  } catch (error) {
+    console.error('PREVIEW_USER_ERROR:', error);
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to create preview user'
+    );
+  }
+}
+
 export async function saveChat({
   id,
   userId,

@@ -3,10 +3,13 @@ import NextAuth, { type DefaultSession } from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import Google from 'next-auth/providers/google';
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
-import { getUser, upsertOAuthUser } from '@/lib/db/queries';
+import { getUser, upsertOAuthUser, createPreviewUser } from '@/lib/db/queries';
 import { authConfig } from './auth.config';
 import { DUMMY_PASSWORD } from '@/lib/constants';
 import type { DefaultJWT } from 'next-auth/jwt';
+
+// Check if preview auth mode is enabled
+const isPreviewAuthMode = process.env.PREVIEW_AUTH_MODE === 'true';
 
 export type UserType = 'regular';
 
@@ -72,6 +75,17 @@ export const {
         password: { label: 'Password', type: 'password' }
       },
       async authorize({ email, password }: any) {
+        // Preview mode: accept any non-empty email/password
+        if (isPreviewAuthMode) {
+          if (!email || !password) {
+            return null;
+          }
+          // Create or get the preview user
+          const user = await createPreviewUser(email);
+          return { ...user, type: 'regular' };
+        }
+
+        // Production mode: validate against database
         const users = await getUser(email);
 
         if (users.length === 0) {
