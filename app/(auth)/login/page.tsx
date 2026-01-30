@@ -92,8 +92,9 @@ function LoginContent() {
           description: 'Failed to sign in',
         });
         setLoadingMethod(null);
-      } else if (result?.url) {
-        window.location.href = result.url;
+      } else if (result?.ok) {
+        // Use callbackUrl directly to avoid NEXTAUTH_URL issues
+        window.location.href = callbackUrl;
       }
     } catch (error) {
       toast({
