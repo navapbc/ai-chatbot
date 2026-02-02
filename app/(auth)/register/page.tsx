@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useActionState, useEffect, useState } from 'react';
+import { useActionState, useEffect, useRef, useState } from 'react';
 import { toast } from '@/components/toast';
 import { useSession } from 'next-auth/react';
 
@@ -13,6 +13,7 @@ export default function Page() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isSuccessful, setIsSuccessful] = useState(false);
+  const hasHandledStatus = useRef<string | null>(null);
 
   const [state, formAction, isPending] = useActionState<RegisterActionState, FormData>(
     register,
@@ -22,6 +23,13 @@ export default function Page() {
   const { update: updateSession } = useSession();
 
   useEffect(() => {
+    // Prevent handling the same status multiple times
+    if (state.status === 'idle' || hasHandledStatus.current === state.status) {
+      return;
+    }
+
+    hasHandledStatus.current = state.status;
+
     if (state.status === 'user_exists') {
       toast({ type: 'error', description: 'Account already exists!' });
     } else if (state.status === 'failed') {
@@ -37,7 +45,7 @@ export default function Page() {
       updateSession();
       router.push('/home');
     }
-  }, [state, router, updateSession]);
+  }, [state.status, router, updateSession]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
