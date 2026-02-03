@@ -30,12 +30,12 @@ export type {
 } from './models/apricot-models';
 
 // ===== Configuration =====
-// Use 'api' for production only (https://labs-asp.navateam.com), 'sandbox' for all other environments including dev
-const env = process.env.NEXTAUTH_URL?.includes('://labs-asp.navateam.com') ? 'api' : 'sandbox';
+// Use 'api' for production only (ENVIRONMENT=prod), 'sandbox' for all other environments including dev
+const env = process.env.ENVIRONMENT === 'prod' ? 'api' : 'sandbox';
 
 // Log environment on module load for debugging
-console.log(`[Apricot API] Environment: "${env}" | NEXTAUTH_URL: "${process.env.NEXTAUTH_URL || 'undefined'}"`);
-console.log(`[Apricot API] Expected: prod (labs-asp.navateam.com) → "api", dev (dev.labs-asp.navateam.com) → "sandbox"`);
+console.log(`[Apricot API] Environment: "${env}" | ENVIRONMENT: "${process.env.ENVIRONMENT || 'undefined'}"`);
+console.log(`[Apricot API] Expected: prod (ENVIRONMENT=prod) → "api", all others → "sandbox"`);
 
 // API configuration from environment variables
 const baseUrl = process.env.APRICOT_API_BASE_URL;
@@ -97,9 +97,7 @@ export const authenticate = async (): Promise<string> => {
   }
 
   try {
-    const authUrl = `${baseUrl}/${env}/oauth/token`;
-    console.log(`[Apricot API] Authenticating via: ${authUrl}`);
-    const response = await fetch(authUrl, {
+    const response = await fetch(`${baseUrl}/${env}/oauth/token`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -131,8 +129,6 @@ export const authenticate = async (): Promise<string> => {
     const expiresInMs = (data.expires_in || 3600) * 1000;
     // Subtract 60 seconds as a buffer to avoid using expired tokens
     tokenExpiry = Date.now() + expiresInMs - 60000;
-
-    console.log(`[Apricot API] Successfully authenticated with "${env}" environment`);
 
     return cachedToken;
   } catch (error) {
