@@ -26,9 +26,9 @@ import {
 } from './ui/collapsible';
 import { ChevronDown } from 'lucide-react';
 import { CollapsibleWrapper } from './ui/collapsible-wrapper';
-import { getToolDisplayInfo } from './tool-icon';
+import { getToolDisplayInfo, getTaskGroupTitle } from './tool-icon';
 import { Spinner } from './ui/spinner';
-import { UserActionConfirmation } from './ai-elements';
+import { UserActionConfirmation, Task, TaskTrigger, TaskContent, TaskItem } from './ai-elements';
 
 // Responsive min-height calculation that accounts for side-chat-header height
 // This ensures the last message has enough space to scroll properly with the header
@@ -141,353 +141,378 @@ const PurePreviewMessage = ({
               </div>
             )}
 
-            {message.parts?.map((part, index) => {
-              const { type } = part;
-              const key = `message-${message.id}-part-${index}`;
+            {/* Group parts into segments: consecutive browser tools become Task groups */}
+            {(() => {
+              type GroupedPart =
+                | { type: 'single'; part: any; index: number }
+                | { type: 'task-group'; parts: any[]; startIndex: number };
 
-              if (type === 'reasoning' && part.text?.trim().length > 0) {
-                return (
-                  <MessageReasoning
-                    key={key}
-                    isLoading={isLoading}
-                    reasoning={part.text}
-                  />
-                );
+              const isBrowserToolPart = (part: any) => {
+                const { type } = part;
+                if (!type.startsWith('tool-')) return false;
+                if (['tool-getWeather', 'tool-createDocument', 'tool-updateDocument', 'tool-requestSuggestions'].includes(type)) return false;
+                const { input } = part as any;
+                const { text: displayName } = getToolDisplayInfo(type, input);
+                if (displayName === 'Updated working memory' || displayName === 'Executed JavaScript' || displayName === 'Retrieved participant data') return false;
+                return true;
+              };
+
+              // Group consecutive browser tool parts together
+              const groupedParts: GroupedPart[] = [];
+              let currentToolGroup: any[] = [];
+              let toolGroupStartIndex = 0;
+
+              message.parts?.forEach((part, index) => {
+                if (isBrowserToolPart(part)) {
+                  if (currentToolGroup.length === 0) {
+                    toolGroupStartIndex = index;
+                  }
+                  currentToolGroup.push(part);
+                } else {
+                  // Flush any accumulated tool group
+                  if (currentToolGroup.length > 0) {
+                    groupedParts.push({ type: 'task-group', parts: currentToolGroup, startIndex: toolGroupStartIndex });
+                    currentToolGroup = [];
+                  }
+                  groupedParts.push({ type: 'single', part, index });
+                }
+              });
+              // Flush remaining tool group
+              if (currentToolGroup.length > 0) {
+                groupedParts.push({ type: 'task-group', parts: currentToolGroup, startIndex: toolGroupStartIndex });
               }
 
-              if (type === 'text') {
-                if (mode === 'view') {
-                  const partnerData = parsePartnerData(part.text);
+              return groupedParts.map((grouped) => {
+                if (grouped.type === 'task-group') {
+                  const { parts: toolParts, startIndex } = grouped;
+                  const hasInProgressTool = toolParts.some((part: any) => part.state === 'input-available');
+                  const allComplete = toolParts.every((part: any) => part.state === 'output-available');
+                  const taskTitle = getTaskGroupTitle(toolParts, allComplete);
 
-                  if (partnerData && message.role === 'user') {
+                  return (
+                    <Task key={`task-group-${startIndex}`} defaultOpen={true}>
+                      <TaskTrigger
+                        title={taskTitle}
+                        isLoading={hasInProgressTool}
+                        isComplete={allComplete}
+                      />
+                      <TaskContent>
+                        {toolParts.map((part: any, idx: number) => {
+                          const { toolCallId, state, input, output } = part;
+                          const { text: displayName, icon: Icon } = getToolDisplayInfo(part.type, input);
+                          const hasError = state === 'output-available' && output && 'error' in output && output.error;
+
+                          return (
+                            <TaskItem
+                              key={toolCallId || idx}
+                              icon={Icon && <Icon size={14} />}
+                              className={hasError ? 'text-red-600' : ''}
+                            >
+                              {displayName}{hasError && ' (Error)'}
+                            </TaskItem>
+                          );
+                        })}
+                      </TaskContent>
+                    </Task>
+                  );
+                }
+
+                // Render single non-tool parts
+                const { part, index } = grouped;
+                const { type } = part;
+                const key = `message-${message.id}-part-${index}`;
+
+                if (type === 'reasoning' && part.text?.trim().length > 0) {
+                  return (
+                    <MessageReasoning
+                      key={key}
+                      isLoading={isLoading}
+                      reasoning={part.text}
+                    />
+                  );
+                }
+
+                if (type === 'text') {
+                  if (mode === 'view') {
+                    const partnerData = parsePartnerData(part.text);
+
+                    if (partnerData && message.role === 'user') {
+                      return (
+                        <div key={key} className="flex flex-col gap-2 items-end w-full">
+                          {partnerData.taskText && (
+                            <div
+                              data-testid="message-content"
+                              className="bg-accent dark:bg-muted text-foreground dark:text-foreground px-[18px] py-[18px] rounded-xl text-xs leading-[18px] font-inter"
+                            >
+                              <Markdown>{sanitizeText(partnerData.taskText)}</Markdown>
+                            </div>
+                          )}
+                          <CollapsibleWrapper
+                            displayName="Participant data from partner"
+                            output={partnerData.participantData}
+                          />
+                        </div>
+                      );
+                    }
+
+                    const textContent = part.text.toLowerCase();
+                    const requiresUserAction =
+                      textContent.includes('captcha') ||
+                      textContent.includes('action required') ||
+                      textContent.includes('take control') ||
+                      textContent.includes('user intervention') ||
+                      textContent.includes('missing information') ||
+                      textContent.includes('complete the application');
+
                     return (
-                      <div key={key} className="flex flex-col gap-2 items-end w-full">
-                        {partnerData.taskText && (
+                      <div key={key} className="flex flex-col gap-3">
+                        <div className="flex flex-row gap-2 items-start">
                           <div
                             data-testid="message-content"
-                            className="bg-accent dark:bg-muted text-foreground dark:text-foreground px-[18px] py-[18px] rounded-xl text-xs leading-[18px] font-inter"
+                            className={cn('flex flex-col gap-4', {
+                              'bg-accent dark:bg-muted text-foreground dark:text-foreground px-[18px] py-[18px] rounded-xl text-xs leading-[18px] font-inter':
+                                message.role === 'user',
+                              'assistant-message-bubble font-source-serif':
+                                message.role === 'assistant',
+                            })}
                           >
-                            <Markdown>{sanitizeText(partnerData.taskText)}</Markdown>
+                            <Markdown>{sanitizeText(part.text)}</Markdown>
                           </div>
-                        )}
-                        <CollapsibleWrapper
-                          displayName="Participant data from partner"
-                          output={partnerData.participantData}
-                        />
-                      </div>
-                    );
-                  }
-
-                  const textContent = part.text.toLowerCase();
-                  const requiresUserAction = 
-                    textContent.includes('captcha') ||
-                    textContent.includes('action required') ||
-                    textContent.includes('take control') ||
-                    textContent.includes('user intervention') ||
-                    textContent.includes('missing information') ||
-                    textContent.includes('complete the application');
-
-                  return (
-                    <div key={key} className="flex flex-col gap-3">
-                      <div className="flex flex-row gap-2 items-start">
-                        {/* {message.role === 'user' && !isReadonly && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                data-testid="message-edit-button"
-                                variant="ghost"
-                                className="px-2 h-fit rounded-full text-muted-foreground opacity-0 group-hover/message:opacity-100"
-                                onClick={() => {
-                                  setMode('edit');
-                                }}
-                              >
-                                <PencilEditIcon />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>Edit message</TooltipContent>
-                          </Tooltip>
-                        )} */}
-
-                        <div
-                          data-testid="message-content"
-                          className={cn('flex flex-col gap-4', {
-                            'bg-accent dark:bg-muted text-foreground dark:text-foreground px-[18px] py-[18px] rounded-xl text-xs leading-[18px] font-inter':
-                              message.role === 'user',
-                            'assistant-message-bubble font-source-serif':
-                              message.role === 'assistant',
-                          })}
-                        >
-                          <Markdown>{sanitizeText(part.text)}</Markdown>
                         </div>
+
+                        {message.role === 'assistant' && requiresUserAction && !isReadonly && !isLoading && !dismissedActionConfirmations.has(message.id) && isArtifactVisible && (
+                          <UserActionConfirmation
+                            approval={{ id: `action-${message.id}`, approved: undefined }}
+                            state="approval-requested"
+                            requestMessage={
+                              textContent.includes('captcha')
+                                ? 'Complete the CAPTCHA and submit the application.'
+                                : 'Manual action required to proceed.'
+                            }
+                            onApprove={(approvalId) => {
+                              const event = new CustomEvent('switch-browser-control', {
+                                detail: { mode: 'user' }
+                              });
+                              window.dispatchEvent(event);
+                            }}
+                          />
+                        )}
                       </div>
-                      
-                      {message.role === 'assistant' && requiresUserAction && !isReadonly && !isLoading && !dismissedActionConfirmations.has(message.id) && isArtifactVisible && (
-                        <UserActionConfirmation
-                          approval={{ id: `action-${message.id}`, approved: undefined }}
-                          state="approval-requested"
-                          requestMessage={
-                            textContent.includes('captcha')
-                              ? 'Complete the CAPTCHA and submit the application.'
-                              : 'Manual action required to proceed.'
-                          }
-                          onApprove={(approvalId) => {
-                            // Trigger browser control switch to user mode
-                            const event = new CustomEvent('switch-browser-control', { 
-                              detail: { mode: 'user' } 
-                            });
-                            window.dispatchEvent(event);
-                          }}
-                          // onReject={(approvalId) => {
-                          //   // Dismiss the confirmation by adding message.id to the dismissed set
-                          //   setDismissedActionConfirmations((prev) => new Set([...prev, message.id]));
-                          // }}
+                    );
+                  }
+
+                  if (mode === 'edit') {
+                    return (
+                      <div key={key} className="flex flex-row gap-2 items-start">
+                        <div className="size-8" />
+                        <MessageEditor
+                          key={message.id}
+                          message={message}
+                          setMode={setMode}
+                          setMessages={setMessages}
+                          regenerate={regenerate}
                         />
-                      )}
-                    </div>
-                  );
+                      </div>
+                    );
+                  }
                 }
 
-                if (mode === 'edit') {
-                  return (
-                    <div key={key} className="flex flex-row gap-2 items-start">
-                      <div className="size-8" />
+                if (type === 'tool-getWeather') {
+                  const { toolCallId, state } = part;
 
-                      <MessageEditor
-                        key={message.id}
-                        message={message}
-                        setMode={setMode}
-                        setMessages={setMessages}
-                        regenerate={regenerate}
-                      />
-                    </div>
-                  );
-                }
-              }
-
-              if (type === 'tool-getWeather') {
-                const { toolCallId, state } = part;
-
-                if (state === 'input-available') {
-                  return (
-                    <div key={toolCallId} className="skeleton">
-                      <Weather />
-                    </div>
-                  );
-                }
-
-                if (state === 'output-available') {
-                  const { output } = part;
-                  return (
-                    <div key={toolCallId}>
-                      <Weather weatherAtLocation={output} />
-                    </div>
-                  );
-                }
-              }
-
-              if (type === 'tool-createDocument') {
-                const { toolCallId, state } = part;
-
-                if (state === 'input-available') {
-                  const { input } = part;
-                  return (
-                    <div key={toolCallId}>
-                      <DocumentPreview isReadonly={isReadonly} args={input} />
-                    </div>
-                  );
-                }
-
-                if (state === 'output-available') {
-                  const { output } = part;
-
-                  if ('error' in output) {
+                  if (state === 'input-available') {
                     return (
-                      <div
-                        key={toolCallId}
-                        className="text-red-500 p-2 border rounded"
-                      >
-                        Error: {String(output.error)}
+                      <div key={toolCallId} className="skeleton">
+                        <Weather />
                       </div>
                     );
                   }
 
-                  return (
-                    <div key={toolCallId}>
-                      <DocumentPreview
-                        isReadonly={isReadonly}
-                        result={output}
-                      />
-                    </div>
-                  );
-                }
-              }
-
-              if (type === 'tool-updateDocument') {
-                const { toolCallId, state } = part;
-
-                if (state === 'input-available') {
-                  const { input } = part;
-
-                  return (
-                    <div key={toolCallId}>
-                      <DocumentToolCall
-                        type="update"
-                        args={input}
-                        isReadonly={isReadonly}
-                      />
-                    </div>
-                  );
-                }
-
-                if (state === 'output-available') {
-                  const { output } = part;
-
-                  if ('error' in output) {
+                  if (state === 'output-available') {
+                    const { output } = part;
                     return (
-                      <div
-                        key={toolCallId}
-                        className="text-red-500 p-2 border rounded"
-                      >
-                        Error: {String(output.error)}
+                      <div key={toolCallId}>
+                        <Weather weatherAtLocation={output} />
+                      </div>
+                    );
+                  }
+                }
+
+                if (type === 'tool-createDocument') {
+                  const { toolCallId, state } = part;
+
+                  if (state === 'input-available') {
+                    const { input } = part;
+                    return (
+                      <div key={toolCallId}>
+                        <DocumentPreview isReadonly={isReadonly} args={input} />
                       </div>
                     );
                   }
 
-                  return (
-                    <div key={toolCallId}>
-                      <DocumentToolResult
-                        type="update"
-                        result={output}
-                        isReadonly={isReadonly}
-                      />
-                    </div>
-                  );
-                }
-              }
+                  if (state === 'output-available') {
+                    const { output } = part;
 
-              if (type === 'tool-requestSuggestions') {
-                const { toolCallId, state } = part;
+                    if ('error' in output) {
+                      return (
+                        <div
+                          key={toolCallId}
+                          className="text-red-500 p-2 border rounded"
+                        >
+                          Error: {String(output.error)}
+                        </div>
+                      );
+                    }
 
-                if (state === 'input-available') {
-                  const { input } = part;
-                  return (
-                    <div key={toolCallId}>
-                      <DocumentToolCall
-                        type="request-suggestions"
-                        args={input}
-                        isReadonly={isReadonly}
-                      />
-                    </div>
-                  );
-                }
-
-                if (state === 'output-available') {
-                  const { output } = part;
-
-                  if ('error' in output) {
                     return (
-                      <div
-                        key={toolCallId}
-                        className="text-red-500 p-2 border rounded"
-                      >
-                        Error: {String(output.error)}
+                      <div key={toolCallId}>
+                        <DocumentPreview
+                          isReadonly={isReadonly}
+                          result={output}
+                        />
+                      </div>
+                    );
+                  }
+                }
+
+                if (type === 'tool-updateDocument') {
+                  const { toolCallId, state } = part;
+
+                  if (state === 'input-available') {
+                    const { input } = part;
+
+                    return (
+                      <div key={toolCallId}>
+                        <DocumentToolCall
+                          type="update"
+                          args={input}
+                          isReadonly={isReadonly}
+                        />
                       </div>
                     );
                   }
 
-                  return (
-                    <div key={toolCallId}>
-                      <DocumentToolResult
-                        type="request-suggestions"
-                        result={output}
-                        isReadonly={isReadonly}
-                      />
-                    </div>
-                  );
+                  if (state === 'output-available') {
+                    const { output } = part;
+
+                    if ('error' in output) {
+                      return (
+                        <div
+                          key={toolCallId}
+                          className="text-red-500 p-2 border rounded"
+                        >
+                          Error: {String(output.error)}
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div key={toolCallId}>
+                        <DocumentToolResult
+                          type="update"
+                          result={output}
+                          isReadonly={isReadonly}
+                        />
+                      </div>
+                    );
+                  }
                 }
-              }
 
-              // Handle any other tool calls (including web automation tools)
-              if (type.startsWith('tool-') && !['tool-getWeather', 'tool-createDocument', 'tool-updateDocument', 'tool-requestSuggestions'].includes(type)) {
-                const { toolCallId, state } = part as any;
+                if (type === 'tool-requestSuggestions') {
+                  const { toolCallId, state } = part;
 
-                if (state === 'input-available') {
-                  const { input } = part as any;
+                  if (state === 'input-available') {
+                    const { input } = part;
+                    return (
+                      <div key={toolCallId}>
+                        <DocumentToolCall
+                          type="request-suggestions"
+                          args={input}
+                          isReadonly={isReadonly}
+                        />
+                      </div>
+                    );
+                  }
+
+                  if (state === 'output-available') {
+                    const { output } = part;
+
+                    if ('error' in output) {
+                      return (
+                        <div
+                          key={toolCallId}
+                          className="text-red-500 p-2 border rounded"
+                        >
+                          Error: {String(output.error)}
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div key={toolCallId}>
+                        <DocumentToolResult
+                          type="request-suggestions"
+                          result={output}
+                          isReadonly={isReadonly}
+                        />
+                      </div>
+                    );
+                  }
+                }
+
+                // Handle get-participant-with-household separately (CollapsibleWrapper)
+                if (type.startsWith('tool-') && !['tool-getWeather', 'tool-createDocument', 'tool-updateDocument', 'tool-requestSuggestions'].includes(type)) {
+                  const { toolCallId, state, input } = part as any;
                   const { text: displayName, icon: Icon } = getToolDisplayInfo(type, input);
 
-                  if (displayName === 'Updated working memory' || displayName === 'Executed JavaScript') {
-                    return;
-                  }
-                  // Only use CollapsibleWrapper for get-participant-with-household
                   if (displayName === 'Retrieved participant data') {
-                    return (
-                      <CollapsibleWrapper key={toolCallId} displayName={displayName} input={input} icon={Icon} />
-                    );
+                    if (state === 'input-available') {
+                      return (
+                        <CollapsibleWrapper key={toolCallId} displayName={displayName} input={input} icon={Icon} />
+                      );
+                    }
+                    if (state === 'output-available') {
+                      const { output } = part as any;
+                      const hasParticipantError = output && 'error' in output && output.error;
+                      return (
+                        <CollapsibleWrapper
+                          key={toolCallId}
+                          displayName={displayName}
+                          input={input}
+                          output={output}
+                          isError={hasParticipantError}
+                          icon={Icon}
+                        />
+                      );
+                    }
                   }
-
-                  // For all other tools, show simple icon with text
-                  return (
-                    <div key={toolCallId} className="flex items-center gap-2 p-3 border-0 rounded-md">
-                      <div className="text-[10px] leading-[150%] font-ibm-plex-mono text-muted-foreground flex items-center gap-2">
-                        {Icon && (
-                          <Icon size={12} className="text-gray-500 shrink-0" />
-                        )}
-                        {displayName}
-                      </div>
-                    </div>
-                  );
                 }
 
-                if (state === 'output-available') {
-                  const { output, input } = part as any;
-                  const { text: displayName, icon: Icon } = getToolDisplayInfo(type, input);
+                return null;
+              });
+            })()}
 
-                  if (displayName === 'Updated working memory' || displayName === 'Executed JavaScript') {
-                    return;
-                  }
-
-                  // Only use CollapsibleWrapper for get-participant-with-household
-                  if (displayName === 'Retrieved participant data') {
-                    // Check for actual error value, not just presence of 'error' key
-                    const hasParticipantError = output && 'error' in output && output.error;
-                    return (
-                      <CollapsibleWrapper
-                        key={toolCallId}
-                        displayName={displayName}
-                        input={input}
-                        output={output}
-                        isError={hasParticipantError}
-                        icon={Icon}
-                      />
-                    );
-                  }
-
-                  // For all other tools, show simple icon with text
-                  // Check for actual error value, not just presence of 'error' key (some tools return { error: null } on success)
-                  const hasError = output && 'error' in output && output.error;
-                  return (
-                    <div key={toolCallId} className="flex items-center gap-2 p-3 border-0 rounded-md">
-                      <div className={`text-[10px] leading-[150%] font-ibm-plex-mono flex items-center gap-2 ${hasError ? 'text-red-600' : 'text-muted-foreground'}`}>
-                        {Icon && (
-                          <Icon size={12} className="text-gray-500 shrink-0" />
-                        )}
-                        {displayName}
-                        {hasError && ' (Error)'}
-                      </div>
-                    </div>
-                  );
-                }
-              }
-            })}
-
-            {isLoading && (
-              <div className="flex items-center gap-2 p-3 border-0 rounded-md">
-                <div className="text-[10px] leading-[150%] font-ibm-plex-mono text-muted-foreground flex items-center gap-2">
-                  <Spinner className="size-3 shrink-0 text-primary" />
-                  Processing...
+            {/* Only show processing spinner if there are no browser tool parts (they have their own loading state) */}
+            {isLoading && (() => {
+              const hasBrowserToolParts = message.parts.some((part) => {
+                const { type } = part;
+                if (!type.startsWith('tool-')) return false;
+                if (['tool-getWeather', 'tool-createDocument', 'tool-updateDocument', 'tool-requestSuggestions'].includes(type)) return false;
+                const { input } = part as any;
+                const { text: displayName } = getToolDisplayInfo(type, input);
+                if (displayName === 'Updated working memory' || displayName === 'Executed JavaScript' || displayName === 'Retrieved participant data') return false;
+                return true;
+              });
+              if (hasBrowserToolParts) return null;
+              return (
+                <div className="flex items-center gap-2 p-3 border-0 rounded-md">
+                  <div className="text-[10px] leading-[150%] font-ibm-plex-mono text-muted-foreground flex items-center gap-2">
+                    <Spinner className="size-3 shrink-0 text-primary" />
+                    Processing...
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* {!isReadonly && (
               <MessageActions

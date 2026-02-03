@@ -227,7 +227,7 @@ export const getToolDisplayInfo = (toolName: string, input?: any): { text: strin
   };
 
   const mapper = toolMappings[cleanToolName];
-  
+
   let text: string;
   if (mapper) {
     text = mapper(input);
@@ -235,9 +235,56 @@ export const getToolDisplayInfo = (toolName: string, input?: any): { text: strin
     // Fallback: convert kebab-case to readable format
     text = cleanToolName.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
   }
-  
+
   return {
     text,
     icon: getToolIcon(toolName)
   };
+};
+
+// Tool action categories for determining task group titles
+const formFillingActions = ['Typing', 'Filling', 'Selecting', 'Checking', 'Unchecking', 'Typed', 'Filled', 'Selected'];
+const navigationActions = ['Opening', 'Navigated', 'Going back', 'Going forward', 'Reloading'];
+const readingActions = ['Reading page', 'Taking screenshot', 'Captured page snapshot', 'Took screenshot'];
+
+// Determine the task group title based on the tool calls
+// Returns both in-progress and completed titles
+export const getTaskGroupTitle = (toolParts: any[], isComplete: boolean = false): string => {
+  if (toolParts.length === 0) return isComplete ? 'Completed' : 'Working ...';
+
+  let hasFormFilling = false;
+  let hasNavigation = false;
+  let hasReading = false;
+
+  for (const part of toolParts) {
+    const { text: displayName } = getToolDisplayInfo(part.type, part.input);
+
+    if (formFillingActions.some(action => displayName.startsWith(action))) {
+      hasFormFilling = true;
+    }
+    if (navigationActions.some(action => displayName.startsWith(action))) {
+      hasNavigation = true;
+    }
+    if (readingActions.some(action => displayName.startsWith(action))) {
+      hasReading = true;
+    }
+  }
+
+  // Prioritize form filling if any form actions are present
+  if (hasFormFilling) {
+    return isComplete ? 'Filled out form' : 'Filling the form ...';
+  }
+
+  // Navigation actions
+  if (hasNavigation && !hasReading) {
+    return isComplete ? 'Navigated' : 'Navigating ...';
+  }
+
+  // Reading/analyzing the page
+  if (hasReading && !hasNavigation) {
+    return isComplete ? 'Read page' : 'Reading page ...';
+  }
+
+  // Mixed or other actions
+  return isComplete ? 'Completed' : 'Working on page ...';
 };
