@@ -171,6 +171,7 @@ export async function POST(request: Request) {
       }
 
       // Create session ID for browser isolation
+      // sessionId includes both chatId and userId to ensure global uniqueness
       const sessionId = `${id}-${session.user.id}`;
 
       // Register abort controller - this will abort any previous request for this chat
@@ -186,7 +187,7 @@ export async function POST(request: Request) {
             tools: {
               ...apricotTools,
               gapAnalysis,
-              browser: createBrowserTool(sessionId, id),
+              browser: createBrowserTool(sessionId, session.user.id),
             },
             stopWhen: stepCountIs(100),
             abortSignal: abortController.signal,
