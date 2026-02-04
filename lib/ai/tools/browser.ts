@@ -1,10 +1,87 @@
 import { tool } from 'ai';
 import { z } from 'zod';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+import { execFile, type ChildProcess } from 'child_process';
 import { createKernelBrowser } from '@/lib/kernel/browser';
+import { isAborted } from '@/lib/ai/abort-registry';
 
-const execFileAsync = promisify(execFile);
+/**
+ * Execute a command with support for early termination via abort checking.
+ * This wraps execFile to allow killing the process if the chat is aborted.
+ * Supports both AbortSignal (immediate) and Redis-based polling (distributed).
+ */
+function execFileWithAbort(
+  command: string,
+  args: string[],
+  options: { timeout?: number; maxBuffer?: number },
+  chatId?: string,
+  abortSignal?: AbortSignal
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    let childProcess: ChildProcess | null = null;
+    let abortCheckInterval: NodeJS.Timeout | null = null;
+    let isCleanedUp = false;
+
+    const cleanup = () => {
+      if (isCleanedUp) return;
+      isCleanedUp = true;
+      if (abortCheckInterval) {
+        clearInterval(abortCheckInterval);
+        abortCheckInterval = null;
+      }
+    };
+
+    const killProcess = (reason: string) => {
+      if (childProcess && !childProcess.killed) {
+        console.log(`[browser-tool] Killing process: ${reason}`);
+        childProcess.kill('SIGTERM');
+        // Force kill after 1 second if SIGTERM doesn't work
+        setTimeout(() => {
+          if (childProcess && !childProcess.killed) {
+            console.log(`[browser-tool] Force killing process with SIGKILL`);
+            childProcess.kill('SIGKILL');
+          }
+        }, 1000);
+        cleanup();
+        reject({ killed: true, message: 'Command aborted by user', stdout: '', stderr: '' });
+      }
+    };
+
+    // Handle immediate abort via AbortSignal
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        reject({ killed: true, message: 'Command aborted by user', stdout: '', stderr: '' });
+        return;
+      }
+      abortSignal.addEventListener('abort', () => {
+        killProcess('AbortSignal fired');
+      }, { once: true });
+    }
+
+    childProcess = execFile(command, args, options, (error, stdout, stderr) => {
+      cleanup();
+
+      if (error) {
+        reject({ ...error, stdout, stderr });
+      } else {
+        resolve({ stdout, stderr });
+      }
+    });
+
+    // If we have a chatId, periodically check if we should abort (for distributed abort across instances)
+    if (chatId) {
+      abortCheckInterval = setInterval(async () => {
+        try {
+          const shouldAbort = await isAborted(chatId);
+          if (shouldAbort) {
+            killProcess(`Redis abort signal for chat ${chatId}`);
+          }
+        } catch (err) {
+          // Ignore errors from abort check
+        }
+      }, 500); // Check every 500ms
+    }
+  });
+}
 
 /**
  * Parse a command string into an array of arguments, respecting quoted strings.
@@ -49,10 +126,13 @@ function parseCommand(command: string): string[] {
  * The tool connects to a Kernel.sh managed browser instance and executes
  * commands using the agent-browser CLI.
  *
+ * @param sessionId - The browser session ID for Kernel
+ * @param chatId - Optional chat ID for abort signal checking
+ *
  * @see https://www.kernel.sh/docs/integrations/agent-browser
  * @see https://agent-browser.dev/commands
  */
-export const createBrowserTool = (sessionId: string) =>
+export const createBrowserTool = (sessionId: string, chatId?: string) =>
   tool({
     description: `Execute browser automation commands using agent-browser CLI connected to a remote Kernel browser.
 
@@ -106,8 +186,27 @@ eval is only acceptable for reading values (e.g. checking if an element exists).
     inputSchema: z.object({
       command: z.string().describe('The agent-browser command to execute'),
     }),
-    execute: async ({ command }: { command: string }) => {
+    execute: async ({ command }: { command: string }, { abortSignal }: { abortSignal?: AbortSignal } = {}) => {
       try {
+        // Check if already aborted before starting (via signal or Redis)
+        if (abortSignal?.aborted) {
+          return {
+            success: false,
+            output: null,
+            error: 'Operation was stopped by user',
+          };
+        }
+        if (chatId) {
+          const shouldAbort = await isAborted(chatId);
+          if (shouldAbort) {
+            return {
+              success: false,
+              output: null,
+              error: 'Operation was stopped by user',
+            };
+          }
+        }
+
         // Ensure we have a Kernel browser instance for this session
         // This creates a new browser or returns existing one
         const browser = await createKernelBrowser(sessionId);
@@ -115,16 +214,17 @@ eval is only acceptable for reading values (e.g. checking if an element exists).
 
         console.log('[browser-tool] Session:', sessionId);
         console.log('[browser-tool] CDP URL:', cdpUrl);
+        if (chatId) console.log('[browser-tool] ChatId (for abort):', chatId);
 
         // Use --cdp flag to connect agent-browser to Kernel's browser via CDP WebSocket
         // Use execFile (no shell) so URLs with #, &, ? etc. aren't mangled by the shell
         const args = ['agent-browser', '--cdp', cdpUrl, ...parseCommand(command)];
         console.log('[browser-tool] Executing: npx', args.join(' '));
 
-        const { stdout, stderr } = await execFileAsync('npx', args, {
+        const { stdout, stderr } = await execFileWithAbort('npx', args, {
           timeout: 120000, // 2 minute timeout per command
           maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large snapshots
-        });
+        }, chatId, abortSignal);
 
         console.log('[browser-tool] Success. stdout length:', stdout?.length);
         if (stderr) console.log('[browser-tool] stderr:', stderr);
@@ -151,8 +251,16 @@ eval is only acceptable for reading values (e.g. checking if an element exists).
           stdout: execError.stdout,
         });
 
-        // Handle timeout specifically
+        // Handle abort/timeout specifically
         if (execError.killed) {
+          // Check if this was an abort or a timeout
+          if (execError.message === 'Command aborted by user') {
+            return {
+              success: false,
+              output: null,
+              error: 'Operation was stopped by user',
+            };
+          }
           return {
             success: false,
             output: null,

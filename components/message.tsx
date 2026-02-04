@@ -24,7 +24,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from './ui/collapsible';
-import { ChevronDown } from 'lucide-react';
+import { X } from 'lucide-react';
 import { CollapsibleWrapper } from './ui/collapsible-wrapper';
 import { getToolDisplayInfo } from './tool-icon';
 import { Spinner } from './ui/spinner';
@@ -470,6 +470,26 @@ const PurePreviewMessage = ({
               // Handle any other tool calls (including web automation tools)
               if (type.startsWith('tool-') && !['tool-getWeather', 'tool-createDocument', 'tool-updateDocument', 'tool-requestSuggestions', 'tool-gapAnalysis'].includes(type)) {
                 const { toolCallId, state } = part as any;
+
+                if (state === 'stopped') {
+                  const { input } = part as any;
+                  const { text: displayName } = getToolDisplayInfo(type, input);
+
+                  if (displayName === 'Updated working memory' || displayName === 'Executed JavaScript') {
+                    return;
+                  }
+
+                  // For stopped tools, show X icon and "(Stopped)" text
+                  return (
+                    <div key={toolCallId} className="flex items-center gap-2 p-3 border-0 rounded-md">
+                      <div className="text-[10px] leading-[150%] font-ibm-plex-mono text-muted-foreground/60 flex items-center gap-2">
+                        <X size={12} className=" shrink-0" />
+                        {displayName}
+                        <span>(Stopped)</span>
+                      </div>
+                    </div>
+                  );
+                }
 
                 if (state === 'input-available') {
                   const { input } = part as any;

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ChevronDown, Layers } from 'lucide-react';
+import { ChevronDown, Layers, X } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Collapsible,
@@ -248,14 +248,22 @@ export function ToolCallGroup({
 
   // Single part → render as-is (no card wrapper)
   if (deduped.length === 1) {
-    return <SingleToolLine part={deduped[0]} />;
+    const singlePart = deduped[0];
+    return (
+      <SingleToolLine
+        part={singlePart}
+        isRunning={singlePart.state === 'input-available'}
+        isStopped={singlePart.state === 'stopped'}
+      />
+    );
   }
 
   // If the latest tool is still running, show it separately below the summary.
   // Otherwise all tools are done — include everything in the summary counts.
   const lastTool = deduped[deduped.length - 1];
   const isLastRunning = lastTool.state === 'input-available';
-  const summaryParts = isLastRunning ? deduped.slice(0, -1) : deduped;
+  const isLastStopped = lastTool.state === 'stopped';
+  const summaryParts = isLastRunning || isLastStopped ? deduped.slice(0, -1) : deduped;
 
   const summary = generateGroupSummary(summaryParts);
 
@@ -301,13 +309,14 @@ export function ToolCallGroup({
           </CollapsibleContent>
         </Collapsible>
 
-        {/* Current tool — only shown while still running */}
-        {isLastRunning && (
+        {/* Current tool — only shown while still running or stopped */}
+        {(isLastRunning || isLastStopped) && (
           <div className="mt-1">
             <SingleToolLine
               part={lastTool}
               compact
-              isRunning
+              isRunning={isLastRunning}
+              isStopped={isLastStopped}
             />
           </div>
         )}
@@ -335,10 +344,12 @@ function SingleToolLine({
   part,
   compact = false,
   isRunning = false,
+  isStopped = false,
 }: {
   part: MessagePart;
   compact?: boolean;
   isRunning?: boolean;
+  isStopped?: boolean;
 }) {
   const { text: displayName, icon: Icon } = getToolDisplayInfo(
     part.type,
@@ -351,13 +362,19 @@ function SingleToolLine({
         compact ? 'px-1 py-1.5' : 'p-3',
       )}
     >
-      <div className="text-[10px] leading-[150%] font-ibm-plex-mono text-muted-foreground flex items-center gap-2">
+      <div className={cn(
+        'text-[10px] leading-[150%] font-ibm-plex-mono flex items-center gap-2',
+        isStopped ? 'text-muted-foreground/60' : 'text-muted-foreground'
+      )}>
         {isRunning ? (
           <Spinner className="size-3 shrink-0 text-primary" />
+        ) : isStopped ? (
+          <X size={12} className="shrink-0" />
         ) : (
           Icon && <Icon size={12} className="text-gray-500 shrink-0" />
         )}
         {displayName}
+        {isStopped && <span>(Stopped)</span>}
       </div>
     </div>
   );

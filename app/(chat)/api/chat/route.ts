@@ -25,7 +25,7 @@ import { updateDocument } from '@/lib/ai/tools/update-document';
 import { requestSuggestions } from '@/lib/ai/tools/request-suggestions';
 import { getWeather } from '@/lib/ai/tools/get-weather';
 import { isProductionEnvironment } from '@/lib/constants';
-import { myProvider, webAutomationModel } from '@/lib/ai/providers';
+import { myProvider, webAutomationModel, localWebAutomationModel } from '@/lib/ai/providers';
 import { entitlementsByUserType } from '@/lib/ai/entitlements';
 import { postRequestBodySchema, type PostRequestBody } from './schema';
 import { geolocation } from '@vercel/functions';
@@ -44,6 +44,7 @@ import { apricotTools } from '@/lib/ai/tools/apricot';
 import { createBrowserTool } from '@/lib/ai/tools/browser';
 import { gapAnalysis } from '@/lib/ai/tools/gap-analysis';
 import { webAutomationSystemPrompt } from '@/lib/ai/prompts/web-automation';
+import { registerAbortController, cleanupAbortController, signalAbort } from '@/lib/ai/abort-registry';
 
 // Feature flag for AI SDK agent vs Mastra
 const useAiSdkAgent = process.env.USE_AI_SDK_AGENT === 'true';
@@ -172,18 +173,23 @@ export async function POST(request: Request) {
       // Create session ID for browser isolation
       const sessionId = `${id}-${session.user.id}`;
 
+      // Register abort controller - this will abort any previous request for this chat
+      const abortController = await registerAbortController(id);
+
       const stream = createUIMessageStream({
         execute: async ({ writer: dataStream }) => {
           const result = streamText({
+            // model: localWebAutomationModel,
             model: webAutomationModel,
             system: webAutomationSystemPrompt,
             messages: await convertToModelMessages(uiMessages),
             tools: {
               ...apricotTools,
               gapAnalysis,
-              browser: createBrowserTool(sessionId),
+              browser: createBrowserTool(sessionId, id),
             },
             stopWhen: stepCountIs(100),
+            abortSignal: abortController.signal,
             experimental_telemetry: {
               isEnabled: isProductionEnvironment,
               functionId: 'web-automation-agent',
@@ -195,6 +201,8 @@ export async function POST(request: Request) {
         },
         generateId: generateUUID,
         onFinish: async ({ messages }) => {
+          // Clean up abort controller on normal completion
+          await cleanupAbortController(id);
           await saveMessages({
             messages: messages.map((message) => ({
               id: message.id,
@@ -207,6 +215,8 @@ export async function POST(request: Request) {
           });
         },
         onError: () => {
+          // Clean up abort controller on error
+          cleanupAbortController(id).catch(console.error);
           return 'Oops, an error occurred!';
         },
       });

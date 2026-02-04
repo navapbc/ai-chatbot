@@ -124,23 +124,53 @@ export function Chat({
     // Always call the original stop to abort the stream
     originalStop();
 
-    // For web automation model using Mastra backend, also send stopChat action
-    // When using AI SDK agent, the AbortController handles stopping
-    if (initialChatModel === 'web-automation-model' && !useAiSdkAgent) {
-      try {
-        await fetch('/api/mastra-proxy', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            action: 'stopChat',
-            threadId: id,
-            resourceId: session?.user?.id,
-          }),
-        });
-      } catch (error) {
-        console.error('Error sending stopChat action:', error);
+    // Mark any running tool calls as stopped in the UI
+    setMessages((prevMessages) =>
+      prevMessages.map((msg) => ({
+        ...msg,
+        parts: msg.parts.map((part) => {
+          // If this is a tool part that's still running (input-available), mark it as stopped
+          if (part.type?.startsWith('tool-') && (part as any).state === 'input-available') {
+            return { ...part, state: 'stopped' } as unknown as typeof part;
+          }
+          return part;
+        }),
+      })) as ChatMessage[]
+    );
+
+    if (initialChatModel === 'web-automation-model') {
+      if (useAiSdkAgent) {
+        // For AI SDK agent, call the stop endpoint to abort server-side operations
+        try {
+          await fetch('/api/chat/stop', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              chatId: id,
+            }),
+          });
+        } catch (error) {
+          console.error('Error sending stop action:', error);
+        }
+      } else {
+        // For Mastra backend, send stopChat action
+        try {
+          await fetch('/api/mastra-proxy', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              action: 'stopChat',
+              threadId: id,
+              resourceId: session?.user?.id,
+            }),
+          });
+        } catch (error) {
+          console.error('Error sending stopChat action:', error);
+        }
       }
     }
   };
