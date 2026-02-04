@@ -121,7 +121,25 @@ export function Chat({
 
   // Custom stop function that sends stopChat action for web automation
   const stop = async () => {
-    // Always call the original stop to abort the stream
+    // For web automation, signal abort to server FIRST and WAIT for it
+    // This ensures the abort is registered in Redis before any more tool calls can start
+    if (initialChatModel === 'web-automation-model' && useAiSdkAgent) {
+      try {
+        await fetch('/api/chat/stop', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            chatId: id,
+          }),
+        });
+      } catch (error) {
+        console.error('Error sending stop action:', error);
+      }
+    }
+
+    // Call the original stop to abort the stream
     originalStop();
 
     // Mark any running tool calls as stopped in the UI
@@ -138,39 +156,22 @@ export function Chat({
       })) as ChatMessage[]
     );
 
-    if (initialChatModel === 'web-automation-model') {
-      if (useAiSdkAgent) {
-        // For AI SDK agent, call the stop endpoint to abort server-side operations
-        try {
-          await fetch('/api/chat/stop', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              chatId: id,
-            }),
-          });
-        } catch (error) {
-          console.error('Error sending stop action:', error);
-        }
-      } else {
-        // For Mastra backend, send stopChat action
-        try {
-          await fetch('/api/mastra-proxy', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              action: 'stopChat',
-              threadId: id,
-              resourceId: session?.user?.id,
-            }),
-          });
-        } catch (error) {
-          console.error('Error sending stopChat action:', error);
-        }
+    // For Mastra backend (non-AI SDK agent), send stopChat action
+    if (initialChatModel === 'web-automation-model' && !useAiSdkAgent) {
+      try {
+        await fetch('/api/mastra-proxy', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            action: 'stopChat',
+            threadId: id,
+            resourceId: session?.user?.id,
+          }),
+        });
+      } catch (error) {
+        console.error('Error sending stopChat action:', error);
       }
     }
   };

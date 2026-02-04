@@ -187,7 +187,7 @@ export async function POST(request: Request) {
             tools: {
               ...apricotTools,
               gapAnalysis,
-              browser: createBrowserTool(sessionId, session.user.id),
+              browser: createBrowserTool(sessionId, session.user.id, id),
             },
             stopWhen: stepCountIs(100),
             abortSignal: abortController.signal,

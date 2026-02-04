@@ -34,14 +34,12 @@ function execFileWithAbort(
       }
     };
 
-    const killProcess = (reason: string) => {
+    const killProcess = () => {
       if (childProcess && !childProcess.killed) {
-        console.log(`[browser-tool] Killing process: ${reason}`);
         childProcess.kill('SIGTERM');
         // Force kill after 1 second if SIGTERM doesn't work
         setTimeout(() => {
           if (childProcess && !childProcess.killed) {
-            console.log(`[browser-tool] Force killing process with SIGKILL`);
             childProcess.kill('SIGKILL');
           }
         }, 1000);
@@ -57,7 +55,7 @@ function execFileWithAbort(
         return;
       }
       abortSignal.addEventListener('abort', () => {
-        killProcess('AbortSignal fired');
+        killProcess();
       }, { once: true });
     }
 
@@ -72,17 +70,18 @@ function execFileWithAbort(
     });
 
     // If we have a chatId, periodically check if we should abort (for distributed abort across instances)
+    // Use 100ms interval for faster detection of abort signals
     if (chatId) {
       abortCheckInterval = setInterval(async () => {
         try {
           const shouldAbort = await isAborted(chatId);
           if (shouldAbort) {
-            killProcess(`Redis abort signal for chat ${chatId}`);
+            killProcess();
           }
         } catch (err) {
           // Ignore errors from abort check
         }
-      }, 500); // Check every 500ms
+      }, 100);
     }
   });
 }
@@ -130,13 +129,14 @@ function parseCommand(command: string): string[] {
  * The tool connects to a Kernel.sh managed browser instance and executes
  * commands using the agent-browser CLI.
  *
- * @param sessionId - The chat/session ID for browser isolation
+ * @param sessionId - The browser session ID for Kernel isolation
  * @param userId - The user ID for ownership validation and security
+ * @param chatId - Optional chat ID for abort signal checking
  *
  * @see https://www.kernel.sh/docs/integrations/agent-browser
  * @see https://agent-browser.dev/commands
  */
-export const createBrowserTool = (sessionId: string, userId: string) =>
+export const createBrowserTool = (sessionId: string, userId: string, chatId?: string) =>
   tool({
     description: `Execute browser automation commands using agent-browser CLI connected to a remote Kernel browser.
 
@@ -190,24 +190,19 @@ eval is only acceptable for reading values (e.g. checking if an element exists).
     inputSchema: z.object({
       command: z.string().describe('The agent-browser command to execute'),
     }),
-    execute: async ({ command }: { command: string }, { abortSignal }: { abortSignal?: AbortSignal } = {}) => {
+    execute: async ({ command }: { command: string }, options: { abortSignal?: AbortSignal } = {}) => {
+      const { abortSignal } = options;
+
       try {
         // Check if already aborted before starting (via signal or Redis)
+        // Throw error instead of returning result to stop AI SDK from retrying
         if (abortSignal?.aborted) {
-          return {
-            success: false,
-            output: null,
-            error: 'Operation was stopped by user',
-          };
+          throw new Error('ABORT: Operation was stopped by user');
         }
         if (chatId) {
           const shouldAbort = await isAborted(chatId);
           if (shouldAbort) {
-            return {
-              success: false,
-              output: null,
-              error: 'Operation was stopped by user',
-            };
+            throw new Error('ABORT: Operation was stopped by user');
           }
         }
 
@@ -217,22 +212,25 @@ eval is only acceptable for reading values (e.g. checking if an element exists).
         await recordAgentActivity(sessionId, userId);
         const cdpUrl = browser.cdp_ws_url;
 
-        console.log('[browser-tool] Session:', sessionId);
-        console.log('[browser-tool] CDP URL:', cdpUrl);
-        if (chatId) console.log('[browser-tool] ChatId (for abort):', chatId);
+        // Check abort again after browser setup (might have taken time)
+        if (abortSignal?.aborted) {
+          throw new Error('ABORT: Operation was stopped by user');
+        }
+        if (chatId) {
+          const shouldAbort = await isAborted(chatId);
+          if (shouldAbort) {
+            throw new Error('ABORT: Operation was stopped by user');
+          }
+        }
 
         // Use --cdp flag to connect agent-browser to Kernel's browser via CDP WebSocket
         // Use execFile (no shell) so URLs with #, &, ? etc. aren't mangled by the shell
         const args = ['agent-browser', '--cdp', cdpUrl, ...parseCommand(command)];
-        console.log('[browser-tool] Executing: npx', args.join(' '));
 
         const { stdout, stderr } = await execFileWithAbort('npx', args, {
           timeout: 120000, // 2 minute timeout per command
           maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large snapshots
         }, chatId, abortSignal);
-
-        console.log('[browser-tool] Success. stdout length:', stdout?.length);
-        if (stderr) console.log('[browser-tool] stderr:', stderr);
 
         return {
           success: true,
@@ -242,6 +240,11 @@ eval is only acceptable for reading values (e.g. checking if an element exists).
           error: null,
         };
       } catch (error: unknown) {
+        // Re-throw ABORT errors to stop the AI SDK from retrying
+        if (error instanceof Error && error.message.startsWith('ABORT:')) {
+          throw error;
+        }
+
         const execError = error as {
           killed?: boolean;
           stdout?: string;
@@ -249,22 +252,12 @@ eval is only acceptable for reading values (e.g. checking if an element exists).
           message?: string;
         };
 
-        console.error('[browser-tool] Error:', {
-          killed: execError.killed,
-          message: execError.message,
-          stderr: execError.stderr,
-          stdout: execError.stdout,
-        });
-
         // Handle abort/timeout specifically
         if (execError.killed) {
           // Check if this was an abort or a timeout
           if (execError.message === 'Command aborted by user') {
-            return {
-              success: false,
-              output: null,
-              error: 'Operation was stopped by user',
-            };
+            // Re-throw to stop AI SDK
+            throw new Error('ABORT: Operation was stopped by user');
           }
           return {
             success: false,
