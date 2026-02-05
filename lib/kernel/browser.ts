@@ -1,4 +1,4 @@
-import Kernel from '@onkernel/sdk';
+import Kernel, { NotFoundError } from '@onkernel/sdk';
 import { Redis } from '@upstash/redis';
 import { randomUUID } from 'crypto';
 import { logger } from './logger';
@@ -21,7 +21,6 @@ const LOCK_MAX_WAIT_MS = 10_000; // Fail fast so callers can surface an error
 const PENDING_POLL_INTERVAL_MS = 250;
 const PENDING_MAX_WAIT_MS = 10_000;
 const AGENT_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes without tool usage
-const LIVE_VIEW_HEARTBEAT_TIMEOUT_MS = 60 * 1000; // 60 seconds without heartbeat
 
 interface KernelBrowser {
   session_id: string;
@@ -82,13 +81,6 @@ function hasRecentAgentActivity(entry: KernelBrowserEntry): boolean {
   return Date.now() - entry.lastAgentActivityAt <= AGENT_IDLE_TIMEOUT_MS;
 }
 
-function hasActiveLiveView(entry: KernelBrowserEntry): boolean {
-  if (entry.liveViewConnections <= 0 || entry.lastLiveViewHeartbeatAt == null) {
-    return false;
-  }
-  return Date.now() - entry.lastLiveViewHeartbeatAt <= LIVE_VIEW_HEARTBEAT_TIMEOUT_MS;
-}
-
 /**
  * Determines if a browser entry should be deleted from our Redis state.
  *
@@ -101,6 +93,36 @@ function hasActiveLiveView(entry: KernelBrowserEntry): boolean {
  */
 function isEntryExpired(entry: KernelBrowserEntry): boolean {
   return !hasRecentAgentActivity(entry);
+}
+
+/**
+ * Validate that a browser still exists on Kernel by calling kernel.browsers.retrieve().
+ *
+ * Returns fresh browser data if alive, or null if Kernel returns 404 (dead/expired).
+ * On network errors, falls back to trusting the Redis-cached browser data to avoid
+ * blocking the caller.
+ */
+async function validateBrowserWithKernel(
+  entry: KernelBrowserEntry
+): Promise<KernelBrowser | null> {
+  try {
+    const browser = await kernel.browsers.retrieve(entry.browser.session_id);
+    return {
+      session_id: browser.session_id,
+      cdp_ws_url: browser.cdp_ws_url,
+      browser_live_view_url: browser.browser_live_view_url ?? entry.browser.browser_live_view_url,
+    };
+  } catch (error) {
+    if (error instanceof NotFoundError) {
+      console.log(
+        `[Kernel] Browser ${entry.browser.session_id} no longer exists on Kernel (404). Will recreate.`
+      );
+      return null; // Browser dead on Kernel
+    }
+    // Network error — don't block, trust Redis as fallback
+    console.warn('[Kernel] Failed to validate browser with Kernel, trusting Redis cache', error);
+    return entry.browser;
+  }
 }
 
 /**
@@ -170,18 +192,6 @@ async function updateBrowserEntry(
   const final: KernelBrowserEntry = { ...updated, lastAccessedAt: Date.now() };
   await redis.set(redisKey, final, { ex: BROWSER_TTL_SECONDS });
   return final;
-}
-
-async function maybeExpireSession(
-  sessionId: string,
-  entry: KernelBrowserEntry
-): Promise<boolean> {
-  if (!isEntryExpired(entry)) {
-    return false;
-  }
-
-  await deleteKernelBrowser(sessionId, entry);
-  return true;
 }
 
 async function acquireDistributedLock(sessionId: string, userId: string): Promise<string> {
@@ -256,12 +266,12 @@ async function releaseDistributedLock(sessionId: string, token: string) {
 }
 
 /**
- * Check if a browser exists and verify userId ownership.
+ * Check if a browser exists, verify userId ownership, and validate with Kernel.
  *
- * CRITICAL FIX: Before checking expiry, re-read the entry from Redis to get
- * the latest `lastAgentActivityAt`. Without this, a stale read from a few
- * hundred milliseconds ago could cause us to falsely expire an active session
- * because a concurrent `recordAgentActivity` updated the field after our read.
+ * Instead of relying on Redis timestamps to decide expiry, we call
+ * kernel.browsers.retrieve() to verify the browser actually exists on Kernel.
+ * If Kernel returns 404, the Redis entry is stale and gets deleted.
+ * If alive, Redis is updated with fresh URLs from Kernel.
  */
 async function atomicCheckAndClaimBrowser(
   sessionId: string,
@@ -288,26 +298,23 @@ async function atomicCheckAndClaimBrowser(
     );
   }
 
-  // Re-read to get the absolute latest lastAgentActivityAt before expiry decision.
-  // A concurrent recordAgentActivity may have updated it between our first read
-  // and this check. Without this, we could falsely expire an active session.
-  const freshEntry = await loadBrowserEntry(sessionId);
-  const entryForExpiry = freshEntry ?? entry;
-
-  // Check if expired
-  const expired = await maybeExpireSession(sessionId, entryForExpiry);
-  if (expired) {
-    logger.browserExpired({
-      sessionId,
-      userId,
-      operation: 'atomicCheckAndClaim',
-      browserSessionId: entry.browser.session_id,
-    });
+  // Validate browser still exists on Kernel (source of truth)
+  const validatedBrowser = await validateBrowserWithKernel(entry);
+  if (!validatedBrowser) {
+    // Browser is dead on Kernel — nuke Redis entry so caller creates a fresh one
+    console.log(
+      `[Kernel] Browser ${entry.browser.session_id} dead on Kernel for session ${sessionId}. Deleting Redis entry.`
+    );
+    await redis.del(getRedisKey(sessionId));
     return null;
   }
 
-  // Refresh and return
-  const refreshed = await persistEntry(sessionId, entryForExpiry, userId);
+  // Update Redis with fresh URLs from Kernel and refresh TTL
+  const refreshed = await persistEntry(
+    sessionId,
+    { ...entry, browser: validatedBrowser },
+    userId
+  );
   logger.browserReused({
     sessionId,
     userId,
@@ -323,11 +330,12 @@ async function waitForPendingBrowser(sessionId: string): Promise<KernelBrowser |
   while (Date.now() < deadline) {
     const entry = await loadBrowserEntry(sessionId);
     if (entry) {
-      const expired = await maybeExpireSession(sessionId, entry);
-      if (expired) {
+      const validatedBrowser = await validateBrowserWithKernel(entry);
+      if (!validatedBrowser) {
+        await redis.del(getRedisKey(sessionId));
         return null;
       }
-      const refreshed = await persistEntry(sessionId, entry);
+      const refreshed = await persistEntry(sessionId, { ...entry, browser: validatedBrowser });
       console.log(
         `[Kernel] Observed browser creation completion for session ${sessionId}: ${refreshed.browser.session_id}`
       );
@@ -436,7 +444,7 @@ export async function createKernelBrowser(
         viewport,
         timeout_seconds: 300, // 5 minutes
         kiosk_mode: true, // Hide URL bar, tabs, and browser chrome in live view
-        stealth: true, // Residential proxy + auto CAPTCHA solver
+        stealth: false, // Disabled: stealth proxy was causing page crashes
       })) as KernelBrowser;
 
       const creationDuration = Date.now() - creationStartTime;
@@ -640,26 +648,6 @@ export async function hasActiveBrowser(
   return entry !== null;
 }
 
-// Debug function to see all active browsers (scans Redis keys)
-export async function listActiveBrowsers(): Promise<string[]> {
-  const keys = await redis.keys(`${REDIS_KEY_PREFIX}*`);
-  const sessions: string[] = [];
-
-  for (const key of keys) {
-    const value = await redis.get<KernelBrowserRedisValue>(key);
-    if (isBrowserEntry(value)) {
-      const sessionId = key.replace(REDIS_KEY_PREFIX, '');
-      if (await maybeExpireSession(sessionId, value)) {
-        continue;
-      }
-      await persistEntry(sessionId, value);
-      sessions.push(sessionId);
-    }
-  }
-
-  return sessions;
-}
-
 export async function recordAgentActivity(
   sessionId: string,
   userId: string
@@ -739,15 +727,11 @@ export async function recordLiveViewDisconnection(
     return; // Don't throw on disconnect, just log and ignore
   }
 
-  const updated = await updateBrowserEntry(sessionId, entry => {
+  await updateBrowserEntry(sessionId, entry => {
     entry.liveViewConnections = 0;
     entry.lastLiveViewHeartbeatAt = null;
     return entry;
   });
-
-  if (updated) {
-    await maybeExpireSession(sessionId, updated);
-  }
 }
 
 export async function recordLiveViewHeartbeat(
@@ -774,6 +758,14 @@ export async function recordLiveViewHeartbeat(
       `[Kernel] Heartbeat from user ${userId} for session ${sessionId} owned by ${entry.userId}. Ignoring.`
     );
     throw new Error('Session belongs to different user');
+  }
+
+  // Agent has been idle — tell the client to disconnect the iframe
+  if (isEntryExpired(entry)) {
+    console.log(
+      `[Kernel] Heartbeat: agent idle >5min for session ${sessionId}. Signaling client to disconnect.`
+    );
+    throw new Error('Session expired due to agent inactivity');
   }
 
   // Update heartbeat timestamp

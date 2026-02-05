@@ -68,8 +68,11 @@ export async function POST(request: Request) {
         const currentLiveViewUrl = await getLiveViewUrl(sessionId, session.user.id);
         return Response.json({ success: true, liveViewUrl: currentLiveViewUrl });
       } catch (error) {
-        // If heartbeat fails (session expired), return 404 so client disconnects
-        if (error instanceof Error && error.message.includes('different user')) {
+        // If heartbeat fails (session expired or agent idle), return 404 so client disconnects
+        if (error instanceof Error && (
+          error.message.includes('different user') ||
+          error.message.includes('agent inactivity')
+        )) {
           return Response.json({ error: 'Session expired or invalid' }, { status: 404 });
         }
         throw error;
