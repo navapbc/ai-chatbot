@@ -64,6 +64,64 @@ export function KernelBrowserClient({
   sessionIdRef.current = sessionId;
 
   // =========================================================================
+  // CRITICAL: Clear stale state immediately when sessionId changes.
+  //
+  // Without this, when sessionId changes (e.g. different user), the old
+  // liveViewUrl remains in state and the iframe briefly shows the PREVIOUS
+  // user's browser session until initBrowser completes with the new URL.
+  // =========================================================================
+  const prevSessionIdRef = useRef(sessionId);
+  useEffect(() => {
+    if (prevSessionIdRef.current !== sessionId) {
+      console.log('[Kernel] Session changed, clearing stale state', {
+        old: prevSessionIdRef.current,
+        new: sessionId,
+      });
+      prevSessionIdRef.current = sessionId;
+
+      // Immediately clear the old liveViewUrl so the iframe shows loading
+      // instead of the previous user's browser
+      setLiveViewUrl(null);
+      setIsConnected(false);
+      setLoading(true);
+      setError(null);
+      setSessionExpired(false);
+      initializedSessionRef.current = null;
+      stopHeartbeat();
+      onConnectionChangeRef.current?.(false);
+    }
+  }, [sessionId]);
+
+  // =========================================================================
+  // Response verification — prevents stale/cached cross-user responses
+  // =========================================================================
+
+  /**
+   * Verify that an API response belongs to the current session.
+   * Returns false if the response is stale or from another user's session.
+   */
+  const verifyResponse = useCallback(
+    (data: { ownerSessionId?: string }): boolean => {
+      if (!data.ownerSessionId) {
+        // Server didn't include ownership info — accept (backwards compat)
+        return true;
+      }
+      if (data.ownerSessionId !== sessionIdRef.current) {
+        console.warn(
+          '[Kernel] REJECTED response: ownerSessionId mismatch',
+          {
+            expected: sessionIdRef.current,
+            received: data.ownerSessionId,
+          },
+        );
+        return false;
+      }
+      return true;
+    },
+    [],
+  );
+
+  // =========================================================================
   // Heartbeat — simple TTL refresh + URL change detection
   // =========================================================================
 
@@ -97,6 +155,13 @@ export function KernelBrowserClient({
 
       const data = await response.json();
 
+      // CRITICAL: Verify the response belongs to our session before using it.
+      // A stale/cached response from another user would have a different
+      // ownerSessionId and must be discarded.
+      if (!verifyResponse(data)) {
+        return;
+      }
+
       // Detect if the browser was recreated (Kernel host changed → new URL)
       if (data.liveViewUrl && data.liveViewUrl !== liveViewUrlRef.current) {
         console.log('[Kernel] Browser was recreated, updating live view URL', {
@@ -108,7 +173,7 @@ export function KernelBrowserClient({
     } catch (err) {
       console.warn('[Kernel] Heartbeat failed:', err);
     }
-  }, [sessionId, stopHeartbeat]);
+  }, [sessionId, stopHeartbeat, verifyResponse]);
 
   const startHeartbeat = useCallback(() => {
     stopHeartbeat();
@@ -145,6 +210,15 @@ export function KernelBrowserClient({
         }
 
         const data = await response.json();
+
+        // CRITICAL: Verify the response is for OUR session.
+        // If sessionId changed while the request was in flight, or a cached
+        // response was served from another user, reject it.
+        if (!verifyResponse(data)) {
+          console.warn('[Kernel] Discarding create response — session mismatch');
+          return;
+        }
+
         setLiveViewUrl(data.liveViewUrl);
         setIsConnected(true);
         initializedSessionRef.current = sessionId;
@@ -159,7 +233,7 @@ export function KernelBrowserClient({
         setLoading(false);
       }
     },
-    [sessionId, liveViewUrl, isMobile, startHeartbeat],
+    [sessionId, liveViewUrl, isMobile, startHeartbeat, verifyResponse],
   );
 
   // Initialize browser on mount
@@ -232,8 +306,6 @@ export function KernelBrowserClient({
     const prev = prevChatStatusRef.current;
     prevChatStatusRef.current = chatStatus;
 
-    // If chat was actively streaming and now stopped, and user hasn't already
-    // taken control, the browser is idle — no agent commands are running.
     if (
       (prev === 'streaming' || prev === 'submitted') &&
       (chatStatus === 'ready' || chatStatus === 'error') &&
