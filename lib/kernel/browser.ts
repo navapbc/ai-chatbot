@@ -13,6 +13,7 @@ export interface BrowserSession {
   cdpWsUrl: string;
   userId: string;
   browserManager: BrowserManager;
+  viewport: { width: number; height: number };
 }
 
 // =============================================================================
@@ -99,6 +100,7 @@ export async function getOrCreateBrowser(
         cdpWsUrl: browser.cdp_ws_url,
         userId,
         browserManager: manager,
+        viewport,
       };
 
       sessions.set(key, session);

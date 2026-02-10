@@ -37,6 +37,7 @@ export function KernelBrowserClient({
   onFullscreenChange,
 }: KernelBrowserClientProps) {
   const [liveViewUrl, setLiveViewUrl] = useState<string | null>(null);
+  const [viewport, setViewport] = useState<{ width: number; height: number }>({ width: 1280, height: 800 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -87,6 +88,7 @@ export function KernelBrowserClient({
           const data = await response.json();
           if (data.liveViewUrl) {
             setLiveViewUrl(data.liveViewUrl);
+            if (data.viewport) setViewport(data.viewport);
             setIsConnected(true);
             initializedSessionRef.current = sessionId;
             onConnectionChangeRef.current?.(true);
@@ -290,8 +292,8 @@ export function KernelBrowserClient({
               src={iframeUrl || undefined}
               className="border-0 bg-white rounded-lg shadow-2xl"
               style={{
-                width: '1280px',
-                height: '800px',
+                width: `${viewport.width}px`,
+                height: `${viewport.height}px`,
                 maxWidth: '100%',
                 maxHeight: '100%',
               }}
@@ -427,8 +429,8 @@ export function KernelBrowserClient({
           src={iframeUrl || undefined}
           className="border-0 bg-white rounded-lg"
           style={{
-            width: '1280px',
-            height: '800px',
+            width: `${viewport.width}px`,
+            height: `${viewport.height}px`,
             maxWidth: '100%',
             maxHeight: '100%',
             pointerEvents: controlMode === 'agent' ? 'none' : 'auto',

@@ -39,6 +39,7 @@ export async function POST(request: Request) {
       return Response.json({
         liveViewUrl: browser.liveViewUrl,
         sessionId: browser.kernelSessionId,
+        viewport: browser.viewport,
       });
     }
 
@@ -49,6 +50,7 @@ export async function POST(request: Request) {
       return Response.json({
         liveViewUrl: browser.liveViewUrl,
         sessionId: browser.kernelSessionId,
+        viewport: browser.viewport,
       });
     }
 
