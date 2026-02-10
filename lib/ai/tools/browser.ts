@@ -1,20 +1,22 @@
 import { tool, type ToolExecutionOptions } from 'ai';
 import { z } from 'zod';
-import { randomUUID } from 'crypto';
-import { enqueueCommand, awaitResult } from '@/lib/kernel/message-queue';
-import { ensureWorker } from '@/lib/kernel/command-worker';
 import {
   getOrCreateBrowser,
   recordAgentActivity,
 } from '@/lib/kernel/browser';
+import {
+  getOrCreateBrowserClient,
+  executeBrowserCommand,
+} from '@/lib/kernel/agent-browser-client';
+
+const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes per command
 
 /**
  * Creates a browser automation tool for a specific session.
- * Uses agent-browser CLI with native Kernel provider for remote browser control.
+ * Uses agent-browser with native Kernel provider for remote browser control.
  *
- * Commands are submitted to a Redis Streams message queue and executed by a
- * background worker. This decouples command submission from execution, enabling
- * sequential processing, retries, and real-time status events for the client.
+ * Commands are executed directly via CDP — no message queue or background worker.
+ * AI SDK already runs tool calls sequentially per step, so there's no concurrency risk.
  *
  * @param sessionId - The chat/session ID for browser isolation
  * @param userId - The user ID for ownership validation and security
@@ -81,59 +83,54 @@ eval is only acceptable for reading values (e.g. checking if an element exists).
       { abortSignal }: ToolExecutionOptions,
     ) => {
       try {
+        // Bail early if already aborted
+        if (abortSignal?.aborted) {
+          return {
+            success: false,
+            output: null,
+            error: 'Browser command stopped by user',
+          };
+        }
+
         // Ensure we have a Kernel browser instance (creates one if needed)
         await getOrCreateBrowser(sessionId, userId);
         await recordAgentActivity(sessionId, userId);
 
-        // Ensure the background worker is running for this session
-        const worker = ensureWorker(userId, sessionId);
+        // Get (or create) a persistent CDP connection for this session
+        const browser = await getOrCreateBrowserClient(sessionId, userId);
 
-        // If the user aborts, stop the worker
-        if (abortSignal) {
-          abortSignal.addEventListener('abort', () => worker.stop(), {
-            once: true,
-          });
-        }
-
-        const correlationId = randomUUID();
-
-        console.log('[browser-tool] Enqueueing command:', command);
-        console.log('[browser-tool] Correlation ID:', correlationId);
-
-        // Submit command to the queue
-        await enqueueCommand({
-          correlationId,
-          command,
-          sessionId,
-          userId,
-          timestamp: Date.now(),
-        });
-
-        // Wait for the worker to execute and publish the result
-        const result = await awaitResult(
-          userId,
-          sessionId,
-          correlationId,
-          abortSignal,
-        );
-
-        console.log(
-          '[browser-tool] Result received:',
-          result.success ? 'success' : 'failure',
-        );
+        // Execute with timeout + abort support
+        const result = await Promise.race([
+          executeBrowserCommand(browser, command),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error('Command timed out after 2 minutes')),
+              COMMAND_TIMEOUT_MS,
+            ),
+          ),
+          ...(abortSignal
+            ? [
+                new Promise<never>((_, reject) => {
+                  abortSignal.addEventListener(
+                    'abort',
+                    () => reject(new Error('Browser command stopped by user')),
+                    { once: true },
+                  );
+                }),
+              ]
+            : []),
+        ]);
 
         return {
           success: result.success,
           output: result.output || (result.success ? 'Command completed successfully' : null),
-          error: result.error,
+          error: result.success ? null : (result.output || 'Command failed'),
         };
       } catch (error: unknown) {
         const message =
           error instanceof Error ? error.message : 'Command failed';
 
-        // Handle abort (user clicked Stop or Take Over)
-        if (abortSignal?.aborted) {
-          console.log('[browser-tool] Command aborted by user');
+        if (abortSignal?.aborted || message === 'Browser command stopped by user') {
           return {
             success: false,
             output: null,

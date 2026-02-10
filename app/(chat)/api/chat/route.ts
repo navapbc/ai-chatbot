@@ -185,14 +185,18 @@ export async function POST(request: Request) {
               browser: createBrowserTool(sessionId, session.user.id),
             },
             stopWhen: stepCountIs(100),
+            experimental_transform: smoothStream({ chunking: 'word' }),
             experimental_telemetry: {
               isEnabled: isProductionEnvironment,
               functionId: 'web-automation-agent',
             },
+            onError: ({ error }) => {
+              console.error('Web automation streamText error:', error);
+            },
           });
 
           result.consumeStream();
-          dataStream.merge(result.toUIMessageStream());
+          await dataStream.merge(result.toUIMessageStream());
         },
         generateId: generateUUID,
         onFinish: async ({ messages }) => {

@@ -16,23 +16,6 @@ import {
 import type { ChatStatus } from '@/components/create-artifact';
 
 // =============================================================================
-// Types for SSE status events from the message queue
-// =============================================================================
-
-interface BrowserStatusEvent {
-  type:
-    | 'command_queued'
-    | 'command_started'
-    | 'command_completed'
-    | 'command_failed'
-    | 'session_expired';
-  correlationId: string;
-  command: string;
-  details: string;
-  timestamp: string;
-}
-
-// =============================================================================
 // Idle timeout: disconnect after 5 minutes of no user interaction.
 // The agent idle timeout (server-side, 5 min) covers agent inactivity.
 // This covers user inactivity (e.g., user walks away from computer).
@@ -45,7 +28,6 @@ interface KernelBrowserClientProps {
   controlMode: 'agent' | 'user';
   onControlModeChange: (mode: 'agent' | 'user') => void;
   onConnectionChange?: (connected: boolean) => void;
-  onBrowserEvent?: (event: BrowserStatusEvent) => void;
   chatStatus?: ChatStatus;
   stop?: () => void;
   isFullscreen?: boolean;
@@ -57,7 +39,6 @@ export function KernelBrowserClient({
   controlMode,
   onControlModeChange,
   onConnectionChange,
-  onBrowserEvent,
   chatStatus,
   stop,
   isFullscreen = false,
@@ -69,15 +50,11 @@ export function KernelBrowserClient({
   const [isConnected, setIsConnected] = useState(false);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
-  const [lastCommand, setLastCommand] = useState<string | null>(null);
   const isMobile = useIsMobile();
 
   // Stable refs to avoid dependency changes triggering re-initialization
   const onConnectionChangeRef = useRef(onConnectionChange);
   onConnectionChangeRef.current = onConnectionChange;
-
-  const onBrowserEventRef = useRef(onBrowserEvent);
-  onBrowserEventRef.current = onBrowserEvent;
 
   const isConnectedRef = useRef(isConnected);
   isConnectedRef.current = isConnected;
@@ -85,7 +62,6 @@ export function KernelBrowserClient({
   // Track if we've already initialized for this session
   const initializedSessionRef = useRef<string | null>(null);
   const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
 
   // Ref for liveViewUrl so heartbeat can compare without re-creating callbacks
   const liveViewUrlRef = useRef(liveViewUrl);
@@ -152,84 +128,10 @@ export function KernelBrowserClient({
 
   const startHeartbeat = useCallback(() => {
     stopHeartbeat();
-    // Heartbeat now serves only as a TTL refresh fallback — real-time updates
-    // come via SSE. Reduced frequency from 30s to 60s.
     heartbeatIntervalRef.current = setInterval(() => {
       void heartbeat();
-    }, 60_000);
+    }, 30_000);
   }, [heartbeat, stopHeartbeat]);
-
-  // =========================================================================
-  // SSE — real-time status events from the message queue
-  // =========================================================================
-
-  const stopEventSource = useCallback(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-    }
-  }, []);
-
-  const startEventSource = useCallback(() => {
-    stopEventSource();
-
-    const url = `/api/kernel-browser/events?sessionId=${encodeURIComponent(sessionId)}`;
-    const es = new EventSource(url);
-    eventSourceRef.current = es;
-
-    es.addEventListener('status', (e: MessageEvent) => {
-      try {
-        const event = JSON.parse(e.data) as BrowserStatusEvent;
-        console.log('[Kernel SSE] Status event:', event.type, event.command);
-
-        // Track the last command for UI display
-        if (event.type === 'command_started') {
-          setLastCommand(event.command);
-        } else if (
-          event.type === 'command_completed' ||
-          event.type === 'command_failed'
-        ) {
-          setLastCommand(null);
-        }
-
-        if (event.type === 'session_expired') {
-          setSessionExpired(true);
-          setLiveViewUrl(null);
-          setIsConnected(false);
-          onConnectionChangeRef.current?.(false);
-          stopHeartbeat();
-          stopEventSource();
-          toast.info('Browser session closed due to inactivity');
-        }
-
-        // Forward to parent for custom handling
-        onBrowserEventRef.current?.(event);
-      } catch {
-        // Ignore malformed events
-      }
-    });
-
-    es.addEventListener('timeout', () => {
-      console.log('[Kernel SSE] Stream timed out, reconnecting...');
-      // Browser will auto-reconnect EventSource, but we restart cleanly
-      stopEventSource();
-      // Small delay before reconnect to avoid tight loops
-      setTimeout(() => {
-        if (isConnectedRef.current) {
-          startEventSource();
-        }
-      }, 1000);
-    });
-
-    es.addEventListener('error', () => {
-      console.warn('[Kernel SSE] Connection error');
-      // EventSource auto-reconnects on error, but if the session is gone
-      // we shouldn't keep trying
-      if (!isConnectedRef.current) {
-        stopEventSource();
-      }
-    });
-  }, [sessionId, stopEventSource, stopHeartbeat]);
 
   // =========================================================================
   // Browser lifecycle
@@ -264,7 +166,6 @@ export function KernelBrowserClient({
         initializedSessionRef.current = sessionId;
         onConnectionChangeRef.current?.(true);
         startHeartbeat();
-        startEventSource();
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to connect';
         setError(message);
@@ -329,23 +230,16 @@ export function KernelBrowserClient({
     };
   }, []);
 
-  // Cleanup on unmount: abort AI stream, stop heartbeat/SSE, delete browser.
+  // Cleanup on unmount: abort AI stream, stop heartbeat, delete browser.
   // This handles SPA navigation (e.g., switching chats). Full page navigation
   // is handled by the beforeunload sendBeacon above.
-  //
-  // Order matters: stop() aborts the AI stream which triggers the abort signal
-  // in the browser tool handler, causing awaitResult to return immediately and
-  // the command worker to stop. Without this, deleting the browser removes the
-  // Redis streams while the worker and awaitResult are still polling them,
-  // which causes the agent to recreate a new browser and re-navigate.
   useEffect(() => {
     return () => {
-      // 1. Abort the AI stream — triggers abort signal → worker stops, awaitResult exits
+      // 1. Abort the AI stream — triggers abort signal in browser tool
       stopRef.current?.();
       // 2. Stop client-side connections
       stopHeartbeat();
-      stopEventSource();
-      // 3. Delete browser session (server also stops worker via stopWorker)
+      // 3. Delete browser session
       if (isConnectedRef.current) {
         fetch('/api/kernel-browser', {
           method: 'POST',
@@ -359,7 +253,7 @@ export function KernelBrowserClient({
         });
       }
     };
-  }, [stopHeartbeat, stopEventSource]);
+  }, [stopHeartbeat]);
 
   // =========================================================================
   // User idle timeout — disconnect after prolonged user inactivity.
@@ -424,7 +318,6 @@ export function KernelBrowserClient({
         setIsConnected(false);
         onConnectionChangeRef.current?.(false);
         stopHeartbeat();
-        stopEventSource();
         toast.info('Browser session closed due to inactivity');
       }
     }, IDLE_CHECK_INTERVAL_MS);
@@ -436,7 +329,7 @@ export function KernelBrowserClient({
       });
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [isConnected, stopHeartbeat, stopEventSource]);
+  }, [isConnected, stopHeartbeat]);
 
   // Track previous chatStatus to detect when the chat stops.
   // When chatStatus transitions from 'streaming'/'submitted' → 'ready'/'error',
