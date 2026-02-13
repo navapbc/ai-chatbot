@@ -95,9 +95,14 @@ evaluate is only acceptable for reading values (e.g. checking if an element exis
         // Ensure we have a Kernel browser instance (creates one if needed)
         const session = await getOrCreateBrowser(sessionId, userId);
 
-        // If session was previously stopped, auto-resume since the agent is
-        // actively trying to use the browser again (user sent a new message).
+        // If session was previously stopped, decide whether to resume or bail:
+        // - abortSignal aborted → this is a stale call from the stopped stream, bail out
+        // - abortSignal NOT aborted → new stream (user sent a new message), auto-resume
         if (session.stopped) {
+          if (abortSignal?.aborted) {
+            console.log('[browser-tool] Skipping — session stopped by user');
+            return { success: false, output: null, error: 'Browser command stopped by user' };
+          }
           console.log('[browser-tool] Auto-resuming previously stopped session');
           session.stopped = false;
         }
