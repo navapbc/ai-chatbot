@@ -103,6 +103,13 @@ export function Chat({
       mutate(unstable_serialize(getChatHistoryPaginationKey));
     },
     onError: (error) => {
+      // Suppress expected errors when user clicks Stop during a tool call —
+      // the AI SDK can't match the tool result after the stream is aborted.
+      if (error?.message?.includes('Tool result is missing')) {
+        console.log('Chat stopped during tool call (expected)');
+        return;
+      }
+
       console.error('Chat error:', error);
       if (error instanceof ChatSDKError) {
         toast({

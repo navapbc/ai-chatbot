@@ -95,10 +95,11 @@ evaluate is only acceptable for reading values (e.g. checking if an element exis
         // Ensure we have a Kernel browser instance (creates one if needed)
         const session = await getOrCreateBrowser(sessionId, userId);
 
-        // Check session-level stopped flag (set by stopBrowserOperations)
+        // If session was previously stopped, auto-resume since the agent is
+        // actively trying to use the browser again (user sent a new message).
         if (session.stopped) {
-          console.log('[browser-tool] Skipping — session stopped by user');
-          return { success: false, output: null, error: 'Browser command stopped by user' };
+          console.log('[browser-tool] Auto-resuming previously stopped session');
+          session.stopped = false;
         }
 
         const command = {

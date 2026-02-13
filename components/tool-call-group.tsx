@@ -9,7 +9,6 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { getToolDisplayInfo } from './tool-icon';
-import { Button } from './ui/button';
 import { Spinner } from './ui/spinner';
 import { cn } from '@/lib/utils';
 
@@ -302,7 +301,7 @@ export function ToolCallGroup({
                 ))}
               </div>
             </div>
-            <Button variant="ghost" size="sm" className="p-1 h-auto text-muted-foreground hover:text-primary hover:bg-accent">
+            <div className="p-1 h-auto text-muted-foreground">
               <ChevronDown
                 size={14}
                 className={cn(
@@ -311,7 +310,7 @@ export function ToolCallGroup({
                 )}
               />
               <span className="sr-only">Toggle details</span>
-            </Button>
+            </div>
           </CollapsibleTrigger>
 
           {/* Expanded: full sequential list */}
