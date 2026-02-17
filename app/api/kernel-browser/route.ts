@@ -3,7 +3,7 @@ import {
   getOrCreateBrowser,
   deleteBrowser,
   getBrowser,
-  pauseBrowser,
+  stopBrowser,
 } from '@/lib/kernel/browser';
 
 export async function POST(request: Request) {
@@ -72,8 +72,8 @@ export async function POST(request: Request) {
       });
     }
 
-    if (action === 'pause') {
-      await pauseBrowser(sessionId, userId);
+    if (action === 'stop') {
+      await stopBrowser(sessionId, userId);
       return Response.json({ success: true });
     }
 
