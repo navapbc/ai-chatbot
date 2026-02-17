@@ -631,6 +631,10 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
           sessionId={metadata.sessionId}
           controlMode={metadata.controlMode}
           onControlModeChange={(mode) => {
+            // Always stop the AI when user takes control
+            if (mode === 'user' && stop) {
+              stop();
+            }
             setMetadata((prev) => ({
               ...prev,
               controlMode: mode,

@@ -194,10 +194,8 @@ export function KernelBrowserClient({
     console.log(`[Kernel] Switching control mode to: ${mode}`);
 
     if (mode === 'user') {
-      // Stop the AI when user takes control
-      if (stop) {
-        stop();
-      }
+      // Always stop the AI when user takes control - both kernel and chat must stop
+      stop?.();
       // On desktop, automatically enable fullscreen when switching to user mode
       if (!isMobile) {
         onFullscreenChange?.(true);
