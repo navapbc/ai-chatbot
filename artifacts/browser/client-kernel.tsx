@@ -200,7 +200,7 @@ export function KernelBrowserClient({
         const response = await fetch('/api/kernel-browser', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'pause', sessionId }),
+          body: JSON.stringify({ action: 'stop', sessionId }),
         });
         if (response.ok) {
           console.log(`[Kernel] Paused browser ${sessionId}`);
