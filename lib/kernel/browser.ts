@@ -24,6 +24,7 @@ export interface BrowserSession {
 // =============================================================================
 
 const sessions = new Map<string, BrowserSession>();
+const stoppedSessions = new Map<string, Omit<BrowserSession, 'browserManager'>>();
 const pendingCreations = new Map<string, Promise<BrowserSession>>();
 
 function cacheKey(userId: string, sessionId: string): string {
@@ -61,14 +62,21 @@ export async function getOrCreateBrowser(
     return cached;
   }
 
-  // 2. If a create is already in-flight, await it
+  // 2. Check if there's a stopped session to resume
+  const stopped = stoppedSessions.get(key);
+  if (stopped) {
+    const resumed = await resumeBrowser(sessionId, userId);
+    if (resumed) return resumed;
+  }
+
+  // 3. If a create is already in-flight, await it
   const pending = pendingCreations.get(key);
   if (pending) {
     console.log(`[Kernel] Awaiting in-flight create for session ${sessionId}`);
     return pending;
   }
 
-  // 3. Create new browser via Kernel SDK
+  // 4. Create new browser via Kernel SDK
   const createPromise = (async () => {
     try {
       const viewport = options?.isMobile
@@ -149,9 +157,10 @@ export async function getBrowser(
 
 /**
  * Stop a browser session.
- * Removes the session from cache and closes the BrowserManager (CDP connection)
- * so the agent can no longer control the browser. The Kernel browser instance
- * is NOT deleted — it stays alive for user interaction via the live view.
+ * Closes the BrowserManager (CDP connection) so the agent can no longer control
+ * the browser. The Kernel browser instance is NOT deleted — it stays alive for
+ * user interaction via the live view. Session info is preserved so it can be
+ * resumed later via resumeBrowser().
  */
 export async function stopBrowser(
   sessionId: string,
@@ -162,7 +171,15 @@ export async function stopBrowser(
 
   if (!session) return;
 
-  // Remove from cache so the agent can no longer access this session
+  // Move session info to stopped cache for later resume
+  stoppedSessions.set(key, {
+    kernelSessionId: session.kernelSessionId,
+    liveViewUrl: session.liveViewUrl,
+    cdpWsUrl: session.cdpWsUrl,
+    userId: session.userId,
+  });
+
+  // Remove from active sessions so the agent can no longer access it
   sessions.delete(key);
 
   // Close BrowserManager (disconnects Playwright from CDP)
@@ -171,6 +188,47 @@ export async function stopBrowser(
     console.log(`[Kernel] Stopped browser ${session.kernelSessionId} — agent disconnected, browser still alive on Kernel`);
   } catch (err) {
     console.error('[Kernel] Failed to close BrowserManager:', err);
+  }
+}
+
+/**
+ * Resume a stopped browser session.
+ * Reconnects a new BrowserManager to the existing Kernel browser via CDP,
+ * restoring agent control. Returns null if no stopped session exists.
+ */
+export async function resumeBrowser(
+  sessionId: string,
+  userId: string,
+): Promise<BrowserSession | null> {
+  const key = cacheKey(userId, sessionId);
+  const stopped = stoppedSessions.get(key);
+
+  if (!stopped) return null;
+
+  try {
+    const manager = new BrowserManager();
+    await manager.launch({
+      id: 'launch',
+      action: 'launch',
+      cdpUrl: stopped.cdpWsUrl,
+    });
+
+    const session: BrowserSession = {
+      ...stopped,
+      browserManager: manager,
+    };
+
+    // Move back to active sessions
+    sessions.set(key, session);
+    stoppedSessions.delete(key);
+    console.log(`[Kernel] Resumed browser ${stopped.kernelSessionId} — agent CDP reconnected`);
+
+    return session;
+  } catch (err) {
+    console.error('[Kernel] Failed to resume browser:', err);
+    // Clean up the stopped entry if the browser is no longer reachable
+    stoppedSessions.delete(key);
+    return null;
   }
 }
 
@@ -185,10 +243,15 @@ export async function deleteBrowser(
   const key = cacheKey(userId, sessionId);
   const session = sessions.get(key);
 
-  if (!session) return;
+  if (!session) {
+    // Also clean up any stopped session entry
+    stoppedSessions.delete(key);
+    return;
+  }
 
-  // Remove from cache first
+  // Remove from both caches
   sessions.delete(key);
+  stoppedSessions.delete(key);
 
   // Close BrowserManager (disconnects Playwright from CDP)
   try {
