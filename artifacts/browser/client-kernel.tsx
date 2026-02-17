@@ -196,6 +196,19 @@ export function KernelBrowserClient({
     if (mode === 'user') {
       // Always stop the AI when user takes control - both kernel and chat must stop
       stop?.();
+      const pauseBrowser = async () => {
+        const response = await fetch('/api/kernel-browser', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'pause', sessionId }),
+        });
+        if (response.ok) {
+          console.log(`[Kernel] Paused browser ${sessionId}`);
+        } else {
+          console.error(`[Kernel] Failed to pause browser ${sessionId}: ${response.statusText}`);
+        }
+      };
+      pauseBrowser();
       // On desktop, automatically enable fullscreen when switching to user mode
       if (!isMobile) {
         onFullscreenChange?.(true);

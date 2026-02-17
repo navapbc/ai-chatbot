@@ -148,6 +148,65 @@ export async function getBrowser(
 }
 
 /**
+ * Pause a browser session.
+ * Disconnects the agent's BrowserManager (CDP control) so the AI can no longer
+ * send commands, but keeps the Kernel browser session alive for user interaction
+ * via the live view. The session stays in cache so it can be resumed later.
+ */
+export async function pauseBrowser(
+  sessionId: string,
+  userId: string,
+): Promise<void> {
+  const key = cacheKey(userId, sessionId);
+  const session = sessions.get(key);
+
+  if (!session) return;
+
+  // Close BrowserManager (disconnects Playwright from CDP)
+  // The Kernel browser session stays alive for user interaction via live view
+  try {
+    await session.browserManager.close();
+    console.log(`[Kernel] Paused browser ${session.kernelSessionId} — agent CDP disconnected, browser still alive`);
+  } catch (err) {
+    console.error('[Kernel] Failed to pause BrowserManager:', err);
+  }
+}
+
+/**
+ * Resume a paused browser session.
+ * Reconnects the BrowserManager to the existing Kernel browser via CDP,
+ * restoring agent control.
+ */
+export async function resumeBrowser(
+  sessionId: string,
+  userId: string,
+): Promise<BrowserSession | null> {
+  const key = cacheKey(userId, sessionId);
+  const session = sessions.get(key);
+
+  if (!session) return null;
+
+  // Reconnect BrowserManager to the existing CDP URL
+  try {
+    const manager = new BrowserManager();
+    await manager.launch({
+      id: 'launch',
+      action: 'launch',
+      cdpUrl: session.cdpWsUrl,
+    });
+
+    // Update the session with the new manager
+    session.browserManager = manager;
+    console.log(`[Kernel] Resumed browser ${session.kernelSessionId} — agent CDP reconnected`);
+
+    return session;
+  } catch (err) {
+    console.error('[Kernel] Failed to resume browser:', err);
+    return null;
+  }
+}
+
+/**
  * Delete a browser session.
  * Removes from cache, then tells Kernel to destroy the browser instance.
  */

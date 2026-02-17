@@ -3,6 +3,7 @@ import {
   getOrCreateBrowser,
   deleteBrowser,
   getBrowser,
+  pauseBrowser,
 } from '@/lib/kernel/browser';
 
 export async function POST(request: Request) {
@@ -69,6 +70,11 @@ export async function POST(request: Request) {
         success: true,
         liveViewUrl: browser.liveViewUrl,
       });
+    }
+
+    if (action === 'pause') {
+      await pauseBrowser(sessionId, userId);
+      return Response.json({ success: true });
     }
 
     return Response.json({ error: 'Invalid action' }, { status: 400 });
