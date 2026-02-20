@@ -57,20 +57,6 @@ export async function POST(request: Request) {
       return Response.json({ success: true });
     }
 
-    if (action === 'heartbeat') {
-      const browser = await getBrowser(sessionId, userId);
-      if (!browser) {
-        return Response.json(
-          { error: 'Session expired or not found' },
-          { status: 404 },
-        );
-      }
-      return Response.json({
-        success: true,
-        liveViewUrl: browser.liveViewUrl,
-      });
-    }
-
     return Response.json({ error: 'Invalid action' }, { status: 400 });
   } catch (error) {
     console.error('Kernel browser API error:', error);

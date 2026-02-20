@@ -77,7 +77,7 @@ export async function getOrCreateBrowser(
 
       const browser = (await kernel.browsers.create({
         viewport,
-        timeout_seconds: 600,
+        timeout_seconds: 3600,
         kiosk_mode: true,
         stealth: true,
       })) as {
@@ -145,6 +145,44 @@ export async function getBrowser(
   }
 
   return null;
+}
+
+/**
+ * Stop in-flight browser operations without destroying the Kernel browser.
+ *
+ * Closes the current BrowserManager (severing the CDP connection, which kills
+ * all in-flight Playwright commands), then reconnects a fresh BrowserManager
+ * to the same cdp_ws_url so future tool calls still work.
+ *
+ * The Kernel browser itself stays alive — the live-view iframe keeps it alive.
+ */
+export async function stopBrowserOperations(
+  sessionId: string,
+  userId: string,
+): Promise<void> {
+  const key = cacheKey(userId, sessionId);
+  const session = sessions.get(key);
+  if (!session) return;
+
+  const { cdpWsUrl } = session;
+
+  // Close current BrowserManager — kills all in-flight Playwright actions
+  try {
+    await session.browserManager.close();
+  } catch (err) {
+    console.error('[Kernel] Failed to close BrowserManager during stop:', err);
+  }
+
+  // Reconnect fresh BrowserManager to same browser via CDP
+  try {
+    const newManager = new BrowserManager();
+    await newManager.launch({ id: 'relaunch', action: 'launch', cdpUrl: cdpWsUrl });
+    session.browserManager = newManager;
+  } catch (err) {
+    // Reconnect failed — remove from cache so next tool call creates fresh
+    console.error('[Kernel] Failed to reconnect BrowserManager:', err);
+    sessions.delete(key);
+  }
 }
 
 /**

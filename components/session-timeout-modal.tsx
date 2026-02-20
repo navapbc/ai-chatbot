@@ -65,7 +65,8 @@ export function SessionTimeoutModal({
       setRemaining((prev) => {
         if (prev <= 1) {
           clearInterval(intervalRef.current!);
-          onEndSession();
+          // Defer to avoid setState-during-render when parent updates in onEndSession
+          setTimeout(onEndSession, 0);
           return 0;
         }
         return prev - 1;

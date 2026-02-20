@@ -39,12 +39,11 @@ export function ExitWarningModal({
             Leave this application session?
           </AlertDialogTitle>
           <AlertDialogDescription className="font-sans text-[18px] font-normal leading-[28px] text-foreground text-left">
-            If you start a new application or open another one, your current
-            session will end.
+            Your browser session will remain active in the background. You can
+            return to this chat to continue where you left off.
             <br />
             <br />
-            You&apos;ll be able to view it, but you won&apos;t be able to continue or
-            submit the application.
+            Sessions automatically close after 1 hour of inactivity.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter className="flex-row justify-end gap-2 mt-0">
@@ -58,7 +57,7 @@ export function ExitWarningModal({
             onClick={handleLeaveSession}
             className="bg-primary text-primary-foreground text-[14px] font-medium leading-[24px] px-4 py-2 rounded-[6px] hover:bg-primary/90 transition-colors border-0"
           >
-            Leave session
+            Continue
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

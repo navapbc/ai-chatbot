@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { executeCommand } from 'agent-browser/dist/actions.js';
 import type { Command, Response } from 'agent-browser/dist/types.js';
-import { getOrCreateBrowser } from '@/lib/kernel/browser';
+import { getOrCreateBrowser, stopBrowserOperations } from '@/lib/kernel/browser';
 
 const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes
 
@@ -15,9 +15,25 @@ const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes
  */
 const sessionQueues = new Map<string, Promise<unknown>>();
 
+/** Per-session abort flag — when set, queued commands bail immediately. */
+const sessionAborted = new Map<string, boolean>();
+
 function withSessionQueue<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
   const prev = sessionQueues.get(sessionId) ?? Promise.resolve();
-  const next = prev.then(fn, fn); // always advance the queue even on error
+  const next = prev.then(
+    () => {
+      if (sessionAborted.get(sessionId)) {
+        return Promise.reject(new Error('Browser command stopped by user'));
+      }
+      return fn();
+    },
+    () => {
+      if (sessionAborted.get(sessionId)) {
+        return Promise.reject(new Error('Browser command stopped by user'));
+      }
+      return fn();
+    },
+  );
   sessionQueues.set(sessionId, next.then(() => {}, () => {})); // swallow to prevent unhandled rejection on queue chain
   return next;
 }
@@ -117,6 +133,10 @@ NEVER use "evaluate" to enable disabled buttons, bypass validation, or modify pa
       params: Record<string, unknown>,
       { abortSignal }: ToolExecutionOptions,
     ) => {
+      // Clear abort flag at the start of a new tool call — a new message
+      // means the user wants to proceed, so reset any previous stop state.
+      sessionAborted.delete(sessionId);
+
       return withSessionQueue(sessionId, async () => {
         try {
           // Ensure we have a Kernel browser instance (creates one if needed)
@@ -130,6 +150,8 @@ NEVER use "evaluate" to enable disabled buttons, bypass validation, or modify pa
           console.log('[browser-tool] Session:', sessionId);
           console.log('[browser-tool] Executing:', command.action, JSON.stringify(params));
 
+          let stopTriggered = false;
+
           const response = await Promise.race([
             executeCommand(command, session.browserManager),
             new Promise<never>((_, reject) => {
@@ -137,8 +159,16 @@ NEVER use "evaluate" to enable disabled buttons, bypass validation, or modify pa
                 () => reject(new Error('Command timed out after 2 minutes')),
                 COMMAND_TIMEOUT_MS,
               );
-              abortSignal?.addEventListener('abort', () => {
+              abortSignal?.addEventListener('abort', async () => {
                 clearTimeout(timer);
+                if (!stopTriggered) {
+                  stopTriggered = true;
+                  // Set abort flag so queued commands drain immediately
+                  sessionAborted.set(sessionId, true);
+                  console.log('[browser-tool] Stop triggered — closing BrowserManager');
+                  // Kill in-flight Playwright command by severing CDP connection
+                  await stopBrowserOperations(sessionId, userId);
+                }
                 reject(new Error('Browser command stopped by user'));
               });
             }),

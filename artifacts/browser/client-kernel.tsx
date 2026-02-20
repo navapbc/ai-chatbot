@@ -7,6 +7,9 @@ import { toast } from 'sonner';
 import { AgentStatusIndicator } from '@/components/agent-status-indicator';
 import { BrowserLoadingState, BrowserErrorState, BrowserTimeoutState } from './browser-states';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { useIdleTimeout } from '@/hooks/use-idle-timeout';
+import { SessionTimeoutModal } from '@/components/session-timeout-modal';
+import { closeArtifact, useArtifact } from '@/hooks/use-artifact';
 import {
   Sheet,
   SheetContent,
@@ -16,6 +19,11 @@ import {
 import type { ChatStatus } from '@/components/create-artifact';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import type { ChatMessage } from '@/lib/types';
+
+// const IDLE_TIMEOUT_MS = 55 * 60 * 1000; // 55 minutes
+const IDLE_TIMEOUT_MS = 10 * 1000; // 55 minutes
+// const COUNTDOWN_SECONDS = 300; // 5 minute countdown in the modal
+const COUNTDOWN_SECONDS = 5; // 5 minute countdown in the modal
 
 interface KernelBrowserClientProps {
   sessionId: string;
@@ -45,7 +53,9 @@ export function KernelBrowserClient({
   const [error, setError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
+  const [isTimeoutModalOpen, setIsTimeoutModalOpen] = useState(false);
   const isMobile = useIsMobile();
+  const { setArtifact } = useArtifact();
 
   // Use refs to avoid dependency changes triggering re-initialization
   const onConnectionChangeRef = useRef(onConnectionChange);
@@ -58,6 +68,36 @@ export function KernelBrowserClient({
   // Track if we've already initialized for this session
   const initializedSessionRef = useRef<string | null>(null);
   const initInFlightRef = useRef(false);
+
+  // Only run idle detection when connected AND agent is not actively working.
+  // chatStatus is 'submitted' | 'streaming' while the agent is busy, 'ready' when idle.
+  const agentIdle = chatStatus === 'ready' || chatStatus === 'error' || !chatStatus;
+  const idleEnabled = isConnected && agentIdle;
+
+  const { resetIdleTimer } = useIdleTimeout({
+    timeoutMs: IDLE_TIMEOUT_MS,
+    enabled: idleEnabled,
+    onIdle: () => setIsTimeoutModalOpen(true),
+  });
+
+  const handleContinueSession = useCallback(() => {
+    setIsTimeoutModalOpen(false);
+    resetIdleTimer();
+  }, [resetIdleTimer]);
+
+  const handleEndSession = useCallback(async () => {
+    setIsTimeoutModalOpen(false);
+    try {
+      await fetch('/api/kernel-browser', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', sessionId }),
+      });
+    } catch (err) {
+      console.error('[Kernel] Failed to delete browser session:', err);
+    }
+    closeArtifact(setArtifact);
+  }, [sessionId, setArtifact]);
 
   const initBrowser = useCallback(async (force = false) => {
     // Skip if already initialized for this session (unless forced)
@@ -120,39 +160,12 @@ export function KernelBrowserClient({
     }
   }, [sessionId, liveViewUrl, isMobile]);
 
-  // Keep sessionId in a ref so the beforeunload handler always has the latest value
-  const sessionIdRef = useRef(sessionId);
-  sessionIdRef.current = sessionId;
-
   // Initialize browser on mount
   useEffect(() => {
     if (initializedSessionRef.current !== sessionId) {
       initBrowser();
     }
   }, [sessionId, initBrowser]);
-
-  // Clean up browser when component unmounts (chat navigation) or page closes.
-  // Uses sendBeacon for fire-and-forget cleanup that works in both cases.
-  useEffect(() => {
-    const cleanup = () => {
-      try {
-        const payload = JSON.stringify({ action: 'delete', sessionId: sessionIdRef.current });
-        navigator.sendBeacon(
-          '/api/kernel-browser',
-          new Blob([payload], { type: 'application/json' }),
-        );
-      } catch {
-        // Best-effort cleanup
-      }
-    };
-
-    window.addEventListener('beforeunload', cleanup);
-    return () => {
-      window.removeEventListener('beforeunload', cleanup);
-      // Component unmounting (SPA navigation) — delete the browser immediately
-      cleanup();
-    };
-  }, []);
 
   // Listen for control mode switch events from confirmation components
   useEffect(() => {
@@ -221,21 +234,6 @@ export function KernelBrowserClient({
     onControlModeChange(mode);
   };
 
-  const disconnectBrowser = async () => {
-    try {
-      await fetch('/api/kernel-browser', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'delete', sessionId }),
-      });
-      setIsConnected(false);
-      setLiveViewUrl(null);
-      onConnectionChange?.(false);
-    } catch (err) {
-      console.error('Failed to disconnect browser:', err);
-    }
-  };
-
   // Build the iframe URL with readOnly based on control mode
   // In agent mode: readOnly=true (user cannot interact)
   // In user mode: no readOnly param (user can interact directly)
@@ -271,6 +269,13 @@ export function KernelBrowserClient({
   if (controlMode === 'user' && isFullscreen) {
     return (
       <div className="fixed inset-0 z-50 browser-fullscreen-bg flex flex-col overflow-hidden">
+        <SessionTimeoutModal
+          open={isTimeoutModalOpen}
+          onOpenChange={setIsTimeoutModalOpen}
+          countdownSeconds={COUNTDOWN_SECONDS}
+          onEndSession={handleEndSession}
+          onContinueSession={handleContinueSession}
+        />
         {/* Fullscreen header with controls */}
         <div className="sticky top-0 left-0 right-0 z-10 browser-fullscreen-bg">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between px-2 sm:px-4 py-2 sm:py-3 gap-2">
@@ -322,6 +327,13 @@ export function KernelBrowserClient({
   if (isMobile) {
     return (
       <div className="pointer-events-none">
+        <SessionTimeoutModal
+          open={isTimeoutModalOpen}
+          onOpenChange={setIsTimeoutModalOpen}
+          countdownSeconds={COUNTDOWN_SECONDS}
+          onEndSession={handleEndSession}
+          onContinueSession={handleContinueSession}
+        />
         {/* Mobile: Floating button to open browser drawer */}
         <div className="fixed top-4 right-4 z-[100] pointer-events-auto">
           <Button
@@ -403,6 +415,13 @@ export function KernelBrowserClient({
   // Normal (non-fullscreen) desktop mode
   return (
     <div className="h-full flex flex-col">
+      <SessionTimeoutModal
+        open={isTimeoutModalOpen}
+        onOpenChange={setIsTimeoutModalOpen}
+        countdownSeconds={COUNTDOWN_SECONDS}
+        onEndSession={handleEndSession}
+        onContinueSession={handleContinueSession}
+      />
       {/* Control mode indicator and buttons */}
       {isConnected && (
         <div className="flex-shrink-0 flex items-center justify-between py-2 bg-muted/20">
