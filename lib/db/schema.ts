@@ -9,6 +9,7 @@ import {
   primaryKey,
   foreignKey,
   boolean,
+  unique,
 } from 'drizzle-orm/pg-core';
 
 export const user = pgTable('User', {
@@ -172,3 +173,26 @@ export const stream = pgTable(
 );
 
 export type Stream = InferSelectModel<typeof stream>;
+
+export const browserSession = pgTable(
+  'BrowserSession',
+  {
+    id: uuid('id').primaryKey().notNull().defaultRandom(),
+    sessionId: varchar('sessionId', { length: 255 }).notNull(),
+    userId: uuid('userId')
+      .notNull()
+      .references(() => user.id),
+    chatId: uuid('chatId')
+      .notNull()
+      .references(() => chat.id),
+    kernelSessionId: varchar('kernelSessionId', { length: 255 }).notNull(),
+    liveViewUrl: text('liveViewUrl').notNull(),
+    cdpWsUrl: text('cdpWsUrl').notNull(),
+    createdAt: timestamp('createdAt').notNull(),
+  },
+  (table) => ({
+    sessionIdUnique: unique().on(table.sessionId),
+  }),
+);
+
+export type BrowserSession = InferSelectModel<typeof browserSession>;

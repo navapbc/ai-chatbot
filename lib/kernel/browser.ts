@@ -1,5 +1,10 @@
 import Kernel from '@onkernel/sdk';
 import { BrowserManager } from 'agent-browser/dist/browser.js';
+import {
+  saveBrowserSession,
+  getBrowserSession,
+  deleteBrowserSession,
+} from '@/lib/db/queries';
 
 const kernel = new Kernel();
 
@@ -28,6 +33,84 @@ const pendingCreations = new Map<string, Promise<BrowserSession>>();
 
 function cacheKey(userId: string, sessionId: string): string {
   return `${userId}:${sessionId}`;
+}
+
+// =============================================================================
+// DB reconnection helper
+// =============================================================================
+
+/**
+ * Try to reconnect to a browser session stored in the DB.
+ * Returns null if no record exists or the Kernel session is dead.
+ */
+async function tryReconnectFromDB(
+  sessionId: string,
+  userId: string,
+): Promise<BrowserSession | null> {
+  const record = await getBrowserSession({ sessionId });
+  if (!record) return null;
+
+  try {
+    const kernelSession = (await kernel.browsers.retrieve(
+      record.kernelSessionId,
+    )) as {
+      session_id: string;
+      cdp_ws_url: string;
+      browser_live_view_url: string;
+      deleted_at?: string | null;
+    };
+
+    // Session expired or deleted
+    if (kernelSession.deleted_at) {
+      await deleteBrowserSession({ sessionId });
+      return null;
+    }
+
+    // Reconnect BrowserManager via CDP
+    const manager = new BrowserManager();
+    await manager.launch({
+      id: 'reconnect',
+      action: 'launch',
+      cdpUrl: kernelSession.cdp_ws_url,
+    });
+
+    const session: BrowserSession = {
+      kernelSessionId: kernelSession.session_id,
+      liveViewUrl: kernelSession.browser_live_view_url,
+      cdpWsUrl: kernelSession.cdp_ws_url,
+      userId,
+      browserManager: manager,
+    };
+
+    // Update cache and DB with fresh URLs
+    const key = cacheKey(userId, sessionId);
+    sessions.set(key, session);
+
+    await saveBrowserSession({
+      sessionId,
+      userId,
+      chatId: record.chatId,
+      kernelSessionId: session.kernelSessionId,
+      liveViewUrl: session.liveViewUrl,
+      cdpWsUrl: session.cdpWsUrl,
+    });
+
+    console.log(
+      `[Kernel] Reconnected to browser ${session.kernelSessionId} from DB for session ${sessionId}`,
+    );
+    return session;
+  } catch (err: unknown) {
+    const error = err as { status?: number };
+    if (error.status === 404) {
+      console.log(
+        `[Kernel] DB record for session ${sessionId} points to deleted Kernel session, cleaning up`,
+      );
+    } else {
+      console.error('[Kernel] Failed to reconnect from DB:', err);
+    }
+    await deleteBrowserSession({ sessionId });
+    return null;
+  }
 }
 
 // =============================================================================
@@ -68,7 +151,11 @@ export async function getOrCreateBrowser(
     return pending;
   }
 
-  // 3. Create new browser via Kernel SDK
+  // 3. Try to reconnect from DB (survives Cloud Run restarts)
+  const reconnected = await tryReconnectFromDB(sessionId, userId);
+  if (reconnected) return reconnected;
+
+  // 4. Create new browser via Kernel SDK
   const createPromise = (async () => {
     try {
       const viewport = options?.isMobile
@@ -105,6 +192,17 @@ export async function getOrCreateBrowser(
       console.log(
         `[Kernel] Created browser ${browser.session_id} for session ${sessionId}`,
       );
+
+      // Persist to DB for reconnection after Cloud Run restarts
+      const chatId = sessionId.replace(`-${userId}`, '');
+      await saveBrowserSession({
+        sessionId,
+        userId,
+        chatId,
+        kernelSessionId: session.kernelSessionId,
+        liveViewUrl: session.liveViewUrl,
+        cdpWsUrl: session.cdpWsUrl,
+      });
 
       return session;
     } finally {
@@ -144,7 +242,8 @@ export async function getBrowser(
     return pending;
   }
 
-  return null;
+  // Fall back to DB (survives Cloud Run restarts)
+  return tryReconnectFromDB(sessionId, userId);
 }
 
 /**
@@ -196,9 +295,12 @@ export async function deleteBrowser(
   const key = cacheKey(userId, sessionId);
   const session = sessions.get(key);
 
+  // Always clean up DB record (may exist from a previous instance)
+  await deleteBrowserSession({ sessionId });
+
   if (!session) return;
 
-  // Remove from cache first
+  // Remove from cache
   sessions.delete(key);
 
   // Close BrowserManager (disconnects Playwright from CDP)
@@ -222,5 +324,49 @@ export async function deleteBrowser(
       console.error('[Kernel] Failed to delete browser:', err);
     }
   }
+}
+
+/**
+ * Disconnect CDP without destroying the Kernel browser.
+ *
+ * Closes the BrowserManager (severs CDP — stops billing), removes from
+ * in-memory cache, but keeps the DB record so we can reconnect later.
+ */
+export async function disconnectBrowser(
+  sessionId: string,
+  userId: string,
+): Promise<void> {
+  const key = cacheKey(userId, sessionId);
+  const session = sessions.get(key);
+  if (!session) return;
+
+  // Close BrowserManager (severs CDP connection)
+  try {
+    await session.browserManager.close();
+  } catch (err) {
+    console.error('[Kernel] Failed to close BrowserManager during disconnect:', err);
+  }
+
+  // Remove from in-memory cache — DB record stays for reconnection
+  sessions.delete(key);
+  console.log(`[Kernel] Disconnected CDP for session ${sessionId}`);
+}
+
+/**
+ * Reconnect to a browser session.
+ *
+ * Checks in-memory cache first, then falls back to DB lookup + Kernel retrieve.
+ */
+export async function reconnectBrowser(
+  sessionId: string,
+  userId: string,
+): Promise<BrowserSession | null> {
+  const key = cacheKey(userId, sessionId);
+
+  // Already in memory
+  const cached = sessions.get(key);
+  if (cached) return cached;
+
+  return tryReconnectFromDB(sessionId, userId);
 }
 

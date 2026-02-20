@@ -114,6 +114,29 @@ export function KernelBrowserClient({
       setLoading(true);
       setError(null);
 
+      // Try reconnecting to an existing session first (unless forcing a new create)
+      if (!force) {
+        try {
+          const reconnectRes = await fetch('/api/kernel-browser', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'reconnect', sessionId }),
+          });
+          if (reconnectRes.ok) {
+            const data = await reconnectRes.json();
+            if (data.liveViewUrl) {
+              setLiveViewUrl(data.liveViewUrl);
+              setIsConnected(true);
+              initializedSessionRef.current = sessionId;
+              onConnectionChangeRef.current?.(true);
+              return;
+            }
+          }
+        } catch {
+          // Reconnect failed — fall through to normal flow
+        }
+      }
+
       // force=true (refresh button) → create a new browser directly
       // force=false (normal mount) → poll for the browser the tool creates
       const action = force ? 'create' : 'get';
@@ -166,6 +189,19 @@ export function KernelBrowserClient({
       initBrowser();
     }
   }, [sessionId, initBrowser]);
+
+  // Disconnect CDP on unmount (stops billing while user is away)
+  useEffect(() => {
+    return () => {
+      navigator.sendBeacon(
+        '/api/kernel-browser',
+        new Blob(
+          [JSON.stringify({ action: 'disconnect', sessionId })],
+          { type: 'application/json' },
+        ),
+      );
+    };
+  }, [sessionId]);
 
   // Listen for control mode switch events from confirmation components
   useEffect(() => {

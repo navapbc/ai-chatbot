@@ -3,6 +3,8 @@ import {
   getOrCreateBrowser,
   deleteBrowser,
   getBrowser,
+  disconnectBrowser,
+  reconnectBrowser,
 } from '@/lib/kernel/browser';
 
 export async function POST(request: Request) {
@@ -55,6 +57,20 @@ export async function POST(request: Request) {
     if (action === 'delete') {
       await deleteBrowser(sessionId, userId);
       return Response.json({ success: true });
+    }
+
+    if (action === 'disconnect') {
+      await disconnectBrowser(sessionId, userId);
+      return Response.json({ success: true });
+    }
+
+    if (action === 'reconnect') {
+      const browser = await reconnectBrowser(sessionId, userId);
+      return Response.json(
+        browser
+          ? { liveViewUrl: browser.liveViewUrl, sessionId: browser.kernelSessionId }
+          : { liveViewUrl: null },
+      );
     }
 
     return Response.json({ error: 'Invalid action' }, { status: 400 });

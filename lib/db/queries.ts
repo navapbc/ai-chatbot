@@ -27,6 +27,7 @@ import {
   type DBMessage,
   type Chat,
   stream,
+  browserSession,
 } from './schema';
 import type { ArtifactKind } from '@/components/artifact';
 import { generateUUID } from '../utils';
@@ -171,6 +172,7 @@ export async function deleteChatById({ id }: { id: string }) {
     await db.delete(vote).where(eq(vote.chatId, id));
     await db.delete(message).where(eq(message.chatId, id));
     await db.delete(stream).where(eq(stream.chatId, id));
+    await db.delete(browserSession).where(eq(browserSession.chatId, id));
 
     const [chatsDeleted] = await db
       .delete(chat)
@@ -738,5 +740,80 @@ export async function getStreamIdsByChatId({ chatId }: { chatId: string }) {
       'bad_request:database',
       'Failed to get stream ids by chat id',
     );
+  }
+}
+
+// =============================================================================
+// Browser session persistence
+// =============================================================================
+
+export async function saveBrowserSession({
+  sessionId,
+  userId,
+  chatId,
+  kernelSessionId,
+  liveViewUrl,
+  cdpWsUrl,
+}: {
+  sessionId: string;
+  userId: string;
+  chatId: string;
+  kernelSessionId: string;
+  liveViewUrl: string;
+  cdpWsUrl: string;
+}) {
+  try {
+    await db
+      .insert(browserSession)
+      .values({
+        sessionId,
+        userId,
+        chatId,
+        kernelSessionId,
+        liveViewUrl,
+        cdpWsUrl,
+        createdAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: browserSession.sessionId,
+        set: {
+          kernelSessionId,
+          liveViewUrl,
+          cdpWsUrl,
+        },
+      });
+  } catch (error) {
+    console.error('[DB] Failed to save browser session:', error);
+  }
+}
+
+export async function getBrowserSession({
+  sessionId,
+}: {
+  sessionId: string;
+}) {
+  try {
+    const [row] = await db
+      .select()
+      .from(browserSession)
+      .where(eq(browserSession.sessionId, sessionId));
+    return row ?? null;
+  } catch (error) {
+    console.error('[DB] Failed to get browser session:', error);
+    return null;
+  }
+}
+
+export async function deleteBrowserSession({
+  sessionId,
+}: {
+  sessionId: string;
+}) {
+  try {
+    await db
+      .delete(browserSession)
+      .where(eq(browserSession.sessionId, sessionId));
+  } catch (error) {
+    console.error('[DB] Failed to delete browser session:', error);
   }
 }
