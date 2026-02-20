@@ -6,6 +6,7 @@ import {
   disconnectBrowser,
   reconnectBrowser,
 } from '@/lib/kernel/browser';
+import { abortBrowserCommands } from '@/lib/ai/tools/browser';
 
 export async function POST(request: Request) {
   const session = await auth();
@@ -61,6 +62,11 @@ export async function POST(request: Request) {
 
     if (action === 'disconnect') {
       await disconnectBrowser(sessionId, userId);
+      return Response.json({ success: true });
+    }
+
+    if (action === 'stop') {
+      await abortBrowserCommands(sessionId, userId);
       return Response.json({ success: true });
     }
 

@@ -119,29 +119,26 @@ export function Chat({
     },
   });
 
-  // Custom stop function that sends stopChat action for web automation
+  // Custom stop function that also stops backend browser/agent execution.
+  // request.signal propagation is unreliable on Cloud Run with resumable
+  // streams, so we send an explicit stop request to the backend.
   const stop = async () => {
-    // Always call the original stop to abort the stream
     originalStop();
 
-    // For web automation model using Mastra backend, also send stopChat action
-    // When using AI SDK agent, the AbortController handles stopping
-    if (initialChatModel === 'web-automation-model' && !useAiSdkAgent) {
-      try {
-        await fetch('/api/mastra-proxy', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            action: 'stopChat',
-            threadId: id,
-            resourceId: session?.user?.id,
-          }),
-        });
-      } catch (error) {
-        console.error('Error sending stopChat action:', error);
-      }
+    if (initialChatModel !== 'web-automation-model') return;
+
+    const [url, body] = useAiSdkAgent
+      ? ['/api/kernel-browser', { action: 'stop', sessionId: `${id}-${session?.user?.id}` }]
+      : ['/api/mastra-proxy', { action: 'stopChat', threadId: id, resourceId: session?.user?.id }];
+
+    try {
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      console.error('Error sending stop action:', error);
     }
   };
 

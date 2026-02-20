@@ -26,6 +26,9 @@ const sessionQueues = new Map<string, Promise<unknown>>();
  */
 const sessionAbortControllers = new Map<string, AbortController>();
 
+/** Track which request signals we've already wired to avoid duplicate listeners. */
+const wiredRequestSignals = new WeakSet<AbortSignal>();
+
 function getOrCreateSessionAbortController(sessionId: string): AbortController {
   let controller = sessionAbortControllers.get(sessionId);
   if (!controller || controller.signal.aborted) {
@@ -33,6 +36,27 @@ function getOrCreateSessionAbortController(sessionId: string): AbortController {
     sessionAbortControllers.set(sessionId, controller);
   }
   return controller;
+}
+
+/**
+ * Abort all queued and in-flight browser commands for a session.
+ *
+ * Called explicitly from the API route when the client clicks "Stop" —
+ * does NOT rely on request.signal propagation (unreliable on Cloud Run
+ * with resumable streams / SSE).
+ */
+export async function abortBrowserCommands(
+  sessionId: string,
+  userId: string,
+): Promise<void> {
+  const controller = sessionAbortControllers.get(sessionId);
+  if (controller && !controller.signal.aborted) {
+    console.log('[browser-tool] Explicit abort for session:', sessionId);
+    controller.abort();
+    await stopBrowserOperations(sessionId, userId).catch((err) =>
+      console.error('[browser-tool] Failed to stop browser ops:', err),
+    );
+  }
 }
 
 function withSessionQueue<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
@@ -156,9 +180,12 @@ NEVER use "evaluate" to enable disabled buttons, bypass validation, or modify pa
       const sessionController = getOrCreateSessionAbortController(sessionId);
       const sessionSignal = sessionController.signal;
 
-      // Wire the request-level abort signal into the session controller
-      // so that clicking "Stop" in the UI aborts all browser commands.
-      if (abortSignal && !abortSignal.aborted) {
+      // Wire the request-level abort signal into the session controller ONCE
+      // per request to avoid MaxListenersExceededWarning and ensure the
+      // listener actually fires. Every tool call in the same request shares
+      // the same abortSignal instance, so we track it with a WeakSet.
+      if (abortSignal && !abortSignal.aborted && !wiredRequestSignals.has(abortSignal)) {
+        wiredRequestSignals.add(abortSignal);
         abortSignal.addEventListener('abort', () => {
           if (!sessionController.signal.aborted) {
             console.log('[browser-tool] Request abort → aborting session controller');
