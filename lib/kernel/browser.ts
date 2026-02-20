@@ -164,7 +164,7 @@ export async function getOrCreateBrowser(
 
       const browser = (await kernel.browsers.create({
         viewport,
-        timeout_seconds: 3600,
+        timeout_seconds: 86400,
         kiosk_mode: true,
         stealth: true,
       })) as {

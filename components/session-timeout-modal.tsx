@@ -99,7 +99,7 @@ export function SessionTimeoutModal({
       >
         <DialogHeader className="px-6 pt-6 pb-0">
           <DialogTitle className="font-source-serif font-semibold leading-[28px] text-card-foreground text-left break-words">
-            Your session is ending soon
+            Leave this application session?
           </DialogTitle>
         </DialogHeader>
 
@@ -114,24 +114,25 @@ export function SessionTimeoutModal({
         <div className="h-px bg-border mx-6" />
 
         <DialogDescription className="px-6 pt-4 pb-2 font-inter text-[14px] font-normal leading-[22px] text-foreground text-left">
-          To keep the system running smoothly, sessions end after inactivity.
-          Select <strong className="font-bold text-foreground">Continue session</strong> to keep
-          working.
+          Your application will stay open in this browser for 1 hour, so you
+          can return and pick up where you left off. After 1 hour of
+          inactivity, your session will automatically close. After 1 day, your
+          browser session will be permanently deleted.
         </DialogDescription>
 
         <DialogFooter className="px-6 pb-6 pt-3 flex-row justify-end gap-3">
           <Button
             variant="outline"
-            onClick={handleEndSession}
+            onClick={handleContinueSession}
             className="border border-border bg-card text-card-foreground text-[14px] font-medium leading-[24px] px-5 py-2 rounded-[6px] hover:bg-secondary/80 transition-colors"
           >
-            End session
+            Cancel
           </Button>
           <Button
-            onClick={handleContinueSession}
+            onClick={handleEndSession}
             className="bg-primary text-primary-foreground text-[14px] font-medium leading-[24px] px-5 py-2 rounded-[6px] hover:bg-primary/90 transition-colors border-0"
           >
-            Continue session
+            Leave session
           </Button>
         </DialogFooter>
       </DialogContent>
