@@ -116,8 +116,7 @@ export function SessionTimeoutModal({
         <DialogDescription className="px-6 pt-4 pb-2 font-inter text-[14px] font-normal leading-[22px] text-foreground text-left">
           Your application will stay open in this browser for 1 hour, so you
           can return and pick up where you left off. After 1 hour of
-          inactivity, your session will automatically close. After 1 day, your
-          browser session will be permanently deleted.
+          inactivity, your session will automatically close.
         </DialogDescription>
 
         <DialogFooter className="px-6 pb-6 pt-3 flex-row justify-end gap-3">

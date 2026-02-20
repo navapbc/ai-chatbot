@@ -15,20 +15,37 @@ const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes
  */
 const sessionQueues = new Map<string, Promise<unknown>>();
 
-/** Per-session abort flag — when set, queued commands bail immediately. */
-const sessionAborted = new Map<string, boolean>();
+/**
+ * Per-session abort controller — when aborted, all queued and in-flight
+ * commands for this session bail immediately and the BrowserManager CDP
+ * connection is severed (killing any in-flight Playwright action).
+ *
+ * A new AbortController is created per user message (i.e. per streamText
+ * round). The request-level abortSignal (from the HTTP request) is wired
+ * into this so that clicking "Stop" in the UI aborts the session controller.
+ */
+const sessionAbortControllers = new Map<string, AbortController>();
+
+function getOrCreateSessionAbortController(sessionId: string): AbortController {
+  let controller = sessionAbortControllers.get(sessionId);
+  if (!controller || controller.signal.aborted) {
+    controller = new AbortController();
+    sessionAbortControllers.set(sessionId, controller);
+  }
+  return controller;
+}
 
 function withSessionQueue<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
   const prev = sessionQueues.get(sessionId) ?? Promise.resolve();
   const next = prev.then(
     () => {
-      if (sessionAborted.get(sessionId)) {
+      if (sessionAbortControllers.get(sessionId)?.signal.aborted) {
         return Promise.reject(new Error('Browser command stopped by user'));
       }
       return fn();
     },
     () => {
-      if (sessionAborted.get(sessionId)) {
+      if (sessionAbortControllers.get(sessionId)?.signal.aborted) {
         return Promise.reject(new Error('Browser command stopped by user'));
       }
       return fn();
@@ -133,9 +150,32 @@ NEVER use "evaluate" to enable disabled buttons, bypass validation, or modify pa
       params: Record<string, unknown>,
       { abortSignal }: ToolExecutionOptions,
     ) => {
-      // Clear abort flag at the start of a new tool call — a new message
-      // means the user wants to proceed, so reset any previous stop state.
-      sessionAborted.delete(sessionId);
+      // Get or create a session-scoped abort controller.
+      // A fresh controller is created when the previous one was aborted
+      // (i.e. user sent a new message after stopping).
+      const sessionController = getOrCreateSessionAbortController(sessionId);
+      const sessionSignal = sessionController.signal;
+
+      // Wire the request-level abort signal into the session controller
+      // so that clicking "Stop" in the UI aborts all browser commands.
+      if (abortSignal && !abortSignal.aborted) {
+        abortSignal.addEventListener('abort', () => {
+          if (!sessionController.signal.aborted) {
+            console.log('[browser-tool] Request abort → aborting session controller');
+            sessionController.abort();
+            // Sever CDP to kill in-flight Playwright actions
+            stopBrowserOperations(sessionId, userId).catch((err) =>
+              console.error('[browser-tool] Failed to stop browser ops:', err),
+            );
+          }
+        }, { once: true });
+      }
+
+      // If already aborted (stop fired between tool calls), bail immediately
+      if (sessionSignal.aborted || abortSignal?.aborted) {
+        console.log('[browser-tool] Already aborted, skipping command');
+        return { success: false, output: null, error: 'Browser command stopped by user' };
+      }
 
       return withSessionQueue(sessionId, async () => {
         try {
@@ -150,8 +190,6 @@ NEVER use "evaluate" to enable disabled buttons, bypass validation, or modify pa
           console.log('[browser-tool] Session:', sessionId);
           console.log('[browser-tool] Executing:', command.action, JSON.stringify(params));
 
-          let stopTriggered = false;
-
           const response = await Promise.race([
             executeCommand(command, session.browserManager),
             new Promise<never>((_, reject) => {
@@ -159,18 +197,17 @@ NEVER use "evaluate" to enable disabled buttons, bypass validation, or modify pa
                 () => reject(new Error('Command timed out after 2 minutes')),
                 COMMAND_TIMEOUT_MS,
               );
-              abortSignal?.addEventListener('abort', async () => {
+              // Listen on session signal (covers both direct abort and request abort)
+              const onAbort = () => {
                 clearTimeout(timer);
-                if (!stopTriggered) {
-                  stopTriggered = true;
-                  // Set abort flag so queued commands drain immediately
-                  sessionAborted.set(sessionId, true);
-                  console.log('[browser-tool] Stop triggered — closing BrowserManager');
-                  // Kill in-flight Playwright command by severing CDP connection
-                  await stopBrowserOperations(sessionId, userId);
-                }
                 reject(new Error('Browser command stopped by user'));
-              });
+              };
+              if (sessionSignal.aborted) {
+                clearTimeout(timer);
+                reject(new Error('Browser command stopped by user'));
+              } else {
+                sessionSignal.addEventListener('abort', onAbort, { once: true });
+              }
             }),
           ]);
 
@@ -189,7 +226,7 @@ NEVER use "evaluate" to enable disabled buttons, bypass validation, or modify pa
           const message =
             error instanceof Error ? error.message : String(error);
 
-          if (abortSignal?.aborted || message.includes('stopped by user')) {
+          if (sessionSignal.aborted || abortSignal?.aborted || message.includes('stopped by user')) {
             console.log('[browser-tool] Command aborted by user');
             return {
               success: false,
