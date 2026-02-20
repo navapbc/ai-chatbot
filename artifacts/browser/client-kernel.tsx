@@ -20,10 +20,8 @@ import type { ChatStatus } from '@/components/create-artifact';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import type { ChatMessage } from '@/lib/types';
 
-// const IDLE_TIMEOUT_MS = 55 * 60 * 1000; // 55 minutes
-const IDLE_TIMEOUT_MS = 10 * 1000; // 55 minutes
-// const COUNTDOWN_SECONDS = 300; // 5 minute countdown in the modal
-const COUNTDOWN_SECONDS = 5; // 5 minute countdown in the modal
+const IDLE_TIMEOUT_MS = 55 * 60 * 1000; // 55 minutes
+const COUNTDOWN_SECONDS = 300; // 5 minute countdown in the modal
 
 interface KernelBrowserClientProps {
   sessionId: string;
