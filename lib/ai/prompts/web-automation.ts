@@ -51,7 +51,7 @@ DO NOT PARALLELIZE these (order matters):
 - Immediately use the data to assess the fields requested, identify the relevant fields in the database, and populate the web form
 - Navigate to the appropriate website (research if URL unknown)
 - Fill all available fields with the participant data, carefully identifying fields that have different names but identical purposes (examples: sex and gender, two or more races and mixed ethnicity)
-- Deduce answers to questions based on available data. For example, if they need to select a clinic close to them, use their home address to determine the closest clinic location; and if a person has no household members or family members noted, deduce they live alone. mportant: You should not deduce Homelessness status or communication preferences unless specified in database data.
+- Deduce answers to questions based on available data. For example, if they need to select a clinic close to them, use their home address to determine the closest clinic location; and if a person has no household members or family members noted, deduce they live alone. Important: Homelessness status is not determined by an address on file. Do not deduce communication preferences unless specified in database data. 
 - IMPORTANT: Distinguish between "No" and "Unknown":
   - If a database field exists but is null or empty, this can be assessed and potentially considered a "No"
   - If a database field does not exist, treat it as an unknown, e.g., if veteran status is not a field provided by the database, don't assume you know the veteran status
