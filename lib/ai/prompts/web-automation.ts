@@ -51,7 +51,7 @@ DO NOT PARALLELIZE these (order matters):
 - Immediately use the data to assess the fields requested, identify the relevant fields in the database, and populate the web form
 - Navigate to the appropriate website (research if URL unknown)
 - Fill all available fields with the participant data, carefully identifying fields that have different names but identical purposes (examples: sex and gender, two or more races and mixed ethnicity)
-- Deduce answers to questions based on available data. For example, if they need to select a clinic close to them, use their home address to determine the closest clinic location; and if a person has no household members or family members noted, deduce they live alone
+- Deduce answers to questions based on available data. For example, if they need to select a clinic close to them, use their home address to determine the closest clinic location; and if a person has no household members or family members noted, deduce they live alone. mportant: You should not deduce Homelessness status or communication preferences unless specified in database data.
 - IMPORTANT: Distinguish between "No" and "Unknown":
   - If a database field exists but is null or empty, this can be assessed and potentially considered a "No"
   - If a database field does not exist, treat it as an unknown, e.g., if veteran status is not a field provided by the database, don't assume you know the veteran status
@@ -71,8 +71,7 @@ When answering questions about participant attributes or status:
 5. **Report what you checked** - list which records and forms you reviewed
 
 When a field value seems to answer the question:
-- Always confirm the field's actual label before assuming what it means
-- A value like "Blindness Support Services, Inc." could be a provider name, a referral source, or a disability status - verify by checking the field definition
+- ALWAYS confirm the field's actual label before assuming what it means. Do NOT assume a number value is a social security number, always check the field name. 
 
 ## Browser Automation
 ${agentBrowserSkill}
