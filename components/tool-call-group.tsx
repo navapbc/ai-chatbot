@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ChevronDown, Layers } from 'lucide-react';
+import { CheckIcon, ChevronDown, Globe, Layers, Monitor, MousePointer, Pencil, Search } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Collapsible,
@@ -9,8 +9,8 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { getToolDisplayInfo } from './tool-icon';
-import { Spinner } from './ui/spinner';
 import { cn } from '@/lib/utils';
+import { Shimmer } from '@/components/ai-elements/shimmer';
 
 // --- Types ---
 
@@ -229,18 +229,86 @@ export function generateGroupSummary(parts: MessagePart[]): { noun: string; coun
   return Object.entries(counts).map(([noun, count]) => ({ noun, count }));
 }
 
+// --- Group title generation ---
+
+type ActionCategory = 'fill' | 'navigate' | 'interact' | 'read' | 'search' | 'misc';
+
+function categorizeToolAction(part: MessagePart): ActionCategory {
+  const cleanName = part.type.replace('tool-', '');
+  const action = (part.input?.action ?? '').toLowerCase();
+
+  if (
+    ['fill', 'type', 'getbylabel'].includes(action) ||
+    ['browser_fill_form', 'browser_type', 'playwright_browser_fill_form', 'playwright_browser_type'].includes(cleanName)
+  ) return 'fill';
+
+  if (
+    ['navigate', 'goto', 'open', 'back', 'forward', 'reload'].includes(action) ||
+    ['browser_navigate', 'browser_navigate_back', 'playwright_browser_navigate', 'playwright_browser_navigate_back'].includes(cleanName)
+  ) return 'navigate';
+
+  if (
+    ['click', 'dblclick', 'hover', 'focus', 'scroll', 'scrollintoview', 'drag', 'press', 'check', 'uncheck', 'select'].includes(action) ||
+    ['browser_click', 'browser_hover', 'browser_drag', 'browser_press_key', 'browser_select_option',
+     'playwright_browser_click', 'playwright_browser_hover', 'playwright_browser_drag', 'playwright_browser_press_key'].includes(cleanName)
+  ) return 'interact';
+
+  if (
+    ['snapshot', 'screenshot'].includes(action) ||
+    ['browser_snapshot', 'browser_take_screenshot', 'playwright_browser_snapshot', 'playwright_browser_take_screenshot'].includes(cleanName)
+  ) return 'read';
+
+  if (cleanName.includes('search')) return 'search';
+
+  return 'misc';
+}
+
+const GROUP_TITLE_MAP: Record<ActionCategory, {
+  inProgress: string;
+  done: string;
+  iconProgress: React.ComponentType<any>;
+  iconDone: React.ComponentType<any>;
+}> = {
+  fill:     { inProgress: 'Filling in form',      done: 'Filled the form',      iconProgress: Pencil, iconDone: CheckIcon },
+  navigate: { inProgress: 'Navigating to page',   done: 'Navigated to page',    iconProgress: Globe, iconDone: CheckIcon },
+  interact: { inProgress: 'Interacting with page', done: 'Interacted with page', iconProgress: MousePointer, iconDone: CheckIcon },
+  read:     { inProgress: 'Reading page',          done: 'Read page',            iconProgress: Monitor, iconDone: CheckIcon },
+  search:   { inProgress: 'Searching',             done: 'Search complete',      iconProgress: Search, iconDone: CheckIcon },
+  misc:     { inProgress: 'Working on page',       done: 'Completed actions',    iconProgress: Layers, iconDone: CheckIcon },
+};
+
+function getGroupTitle(
+  parts: MessagePart[],
+  isProcessing: boolean,
+): { label: string; Icon: React.ComponentType<any> } {
+  const counts: Partial<Record<ActionCategory, number>> = {};
+  for (const part of parts) {
+    const cat = categorizeToolAction(part);
+    counts[cat] = (counts[cat] ?? 0) + 1;
+  }
+
+  // Pick the category with the most occurrences; fall back to misc
+  const dominant = (
+    Object.entries(counts).sort((a, b) => (b[1] as number) - (a[1] as number))[0]?.[0] ?? 'misc'
+  ) as ActionCategory;
+
+  const entry = GROUP_TITLE_MAP[dominant];
+  return {
+    label: isProcessing ? entry.inProgress : entry.done,
+    Icon: isProcessing ? entry.iconProgress : entry.iconDone,
+  };
+}
+
 // --- Component ---
 
 interface ToolCallGroupProps {
   parts: MessagePart[];
-  messageId: string;
-  startIndex: number;
+  isStreaming?: boolean;
 }
 
 export function ToolCallGroup({
   parts,
-  messageId,
-  startIndex,
+  isStreaming = false,
 }: ToolCallGroupProps) {
   const [open, setOpen] = useState(false);
 
@@ -252,32 +320,34 @@ export function ToolCallGroup({
     return <SingleToolLine part={deduped[0]} />;
   }
 
-  // If the latest tool is still running, show it separately below the summary.
-  // Otherwise all tools are done — include everything in the summary counts.
-  const lastTool = deduped[deduped.length - 1];
-  const isLastRunning = lastTool.state === 'input-available';
-  const summaryParts = isLastRunning ? deduped.slice(0, -1) : deduped;
+  // Group is "in progress" while the parent signals the agent is still streaming this group.
+  const isInProgress = isStreaming;
+  const completedParts = deduped.filter((p) => p.state === 'output-available');
+  const displayParts = isInProgress ? completedParts : deduped;
 
-  const summary = generateGroupSummary(summaryParts);
+  const { label, Icon: TitleIcon } = getGroupTitle(deduped, isInProgress);
 
   return (
     <Alert className="rounded-xl border-accent bg-background p-3">
       <AlertDescription>
         <Collapsible open={open} onOpenChange={setOpen}>
           {/* Summary line — always visible, clickable to expand */}
-          <CollapsibleTrigger className="flex items-start justify-between w-full cursor-pointer gap-2">
-            <div className="flex items-start gap-2 min-w-0">
-              <Layers size={12} className="text-gray-500 shrink-0 mt-1" />
-              <div className="flex flex-wrap gap-x-1.5 gap-y-1">
-                {summary.map(({ noun, count }) => (
-                  <span
-                    key={noun}
-                    className="text-[10px] leading-[150%] font-ibm-plex-mono text-muted-foreground whitespace-nowrap border border-border rounded px-1.5 py-0.5"
-                  >
-                    {count} {count === 1 ? noun : noun + 's'}
-                  </span>
-                ))}
-              </div>
+          <CollapsibleTrigger className="flex items-center justify-between w-full cursor-pointer gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <TitleIcon size={12} className="text-gray-500 shrink-0" />
+              {isInProgress ? (
+                <Shimmer
+                  as="span"
+                  className="text-[10px] leading-[150%] font-ibm-plex-mono"
+                  duration={1.5}
+                >
+                  {label}
+                </Shimmer>
+              ) : (
+                <span className="text-[10px] leading-[150%] font-ibm-plex-mono text-muted-foreground">
+                  {label}
+                </span>
+              )}
             </div>
             <span className="inline-flex items-center justify-center p-1 h-auto text-muted-foreground">
               <ChevronDown
@@ -291,10 +361,10 @@ export function ToolCallGroup({
             </span>
           </CollapsibleTrigger>
 
-          {/* Expanded: full sequential list */}
+          {/* Expanded: show completed tools (or all when done) */}
           <CollapsibleContent>
             <div className="flex flex-col gap-0 mt-2 border-t border-border pt-1">
-              {(isLastRunning ? summaryParts : deduped).map((part) => (
+              {displayParts.map((part) => (
                 <SingleToolLine
                   key={part.toolCallId}
                   part={part}
@@ -304,17 +374,6 @@ export function ToolCallGroup({
             </div>
           </CollapsibleContent>
         </Collapsible>
-
-        {/* Current tool — only shown while still running */}
-        {isLastRunning && (
-          <div className="mt-1">
-            <SingleToolLine
-              part={lastTool}
-              compact
-              isRunning
-            />
-          </div>
-        )}
       </AlertDescription>
     </Alert>
   );
@@ -338,11 +397,9 @@ function deduplicateParts(parts: MessagePart[]): MessagePart[] {
 function SingleToolLine({
   part,
   compact = false,
-  isRunning = false,
 }: {
   part: MessagePart;
   compact?: boolean;
-  isRunning?: boolean;
 }) {
   const { text: displayName, icon: Icon } = getToolDisplayInfo(
     part.type,
@@ -356,11 +413,7 @@ function SingleToolLine({
       )}
     >
       <div className="text-[10px] leading-[150%] font-ibm-plex-mono text-muted-foreground flex items-center gap-2">
-        {isRunning ? (
-          <Spinner className="size-3 shrink-0 text-primary" />
-        ) : (
-          Icon && <Icon size={12} className="text-gray-500 shrink-0" />
-        )}
+        {Icon && <Icon size={12} className="text-gray-500 shrink-0" />}
         {displayName}
       </div>
     </div>

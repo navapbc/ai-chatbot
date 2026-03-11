@@ -129,6 +129,11 @@ const PurePreviewMessage = ({
     [message.parts],
   );
 
+  const lastToolGroupIdx = useMemo(
+    () => processedParts.reduce((last, p, i) => (p.kind === 'tool-group' ? i : last), -1),
+    [processedParts],
+  );
+
   // Map each checkpoint to the processed-part index it should render after.
   // We use the stepNumber from the checkpoint event to find the Nth step-start
   // in the original parts, then map that part index to the processed-part index.
@@ -221,8 +226,7 @@ const PurePreviewMessage = ({
                   <div key={`message-${message.id}-group-${processed.startIndex}`}>
                     <ToolCallGroup
                       parts={processed.parts as any}
-                      messageId={message.id}
-                      startIndex={processed.startIndex}
+                      isStreaming={isLoading && processedIdx === lastToolGroupIdx}
                     />
                     {cpCards?.map((cp, i) => (
                       <CheckpointCard key={`checkpoint-${cp.stepNumber}-${i}`} summary={cp.summary} />
