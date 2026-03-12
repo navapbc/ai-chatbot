@@ -1,9 +1,10 @@
-import { tool, type ToolExecutionOptions } from 'ai';
+import { tool, type ToolExecutionOptions, type UIMessageStreamWriter } from 'ai';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { executeCommand } from 'agent-browser/dist/actions.js';
 import type { Command, Response } from 'agent-browser/dist/types.js';
 import { getOrCreateBrowser } from '@/lib/kernel/browser';
+import type { ChatMessage } from '@/lib/types';
 
 const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes
 
@@ -34,8 +35,10 @@ function withSessionQueue<T>(sessionId: string, fn: () => Promise<T>): Promise<T
  *
  * @see https://www.kernel.sh/docs/integrations/agent-browser
  */
-export const createBrowserTool = (sessionId: string, userId: string) =>
-  tool({
+export const createBrowserTool = (sessionId: string, userId: string, dataStream?: UIMessageStreamWriter<ChatMessage>) => {
+  let liveViewUrlEmitted = false;
+
+  return tool({
     description: `Execute browser automation commands on a remote Kernel browser.
 
 Send structured JSON commands with an "action" field and action-specific parameters. See the Browser Automation skill for snapshot discipline, selector strategy, and workflow rules.
@@ -104,6 +107,16 @@ NEVER navigate away from the target application domain. Do NOT click social medi
           // Ensure we have a Kernel browser instance (creates one if needed)
           const session = await getOrCreateBrowser(sessionId, userId);
 
+          // Push liveViewUrl to the client via data stream (once per session)
+          if (!liveViewUrlEmitted && dataStream && session.liveViewUrl) {
+            dataStream.write({
+              type: 'data-liveViewUrl',
+              data: session.liveViewUrl,
+              transient: true,
+            });
+            liveViewUrlEmitted = true;
+          }
+
           const command = {
             id: nanoid(),
             ...params,
@@ -160,3 +173,4 @@ NEVER navigate away from the target application domain. Do NOT click social medi
       });
     },
   });
+};

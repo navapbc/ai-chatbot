@@ -40,6 +40,7 @@ interface BrowserArtifactMetadata {
   isFullscreen: boolean;
   isSheetOpen?: boolean;
   setIsSheetOpen?: (open: boolean) => void;
+  liveViewUrl?: string;
 }
 
 export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>({
@@ -81,13 +82,21 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
         status: 'streaming',
       }));
     }
-    
+
     // Handle content updates
     if (streamPart.type === 'data-textDelta') {
       setArtifact((draftArtifact) => ({
         ...draftArtifact,
         content: draftArtifact.content + streamPart.data,
         status: 'streaming',
+      }));
+    }
+
+    // Handle liveViewUrl pushed from the browser tool
+    if (streamPart.type === 'data-liveViewUrl' && typeof streamPart.data === 'string') {
+      setMetadata((prev) => ({
+        ...prev,
+        liveViewUrl: streamPart.data as string,
       }));
     }
   },
@@ -657,18 +666,21 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
       };
     }, [setArtifact, router]);
 
-    if (!metadata) {
-      console.log('[BrowserArtifact] metadata is null — KernelBrowserClient will UNMOUNT');
-      return <BrowserLoadingState />;
-    }
+    // When using AI SDK agent with Kernel.sh, render the Kernel browser client.
+    // IMPORTANT: Always render KernelBrowserClient once we have a sessionId, even
+    // if metadata is transiently null during re-renders. Unmounting the child
+    // triggers cleanup that destroys the remote browser session. Show a loading
+    // overlay on top instead of swapping the child out.
+    if (useAiSdkAgent) {
+      if (!metadata?.sessionId) {
+        return <BrowserLoadingState />;
+      }
 
-    // When using AI SDK agent with Kernel.sh, render the Kernel browser client
-    // This uses an iframe with Kernel's live-view instead of WebSocket streaming
-    if (useAiSdkAgent && metadata?.sessionId) {
       return (
         <>
         <KernelBrowserClient
           sessionId={metadata.sessionId}
+          liveViewUrl={metadata.liveViewUrl}
           controlMode={metadata.controlMode}
           onControlModeChange={(mode) => {
             setMetadata((prev) => ({
@@ -706,6 +718,10 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
         />
       </>
       );
+    }
+
+    if (!metadata) {
+      return <BrowserLoadingState />;
     }
 
     // Fullscreen mode when in user control mode

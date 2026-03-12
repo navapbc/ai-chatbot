@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { MousePointerClick, RefreshCw, Monitor } from 'lucide-react';
 import { toast } from 'sonner';
 import { AgentStatusIndicator } from '@/components/agent-status-indicator';
-import { BrowserLoadingState, BrowserErrorState, BrowserTimeoutState } from './browser-states';
+import { BrowserLoadingState, BrowserErrorState } from './browser-states';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
   Sheet,
@@ -19,6 +19,7 @@ import type { ChatMessage } from '@/lib/types';
 
 interface KernelBrowserClientProps {
   sessionId: string;
+  liveViewUrl?: string;
   controlMode: 'agent' | 'user';
   onControlModeChange: (mode: 'agent' | 'user') => void;
   onConnectionChange?: (connected: boolean) => void;
@@ -31,6 +32,7 @@ interface KernelBrowserClientProps {
 
 export function KernelBrowserClient({
   sessionId,
+  liveViewUrl: liveViewUrlProp,
   controlMode,
   onControlModeChange,
   onConnectionChange,
@@ -40,128 +42,57 @@ export function KernelBrowserClient({
   onFullscreenChange,
   sendMessage,
 }: KernelBrowserClientProps) {
-  const [liveViewUrl, setLiveViewUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const isMobile = useIsMobile();
 
-  // Use refs to avoid dependency changes triggering re-initialization
+  // Use refs to avoid dependency changes triggering re-renders in effects
   const onConnectionChangeRef = useRef(onConnectionChange);
   onConnectionChangeRef.current = onConnectionChange;
-
-  // Use ref for isConnected to avoid stale closure in event handlers
-  const isConnectedRef = useRef(isConnected);
-  isConnectedRef.current = isConnected;
-
-  // Track if we've already initialized for this session
-  const initializedSessionRef = useRef<string | null>(null);
-  const initInFlightRef = useRef(false);
-
-  // Diagnostic: track mount/unmount to find stale iframe root cause
-  useEffect(() => {
-    console.log('[KernelBrowserClient] MOUNTED, sessionId:', sessionId);
-    return () => {
-      console.log('[KernelBrowserClient] UNMOUNTED, sessionId:', sessionId);
-    };
-  }, [sessionId]);
-
-  const initBrowser = useCallback(async (force = false) => {
-    // Skip if already initialized for this session (unless forced)
-    if (!force && initializedSessionRef.current === sessionId && liveViewUrl) {
-      return;
-    }
-    // Skip if a request is already in-flight
-    if (initInFlightRef.current) {
-      return;
-    }
-
-    try {
-      initInFlightRef.current = true;
-      setLoading(true);
-      setError(null);
-
-      // force=true (refresh button) → create a new browser directly
-      // force=false (normal mount) → poll for the browser the tool creates
-      const action = force ? 'create' : 'get';
-      const maxAttempts = force ? 1 : 30; // poll up to 30s for tool to create
-      let attempts = 0;
-
-      while (attempts < maxAttempts) {
-        const response = await fetch('/api/kernel-browser', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, sessionId, isMobile }),
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          if (data.liveViewUrl) {
-            setLiveViewUrl(data.liveViewUrl);
-            setIsConnected(true);
-            initializedSessionRef.current = sessionId;
-            onConnectionChangeRef.current?.(true);
-            return;
-          }
-        } else if (force) {
-          // For create, surface error immediately
-          const data = await response.json();
-          throw new Error(data.error || 'Failed to create browser');
-        }
-
-        attempts++;
-        if (attempts < maxAttempts) {
-          await new Promise((r) => setTimeout(r, 1000));
-        }
-      }
-
-      throw new Error('Browser session not available yet. Please try again.');
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to connect';
-      setError(message);
-      setIsConnected(false);
-      onConnectionChangeRef.current?.(false);
-    } finally {
-      setLoading(false);
-      initInFlightRef.current = false;
-    }
-  }, [sessionId, liveViewUrl, isMobile]);
 
   // Keep sessionId in a ref so the beforeunload handler always has the latest value
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
 
-  // Initialize browser on mount
+  // On mount, if no liveViewUrl was provided via stream (e.g. page refresh),
+  // try to recover it from the server's in-memory session cache. Single
+  // request, no polling — if the session isn't there, the browser is gone.
+  const [recoveredUrl, setRecoveredUrl] = useState<string | null>(null);
   useEffect(() => {
-    if (initializedSessionRef.current !== sessionId) {
-      initBrowser();
-    }
-  }, [sessionId, initBrowser]);
+    if (liveViewUrlProp || recoveredUrl) return;
 
-  // Clean up browser when component unmounts (chat navigation) or page closes.
-  // Uses sendBeacon for fire-and-forget cleanup that works in both cases.
-  useEffect(() => {
-    const cleanup = () => {
+    let cancelled = false;
+    (async () => {
       try {
-        console.log('[KernelBrowserClient] CLEANUP firing — sending delete for session:', sessionIdRef.current);
-        const payload = JSON.stringify({ action: 'delete', sessionId: sessionIdRef.current });
-        navigator.sendBeacon(
-          '/api/kernel-browser',
-          new Blob([payload], { type: 'application/json' }),
-        );
-      } catch {
-        // Best-effort cleanup
+        console.log('[KernelBrowserClient] Recovery: fetching existing session for', sessionId);
+        const res = await fetch('/api/kernel-browser', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'get', sessionId }),
+        });
+        const data = await res.json();
+        console.log('[KernelBrowserClient] Recovery response:', res.status, data);
+        if (res.ok && data.liveViewUrl && !cancelled) {
+          setRecoveredUrl(data.liveViewUrl);
+        }
+      } catch (err) {
+        console.error('[KernelBrowserClient] Recovery failed:', err);
       }
-    };
+    })();
+    return () => { cancelled = true; };
+  }, [sessionId, liveViewUrlProp, recoveredUrl]);
 
-    window.addEventListener('beforeunload', cleanup);
-    return () => {
-      window.removeEventListener('beforeunload', cleanup);
-      // Component unmounting (SPA navigation) — delete the browser immediately
-      cleanup();
-    };
-  }, []);
+  const effectiveUrl = liveViewUrlProp || recoveredUrl;
+  const isConnected = !!effectiveUrl;
+
+  // Notify parent when connection state changes
+  const prevConnectedRef = useRef(false);
+  useEffect(() => {
+    if (isConnected !== prevConnectedRef.current) {
+      prevConnectedRef.current = isConnected;
+      onConnectionChangeRef.current?.(isConnected);
+    }
+  }, [isConnected]);
 
   // Listen for control mode switch events from confirmation components
   useEffect(() => {
@@ -195,7 +126,7 @@ export function KernelBrowserClient({
   }, [isFullscreen, controlMode]);
 
   const switchControlMode = (mode: 'agent' | 'user') => {
-    if (!isConnectedRef.current) {
+    if (!isConnected) {
       toast.error('Not connected to browser session');
       return;
     }
@@ -230,50 +161,25 @@ export function KernelBrowserClient({
     onControlModeChange(mode);
   };
 
-  const disconnectBrowser = async () => {
-    try {
-      await fetch('/api/kernel-browser', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'delete', sessionId }),
-      });
-      setIsConnected(false);
-      setLiveViewUrl(null);
-      onConnectionChange?.(false);
-    } catch (err) {
-      console.error('Failed to disconnect browser:', err);
-    }
-  };
-
   // Build the iframe URL with readOnly based on control mode
-  // In agent mode: readOnly=true (user cannot interact)
-  // In user mode: no readOnly param (user can interact directly)
   const iframeUrl = useMemo(() => {
-    if (!liveViewUrl) return null;
+    if (!effectiveUrl) return null;
 
-    const url = new URL(liveViewUrl);
+    const url = new URL(effectiveUrl);
     if (controlMode === 'agent') {
       url.searchParams.set('readOnly', 'true');
     } else {
       url.searchParams.delete('readOnly');
     }
     return url.toString();
-  }, [liveViewUrl, controlMode]);
-
-  if (loading) {
-    return <BrowserLoadingState />;
-  }
+  }, [effectiveUrl, controlMode]);
 
   if (error) {
-    return <BrowserErrorState onRetry={initBrowser} />;
+    return <BrowserErrorState onRetry={() => setError(null)} />;
   }
 
-  if (!liveViewUrl) {
-    return (
-      <div className="flex items-center justify-center h-full bg-zinc-900 text-zinc-400">
-        No browser available
-      </div>
-    );
+  if (!effectiveUrl) {
+    return <BrowserLoadingState />;
   }
 
   // Fullscreen mode when user has control
@@ -309,7 +215,7 @@ export function KernelBrowserClient({
         <div className="flex-1 overflow-hidden browser-fullscreen-bg pt-20 pb-4 sm:pb-12 px-2 sm:px-4 md:px-12">
           <div className="w-full h-full flex items-center justify-center">
             <iframe
-              key={liveViewUrl}
+              key={effectiveUrl}
               src={iframeUrl || undefined}
               className="border-0 bg-white rounded-lg shadow-2xl"
               style={{
@@ -318,7 +224,7 @@ export function KernelBrowserClient({
                 maxWidth: '100%',
                 maxHeight: '100%',
               }}
-              allow="clipboard-read; clipboard-write"
+              allow="autoplay; clipboard-read; clipboard-write"
               title="Browser View"
             />
           </div>
@@ -356,9 +262,6 @@ export function KernelBrowserClient({
                 <SheetTitle className="text-left">Browser View</SheetTitle>
               </SheetHeader>
 
-              {/* Loading state */}
-              {loading && <BrowserLoadingState />}
-
               {/* Control mode indicator */}
               {isConnected && (
                 <div className="flex-shrink-0 flex items-center justify-between py-2 px-4 bg-muted/20">
@@ -386,21 +289,15 @@ export function KernelBrowserClient({
 
               {/* Browser content */}
               <div className="flex-1 overflow-hidden min-h-0 p-4">
-                {error ? (
-                  <BrowserErrorState onRetry={initBrowser} />
-                ) : !isConnected ? (
-                  <BrowserLoadingState />
-                ) : (
-                  <div className={`h-full overflow-hidden bg-black rounded-lg ${controlMode === 'agent' ? 'cursor-not-allowed' : 'cursor-auto'}`}>
-                    <iframe
-                      key={liveViewUrl}
-                      src={iframeUrl || undefined}
-                      className="w-full h-full border-0 bg-white shadow-lg"
-                      allow="clipboard-read; clipboard-write"
-                      title="Browser View"
-                    />
-                  </div>
-                )}
+                <div className={`h-full overflow-hidden bg-black rounded-lg ${controlMode === 'agent' ? 'cursor-not-allowed' : 'cursor-auto'}`}>
+                  <iframe
+                    key={effectiveUrl}
+                    src={iframeUrl || undefined}
+                    className="w-full h-full border-0 bg-white shadow-lg"
+                    allow="autoplay; clipboard-read; clipboard-write"
+                    title="Browser View"
+                  />
+                </div>
               </div>
             </SheetContent>
           </Sheet>
@@ -423,15 +320,6 @@ export function KernelBrowserClient({
           <div className="flex items-center gap-2">
             <Button
               type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => initBrowser(true)}
-              title="Refresh browser connection"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </Button>
-            <Button
-              type="button"
               variant="default"
               size="sm"
               onClick={() => switchControlMode(controlMode === 'user' ? 'agent' : 'user')}
@@ -446,7 +334,7 @@ export function KernelBrowserClient({
       {/* Browser iframe - fixed pixel dimensions to prevent layout recalculation flicker */}
       <div className={`flex-1 overflow-hidden m-4 min-h-0 flex items-center justify-center ${controlMode === 'agent' ? 'cursor-not-allowed' : 'cursor-auto'}`}>
         <iframe
-          key={liveViewUrl}
+          key={effectiveUrl}
           src={iframeUrl || undefined}
           className="border-0 bg-white rounded-lg"
           style={{
@@ -456,7 +344,7 @@ export function KernelBrowserClient({
             maxHeight: '100%',
             pointerEvents: controlMode === 'agent' ? 'none' : 'auto',
           }}
-          allow="clipboard-read; clipboard-write"
+          allow="autoplay; clipboard-read; clipboard-write"
           title="Browser View"
         />
       </div>

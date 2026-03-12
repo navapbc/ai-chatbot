@@ -235,7 +235,7 @@ export async function POST(request: Request) {
               ...apricotTools,
               gapAnalysis,
               formSummary,
-              browser: createBrowserTool(sessionId, session.user.id),
+              browser: createBrowserTool(sessionId, session.user.id, dataStream),
               loadSkill,
               readSkillFile,
             },

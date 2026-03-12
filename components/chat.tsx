@@ -247,23 +247,14 @@ export function Chat({
   const { setArtifact, artifact } = useArtifact();
   const [browserArtifactDismissed, setBrowserArtifactDismissed] = useState(false);
 
-  // Monitor messages for browser tool usage - only open artifact for new messages, not when navigating to existing chats
-  useEffect(() => {
-    // Only check for browser tool calls if we're actively streaming (new message being processed)
-    // This prevents artifacts from opening when just navigating to view an existing chat
-    if (status !== 'streaming') {
-      return;
-    }
-
-    const hasBrowserToolCall = messages.some(message =>
+  const hasBrowserToolCall = (msgs: typeof messages) =>
+    msgs.some(message =>
       message.parts?.some(part => {
         const partType = (part as any).type;
         const toolName = (part as any).toolName;
 
-        // Check for tool-call type with browser-related toolName
-        // Supports: browser (AI SDK), browser_navigate, playwright_browser_*, mcp_playwright_browser_*, playwright.browser_*
         if (partType === 'tool-call' &&
-            (toolName === 'browser' || // AI SDK agent browser tool
+            (toolName === 'browser' ||
              toolName?.startsWith('browser_') ||
              toolName?.startsWith('playwright_browser') ||
              toolName?.startsWith('mcp_playwright_browser') ||
@@ -272,8 +263,7 @@ export function Chat({
           return true;
         }
 
-        // Check for tool- prefixed types (how tools appear in message parts)
-        if (partType === 'tool-browser' || // AI SDK agent browser tool
+        if (partType === 'tool-browser' ||
             partType?.startsWith('tool-browser_') ||
             partType?.startsWith('tool-playwright_browser') ||
             partType?.startsWith('tool-mcp_playwright_browser') ||
@@ -284,26 +274,59 @@ export function Chat({
         return false;
       })
     );
-    
-    if (hasBrowserToolCall && !isArtifactVisible && !browserArtifactDismissed) {
-      const userMessage = messages.find(msg => msg.role === 'user');
-      const messageText = userMessage?.parts.find(part => part.type === 'text')?.text || 'Web Automation';
-      const title = `Browser: ${messageText}`;
 
-      setArtifact({
-        documentId: generateUUID(),
-        content: `# ${title}\n\nBrowser automation session starting...`,
-        kind: 'browser',
-        title,
-        status: 'idle',
-        isVisible: true,
-        boundingBox: {
-          top: 0,
-          left: 0,
-          width: 0,
-          height: 0,
-        },
-      });
+  const openBrowserArtifact = () => {
+    const userMessage = messages.find(msg => msg.role === 'user');
+    const messageText = userMessage?.parts.find(part => part.type === 'text')?.text || 'Web Automation';
+    const title = `Browser: ${messageText}`;
+
+    setArtifact({
+      documentId: generateUUID(),
+      content: `# ${title}\n\nBrowser automation session starting...`,
+      kind: 'browser',
+      title,
+      status: 'idle',
+      isVisible: true,
+      boundingBox: {
+        top: 0,
+        left: 0,
+        width: 0,
+        height: 0,
+      },
+    });
+  };
+
+  // On page load: if saved messages have browser tool calls and the server
+  // still has an active browser session, restore the artifact panel.
+  const recoveryAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (recoveryAttemptedRef.current) return;
+    if (isArtifactVisible || browserArtifactDismissed) return;
+    if (!hasBrowserToolCall(initialMessages)) return;
+    if (!session?.user?.id) return;
+
+    recoveryAttemptedRef.current = true;
+    const sessionId = `${id}-${session.user.id}`;
+
+    fetch('/api/kernel-browser', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'get', sessionId }),
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.liveViewUrl) {
+          openBrowserArtifact();
+        }
+      })
+      .catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // During streaming: open browser artifact when browser tool calls appear
+  useEffect(() => {
+    if (status !== 'streaming') return;
+    if (hasBrowserToolCall(messages) && !isArtifactVisible && !browserArtifactDismissed) {
+      openBrowserArtifact();
     }
   }, [messages, isArtifactVisible, browserArtifactDismissed, status, setArtifact]);
 
@@ -311,28 +334,7 @@ export function Chat({
   useEffect(() => {
     // If artifact was visible and now it's not, and we have browser tool calls, user dismissed it
     if (!isArtifactVisible && !browserArtifactDismissed) {
-      const hasBrowserToolCall = messages.some(message =>
-        message.parts?.some(part => {
-          const partType = (part as any).type;
-          const toolName = (part as any).toolName;
-
-          // Supports: browser (AI SDK), browser_navigate, playwright_browser_*, mcp_playwright_browser_*, playwright.browser_*
-          return (partType === 'tool-call' &&
-                  (toolName === 'browser' || // AI SDK agent browser tool
-                   toolName?.startsWith('browser_') ||
-                   toolName?.startsWith('playwright_browser') ||
-                   toolName?.startsWith('mcp_playwright_browser') ||
-                   toolName?.startsWith('playwright.browser_') ||
-                   toolName?.includes('_browser_'))) ||
-                 (partType === 'tool-browser' || // AI SDK agent browser tool
-                  partType?.startsWith('tool-browser_') ||
-                  partType?.startsWith('tool-playwright_browser') ||
-                  partType?.startsWith('tool-mcp_playwright_browser') ||
-                  partType?.startsWith('tool-playwright.browser_'));
-        })
-      );
-
-      if (hasBrowserToolCall && initialChatModel === 'web-automation-model') {
+      if (hasBrowserToolCall(messages) && initialChatModel === 'web-automation-model') {
         setBrowserArtifactDismissed(true);
       }
     }
