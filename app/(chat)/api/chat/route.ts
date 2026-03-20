@@ -295,6 +295,9 @@ export async function POST(request: Request) {
             experimental_telemetry: {
               isEnabled: isProductionEnvironment,
               functionId: 'web-automation-agent',
+              metadata: {
+                environment: process.env.ENVIRONMENT ?? 'unknown',
+              },
             },
           });
 
@@ -352,6 +355,9 @@ export async function POST(request: Request) {
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,
             functionId: 'stream-text',
+            metadata: {
+              environment: process.env.ENVIRONMENT ?? 'unknown',
+            },
           },
         });
 

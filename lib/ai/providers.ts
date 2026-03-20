@@ -7,7 +7,7 @@ import { xai } from '@ai-sdk/xai';
 import { openai } from '@ai-sdk/openai';
 import { google } from '@ai-sdk/google';
 import { gateway } from '@ai-sdk/gateway';
-import { vertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
+import { createVertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
 import { createVertex } from '@ai-sdk/google-vertex';
 
 const vertex = createVertex({
@@ -21,6 +21,26 @@ import {
   titleModel,
 } from './models.test';
 import { isTestEnvironment } from '../constants';
+
+// Environment tag injected into every Vertex AI Anthropic request as
+// `metadata.user_id` so BigQuery request-response logs can be filtered
+// by environment (dev / prod / preview-pr-*).
+const environment = process.env.NEXT_PUBLIC_ENVIRONMENT || process.env.ENVIRONMENT || 'unknown';
+
+const vertexAnthropic = createVertexAnthropic({
+  fetch: async (url, init) => {
+    if (init?.body && typeof init.body === 'string') {
+      try {
+        const body = JSON.parse(init.body);
+        body.metadata = { ...body.metadata, user_id: environment };
+        init = { ...init, body: JSON.stringify(body) };
+      } catch {
+        // non-JSON body, pass through
+      }
+    }
+    return fetch(url, init);
+  },
+});
 
 // Anthropic model for web automation via Vertex AI
 export const webAutomationModel = vertexAnthropic('claude-sonnet-4-6');
