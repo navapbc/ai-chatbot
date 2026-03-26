@@ -26,6 +26,7 @@ export default defineConfig({
       '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*',
       '**/tests/e2e/**',
       '**/tests/routes/**',
+      '**/tests/evals/**',
       '**/lib/ai/models.test.ts', // This is not a test file, it exports mocks
     ],
   }

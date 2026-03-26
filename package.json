@@ -17,7 +17,8 @@
     "db:check": "drizzle-kit check",
     "db:up": "drizzle-kit up",
     "test:playwright": "export PLAYWRIGHT=True && pnpm exec playwright test",
-    "test": "vitest"
+    "test": "vitest",
+    "test:evals": "vitest run tests/evals --config vitest.evals.config.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.58",
