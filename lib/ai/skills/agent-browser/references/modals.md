@@ -22,12 +22,12 @@ Some modals (especially on React apps like BenefitsCal) set `aria-hidden="true"`
 
 When this happens, use ONE evaluate to discover the modal structure:
 ```
-{ action: "evaluate", script: "document.querySelector('[aria-modal=true], .modal, [role=dialog]')?.outerHTML?.substring(0, 2000) || 'No modal found'" }
+{ action: "eval", script: "document.querySelector('[aria-modal=true], .modal, [role=dialog]')?.outerHTML?.substring(0, 2000) || 'No modal found'" }
 ```
 
 If that returns nothing, try:
 ```
-{ action: "evaluate", script: "document.querySelector('body > div:not([aria-hidden])').outerHTML.substring(0, 2000)" }
+{ action: "eval", script: "document.querySelector('body > div:not([aria-hidden])').outerHTML.substring(0, 2000)" }
 ```
 
 Once you see the modal HTML, identify the select element and button, then interact using CSS selectors (not evaluate):
@@ -44,12 +44,12 @@ React apps track form values internally. Setting `select.value` programmatically
 
 For selects — clear React's value tracker and fire change events:
 ```
-{ action: "evaluate", script: "var s = document.querySelector('#county'); var tracker = s._valueTracker; if (tracker) tracker.setValue(''); s.value = '33'; s.dispatchEvent(new Event('change', { bubbles: true }));" }
+{ action: "eval", script: "var s = document.querySelector('#county'); var tracker = s._valueTracker; if (tracker) tracker.setValue(''); s.value = '33'; s.dispatchEvent(new Event('change', { bubbles: true }));" }
 ```
 
 For buttons — dispatch the full mouse event sequence (not just `.click()`):
 ```
-{ action: "evaluate", script: "var btn = document.querySelector('button'); btn.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window})); btn.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window})); btn.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));" }
+{ action: "eval", script: "var btn = document.querySelector('button'); btn.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window})); btn.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window})); btn.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));" }
 ```
 
 After the modal closes, re-snapshot to confirm and continue.
@@ -69,5 +69,5 @@ These commonly appear after address entry on benefits sites. The typical flow:
 Government and health sites often have a Google Translate bar injected at the top of the page. This renders as a floating element that can block clicks on form fields below it. **Always keep the form in English** — dismiss or hide the translate bar if it's interfering.
 
 If elements report "blocked by another element" and you suspect the translate bar:
-1. Dismiss it via evaluate: `{ action: "evaluate", script: "document.querySelector('.VIpgJd-yAWNEb-hvhgNd') && document.querySelector('.VIpgJd-yAWNEb-hvhgNd').remove()" }`
+1. Dismiss it via evaluate: `{ action: "eval", script: "document.querySelector('.VIpgJd-yAWNEb-hvhgNd') && document.querySelector('.VIpgJd-yAWNEb-hvhgNd').remove()" }`
 2. Re-snapshot and continue — the form fields should now be accessible

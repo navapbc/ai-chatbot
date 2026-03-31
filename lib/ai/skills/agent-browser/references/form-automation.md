@@ -48,13 +48,13 @@ browser({ action: "check", selector: "#chkBxApplyYourselfYes" })
 
 ### 3. Label Locators (last resort, unique labels only)
 
-Use `getbylabel` ONLY when the label text is **globally unique** on the entire page and no refs or IDs are available. Do NOT use for common labels like "Yes", "No", "First Name", "Last Name", "State", "Zip Code", "Birthdate", "Phone" — these appear multiple times on benefit forms and cause strict-mode violations.
+Use `find label` ONLY when the label text is **globally unique** on the entire page and no refs or IDs are available. Do NOT use for common labels like "Yes", "No", "First Name", "Last Name", "State", "Zip Code", "Birthdate", "Phone" — these appear multiple times on benefit forms and cause strict-mode violations.
 
 **NEVER include asterisks or colons** in the label text (`"First Name"` not `"First Name: *"`).
 
 ```
 // ONLY acceptable when label is truly unique and no IDs available:
-browser({ action: "getbylabel", label: "Social Security Number", subaction: "fill", value: "123456789" })
+browser({ action: "find label", label: "Social Security Number", subaction: "fill", value: "123456789" })
 ```
 
 ## Field Type Patterns
@@ -63,7 +63,7 @@ browser({ action: "getbylabel", label: "Social Security Number", subaction: "fil
 
 **CRITICAL — Always check `maxlength`**: Strip dashes, slashes, spaces so the value fits. The browser silently truncates values exceeding `maxlength`.
 
-**Always verify masked fields**: After typing, use `inputvalue` to confirm the value stuck. If empty/wrong, click the field, wait, re-type.
+**Always verify masked fields**: After typing, use `get value` to confirm the value stuck. If empty/wrong, click the field, wait, re-type.
 
 ### Text Fields (use `fill`)
 ```
@@ -77,7 +77,7 @@ Check `maxlength`. If `maxlength="8"`, digits only (MMDDYYYY). Click first, then
 ```
 browser({ action: "click", selector: "@e1" })
 browser({ action: "type", selector: "@e1", text: "01152000", clear: true })
-browser({ action: "inputvalue", selector: "@e1" })  // Verify
+browser({ action: "get value", selector: "@e1" })  // Verify
 ```
 
 Or if using a date picker:
@@ -92,7 +92,7 @@ Check `maxlength`. If `maxlength="9"`, digits only:
 ```
 browser({ action: "click", selector: "@e1" })
 browser({ action: "type", selector: "@e1", text: "123456789", clear: true })
-browser({ action: "inputvalue", selector: "@e1" })  // Verify
+browser({ action: "get value", selector: "@e1" })  // Verify
 ```
 
 ### Phone Number Fields (use `type`)
@@ -100,7 +100,7 @@ Check `maxlength`. If `maxlength="10"`, digits only:
 ```
 browser({ action: "click", selector: "@e1" })
 browser({ action: "type", selector: "@e1", text: "5551234567", clear: true })
-browser({ action: "inputvalue", selector: "@e1" })  // Verify
+browser({ action: "get value", selector: "@e1" })  // Verify
 ```
 
 ### State Fields (use `type`)
@@ -108,7 +108,7 @@ Check `maxlength`. If `maxlength="2"`, use abbreviation:
 ```
 browser({ action: "click", selector: "@e1" })
 browser({ action: "type", selector: "@e1", text: "CA", clear: true })
-browser({ action: "inputvalue", selector: "@e1" })  // Verify
+browser({ action: "get value", selector: "@e1" })  // Verify
 ```
 
 ### Native Dropdowns (select)

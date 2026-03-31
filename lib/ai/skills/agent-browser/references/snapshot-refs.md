@@ -17,13 +17,13 @@ browser({ action: "fill", selector: "#firstNameTxt", value: "John" })
 ```
 
 ### 2. Label Locators — LAST RESORT
-Use `getbylabel` ONLY when the label is globally unique AND the element has no ID. NEVER use for common labels like "Yes", "No", "First Name", "State" — these appear multiple times on benefit forms and cause strict-mode violations.
+Use `find label` ONLY when the label is globally unique AND the element has no ID. NEVER use for common labels like "Yes", "No", "First Name", "State" — these appear multiple times on benefit forms and cause strict-mode violations.
 
 **NEVER include asterisks or colons** in labels.
 
 ```
 // Only when label is truly unique and no IDs available:
-browser({ action: "getbylabel", label: "Social Security Number", subaction: "fill", value: "123456789" })
+browser({ action: "find label", label: "Social Security Number", subaction: "fill", value: "123456789" })
 ```
 
 ## Ref Format

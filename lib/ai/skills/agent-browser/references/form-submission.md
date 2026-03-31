@@ -6,7 +6,7 @@ Load this reference only after completing steps 1–4 from the Form Submission s
 
 The form has custom JS gating the button. Find the JS source:
 ```
-{ action: "evaluate", script: "Array.from(document.querySelectorAll('script[src]')).map(s => s.src).join('\\n')" }
+{ action: "eval", script: "Array.from(document.querySelectorAll('script[src]')).map(s => s.src).join('\\n')" }
 ```
 
 Fetch and read the relevant script. Look for:
@@ -19,7 +19,7 @@ Fetch and read the relevant script. Look for:
 
 Once you understand the gate logic, write the minimum evaluate to satisfy all conditions:
 ```
-{ action: "evaluate", script: "isExpanded = true; isCaptchaChecked = true; document.querySelector('#btnSubmit').removeAttribute('disabled');" }
+{ action: "eval", script: "isExpanded = true; isCaptchaChecked = true; document.querySelector('#btnSubmit').removeAttribute('disabled');" }
 ```
 
 **Key principle**: Set the page's JS state variables to match the DOM state. Just removing `disabled` without updating the gating variables means the page's own JS may re-disable the button.

@@ -1,7 +1,17 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { platform, arch } from 'node:os';
+
+/**
+ * Shorten a session key so the daemon's Unix socket path stays under 103 bytes.
+ * Uses a 12-char hex hash prefix — unique enough for concurrent sessions.
+ */
+function shortSessionKey(key: string): string {
+  if (key.length <= 32) return key;
+  return createHash('sha256').update(key).digest('hex').slice(0, 16);
+}
 
 // =============================================================================
 // Binary resolution
@@ -110,9 +120,12 @@ function toArgs(params: Record<string, unknown>): string[][] {
 
     case 'type': {
       if (params.clear && selector) {
-        // CLI `type` has no --clear. Clear first, then type.
+        // CLI `type` has no --clear flag. Select all + delete before typing.
+        // Can't use `fill ""` because it bypasses JS input masks.
         return [
-          ['fill', selector, ''],
+          ['click', selector],
+          ['press', 'Control+a'],
+          ['press', 'Backspace'],
           ['type', selector, text ?? ''],
         ];
       }
@@ -348,9 +361,10 @@ export async function connectSession(
   sessionKey: string,
   cdpWsUrl: string,
 ): Promise<void> {
-  console.log(`[browser-cli] Connecting session "${sessionKey}" to CDP`);
+  const shortKey = shortSessionKey(sessionKey);
+  console.log(`[browser-cli] Connecting session "${shortKey}" to CDP`);
   const result = await spawnCLI([
-    '--session', sessionKey,
+    '--session', shortKey,
     '--cdp', cdpWsUrl,
     'get', 'url', '--json',
   ]);
@@ -359,7 +373,7 @@ export async function connectSession(
     throw new Error(`Failed to connect agent-browser to CDP: ${result.error}`);
   }
 
-  console.log(`[browser-cli] Session "${sessionKey}" connected`);
+  console.log(`[browser-cli] Session "${shortKey}" connected`);
 }
 
 /**
@@ -382,7 +396,7 @@ export async function executeCLICommand(
     console.log('[browser-cli] Executing:', args.join(' '));
 
     lastResult = await spawnCLI(
-      ['--session', sessionKey, '--cdp', cdpWsUrl, ...args, '--json'],
+      ['--session', shortSessionKey(sessionKey), '--cdp', cdpWsUrl, ...args, '--json'],
       abortSignal,
     );
 
@@ -405,8 +419,9 @@ export async function executeCLICommand(
  */
 export async function closeSession(sessionKey: string, cdpWsUrl: string): Promise<void> {
   try {
-    await spawnCLI(['--session', sessionKey, '--cdp', cdpWsUrl, 'close', '--json']);
-    console.log(`[browser-cli] Session "${sessionKey}" closed`);
+    const shortKey = shortSessionKey(sessionKey);
+    await spawnCLI(['--session', shortKey, '--cdp', cdpWsUrl, 'close', '--json']);
+    console.log(`[browser-cli] Session "${shortKey}" closed`);
   } catch (err) {
     console.error(`[browser-cli] Error closing session "${sessionKey}":`, err);
   }
