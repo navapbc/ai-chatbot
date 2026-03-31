@@ -2,10 +2,10 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
-import { MousePointerClick, RefreshCw, Monitor } from 'lucide-react';
+import { MousePointerClick, RefreshCw, Monitor, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { AgentStatusIndicator } from '@/components/agent-status-indicator';
-import { BrowserLoadingState, BrowserErrorState, BrowserTimeoutState } from './browser-states';
+import { BrowserLoadingState, BrowserErrorState } from './browser-states';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
   Sheet,
@@ -27,6 +27,8 @@ interface KernelBrowserClientProps {
   isFullscreen?: boolean;
   onFullscreenChange?: (fullscreen: boolean) => void;
   sendMessage?: UseChatHelpers<ChatMessage>['sendMessage'];
+  /** Called when user clicks the close button — parent should show confirmation modal */
+  onTerminate?: () => void;
 }
 
 export function KernelBrowserClient({
@@ -39,6 +41,7 @@ export function KernelBrowserClient({
   isFullscreen = false,
   onFullscreenChange,
   sendMessage,
+  onTerminate,
 }: KernelBrowserClientProps) {
   const [liveViewUrl, setLiveViewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -246,21 +249,6 @@ export function KernelBrowserClient({
     if (!isConnectedRef.current) return;
     onFullscreenChange?.(false);
     onControlModeChange('agent');
-  };
-
-  const disconnectBrowser = async () => {
-    try {
-      await fetch('/api/kernel-browser', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'delete', sessionId }),
-      });
-      setIsConnected(false);
-      setLiveViewUrl(null);
-      onConnectionChange?.(false);
-    } catch (err) {
-      console.error('Failed to disconnect browser:', err);
-    }
   };
 
   // Build the iframe URL with readOnly based on control mode
@@ -472,6 +460,17 @@ export function KernelBrowserClient({
             >
               <RefreshCw className="w-4 h-4" />
             </Button>
+            {onTerminate && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onTerminate}
+                title="End browser session"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            )}
             <Button
               type="button"
               variant="default"

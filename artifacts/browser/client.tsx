@@ -3,7 +3,6 @@ import { useState } from 'react';
 import { BrowserLoadingState } from './browser-states';
 import { closeArtifact, useArtifact } from '@/hooks/use-artifact';
 import { KernelBrowserClient } from './client-kernel';
-import { useRouter } from 'next/navigation';
 import { ExitWarningModal } from '@/components/exit-warning-modal';
 
 interface BrowserArtifactMetadata {
@@ -57,7 +56,6 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
     stop,
     sendMessage,
   }) => {
-    const router = useRouter();
     const { setArtifact } = useArtifact();
     const [showBackModal, setShowBackModal] = useState(false);
 
@@ -94,14 +92,26 @@ export const browserArtifact = new Artifact<'browser', BrowserArtifactMetadata>(
             }));
           }}
           sendMessage={sendMessage}
+          onTerminate={() => setShowBackModal(true)}
         />
         <ExitWarningModal
           open={showBackModal}
           onOpenChange={setShowBackModal}
-          onLeaveSession={() => {
+          onLeaveSession={async () => {
             setShowBackModal(false);
+            // Stop the AI stream
+            stop?.();
+            // Delete the Kernel browser session
+            try {
+              await fetch('/api/kernel-browser', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'delete', sessionId: metadata.sessionId }),
+              });
+            } catch (err) {
+              console.error('Failed to delete browser session:', err);
+            }
             closeArtifact(setArtifact);
-            router.push('/home');
           }}
         />
       </>
