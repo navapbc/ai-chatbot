@@ -1,5 +1,6 @@
 import Kernel from '@onkernel/sdk';
 import { closeSession } from './browser-cli';
+import { clearSessionQueue } from '@/lib/ai/tools/browser';
 
 const kernel = new Kernel();
 
@@ -28,7 +29,7 @@ export interface BrowserSession {
 const sessions = new Map<string, BrowserSession>();
 const pendingCreations = new Map<string, Promise<BrowserSession>>();
 
-function cacheKey(userId: string, sessionId: string): string {
+export function cacheKey(userId: string, sessionId: string): string {
   return `${userId}:${sessionId}`;
 }
 
@@ -168,8 +169,9 @@ export async function deleteBrowser(
 
   if (!session) return;
 
-  // Remove from cache first
+  // Remove from cache and clean up session queue
   sessions.delete(key);
+  clearSessionQueue(key);
 
   // Stop replay recording and log the view URL
   if (session.replayId) {

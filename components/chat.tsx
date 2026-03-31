@@ -80,7 +80,7 @@ export function Chat({
     setMessages,
     sendMessage,
     status,
-    stop: originalStop,
+    stop,
     regenerate,
     resumeStream,
   } = useChat<ChatMessage>({
@@ -173,10 +173,6 @@ export function Chat({
 
   // Keep ref in sync so onData closure always has latest messages
   messagesRef.current = messages;
-
-  const stop = async () => {
-    originalStop();
-  };
 
   const [hasAppendedQuery, setHasAppendedQuery] = useState(false);
 

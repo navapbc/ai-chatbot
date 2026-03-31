@@ -6,7 +6,7 @@ import { platform, arch } from 'node:os';
 
 /**
  * Shorten a session key so the daemon's Unix socket path stays under 103 bytes.
- * Uses a 12-char hex hash prefix — unique enough for concurrent sessions.
+ * Uses a 16-char hex hash — unique enough for concurrent sessions.
  */
 function shortSessionKey(key: string): string {
   if (key.length <= 32) return key;

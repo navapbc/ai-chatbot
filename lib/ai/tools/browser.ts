@@ -1,6 +1,6 @@
 import { tool, type ToolExecutionOptions } from 'ai';
 import { z } from 'zod';
-import { getOrCreateBrowser } from '@/lib/kernel/browser';
+import { getOrCreateBrowser, cacheKey } from '@/lib/kernel/browser';
 import { connectSession, executeCLICommand } from '@/lib/kernel/browser-cli';
 
 const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes
@@ -17,6 +17,11 @@ function withSessionQueue<T>(sessionId: string, fn: () => Promise<T>): Promise<T
   const next = prev.then(fn, fn); // always advance the queue even on error
   sessionQueues.set(sessionId, next.then(() => {}, () => {})); // swallow to prevent unhandled rejection on queue chain
   return next;
+}
+
+/** Remove the session queue entry when a session is deleted. */
+export function clearSessionQueue(sessionKey: string): void {
+  sessionQueues.delete(sessionKey);
 }
 
 /**
@@ -81,7 +86,6 @@ NEVER navigate away from the target application domain. Do NOT click social medi
         values: z.array(z.string()).optional().describe('Option values for select action — must be an array'),
         timeout: z.number().optional().describe('Timeout in ms for wait action — must be a number'),
         amount: z.number().optional().describe('Scroll amount in px — must be a number'),
-        delay: z.number().optional().describe('Delay between keystrokes in ms — must be a number'),
         interactive: z.boolean().optional().describe('Show only interactive elements in snapshot — must be boolean'),
         clear: z.boolean().optional().describe('Clear field before typing — must be boolean'),
         direction: z.string().optional().describe('Scroll direction: "up" or "down"'),
@@ -99,7 +103,7 @@ NEVER navigate away from the target application domain. Do NOT click social medi
         try {
           // Ensure we have a Kernel browser instance (creates one if needed)
           const session = await getOrCreateBrowser(sessionId, userId);
-          const sessionKey = `${userId}:${sessionId}`;
+          const sessionKey = cacheKey(userId, sessionId);
 
           // Connect the CLI daemon to CDP on first tool call
           if (!session.connected) {
@@ -110,10 +114,11 @@ NEVER navigate away from the target application domain. Do NOT click social medi
           console.log('[browser-tool] Session:', sessionId);
           console.log('[browser-tool] Executing:', params.action, JSON.stringify(params));
 
+          let timer: ReturnType<typeof setTimeout>;
           const response = await Promise.race([
             executeCLICommand(sessionKey, session.cdpWsUrl, params, abortSignal),
             new Promise<never>((_, reject) => {
-              const timer = setTimeout(
+              timer = setTimeout(
                 () => reject(new Error('Command timed out after 2 minutes')),
                 COMMAND_TIMEOUT_MS,
               );
@@ -122,7 +127,7 @@ NEVER navigate away from the target application domain. Do NOT click social medi
                 reject(new Error('Browser command stopped by user'));
               });
             }),
-          ]);
+          ]).finally(() => clearTimeout(timer));
 
           if (response.success) {
             console.log('[browser-tool] Success. Output length:', response.output?.length);
