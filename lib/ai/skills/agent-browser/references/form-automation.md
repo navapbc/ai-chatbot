@@ -59,7 +59,7 @@ browser({ action: "find label", label: "Social Security Number", subaction: "fil
 
 ## Field Type Patterns
 
-**CRITICAL — `fill` vs `type`**: Many fields (SSN, date, phone, state, zip) have JavaScript input masks. `fill` sets the value programmatically and **bypasses** JS handlers — the value silently fails or gets wiped. Use `type` with `clear: true` for masked fields. Use `fill` for plain text fields (name, address, city, email).
+**CRITICAL — `fill` vs `type`**: Many fields (SSN, date, phone, state, zip) have JavaScript input masks. `fill` sets the value programmatically and **bypasses** JS handlers — the value silently fails or gets wiped. Click the field first, then use `type` for masked fields. Use `fill` for plain text fields (name, address, city, email).
 
 **CRITICAL — Always check `maxlength`**: Strip dashes, slashes, spaces so the value fits. The browser silently truncates values exceeding `maxlength`.
 
@@ -76,7 +76,7 @@ browser({ action: "fill", selector: "#firstNameTxt", value: "John Doe" })
 Check `maxlength`. If `maxlength="8"`, digits only (MMDDYYYY). Click first, then type:
 ```
 browser({ action: "click", selector: "@e1" })
-browser({ action: "type", selector: "@e1", text: "01152000", clear: true })
+browser({ action: "type", selector: "@e1", text: "01152000" })
 browser({ action: "get value", selector: "@e1" })  // Verify
 ```
 
@@ -91,7 +91,7 @@ browser({ action: "click", selector: "@e5" })          // Click desired date
 Check `maxlength`. If `maxlength="9"`, digits only:
 ```
 browser({ action: "click", selector: "@e1" })
-browser({ action: "type", selector: "@e1", text: "123456789", clear: true })
+browser({ action: "type", selector: "@e1", text: "123456789" })
 browser({ action: "get value", selector: "@e1" })  // Verify
 ```
 
@@ -99,7 +99,7 @@ browser({ action: "get value", selector: "@e1" })  // Verify
 Check `maxlength`. If `maxlength="10"`, digits only:
 ```
 browser({ action: "click", selector: "@e1" })
-browser({ action: "type", selector: "@e1", text: "5551234567", clear: true })
+browser({ action: "type", selector: "@e1", text: "5551234567" })
 browser({ action: "get value", selector: "@e1" })  // Verify
 ```
 
@@ -107,7 +107,7 @@ browser({ action: "get value", selector: "@e1" })  // Verify
 Check `maxlength`. If `maxlength="2"`, use abbreviation:
 ```
 browser({ action: "click", selector: "@e1" })
-browser({ action: "type", selector: "@e1", text: "CA", clear: true })
+browser({ action: "type", selector: "@e1", text: "CA" })
 browser({ action: "get value", selector: "@e1" })  // Verify
 ```
 

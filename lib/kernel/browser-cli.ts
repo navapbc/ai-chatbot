@@ -70,196 +70,63 @@ function resolveBinary(): string {
 }
 
 // =============================================================================
-// Params → CLI args (passthrough with minimal structure mapping)
+// Params → CLI args
 // =============================================================================
 
 /**
- * Convert the flat tool input object into one or more CLI arg arrays.
+ * Convert tool params to CLI args.
  *
- * The tool schema uses the same command names as the agent-browser CLI.
- * This function just arranges the params into positional args and flags
- * that the CLI expects.
- *
- * Returns an array of arg arrays — usually one, but `type` with `clear: true`
- * produces two (fill "" first, then type).
+ * Most commands follow: `<action> [selector] [value]`.
+ * Compound actions like "get text" or "tab new" are split on spaces.
+ * Snapshot and wait have special flag syntax.
+ * Everything else is a direct passthrough — no command-specific logic.
  */
-function toArgs(params: Record<string, unknown>): string[][] {
+function toArgs(params: Record<string, unknown>): string[] {
   const action = String(params.action ?? '');
-  const selector = params.selector as string | undefined;
-  const value = params.value as string | undefined;
-  const text = params.text as string | undefined;
+  const args = action.split(' ');
 
-  switch (action) {
-    // --- Navigation ---
-    case 'open':
-      return [['open', params.url as string ?? '']];
-
-    case 'back':
-    case 'forward':
-    case 'reload':
-    case 'close':
-      return [[action]];
-
-    // --- Snapshot ---
-    case 'snapshot': {
-      const args = ['snapshot'];
-      if (params.interactive) args.push('-i');
-      if (selector) args.push('-s', selector);
-      return [args];
-    }
-
-    // --- Interactions ---
-    case 'click':
-      return [['click', selector ?? '']];
-
-    case 'dblclick':
-      return [['dblclick', selector ?? '']];
-
-    case 'fill':
-      return [['fill', selector ?? '', value ?? '']];
-
-    case 'type': {
-      if (params.clear && selector) {
-        // CLI `type` has no --clear flag. Select all + delete before typing.
-        // Can't use `fill ""` because it bypasses JS input masks.
-        return [
-          ['click', selector],
-          ['press', 'Control+a'],
-          ['press', 'Backspace'],
-          ['type', selector, text ?? ''],
-        ];
-      }
-      return [['type', selector ?? '', text ?? '']];
-    }
-
-    case 'press':
-      return [['press', params.key as string ?? '']];
-
-    case 'select':
-      return [['select', selector ?? '', ...((params.values as string[]) ?? [])]];
-
-    case 'hover':
-      return [['hover', selector ?? '']];
-
-    case 'focus':
-      return [['focus', selector ?? '']];
-
-    case 'check':
-      return [['check', selector ?? '']];
-
-    case 'uncheck':
-      return [['uncheck', selector ?? '']];
-
-    case 'scroll':
-      return [['scroll', (params.direction as string) ?? 'down', String(params.amount ?? 300)]];
-
-    case 'scrollintoview':
-      return [['scrollintoview', selector ?? '']];
-
-    case 'drag':
-      return [['drag', selector ?? '', (params.target as string) ?? '']];
-
-    case 'upload':
-      return [['upload', selector ?? '', ...((params.files as string[]) ?? [])]];
-
-    // --- Wait ---
-    case 'wait':
-      if (selector) return [['wait', selector]];
-      if (params.timeout !== undefined) return [['wait', String(params.timeout)]];
-      if (params.text) return [['wait', '--text', params.text as string]];
-      if (params.url) return [['wait', '--url', params.url as string]];
-      if (params.state) return [['wait', '--load', params.state as string]];
-      if (params.fn) return [['wait', '--fn', params.fn as string]];
-      return [['wait', '1000']];
-
-    // --- Get info ---
-    case 'get text':
-      return [['get', 'text', selector ?? '']];
-
-    case 'get value':
-      return [['get', 'value', selector ?? '']];
-
-    case 'get url':
-      return [['get', 'url']];
-
-    case 'get title':
-      return [['get', 'title']];
-
-    case 'get html':
-      return [['get', 'html', selector ?? '']];
-
-    case 'get attr':
-      return [['get', 'attr', selector ?? '', (params.attr as string) ?? '']];
-
-    case 'get count':
-      return [['get', 'count', selector ?? '']];
-
-    case 'get box':
-      return [['get', 'box', selector ?? '']];
-
-    case 'get styles':
-      return [['get', 'styles', selector ?? '']];
-
-    // --- Screenshot / eval ---
-    case 'screenshot':
-      return [['screenshot']];
-
-    case 'eval':
-      return [['eval', (params.script as string) ?? '']];
-
-    // --- Tabs ---
-    case 'tab':
-      return [['tab']];
-
-    case 'tab new':
-      return [['tab', 'new']];
-
-    case 'tab close':
-      return [['tab', 'close']];
-
-    case 'tab switch':
-      return [['tab', String(params.index ?? 0)]];
-
-    // --- Dialog ---
-    case 'dialog':
-      if (params.promptText) return [['dialog', (params.response as string) ?? 'accept', params.promptText as string]];
-      return [['dialog', (params.response as string) ?? 'accept']];
-
-    // --- Frames ---
-    case 'frame':
-      return [['frame', selector ?? '']];
-
-    case 'frame main':
-      return [['frame', 'main']];
-
-    // --- Find (semantic locators) ---
-    case 'find label': {
-      const args = ['find', 'label', (params.label as string) ?? ''];
-      if (params.subaction) args.push(params.subaction as string);
-      if (value) args.push(value);
-      return [args];
-    }
-
-    case 'find role': {
-      const args = ['find', 'role', (params.role as string) ?? ''];
-      if (params.subaction) args.push(params.subaction as string);
-      if (params.name) args.push('--name', params.name as string);
-      return [args];
-    }
-
-    case 'find text':
-      return [['find', 'text', text ?? '', (params.subaction as string) ?? 'click']];
-
-    // --- Default passthrough ---
-    default: {
-      // Unknown action: pass through as-is for forward compatibility.
-      // Split compound commands like "get text" into ["get", "text"].
-      const parts = action.split(' ');
-      if (selector) parts.push(selector);
-      if (value) parts.push(value);
-      return [parts];
-    }
+  // --- snapshot: uses short flags ---
+  if (action === 'snapshot') {
+    if (params.interactive) args.push('-i');
+    if (params.selector) args.push('-s', String(params.selector));
+    return args;
   }
+
+  // --- wait: polymorphic (selector, ms, or --flag) ---
+  if (action === 'wait') {
+    if (params.selector) return [...args, String(params.selector)];
+    if (params.timeout !== undefined) return [...args, String(params.timeout)];
+    if (params.text) return [...args, '--text', String(params.text)];
+    if (params.url) return [...args, '--url', String(params.url)];
+    if (params.state) return [...args, '--load', String(params.state)];
+    if (params.fn) return [...args, '--fn', String(params.fn)];
+    return args;
+  }
+
+  // --- scroll: direction before selector ---
+  if (action === 'scroll') {
+    if (params.direction) args.push(String(params.direction));
+    if (params.amount !== undefined) args.push(String(params.amount));
+    return args;
+  }
+
+  // --- Everything else: selector, then value-like positional, then extras ---
+  if (params.selector) args.push(String(params.selector));
+
+  // First value positional (only one applies per command)
+  const val = params.value ?? params.text ?? params.url ?? params.key
+    ?? params.script ?? params.label ?? params.response;
+  if (val !== undefined) args.push(String(val));
+
+  // Extras: subaction, array values, index, promptText, --name flag
+  if (params.subaction) args.push(String(params.subaction));
+  if (params.subaction && params.value) args.push(String(params.value));
+  if (Array.isArray(params.values)) params.values.forEach(v => args.push(String(v)));
+  if (params.index !== undefined) args.push(String(params.index));
+  if (params.promptText) args.push(String(params.promptText));
+  if (params.name) args.push('--name', String(params.name));
+
+  return args;
 }
 
 // =============================================================================
@@ -388,29 +255,22 @@ export async function executeCLICommand(
   params: Record<string, unknown>,
   abortSignal?: AbortSignal,
 ): Promise<{ success: boolean; output: string | null; error: string | null }> {
-  const argSets = toArgs(params);
+  const args = toArgs(params);
+  console.log('[browser-cli] Executing:', args.join(' '));
 
-  let lastResult: CLIResult = { success: true };
+  const result = await spawnCLI(
+    ['--session', shortSessionKey(sessionKey), '--cdp', cdpWsUrl, ...args, '--json'],
+    abortSignal,
+  );
 
-  for (const args of argSets) {
-    console.log('[browser-cli] Executing:', args.join(' '));
-
-    lastResult = await spawnCLI(
-      ['--session', shortSessionKey(sessionKey), '--cdp', cdpWsUrl, ...args, '--json'],
-      abortSignal,
-    );
-
-    if (!lastResult.success) break;
-  }
-
-  const output = lastResult.data != null
-    ? (typeof lastResult.data === 'string' ? lastResult.data : JSON.stringify(lastResult.data))
+  const output = result.data != null
+    ? (typeof result.data === 'string' ? result.data : JSON.stringify(result.data))
     : null;
 
   return {
-    success: lastResult.success ?? false,
+    success: result.success ?? false,
     output,
-    error: lastResult.error ?? null,
+    error: result.error ?? null,
   };
 }
 

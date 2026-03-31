@@ -48,7 +48,7 @@ Commands:
 - { action: "snapshot", interactive: true } - Interactive elements only with refs
 - { action: "click", selector: "@e1" } - Click element by ref
 - { action: "fill", selector: "@e1", value: "text" } - Clear field and fill (programmatic — use for plain text fields)
-- { action: "type", selector: "@e1", text: "text", clear: true } - Simulate real keystrokes (use for masked fields: SSN, date, phone, state, zip)
+- { action: "type", selector: "@e1", text: "text" } - Simulate real keystrokes (use for masked fields: SSN, date, phone, state, zip. Click field first.)
 - { action: "select", selector: "@e1", values: ["option"] } - Select native dropdown option
 - { action: "find label", label: "Field Name", subaction: "fill", value: "val" } - Fill by accessible label
 - { action: "press", key: "Enter" } - Press key (Tab, Escape, ArrowDown, etc.)
@@ -87,7 +87,6 @@ NEVER navigate away from the target application domain. Do NOT click social medi
         timeout: z.number().optional().describe('Timeout in ms for wait action — must be a number'),
         amount: z.number().optional().describe('Scroll amount in px — must be a number'),
         interactive: z.boolean().optional().describe('Show only interactive elements in snapshot — must be boolean'),
-        clear: z.boolean().optional().describe('Clear field before typing — must be boolean'),
         direction: z.string().optional().describe('Scroll direction: "up" or "down"'),
         state: z.string().optional().describe('Load state for wait (e.g. "networkidle")'),
         index: z.number().optional().describe('Tab index for tab switch/tab close'),

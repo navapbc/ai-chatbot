@@ -46,7 +46,7 @@ browser({ action: "fill", selector: "#firstNameTxt", value: "John" })
 
 // Masked fields — click + type + verify:
 browser({ action: "click", selector: "#ssnTxt" })
-browser({ action: "type", selector: "#ssnTxt", text: "123456789", clear: true })
+browser({ action: "type", selector: "#ssnTxt", text: "123456789" })
 browser({ action: "get value", selector: "#ssnTxt" })  // Verify it stuck
 
 // Checkboxes — use the specific ID to avoid ambiguity:
@@ -81,7 +81,7 @@ The browser tool accepts `{ action, selector, value, ... }` objects. Common acti
 
 Many form fields (SSN, birthdate, phone, state, zip) have JavaScript input masks or `maxlength` constraints.
 
-**`fill` vs `type`**: The `fill` action sets values programmatically, **bypassing** JS event handlers — masked fields will silently reject or wipe the value. Use `type` with `clear: true` for these fields, which simulates real keystrokes and triggers the JS formatters.
+**`fill` vs `type`**: The `fill` action sets values programmatically, **bypassing** JS event handlers — masked fields will silently reject or wipe the value. Click the field first, then use `type` for these fields — it simulates real keystrokes and triggers the JS formatters.
 
 **Rule of thumb**: `fill` for plain text (name, address, city, email). `type` for anything with formatting (SSN, date, phone, state, zip).
 
