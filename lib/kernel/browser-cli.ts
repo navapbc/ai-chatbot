@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { platform, arch } from 'node:os';
 
@@ -16,22 +16,38 @@ function getBinaryPath(): string {
   const ext = os === 'win32' ? '.exe' : '';
   const binaryName = `agent-browser-${osKey}-${archKey}${ext}`;
 
-  // Resolve from the installed package
-  const pkgDir = require.resolve('agent-browser/package.json').replace('/package.json', '');
-  const binaryPath = join(pkgDir, 'bin', binaryName);
+  // Search for the native binary in node_modules.
+  // We can't use require.resolve() because Next.js serverExternalPackages
+  // rewrites it to a virtual path. Instead, walk up from cwd looking for
+  // the pnpm store or a direct node_modules install.
+  const searchRoots = [
+    process.cwd(),                          // e.g. /app/client
+    join(process.cwd(), '..'),              // parent dir (monorepo)
+  ];
 
-  if (!existsSync(binaryPath)) {
-    // Fallback: try the JS wrapper (which does its own platform detection)
-    const wrapperPath = join(pkgDir, 'bin', 'agent-browser.js');
-    if (existsSync(wrapperPath)) {
-      return wrapperPath;
+  for (const root of searchRoots) {
+    // Direct install (npm/yarn)
+    const directPath = join(root, 'node_modules', 'agent-browser', 'bin', binaryName);
+    if (existsSync(directPath)) return directPath;
+
+    // pnpm store — glob for the versioned directory
+    const pnpmBase = join(root, 'node_modules', '.pnpm');
+    if (existsSync(pnpmBase)) {
+      try {
+        const entries = readdirSync(pnpmBase).filter(e => e.startsWith('agent-browser@'));
+        for (const entry of entries) {
+          const pnpmPath = join(pnpmBase, entry, 'node_modules', 'agent-browser', 'bin', binaryName);
+          if (existsSync(pnpmPath)) return pnpmPath;
+        }
+      } catch {
+        // readdirSync may fail on permissions — continue searching
+      }
     }
-    throw new Error(
-      `agent-browser binary not found: ${binaryPath}. Run "pnpm install" to ensure the package is installed.`,
-    );
   }
 
-  return binaryPath;
+  throw new Error(
+    `agent-browser binary "${binaryName}" not found in node_modules. Run "pnpm install" to ensure the package is installed.`,
+  );
 }
 
 let cachedBinaryPath: string | null = null;
