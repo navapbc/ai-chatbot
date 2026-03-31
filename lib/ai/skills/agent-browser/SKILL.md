@@ -75,7 +75,11 @@ If `select` fails, the dropdown is a custom widget. Click the trigger â†’ wait â
 
 ## Commands
 
-The browser tool accepts `{ action, selector, value, ... }` objects. Common actions: `open`, `snapshot`, `click`, `fill`, `type`, `select`, `check`, `press`, `wait`, `get text`, `get value`, `scrollintoview`, `eval`. For the full command reference with all options, use `readSkillFile` to load `references/commands.md`.
+The browser tool accepts `{ action, selector, value, ... }` objects. The action maps directly to an agent-browser CLI command.
+
+**Self-discovery**: To learn any command's usage and options, send `{ action: "<command> --help" }`. For example, `{ action: "snapshot --help" }` returns all snapshot flags and examples. Use this whenever you're unsure about a command's parameters.
+
+Common actions: `open`, `snapshot`, `click`, `fill`, `type`, `select`, `check`, `press`, `wait`, `get text`, `get value`, `scrollintoview`, `eval`, `screenshot`, `scroll`, `hover`, `find label`, `tab`, `dialog`, `frame`. For the full reference, use `readSkillFile` to load `references/commands.md`.
 
 ## Masked/Formatted Fields (CRITICAL)
 

@@ -37,41 +37,20 @@ export function clearSessionQueue(sessionKey: string): void {
  */
 export const createBrowserTool = (sessionId: string, userId: string) =>
   tool({
-    description: `Execute browser automation commands on a remote Kernel browser.
+    description: `Execute browser automation commands on a remote Kernel browser via the agent-browser CLI.
 
-Send structured JSON commands with an "action" field and action-specific parameters. See the Browser Automation skill for snapshot discipline, selector strategy, and workflow rules.
+Send { action, selector, value, ... } objects. The action maps directly to a CLI command.
 
-Commands:
-- { action: "open", url: "<url>" } - Navigate to URL
-- { action: "snapshot" } - Full accessibility tree (ALWAYS do this first)
-- { action: "snapshot", selector: "form" } - Scoped snapshot (reduces noise)
-- { action: "snapshot", interactive: true } - Interactive elements only with refs
-- { action: "click", selector: "@e1" } - Click element by ref
-- { action: "fill", selector: "@e1", value: "text" } - Clear field and fill (programmatic — use for plain text fields)
-- { action: "type", selector: "@e1", text: "text" } - Simulate real keystrokes (use for masked fields: SSN, date, phone, state, zip. Click field first.)
-- { action: "select", selector: "@e1", values: ["option"] } - Select native dropdown option
-- { action: "find label", label: "Field Name", subaction: "fill", value: "val" } - Fill by accessible label
-- { action: "press", key: "Enter" } - Press key (Tab, Escape, ArrowDown, etc.)
-- { action: "hover", selector: "@e1" } - Hover over element
-- { action: "check", selector: "@e1" } - Toggle checkbox on
-- { action: "uncheck", selector: "@e1" } - Toggle checkbox off
-- { action: "scrollintoview", selector: "@e1" } - Scroll element into view
-- { action: "wait", selector: "@e1" } - Wait for element
-- { action: "wait", timeout: 2000 } - Wait milliseconds
-- { action: "wait", state: "networkidle" } - Wait for network to settle
-- { action: "get text", selector: "@e1" } - Get element text content
-- { action: "get value", selector: "@e1" } - Get input field value
-- { action: "get url" } - Get current URL
-- { action: "get title" } - Get page title
-- { action: "scroll", direction: "down", amount: 500 } - Scroll down 500px
-- { action: "screenshot" } - Take screenshot
-- { action: "back" } / { action: "forward" } - Browser navigation (AVOID during form filling — may wipe state)
-- { action: "eval", script: "document.title" } - Run JavaScript (ONLY for reading simple values — NEVER to find/click elements)
-- { action: "tab" } / { action: "tab switch", index: N } / { action: "tab new" } / { action: "tab close" } - Tab management
-- { action: "dialog", response: "accept" } / { action: "dialog", response: "dismiss" } - Handle browser dialogs
-- { action: "frame", selector: "#iframe" } / { action: "frame main" } - Switch between frames
+Core commands: open, snapshot, click, fill, type, select, check, press, wait, get text, get value, get url, eval, screenshot, scroll, scrollintoview, hover, find label, tab, dialog, frame.
 
-NEVER navigate away from the target application domain. Do NOT click social media links, share buttons, or external links.`,
+To discover any command's full usage and options, send { action: "<command> --help" } (e.g. { action: "type --help" } or { action: "snapshot --help" }).
+
+Key rules:
+- ALWAYS snapshot first to get element refs (@e1, @e2)
+- Use fill for plain text fields, type for masked fields (click field first)
+- See the Browser Automation skill for full workflow rules
+
+NEVER navigate away from the target application domain.`,
     inputSchema: z
       .object({
         action: z.string().describe('The command action (e.g. "open", "click", "snapshot", "fill")'),
