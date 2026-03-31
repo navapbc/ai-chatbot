@@ -4,10 +4,9 @@ const nextConfig: NextConfig = {
   // cacheComponents disabled to allow runtime env vars in API routes
   // See: https://github.com/vercel/next.js/discussions/84894
   cacheComponents: false,
-  // agent-browser uses playwright-core internally (for CDP connection).
-  // Must be external so Next.js doesn't try to bundle Playwright's server
-  // code (which requires 'electron' and other native modules).
-  serverExternalPackages: ['agent-browser', 'playwright-core'],
+  // agent-browser ships a native Rust binary — must be external so
+  // Next.js doesn't try to bundle it.
+  serverExternalPackages: ['agent-browser'],
   images: {
     remotePatterns: [
       {

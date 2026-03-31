@@ -99,10 +99,11 @@ export const ToolIcon = ({ toolName, size = 12, className = "text-gray-500 flex-
   return <IconComponent size={size} className={className} />;
 };
 
-// Map agent-browser CLI commands to display info
+// Map agent-browser CLI commands to display info.
+// Includes both current CLI names and legacy names for backward compatibility
+// with existing chat histories.
 const browserCommandMap: Record<string, { verb: string; icon: React.ComponentType<any> }> = {
   'open': { verb: 'Opening', icon: Globe },
-  'goto': { verb: 'Opening', icon: Globe },
   'navigate': { verb: 'Opening', icon: Globe },
   'snapshot': { verb: 'Reading page', icon: Monitor },
   'click': { verb: 'Clicking', icon: MousePointer },
@@ -119,11 +120,27 @@ const browserCommandMap: Record<string, { verb: string; icon: React.ComponentTyp
   'scrollintoview': { verb: 'Scrolling to', icon: Move },
   'wait': { verb: 'Waiting', icon: Clock },
   'get': { verb: 'Getting', icon: Search },
+  'get text': { verb: 'Getting text', icon: Search },
+  'get value': { verb: 'Getting value', icon: Search },
+  'get url': { verb: 'Getting URL', icon: Search },
+  'get title': { verb: 'Getting title', icon: Search },
+  'get html': { verb: 'Getting HTML', icon: Search },
   'screenshot': { verb: 'Taking screenshot', icon: Camera },
   'drag': { verb: 'Dragging', icon: Move },
   'upload': { verb: 'Uploading', icon: Upload },
   'eval': { verb: 'Running script', icon: Code },
   'evaluate': { verb: 'Running script', icon: Code },
+  'find label': { verb: 'Using label', icon: Type },
+  'find role': { verb: 'Finding role', icon: Search },
+  'find text': { verb: 'Finding text', icon: Search },
+  'tab': { verb: 'Listing tabs', icon: Monitor },
+  'tab new': { verb: 'Opening tab', icon: Monitor },
+  'tab switch': { verb: 'Switching tab', icon: Monitor },
+  'tab close': { verb: 'Closing tab', icon: X },
+  'dialog': { verb: 'Handling dialog', icon: Monitor },
+  'frame': { verb: 'Switching frame', icon: Monitor },
+  'frame main': { verb: 'Switching to main frame', icon: Monitor },
+  // Legacy names (backward compat with existing chat histories)
   'gettext': { verb: 'Getting text', icon: Search },
   'getbylabel': { verb: 'Using label', icon: Type },
   'inputvalue': { verb: 'Getting value', icon: Search },
@@ -150,8 +167,8 @@ const parseBrowserAction = (input?: Record<string, any>): { text: string; icon: 
     return { text: mapping.verb, icon: mapping.icon };
   }
 
-  // Navigate — show URL
-  if (action === 'navigate' && input.url) {
+  // Open / Navigate — show URL
+  if ((action === 'open' || action === 'navigate') && input.url) {
     const url = String(input.url);
     const displayUrl = url.length > 40 ? url.substring(0, 40) + '...' : url;
     return { text: `${mapping.verb} ${displayUrl}`, icon: mapping.icon };
@@ -190,8 +207,8 @@ const parseBrowserAction = (input?: Record<string, any>): { text: string; icon: 
     return { text: mapping.verb, icon: mapping.icon };
   }
 
-  // getbylabel — show label and subaction
-  if (action === 'getbylabel' && input.label) {
+  // find label / getbylabel — show label and subaction
+  if ((action === 'find label' || action === 'getbylabel') && input.label) {
     const label = String(input.label);
     const display = label.length > 30 ? label.substring(0, 30) + '...' : label;
     const subVerb = input.subaction === 'fill' ? 'Filling' : input.subaction === 'click' ? 'Clicking' : 'Using';
