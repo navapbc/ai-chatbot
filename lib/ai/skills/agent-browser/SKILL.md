@@ -94,7 +94,16 @@ Many form fields (SSN, birthdate, phone, state, zip) have JavaScript input masks
 - Phone `maxlength="10"` → `"7775551234"`
 - State `maxlength="2"` → `"CA"`
 
-**Always verify**: After typing into masked fields, use `get value` to confirm the value stuck. If empty/wrong, click the field, wait, and re-type.
+**Always verify**: After typing into masked fields, use `get value` to confirm the value stuck. If empty/wrong, the field likely uses a jQuery mask plugin. Fall back to eval with jQuery `.val()`:
+
+```
+// jQuery mask fallback — use the FORMATTED value (with dashes/slashes):
+browser({ action: "eval", script: "$(document.querySelector('#ssnTxt')).val('123-45-6789').trigger('input').trigger('change').trigger('keyup'); document.querySelector('#ssnTxt').value" })
+browser({ action: "eval", script: "$(document.querySelector('#birthDateTxt')).val('01/02/2000').trigger('input').trigger('change').trigger('keyup'); document.querySelector('#birthDateTxt').value" })
+browser({ action: "eval", script: "$(document.querySelector('#telephoneTxt')).val('5555555555').trigger('input').trigger('change').trigger('keyup'); document.querySelector('#telephoneTxt').value" })
+```
+
+**Key**: Use the **formatted** value with the mask's separators (dashes for SSN, slashes for dates) when using jQuery `.val()`. The mask plugin expects the display format, not raw digits.
 
 ## Modals, Dialogs & Popups
 
