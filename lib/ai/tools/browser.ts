@@ -47,7 +47,7 @@ To discover any command's full usage and options, send { action: "<command> --he
 
 Key rules:
 - ALWAYS snapshot first to get element refs (@e1, @e2)
-- Use fill for plain text fields, type for masked fields (click field first)
+- Use fill for plain text fields, type with clear:true for masked fields (SSN, date, phone, state, zip)
 - See the Browser Automation skill for full workflow rules
 
 NEVER navigate away from the target application domain.`,
@@ -66,6 +66,7 @@ NEVER navigate away from the target application domain.`,
         timeout: z.number().optional().describe('Timeout in ms for wait action — must be a number'),
         amount: z.number().optional().describe('Scroll amount in px — must be a number'),
         interactive: z.boolean().optional().describe('Show only interactive elements in snapshot — must be boolean'),
+        clear: z.boolean().optional().describe('Clear field before typing — use with type for masked fields'),
         direction: z.string().optional().describe('Scroll direction: "up" or "down"'),
         state: z.string().optional().describe('Load state for wait (e.g. "networkidle")'),
         index: z.number().optional().describe('Tab index for tab switch/tab close'),

@@ -44,9 +44,8 @@ browser({ action: "fill", selector: "@e3", value: "John" })
 // OR using CSS IDs (equally valid, more stable):
 browser({ action: "fill", selector: "#firstNameTxt", value: "John" })
 
-// Masked fields — click + type + verify:
-browser({ action: "click", selector: "#ssnTxt" })
-browser({ action: "type", selector: "#ssnTxt", text: "123456789" })
+// Masked fields — type with clear + verify:
+browser({ action: "type", selector: "#ssnTxt", text: "123456789", clear: true })
 browser({ action: "get value", selector: "#ssnTxt" })  // Verify it stuck
 
 // Checkboxes — use the specific ID to avoid ambiguity:
@@ -85,9 +84,9 @@ Common actions: `open`, `snapshot`, `click`, `fill`, `type`, `select`, `check`, 
 
 Many form fields (SSN, birthdate, phone, state, zip) have JavaScript input masks or `maxlength` constraints.
 
-**`fill` vs `type`**: The `fill` action sets values programmatically, **bypassing** JS event handlers — masked fields will silently reject or wipe the value. Click the field first, then use `type` for these fields — it simulates real keystrokes and triggers the JS formatters.
+**`fill` vs `type`**: The `fill` action sets values programmatically, **bypassing** JS event handlers — masked fields will silently reject or wipe the value. Use `type` with `clear: true` for these fields — it clears the field first, then types character-by-character triggering JS formatters.
 
-**Rule of thumb**: `fill` for plain text (name, address, city, email). `type` for anything with formatting (SSN, date, phone, state, zip).
+**Rule of thumb**: `fill` for plain text (name, address, city, email). `type` with `clear: true` for anything with formatting (SSN, date, phone, state, zip).
 
 **Respect `maxlength`**: Strip dashes, slashes, spaces so digits fit. Examples:
 - SSN `maxlength="9"` → `"123456789"`

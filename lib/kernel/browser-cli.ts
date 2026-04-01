@@ -80,34 +80,47 @@ function resolveBinary(): string {
  * Compound actions like "get text" or "tab new" are split on spaces.
  * Snapshot and wait have special flag syntax.
  * Everything else is a direct passthrough — no command-specific logic.
+ *
+ * Returns an array of arg arrays. Usually one, but `type` with `clear: true`
+ * produces two: fill "" to clear, then type to enter text char-by-char.
  */
-function toArgs(params: Record<string, unknown>): string[] {
+function toArgs(params: Record<string, unknown>): string[][] {
   const action = String(params.action ?? '');
   const args = action.split(' ');
+
+  // --- type with clear: daemon supports clear but CLI doesn't expose it.
+  // Clear with fill "" (programmatic — fine for empty field), then type
+  // char-by-char to trigger JS input masks.
+  if (action === 'type' && params.clear && params.selector) {
+    return [
+      ['fill', String(params.selector), ''],
+      ['type', String(params.selector), String(params.text ?? '')],
+    ];
+  }
 
   // --- snapshot: uses short flags ---
   if (action === 'snapshot') {
     if (params.interactive) args.push('-i');
     if (params.selector) args.push('-s', String(params.selector));
-    return args;
+    return [args];
   }
 
   // --- wait: polymorphic (selector, ms, or --flag) ---
   if (action === 'wait') {
-    if (params.selector) return [...args, String(params.selector)];
-    if (params.timeout !== undefined) return [...args, String(params.timeout)];
-    if (params.text) return [...args, '--text', String(params.text)];
-    if (params.url) return [...args, '--url', String(params.url)];
-    if (params.state) return [...args, '--load', String(params.state)];
-    if (params.fn) return [...args, '--fn', String(params.fn)];
-    return args;
+    if (params.selector) return [[...args, String(params.selector)]];
+    if (params.timeout !== undefined) return [[...args, String(params.timeout)]];
+    if (params.text) return [[...args, '--text', String(params.text)]];
+    if (params.url) return [[...args, '--url', String(params.url)]];
+    if (params.state) return [[...args, '--load', String(params.state)]];
+    if (params.fn) return [[...args, '--fn', String(params.fn)]];
+    return [args];
   }
 
   // --- scroll: direction before selector ---
   if (action === 'scroll') {
     if (params.direction) args.push(String(params.direction));
     if (params.amount !== undefined) args.push(String(params.amount));
-    return args;
+    return [args];
   }
 
   // --- Everything else: selector, then value-like positional, then extras ---
@@ -126,7 +139,7 @@ function toArgs(params: Record<string, unknown>): string[] {
   if (params.promptText) args.push(String(params.promptText));
   if (params.name) args.push('--name', String(params.name));
 
-  return args;
+  return [args];
 }
 
 // =============================================================================
@@ -255,22 +268,26 @@ export async function executeCLICommand(
   params: Record<string, unknown>,
   abortSignal?: AbortSignal,
 ): Promise<{ success: boolean; output: string | null; error: string | null }> {
-  const args = toArgs(params);
-  console.log('[browser-cli] Executing:', args.join(' '));
+  const argSets = toArgs(params);
+  let lastResult: CLIResult = { success: true };
 
-  const result = await spawnCLI(
-    ['--session', shortSessionKey(sessionKey), '--cdp', cdpWsUrl, ...args, '--json'],
-    abortSignal,
-  );
+  for (const args of argSets) {
+    console.log('[browser-cli] Executing:', args.join(' '));
+    lastResult = await spawnCLI(
+      ['--session', shortSessionKey(sessionKey), '--cdp', cdpWsUrl, ...args, '--json'],
+      abortSignal,
+    );
+    if (!lastResult.success) break;
+  }
 
-  const output = result.data != null
-    ? (typeof result.data === 'string' ? result.data : JSON.stringify(result.data))
+  const output = lastResult.data != null
+    ? (typeof lastResult.data === 'string' ? lastResult.data : JSON.stringify(lastResult.data))
     : null;
 
   return {
-    success: result.success ?? false,
+    success: lastResult.success ?? false,
     output,
-    error: result.error ?? null,
+    error: lastResult.error ?? null,
   };
 }
 
