@@ -13,6 +13,10 @@ const config: Config = {
       fontFamily: {
         sans: ['var(--font-geist)'],
         mono: ['var(--font-geist-mono)'],
+        'source-serif': ['var(--font-source-serif)', 'serif'],
+        'inter': ['var(--font-inter)', 'sans-serif'],
+        'ibm-plex-mono': ['var(--font-ibm-plex-mono)', 'monospace'],
+        'roboto': ['var(--font-roboto)', 'sans-serif'],
       },
       screens: {
         'toast-mobile': '600px',
@@ -25,6 +29,7 @@ const config: Config = {
       colors: {
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',
+        'chat-background': 'hsl(var(--chat-background))',
         card: {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
@@ -73,9 +78,14 @@ const config: Config = {
           border: 'hsl(var(--sidebar-border))',
           ring: 'hsl(var(--sidebar-ring))',
         },
+        'custom-purple': 'hsl(var(--custom-purple))',
+
       },
     },
   },
-  plugins: [require('tailwindcss-animate'), require('@tailwindcss/typography')],
+  plugins: [
+    require('tailwindcss-animate'), 
+    require('@tailwindcss/typography'),
+  ],
 };
 export default config;

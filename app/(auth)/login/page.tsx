@@ -1,77 +1,168 @@
 'use client';
 
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { useActionState, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useState, useEffect, Suspense } from 'react';
 import { toast } from '@/components/toast';
+import { signIn } from 'next-auth/react';
+import { MicrosoftLogo } from '@/components/icons/MicrosoftLogo';
+import { GoogleLogo } from '@/components/icons/GoogleLogo';
 
-import { AuthForm } from '@/components/auth-form';
-import { SubmitButton } from '@/components/submit-button';
+// Feature flag for guest login in preview environments
+const useGuestLogin = process.env.NEXT_PUBLIC_USE_GUEST_LOGIN === 'true';
 
-import { login, type LoginActionState } from '../actions';
-import { useSession } from 'next-auth/react';
-
-export default function Page() {
+function ErrorHandler() {
   const router = useRouter();
-
-  const [email, setEmail] = useState('');
-  const [isSuccessful, setIsSuccessful] = useState(false);
-
-  const [state, formAction] = useActionState<LoginActionState, FormData>(
-    login,
-    {
-      status: 'idle',
-    },
-  );
-
-  const { update: updateSession } = useSession();
+  const searchParams = useSearchParams();
 
   useEffect(() => {
-    if (state.status === 'failed') {
+    const error = searchParams.get('error');
+    if (error) {
       toast({
         type: 'error',
-        description: 'Invalid credentials!',
+        description: 'Access denied',
       });
-    } else if (state.status === 'invalid_data') {
-      toast({
-        type: 'error',
-        description: 'Failed validating your submission!',
-      });
-    } else if (state.status === 'success') {
-      setIsSuccessful(true);
-      updateSession();
-      router.refresh();
+      // Clear the error from URL without refresh
+      router.replace('/login', { scroll: false });
     }
-  }, [state.status]);
+  }, [searchParams, router]);
 
-  const handleSubmit = (formData: FormData) => {
-    setEmail(formData.get('email') as string);
-    formAction(formData);
+  return null;
+}
+
+function LoginContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [loadingMethod, setLoadingMethod] = useState<'microsoft' | 'google' | 'guest' | null>(null);
+  const [hasAutoSignedIn, setHasAutoSignedIn] = useState(false);
+
+  // Use callbackUrl from URL params, default to /home
+  const callbackUrl = searchParams.get('callbackUrl') || '/home';
+
+  // Auto sign-in as guest when feature flag is enabled
+  useEffect(() => {
+    const doGuestSignIn = async () => {
+      if (useGuestLogin && !hasAutoSignedIn) {
+        setHasAutoSignedIn(true);
+        setLoadingMethod('guest');
+
+        // Use redirect: false to handle redirect manually
+        const result = await signIn('guest', { redirect: false });
+
+        if (result?.ok) {
+          // Manual redirect to ensure we stay on the correct host
+          router.push(callbackUrl);
+        } else {
+          toast({
+            type: 'error',
+            description: 'Failed to sign in as guest',
+          });
+          setLoadingMethod(null);
+        }
+      }
+    };
+
+    doGuestSignIn();
+  }, [callbackUrl, hasAutoSignedIn, router]);
+
+  const handleGoogleLogin = async () => {
+    setLoadingMethod('google');
+    try {
+      await signIn('google', { callbackUrl });
+    } catch (error) {
+      toast({
+        type: 'error',
+        description: 'Failed to sign in with Google',
+      });
+      setLoadingMethod(null);
+    }
   };
 
-  return (
-    <div className="flex h-dvh w-screen items-start pt-12 md:pt-0 md:items-center justify-center bg-background">
-      <div className="w-full max-w-md overflow-hidden rounded-2xl flex flex-col gap-12">
-        <div className="flex flex-col items-center justify-center gap-2 px-4 text-center sm:px-16">
-          <h3 className="text-xl font-semibold dark:text-zinc-50">Sign In</h3>
-          <p className="text-sm text-gray-500 dark:text-zinc-400">
-            Use your email and password to sign in
-          </p>
+  const handleMicrosoftLogin = async () => {
+    setLoadingMethod('microsoft');
+    try {
+      await signIn('microsoft-entra-id', { callbackUrl });
+    } catch (error) {
+      toast({
+        type: 'error',
+        description: 'Failed to sign in with Microsoft',
+      });
+      setLoadingMethod(null);
+    }
+  };
+
+  // Show loading state when auto-signing in as guest
+  if (useGuestLogin) {
+    return (
+      <div className="bg-chat-background relative size-full min-h-screen">
+        <div className="absolute bg-card border border-border border-solid left-1/2 rounded-[10px] top-[257px] -translate-x-1/2 w-[414px] h-[180px]">
+          <div className="content-stretch flex flex-col gap-[18px] items-center px-[32px] pt-[32px] w-full">
+            <p className="font-source-serif leading-normal min-w-full not-italic relative shrink-0 text-[32px] text-center text-card-foreground tracking-[0.16px]">
+              Welcome
+            </p>
+            <p className="font-inter font-normal leading-normal min-w-full not-italic relative shrink-0 text-[14px] text-center text-muted-foreground tracking-[0.07px]">
+              Signing you in...
+            </p>
+          </div>
         </div>
-        <AuthForm action={handleSubmit} defaultEmail={email}>
-          <SubmitButton isSuccessful={isSuccessful}>Sign in</SubmitButton>
-          <p className="text-center text-sm text-gray-600 mt-4 dark:text-zinc-400">
-            {"Don't have an account? "}
-            <Link
-              href="/register"
-              className="font-semibold text-gray-800 hover:underline dark:text-zinc-200"
-            >
-              Sign up
-            </Link>
-            {' for free.'}
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-chat-background relative size-full min-h-screen">
+      <div className="absolute bg-card border border-border border-solid left-1/2 rounded-[10px] top-[257px] -translate-x-1/2 w-[414px] h-[260px]">
+        <div className="content-stretch flex flex-col gap-[18px] items-center px-[32px] pt-[32px] w-full">
+          <p className="font-source-serif leading-normal min-w-full not-italic relative shrink-0 text-[32px] text-center text-card-foreground tracking-[0.16px]">
+            Welcome
           </p>
-        </AuthForm>
+          <p className="font-inter font-normal leading-normal min-w-full not-italic relative shrink-0 text-[14px] text-center text-muted-foreground tracking-[0.07px]">
+            Sign in to access the Form-Filling Assistant
+          </p>
+
+          {/* Microsoft Login Button */}
+          <button
+            type="button"
+            onClick={handleMicrosoftLogin}
+            disabled={loadingMethod !== null}
+            className="border border-border border-solid box-border content-stretch flex gap-[8px] items-center justify-center min-h-[36px] px-[16px] py-[7.5px] relative rounded-[8px] shrink-0 w-full hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors bg-card"
+          >
+            <div className="relative shrink-0 size-[13.25px]">
+              <MicrosoftLogo size={13.25} className="block max-w-none size-full" />
+            </div>
+            <div className="flex flex-col font-inter font-medium justify-center leading-[0] not-italic relative shrink-0 text-[14px] text-center text-card-foreground text-nowrap">
+              <p className="leading-normal whitespace-pre">
+                {loadingMethod === 'microsoft' ? 'Signing in...' : 'Continue with Microsoft'}
+              </p>
+            </div>
+          </button>
+
+          {/* Google Login Button */}
+          <button
+            type="button"
+            onClick={handleGoogleLogin}
+            disabled={loadingMethod !== null}
+            className="border border-border border-solid box-border content-stretch flex gap-[8px] items-center justify-center min-h-[36px] px-[16px] py-[7.5px] relative rounded-[8px] shrink-0 w-full hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors bg-card"
+          >
+            <div className="relative shrink-0 size-[13.25px]">
+              <GoogleLogo size={13.25} className="block max-w-none size-full" />
+            </div>
+            <div className="flex flex-col font-inter font-medium justify-center leading-[0] not-italic relative shrink-0 text-[14px] text-center text-card-foreground text-nowrap">
+              <p className="leading-normal whitespace-pre">
+                {loadingMethod === 'google' ? 'Signing in...' : 'Continue with Google'}
+              </p>
+            </div>
+          </button>
+        </div>
       </div>
     </div>
+  );
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={null}>
+      <ErrorHandler />
+      <LoginContent />
+    </Suspense>
   );
 }

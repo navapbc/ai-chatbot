@@ -120,6 +120,15 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
     : false;
 
   const handleDelete = async () => {
+    // Clean up any Kernel browser associated with this chat
+    if (deleteId && user?.id) {
+      fetch('/api/kernel-browser', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', sessionId: `${deleteId}-${user.id}` }),
+      }).catch(() => {});
+    }
+
     const deletePromise = fetch(`/api/chat?id=${deleteId}`, {
       method: 'DELETE',
     });

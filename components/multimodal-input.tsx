@@ -20,6 +20,7 @@ import { ArrowUpIcon, PaperclipIcon, StopIcon } from './icons';
 import { PreviewAttachment } from './preview-attachment';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { SuggestedActions } from './suggested-actions';
 import equal from 'fast-deep-equal';
 import type { UseChatHelpers } from '@ai-sdk/react';
@@ -28,6 +29,11 @@ import { ArrowDown } from 'lucide-react';
 import { useScrollToBottom } from '@/hooks/use-scroll-to-bottom';
 import type { VisibilityType } from './visibility-selector';
 import type { Attachment, ChatMessage } from '@/lib/types';
+import type { Session } from 'next-auth';
+import { useRouter } from 'next/navigation';
+import { Alert, AlertDescription } from './ui/alert';
+import { isProductionEnvironment } from '@/lib/constants';
+import { ModelSelectorButton } from './model-selector-button';
 
 function PureMultimodalInput({
   chatId,
@@ -42,6 +48,9 @@ function PureMultimodalInput({
   sendMessage,
   className,
   selectedVisibilityType,
+  showStopButton = true,
+  placeholder = 'Write something...',
+  session,
 }: {
   chatId: string;
   input: string;
@@ -55,9 +64,15 @@ function PureMultimodalInput({
   sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
   className?: string;
   selectedVisibilityType: VisibilityType;
+  showStopButton?: boolean;
+  placeholder?: string;
+  session: Session | null;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { width } = useWindowSize();
+  const router = useRouter();
+  const isLoggedIn = !!session;
+  const [selectedModelId, setSelectedModelId] = useLocalStorage<string>('selected-chat-model-id', '');
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -111,21 +126,29 @@ function PureMultimodalInput({
   const submitForm = useCallback(() => {
     window.history.replaceState({}, '', `/chat/${chatId}`);
 
-    sendMessage({
-      role: 'user',
-      parts: [
-        ...attachments.map((attachment) => ({
-          type: 'file' as const,
-          url: attachment.url,
-          name: attachment.name,
-          mediaType: attachment.contentType,
-        })),
-        {
-          type: 'text',
-          text: input,
-        },
-      ],
-    });
+    console.log(`[multimodal-input] selectedModelId="${selectedModelId}" isProduction=${isProductionEnvironment}`);
+    const messageBody = !isProductionEnvironment && selectedModelId
+      ? { modelOverride: selectedModelId }
+      : undefined;
+
+    sendMessage(
+      {
+        role: 'user',
+        parts: [
+          ...attachments.map((attachment) => ({
+            type: 'file' as const,
+            url: attachment.url,
+            name: attachment.name,
+            mediaType: attachment.contentType,
+          })),
+          {
+            type: 'text',
+            text: input,
+          },
+        ],
+      },
+      messageBody ? { body: messageBody } : undefined,
+    );
 
     setAttachments([]);
     setLocalStorageInput('');
@@ -144,6 +167,7 @@ function PureMultimodalInput({
     setLocalStorageInput,
     width,
     chatId,
+    selectedModelId,
   ]);
 
   const uploadFile = async (file: File) => {
@@ -200,6 +224,11 @@ function PureMultimodalInput({
   );
 
   const { isAtBottom, scrollToBottom } = useScrollToBottom();
+  const [isHydrated, setIsHydrated] = useState(false);
+
+  useEffect(() => {
+    setIsHydrated(true);
+  }, []);
 
   useEffect(() => {
     if (status === 'submitted') {
@@ -208,15 +237,15 @@ function PureMultimodalInput({
   }, [status, scrollToBottom]);
 
   return (
-    <div className="relative w-full flex flex-col gap-4">
+    <div className="relative w-full flex flex-col gap-4 min-w-0">
       <AnimatePresence>
-        {!isAtBottom && (
+        {isHydrated && !isAtBottom && messages.length > 0 && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
             transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-            className="absolute left-1/2 bottom-28 -translate-x-1/2 z-50"
+            className="absolute left-1/2 bottom-48 -translate-x-1/2 z-50"
           >
             <Button
               data-testid="scroll-to-bottom-button"
@@ -236,7 +265,9 @@ function PureMultimodalInput({
 
       {messages.length === 0 &&
         attachments.length === 0 &&
-        uploadQueue.length === 0 && (
+        uploadQueue.length === 0 &&
+        isLoggedIn &&
+        !isProductionEnvironment && (
           <SuggestedActions
             sendMessage={sendMessage}
             chatId={chatId}
@@ -251,12 +282,14 @@ function PureMultimodalInput({
         multiple
         onChange={handleFileChange}
         tabIndex={-1}
+        aria-label="Upload files"
+        title="Upload files"
       />
 
       {(attachments.length > 0 || uploadQueue.length > 0) && (
         <div
           data-testid="attachments-preview"
-          className="flex flex-row gap-2 overflow-x-scroll items-end"
+          className="flex flex-row gap-2 overflow-x-auto items-end"
         >
           {attachments.map((attachment) => (
             <PreviewAttachment key={attachment.url} attachment={attachment} />
@@ -276,49 +309,54 @@ function PureMultimodalInput({
         </div>
       )}
 
-      <Textarea
-        data-testid="multimodal-input"
-        ref={textareaRef}
-        placeholder="Send a message..."
-        value={input}
-        onChange={handleInput}
-        className={cx(
-          'min-h-[24px] max-h-[calc(75dvh)] overflow-hidden resize-none rounded-2xl !text-base bg-muted pb-10 dark:border-zinc-700',
-          className,
-        )}
-        rows={2}
-        autoFocus
-        onKeyDown={(event) => {
-          if (
-            event.key === 'Enter' &&
-            !event.shiftKey &&
-            !event.nativeEvent.isComposing
-          ) {
-            event.preventDefault();
+      <div className="relative">
+        <Textarea
+          data-testid="multimodal-input"
+          ref={textareaRef}
+          placeholder={placeholder}
+          value={input}
+          onChange={handleInput}
+          className={cx(
+            'min-h-[24px] max-h-[calc(75dvh)] overflow-hidden resize-none rounded-2xl !text-base border-2 border-input bg-card text-foreground placeholder-muted-foreground focus-visible:border-primary dark:focus-visible:border-primary transition-colors pb-10',
+            className,
+          )}
+          rows={2}
+          onKeyDown={(event) => {
+            if (
+              event.key === 'Enter' &&
+              !event.shiftKey &&
+              !event.nativeEvent.isComposing
+            ) {
+              event.preventDefault();
 
-            if (status !== 'ready') {
-              toast.error('Please wait for the model to finish its response!');
-            } else {
-              submitForm();
+              if (!isLoggedIn) {
+                router.push('/login');
+              } else if (status === 'error') {
+                toast.error('Something went wrong. Please try again.');
+              } else if (status === 'ready') {
+                submitForm();
+              }
             }
-          }
-        }}
-      />
-
-      <div className="absolute bottom-0 p-2 w-fit flex flex-row justify-start">
-        <AttachmentsButton fileInputRef={fileInputRef} status={status} />
+          }}
+        />
       </div>
 
-      <div className="absolute bottom-0 right-0 p-2 w-fit flex flex-row justify-end">
-        {status === 'submitted' ? (
-          <StopButton stop={stop} setMessages={setMessages} />
-        ) : (
+      <div className="flex flex-row justify-between gap-2 mt-1">
+        <div className="flex flex-row gap-2">
+          <ModelSelectorButton onModelChange={(model) => setSelectedModelId(model.id)} />
+        </div>
+        <div className="flex flex-row gap-2">
+          {showStopButton && (
+            <StopButton status={status} stop={stop} setMessages={setMessages} />
+          )}
           <SendButton
             input={input}
             submitForm={submitForm}
             uploadQueue={uploadQueue}
+            status={status}
+            isLoggedIn={isLoggedIn}
           />
-        )}
+        </div>
       </div>
     </div>
   );
@@ -332,6 +370,7 @@ export const MultimodalInput = memo(
     if (!equal(prevProps.attachments, nextProps.attachments)) return false;
     if (prevProps.selectedVisibilityType !== nextProps.selectedVisibilityType)
       return false;
+    if (prevProps.session?.user?.id !== nextProps.session?.user?.id) return false;
 
     return true;
   },
@@ -347,7 +386,7 @@ function PureAttachmentsButton({
   return (
     <Button
       data-testid="attachments-button"
-      className="rounded-md rounded-bl-lg p-[7px] h-fit dark:border-zinc-700 hover:dark:bg-zinc-900 hover:bg-zinc-200"
+      className="rounded-md rounded-bl-lg p-[7px] h-fit border border-input bg-card dark:bg-card hover:bg-accent dark:hover:bg-accent text-muted-foreground transition-colors"
       onClick={(event) => {
         event.preventDefault();
         fileInputRef.current?.click();
@@ -363,23 +402,27 @@ function PureAttachmentsButton({
 const AttachmentsButton = memo(PureAttachmentsButton);
 
 function PureStopButton({
+  status,
   stop,
   setMessages,
 }: {
+  status: UseChatHelpers<ChatMessage>['status'];
   stop: () => void;
   setMessages: UseChatHelpers<ChatMessage>['setMessages'];
 }) {
   return (
     <Button
       data-testid="stop-button"
-      className="rounded-full p-1.5 h-fit border dark:border-zinc-600"
+      className="bg-transparent hover:bg-accent rounded-[100px] px-3 py-1.5 flex items-center gap-1 text-primary text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       onClick={(event) => {
         event.preventDefault();
         stop();
         setMessages((messages) => messages);
       }}
+      disabled={status !== 'streaming' && status !== 'submitted'}
     >
-      <StopIcon size={14} />
+      <StopIcon size={20} />
+      <span>Stop</span>
     </Button>
   );
 }
@@ -390,29 +433,65 @@ function PureSendButton({
   submitForm,
   input,
   uploadQueue,
+  status,
+  isLoggedIn,
 }: {
   submitForm: () => void;
   input: string;
   uploadQueue: Array<string>;
+  status: UseChatHelpers<ChatMessage>['status'];
+  isLoggedIn: boolean;
 }) {
-  return (
+  const isWorking = status === 'submitted' || status === 'streaming';
+  const isDisabled = !isLoggedIn || input.length === 0 || uploadQueue.length > 0 || isWorking;
+
+  const button = (
     <Button
       data-testid="send-button"
-      className="rounded-full p-1.5 h-fit border dark:border-zinc-600"
+      className="bg-primary hover:bg-primary/90 disabled:bg-muted disabled:hover:bg-muted rounded-[100px] px-3 py-1.5 flex items-center gap-1 text-primary-foreground disabled:text-muted-foreground text-sm font-medium disabled:opacity-50 disabled:pointer-events-auto disabled:cursor-not-allowed transition-colors"
       onClick={(event) => {
         event.preventDefault();
-        submitForm();
+        if (isLoggedIn && status === 'ready') {
+          submitForm();
+        }
       }}
-      disabled={input.length === 0 || uploadQueue.length > 0}
+      disabled={isDisabled}
     >
-      <ArrowUpIcon size={14} />
+      <ArrowUpIcon size={20} />
+      <span>Submit</span>
     </Button>
   );
+
+  if (!isLoggedIn) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span tabIndex={0}>{button}</span>
+        </TooltipTrigger>
+        <TooltipContent>Log in to submit</TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  if (isWorking) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span tabIndex={0}>{button}</span>
+        </TooltipTrigger>
+        <TooltipContent>AI is still working</TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return button;
 }
 
 const SendButton = memo(PureSendButton, (prevProps, nextProps) => {
   if (prevProps.uploadQueue.length !== nextProps.uploadQueue.length)
     return false;
   if (prevProps.input !== nextProps.input) return false;
+  if (prevProps.status !== nextProps.status) return false;
+  if (prevProps.isLoggedIn !== nextProps.isLoggedIn) return false;
   return true;
 });

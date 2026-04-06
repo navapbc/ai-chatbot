@@ -1,13 +1,12 @@
 import {
+  consumeStream,
   convertToModelMessages,
   createUIMessageStream,
   JsonToSseTransformStream,
-  smoothStream,
   stepCountIs,
   streamText,
 } from 'ai';
 import { auth, type UserType } from '@/app/(auth)/auth';
-import { type RequestHints, systemPrompt } from '@/lib/ai/prompts';
 import {
   createStreamId,
   deleteChatById,
@@ -19,26 +18,27 @@ import {
 } from '@/lib/db/queries';
 import { convertToUIMessages, generateUUID } from '@/lib/utils';
 import { generateTitleFromUserMessage } from '../../actions';
-import { createDocument } from '@/lib/ai/tools/create-document';
-import { updateDocument } from '@/lib/ai/tools/update-document';
-import { requestSuggestions } from '@/lib/ai/tools/request-suggestions';
-import { getWeather } from '@/lib/ai/tools/get-weather';
 import { isProductionEnvironment } from '@/lib/constants';
-import { myProvider } from '@/lib/ai/providers';
+import { myProvider, webAutomationModel } from '@/lib/ai/providers';
 import { entitlementsByUserType } from '@/lib/ai/entitlements';
 import { postRequestBodySchema, type PostRequestBody } from './schema';
-import { geolocation } from '@vercel/functions';
 import {
   createResumableStreamContext,
   type ResumableStreamContext,
 } from 'resumable-stream';
 import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
-import type { ChatMessage } from '@/lib/types';
-import type { ChatModel } from '@/lib/ai/models';
-import type { VisibilityType } from '@/components/visibility-selector';
+import { apricotTools } from '@/lib/ai/tools/apricot';
+import { createBrowserTool } from '@/lib/ai/tools/browser';
+import { gapAnalysis } from '@/lib/ai/tools/gap-analysis';
+import { formSummary } from '@/lib/ai/tools/form-summary';
+import { actionLabel } from '@/lib/ai/tools/action-label';
+import { getWebAutomationSystemPrompt } from '@/lib/ai/prompts/web-automation';
+import { loadSkill } from '@/lib/ai/tools/load-skill';
+import { readSkillFile } from '@/lib/ai/tools/read-skill-file';
+import { createMessageCompressor, preCompactMessages } from '@/lib/ai/context-compression';
 
-export const maxDuration = 60;
+export const maxDuration = 300; // 5 minutes for web automation tasks
 
 let globalStreamContext: ResumableStreamContext | null = null;
 
@@ -76,14 +76,14 @@ export async function POST(request: Request) {
     const {
       id,
       message,
-      selectedChatModel,
+      modelOverride,
       selectedVisibilityType,
-    }: {
-      id: string;
-      message: ChatMessage;
-      selectedChatModel: ChatModel['id'];
-      selectedVisibilityType: VisibilityType;
     } = requestBody;
+
+    // Only honour modelOverride in non-production environments.
+    const resolvedModelOverride = !isProductionEnvironment ? modelOverride : undefined;
+
+    console.log(`[chat] rawModelOverride=${modelOverride ?? 'none'} isProduction=${isProductionEnvironment} resolvedOverride=${resolvedModelOverride ?? 'none'}`);
 
     const session = await auth();
 
@@ -91,7 +91,7 @@ export async function POST(request: Request) {
       return new ChatSDKError('unauthorized:chat').toResponse();
     }
 
-    const userType: UserType = session.user.type;
+    const userType: UserType = session.user.type ?? 'regular';
 
     const messageCount = await getMessageCountByUserId({
       id: session.user.id,
@@ -123,14 +123,23 @@ export async function POST(request: Request) {
 
     const messagesFromDb = await getMessagesByChatId({ id });
     const uiMessages = [...convertToUIMessages(messagesFromDb), message];
+    const existingMessageIds = new Set(uiMessages.map((m) => m.id));
 
-    const { longitude, latitude, city, country } = geolocation(request);
-
-    const requestHints: RequestHints = {
-      longitude,
-      latitude,
-      city,
-      country,
+    // Save only messages generated during this request (not already in DB).
+    const saveNewMessages = async (messages: Array<{ id: string; role: string; parts: unknown }>) => {
+      const newMessages = messages.filter((m) => !existingMessageIds.has(m.id));
+      if (newMessages.length > 0) {
+        await saveMessages({
+          messages: newMessages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            parts: m.parts,
+            createdAt: new Date(),
+            attachments: [],
+            chatId: id,
+          })),
+        });
+      }
     };
 
     await saveMessages({
@@ -149,58 +158,117 @@ export async function POST(request: Request) {
     const streamId = generateUUID();
     await createStreamId({ streamId, chatId: id });
 
+    // Create session ID for browser isolation
+    // sessionId includes both chatId and userId to ensure global uniqueness
+    const sessionId = `${id}-${session.user.id}`;
+
     const stream = createUIMessageStream({
-      execute: ({ writer: dataStream }) => {
+      execute: async ({ writer: dataStream }) => {
+        // Pre-compact messages loaded from DB if they exceed the context
+        // window threshold. This handles the cross-request case where a
+        // previous request compacted mid-stream but saved raw messages.
+        const initialModelMessages = await convertToModelMessages(uiMessages);
+        const { messages: preCompacted, compacted: wasPreCompacted, summary: preCompactSummary } =
+          await preCompactMessages(initialModelMessages, () => {
+            dataStream.write({
+              type: 'data-compacting',
+              data: { timestamp: Date.now() },
+              transient: true,
+            });
+          });
+
+        if (wasPreCompacted) {
+          dataStream.write({
+            type: 'data-checkpoint',
+            data: {
+              stepNumber: 0,
+              inputTokens: 0,
+              timestamp: Date.now(),
+              summary: preCompactSummary,
+            },
+            transient: true,
+          });
+        }
+
+        // One compressor instance per request; its cache persists across all
+        // prepareStep calls so generateText is not re-fired on every step.
+        const compressStep = createMessageCompressor();
+
+        const activeModel = resolvedModelOverride
+          ? myProvider.languageModel(resolvedModelOverride)
+          : webAutomationModel;
+
         const result = streamText({
-          model: myProvider.languageModel(selectedChatModel),
-          system: systemPrompt({ selectedChatModel, requestHints }),
-          messages: convertToModelMessages(uiMessages),
-          stopWhen: stepCountIs(5),
-          experimental_activeTools:
-            selectedChatModel === 'chat-model-reasoning'
-              ? []
-              : [
-                  'getWeather',
-                  'createDocument',
-                  'updateDocument',
-                  'requestSuggestions',
-                ],
-          experimental_transform: smoothStream({ chunking: 'word' }),
+          model: activeModel,
+          system: getWebAutomationSystemPrompt(),
+          messages: preCompacted,
           tools: {
-            getWeather,
-            createDocument: createDocument({ session, dataStream }),
-            updateDocument: updateDocument({ session, dataStream }),
-            requestSuggestions: requestSuggestions({
-              session,
-              dataStream,
-            }),
+            ...apricotTools,
+            gapAnalysis,
+            formSummary,
+            actionLabel,
+            browser: createBrowserTool(sessionId, session.user.id),
+            loadSkill,
+            readSkillFile,
+          },
+          stopWhen: stepCountIs(500),
+          abortSignal: request.signal,
+          // Compress message history when token usage approaches the context
+          // window limit (75% of 200K). First step has no prior usage data so
+          // compression is skipped (correct — first step is always small).
+          prepareStep: async ({ messages: stepMessages, steps }) => {
+            const lastInputTokens = steps.length > 0
+              ? steps[steps.length - 1].usage.inputTokens
+              : undefined;
+            const { messages: compressed, compacted, summary } = await compressStep(
+              stepMessages,
+              lastInputTokens,
+              () => {
+                dataStream.write({
+                  type: 'data-compacting',
+                  data: { timestamp: Date.now() },
+                  transient: true,
+                });
+              },
+            );
+            if (compacted) {
+              console.log(
+                `[compressor] emitting data-checkpoint — step=${steps.length}, inputTokens=${lastInputTokens}`
+              );
+              dataStream.write({
+                type: 'data-checkpoint',
+                data: {
+                  stepNumber: steps.length,
+                  inputTokens: lastInputTokens,
+                  timestamp: Date.now(),
+                  summary,
+                },
+                transient: true,
+              });
+            }
+            return { messages: compressed };
+          },
+          // Emit cumulative token usage after each step so the client can
+          // display it in real-time via the Context component.
+          onStepFinish: ({ usage }) => {
+            dataStream.write({
+              type: 'data-token-usage',
+              data: usage,
+              transient: true,
+            });
           },
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,
-            functionId: 'stream-text',
+            functionId: 'web-automation-agent',
           },
         });
 
-        result.consumeStream();
-
-        dataStream.merge(
-          result.toUIMessageStream({
-            sendReasoning: true,
-          }),
-        );
+        dataStream.merge(result.toUIMessageStream());
+        consumeStream({ stream: result.textStream });
       },
       generateId: generateUUID,
       onFinish: async ({ messages }) => {
-        await saveMessages({
-          messages: messages.map((message) => ({
-            id: message.id,
-            role: message.role,
-            parts: message.parts,
-            createdAt: new Date(),
-            attachments: [],
-            chatId: id,
-          })),
-        });
+        await saveNewMessages(messages);
       },
       onError: () => {
         return 'Oops, an error occurred!';
@@ -212,12 +280,11 @@ export async function POST(request: Request) {
     if (streamContext) {
       return new Response(
         await streamContext.resumableStream(streamId, () =>
-          stream.pipeThrough(new JsonToSseTransformStream()),
-        ),
+          stream.pipeThrough(new JsonToSseTransformStream())
+        )
       );
-    } else {
-      return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
     }
+    return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
   } catch (error) {
     if (error instanceof ChatSDKError) {
       return error.toResponse();
@@ -243,6 +310,10 @@ export async function DELETE(request: Request) {
   }
 
   const chat = await getChatById({ id });
+
+  if (!chat) {
+    return new ChatSDKError('not_found:chat').toResponse();
+  }
 
   if (chat.userId !== session.user.id) {
     return new ChatSDKError('forbidden:chat').toResponse();

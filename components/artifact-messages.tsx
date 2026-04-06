@@ -7,6 +7,7 @@ import type { UseChatHelpers } from '@ai-sdk/react';
 import { motion } from 'framer-motion';
 import { useMessages } from '@/hooks/use-messages';
 import type { ChatMessage } from '@/lib/types';
+import type { CheckpointData } from './chat';
 
 interface ArtifactMessagesProps {
   chatId: string;
@@ -15,8 +16,11 @@ interface ArtifactMessagesProps {
   messages: ChatMessage[];
   setMessages: UseChatHelpers<ChatMessage>['setMessages'];
   regenerate: UseChatHelpers<ChatMessage>['regenerate'];
+  sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
   isReadonly: boolean;
   artifactStatus: UIArtifact['status'];
+  checkpoints?: CheckpointData[];
+  isCompacting?: boolean;
 }
 
 function PureArtifactMessages({
@@ -26,7 +30,10 @@ function PureArtifactMessages({
   messages,
   setMessages,
   regenerate,
+  sendMessage,
   isReadonly,
+  checkpoints,
+  isCompacting,
 }: ArtifactMessagesProps) {
   const {
     containerRef: messagesContainerRef,
@@ -37,31 +44,37 @@ function PureArtifactMessages({
   } = useMessages({
     chatId,
     status,
+    messages,
   });
 
   return (
     <div
       ref={messagesContainerRef}
-      className="flex flex-col gap-4 h-full items-center overflow-y-scroll px-4 pt-20"
+      className="flex flex-col gap-4 h-full items-center overflow-y-auto px-6 pt-6"
     >
       {messages.map((message, index) => (
-        <PreviewMessage
-          chatId={chatId}
-          key={message.id}
-          message={message}
-          isLoading={status === 'streaming' && index === messages.length - 1}
-          vote={
-            votes
-              ? votes.find((vote) => vote.messageId === message.id)
-              : undefined
-          }
-          setMessages={setMessages}
-          regenerate={regenerate}
-          isReadonly={isReadonly}
-          requiresScrollPadding={
-            hasSentMessage && index === messages.length - 1
-          }
-        />
+        <div key={message.id} className="w-full">
+          <PreviewMessage
+            chatId={chatId}
+            message={message}
+            isLoading={status === 'streaming' && index === messages.length - 1}
+            isCompacting={isCompacting && status === 'streaming' && index === messages.length - 1}
+            checkpoints={checkpoints?.filter((cp) => cp.messageId === message.id)}
+            vote={
+              votes
+                ? votes.find((vote) => vote.messageId === message.id)
+                : undefined
+            }
+            setMessages={setMessages}
+            regenerate={regenerate}
+            sendMessage={sendMessage}
+            isReadonly={isReadonly}
+            isArtifactVisible={true}
+            requiresScrollPadding={
+              hasSentMessage && index === messages.length - 1
+            }
+          />
+        </div>
       ))}
 
       {status === 'submitted' &&
@@ -82,6 +95,9 @@ function areEqual(
   prevProps: ArtifactMessagesProps,
   nextProps: ArtifactMessagesProps,
 ) {
+  // Allow re-render when checkpoints change even during streaming
+  if (prevProps.checkpoints?.length !== nextProps.checkpoints?.length) return false;
+
   if (
     prevProps.artifactStatus === 'streaming' &&
     nextProps.artifactStatus === 'streaming'

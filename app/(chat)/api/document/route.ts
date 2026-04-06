@@ -4,6 +4,7 @@ import {
   deleteDocumentsByIdAfterTimestamp,
   getDocumentsById,
   saveDocument,
+  ensureUserExists,
 } from '@/lib/db/queries';
 import { ChatSDKError } from '@/lib/errors';
 
@@ -55,6 +56,12 @@ export async function POST(request: Request) {
   if (!session?.user) {
     return new ChatSDKError('not_found:document').toResponse();
   }
+
+  // Ensure user exists in database (handles stale sessions)
+  await ensureUserExists({
+    id: session.user.id,
+    email: session.user.email || '',
+  });
 
   const {
     content,

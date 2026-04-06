@@ -6,6 +6,7 @@ import { memo } from 'react';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import type { VisibilityType } from './visibility-selector';
 import type { ChatMessage } from '@/lib/types';
+import { useModelOverride } from '@/hooks/use-model-override';
 
 interface SuggestedActionsProps {
   chatId: string;
@@ -18,33 +19,34 @@ function PureSuggestedActions({
   sendMessage,
   selectedVisibilityType,
 }: SuggestedActionsProps) {
+  const modelOverride = useModelOverride();
   const suggestedActions = [
     {
-      title: 'What are the advantages',
-      label: 'of using Next.js?',
-      action: 'What are the advantages of using Next.js?',
+      title: 'Help Elodi Thomas apply for WIC',
+      label: 'ruhealth.org/appointments/apply-4-wic-form',
+      action: 'Help participant ID: 339620 apply for WIC at https://www.ruhealth.org/appointments/apply-4-wic-form#.',
     },
     {
-      title: 'Write code to',
-      label: `demonstrate djikstra's algorithm`,
-      action: `Write code to demonstrate djikstra's algorithm`,
+      title: 'Help Celeste Thomas apply for IHSS',
+      label: 'riversideihss.org/Home/IHSSApply',
+      action: 'Help participant ID: 339619 apply for IHSS at https://riversideihss.org/Home/IHSSApply',
     },
     {
-      title: 'Help me write an essay',
-      label: `about silicon valley`,
-      action: `Help me write an essay about silicon valley`,
+      title: 'Help Josephine Thomas apply for IHSS',
+      label: 'riversideihss.org/Home/IHSSApply',
+      action: 'Help participant ID: 339622 apply for IHSS at https://riversideihss.org/Home/IHSSApply',
     },
     {
-      title: 'What is the weather',
-      label: 'in San Francisco?',
-      action: 'What is the weather in San Francisco?',
+      title: 'Help Marceline Thomas apply for Benefits Cal',
+      label: 'BenefitsCal.com',
+      action: 'Help participant ID: 339624 apply for CalFresh at BenefitsCal.com',
     },
   ];
 
   return (
     <div
       data-testid="suggested-actions"
-      className="grid sm:grid-cols-2 gap-2 w-full"
+      className="grid sm:grid-cols-2 gap-2 w-full overflow-hidden"
     >
       {suggestedActions.map((suggestedAction, index) => (
         <motion.div
@@ -53,22 +55,22 @@ function PureSuggestedActions({
           exit={{ opacity: 0, y: 20 }}
           transition={{ delay: 0.05 * index }}
           key={`suggested-action-${suggestedAction.title}-${index}`}
-          className={index > 1 ? 'hidden sm:block' : 'block'}
+          className={`${index > 1 ? 'hidden sm:block' : 'block'} min-w-0`}
         >
           <Button
             variant="ghost"
             onClick={async () => {
               window.history.replaceState({}, '', `/chat/${chatId}`);
 
-              sendMessage({
-                role: 'user',
-                parts: [{ type: 'text', text: suggestedAction.action }],
-              });
+              sendMessage(
+                { role: 'user', parts: [{ type: 'text', text: suggestedAction.action }] },
+                modelOverride,
+              );
             }}
-            className="text-left border rounded-xl px-4 py-3.5 text-sm flex-1 gap-1 sm:flex-col w-full h-auto justify-start items-start"
+            className="text-left border border-sidebar-border rounded-xl px-3 sm:px-4 py-3 sm:py-3.5 text-sm gap-1 flex-col w-full h-auto justify-start items-start transition-colors duration-200 bg-[#E8D0E0] hover:bg-[#DCC0D0] hover:text-black dark:bg-[#2D1B2E] dark:hover:bg-[#3D2A3E] whitespace-normal overflow-hidden"
           >
-            <span className="font-medium">{suggestedAction.title}</span>
-            <span className="text-muted-foreground">
+            <span className="font-medium truncate max-w-full">{suggestedAction.title}</span>
+            <span className="text-muted-foreground text-xs font-mono truncate max-w-full">
               {suggestedAction.label}
             </span>
           </Button>

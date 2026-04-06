@@ -21,7 +21,19 @@ export const postRequestBodySchema = z.object({
     role: z.enum(['user']),
     parts: z.array(partSchema),
   }),
-  selectedChatModel: z.enum(['chat-model', 'chat-model-reasoning']),
+  selectedChatModel: z.enum([
+    'web-automation-model',
+  ]),
+  // Dev-only: overrides the actual LLM used without changing the routing logic.
+  // Ignored in production environments.
+  modelOverride: z.enum([
+    'claude-sonnet-4-6',
+    'claude-haiku-4-5',
+    'gpt-5.4',
+    'gpt-5.4-pro',
+    'gpt-5.4-mini',
+    'gpt-5.4-nano',
+  ]).optional(),
   selectedVisibilityType: z.enum(['public', 'private']),
 });
 

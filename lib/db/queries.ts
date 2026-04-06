@@ -39,7 +39,7 @@ import { ChatSDKError } from '../errors';
 // https://authjs.dev/reference/adapter/drizzle
 
 // biome-ignore lint: Forbidden non-null assertion.
-const client = postgres(process.env.POSTGRES_URL!);
+const client = postgres(process.env.DATABASE_URL!);
 const db = drizzle(client);
 
 export async function getUser(email: string): Promise<Array<User>> {
@@ -49,6 +49,38 @@ export async function getUser(email: string): Promise<Array<User>> {
     throw new ChatSDKError(
       'bad_request:database',
       'Failed to get user by email',
+    );
+  }
+}
+
+export async function getUserById({ id }: { id: string }): Promise<User | null> {
+  try {
+    const result = await db.select().from(user).where(eq(user.id, id));
+    return result[0] || null;
+  } catch (error) {
+    return null;
+  }
+}
+
+export async function ensureUserExists({ id, email }: { id: string; email: string }): Promise<User> {
+  const existingUser = await getUserById({ id });
+  if (existingUser) {
+    return existingUser;
+  }
+
+  const password = generateHashedPassword(generateUUID());
+
+  try {
+    const result = await db.insert(user).values({
+      id,
+      email,
+      password
+    }).returning();
+    return result[0];
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to create user',
     );
   }
 }
@@ -63,19 +95,48 @@ export async function createUser(email: string, password: string) {
   }
 }
 
-export async function createGuestUser() {
-  const email = `guest-${Date.now()}`;
-  const password = generateHashedPassword(generateUUID());
-
+export async function upsertOAuthUser({
+  email,
+  name,
+  image,
+}: {
+  email: string;
+  name?: string | null;
+  image?: string | null;
+}) {
   try {
-    return await db.insert(user).values({ email, password }).returning({
-      id: user.id,
-      email: user.email,
-    });
+    const [existingUser] = await getUser(email);
+
+    if (existingUser) {
+      // Update existing user profile with OAuth data
+      const [updatedUser] = await db
+        .update(user)
+        .set({
+          name: name ?? existingUser.name,
+          image: image ?? existingUser.image,
+          emailVerified: new Date()
+        })
+        .where(eq(user.email, email))
+        .returning();
+      return updatedUser;
+    }
+
+    // Create new OAuth user (no password)
+    const [newUser] = await db.insert(user).values({
+      email,
+      name,
+      image,
+      password: null, // OAuth users don't have passwords
+      emailVerified: new Date(),
+    }).returning();
+
+    return newUser;
   } catch (error) {
+    console.error('OAUTH_UPSERT_ERROR:', error);
+    console.error('OAUTH_USER_DATA:', { email, name, imageLength: image?.length });
     throw new ChatSDKError(
       'bad_request:database',
-      'Failed to create guest user',
+      'Failed to upsert OAuth user'
     );
   }
 }
@@ -100,6 +161,7 @@ export async function saveChat({
       visibility,
     });
   } catch (error) {
+    console.error('[saveChat] DB error:', error);
     throw new ChatSDKError('bad_request:database', 'Failed to save chat');
   }
 }
@@ -303,7 +365,9 @@ export async function saveDocument({
       })
       .returning();
   } catch (error) {
-    throw new ChatSDKError('bad_request:database', 'Failed to save document');
+    console.error('Database error saving document:', error);
+    console.error('Error details:', JSON.stringify(error, null, 2));
+    throw new ChatSDKError('bad_request:database', `Failed to save document: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

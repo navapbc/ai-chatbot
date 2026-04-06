@@ -8,6 +8,7 @@ import { motion } from 'framer-motion';
 import { useMessages } from '@/hooks/use-messages';
 import type { ChatMessage } from '@/lib/types';
 import { useDataStream } from './data-stream-provider';
+import type { CheckpointData } from './chat';
 
 interface MessagesProps {
   chatId: string;
@@ -16,8 +17,11 @@ interface MessagesProps {
   messages: ChatMessage[];
   setMessages: UseChatHelpers<ChatMessage>['setMessages'];
   regenerate: UseChatHelpers<ChatMessage>['regenerate'];
+  sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
   isReadonly: boolean;
   isArtifactVisible: boolean;
+  checkpoints?: CheckpointData[];
+  isCompacting?: boolean;
 }
 
 function PureMessages({
@@ -27,7 +31,11 @@ function PureMessages({
   messages,
   setMessages,
   regenerate,
+  sendMessage,
   isReadonly,
+  isArtifactVisible,
+  checkpoints,
+  isCompacting,
 }: MessagesProps) {
   const {
     containerRef: messagesContainerRef,
@@ -38,6 +46,7 @@ function PureMessages({
   } = useMessages({
     chatId,
     status,
+    messages,
   });
 
   useDataStream();
@@ -45,28 +54,33 @@ function PureMessages({
   return (
     <div
       ref={messagesContainerRef}
-      className="flex flex-col min-w-0 gap-6 flex-1 overflow-y-scroll pt-4 relative"
+      className="flex flex-col min-w-0 gap-6 flex-1 overflow-y-auto pt-16 lg:pt-4 relative"
     >
       {messages.length === 0 && <Greeting />}
 
       {messages.map((message, index) => (
-        <PreviewMessage
-          key={message.id}
-          chatId={chatId}
-          message={message}
-          isLoading={status === 'streaming' && messages.length - 1 === index}
-          vote={
-            votes
-              ? votes.find((vote) => vote.messageId === message.id)
-              : undefined
-          }
-          setMessages={setMessages}
-          regenerate={regenerate}
-          isReadonly={isReadonly}
-          requiresScrollPadding={
-            hasSentMessage && index === messages.length - 1
-          }
-        />
+        <div key={message.id}>
+          <PreviewMessage
+            chatId={chatId}
+            message={message}
+            isLoading={status === 'streaming' && messages.length - 1 === index}
+            isCompacting={isCompacting && status === 'streaming' && messages.length - 1 === index}
+            checkpoints={checkpoints?.filter((cp) => cp.messageId === message.id)}
+            vote={
+              votes
+                ? votes.find((vote) => vote.messageId === message.id)
+                : undefined
+            }
+            setMessages={setMessages}
+            regenerate={regenerate}
+            sendMessage={sendMessage}
+            isReadonly={isReadonly}
+            isArtifactVisible={isArtifactVisible}
+            requiresScrollPadding={
+              hasSentMessage && index === messages.length - 1
+            }
+          />
+        </div>
       ))}
 
       {status === 'submitted' &&
@@ -90,6 +104,8 @@ export const Messages = memo(PureMessages, (prevProps, nextProps) => {
   if (prevProps.messages.length !== nextProps.messages.length) return false;
   if (!equal(prevProps.messages, nextProps.messages)) return false;
   if (!equal(prevProps.votes, nextProps.votes)) return false;
+  if (prevProps.checkpoints?.length !== nextProps.checkpoints?.length) return false;
+  if (prevProps.isCompacting !== nextProps.isCompacting) return false;
 
-  return false;
+  return true;
 });

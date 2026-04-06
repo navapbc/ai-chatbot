@@ -1,15 +1,16 @@
 import { Toaster } from 'sonner';
 import type { Metadata } from 'next';
-import { Geist, Geist_Mono } from 'next/font/google';
+import { Geist, Geist_Mono, IBM_Plex_Mono, Source_Serif_4, Inter, Roboto } from 'next/font/google';
 import { ThemeProvider } from '@/components/theme-provider';
+import { PostHogProvider, PostHogIdentify } from './providers';
 
 import './globals.css';
 import { SessionProvider } from 'next-auth/react';
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://chat.vercel.ai'),
-  title: 'Next.js Chatbot Template',
-  description: 'Next.js chatbot template using the AI SDK.',
+  metadataBase: new URL('https://dev.labs-asp.navateam.com/home'),
+  title: 'Form-Filling Assistant | Prototype',
+  description: 'Form-Filling Assistant prototype using Agentic AI',
 };
 
 export const viewport = {
@@ -26,6 +27,34 @@ const geistMono = Geist_Mono({
   subsets: ['latin'],
   display: 'swap',
   variable: '--font-geist-mono',
+});
+
+const ibmPlexMono = IBM_Plex_Mono({
+  subsets: ['latin'],
+  weight: '400',
+  display: 'swap',
+  variable: '--font-ibm-plex-mono',
+});
+
+const sourceSerifPro = Source_Serif_4({
+  subsets: ['latin'],
+  weight: ['300', '400', '600', '700'],
+  display: 'swap',
+  variable: '--font-source-serif',
+});
+
+const inter = Inter({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  display: 'swap',
+  variable: '--font-inter',
+});
+
+const roboto = Roboto({
+  subsets: ['latin'],
+  weight: ['400', '500', '700'],
+  display: 'swap',
+  variable: '--font-roboto',
 });
 
 const LIGHT_THEME_COLOR = 'hsl(0 0% 100%)';
@@ -61,7 +90,7 @@ export default async function RootLayout({
       // prop is necessary to avoid the React hydration mismatch warning.
       // https://github.com/pacocoursey/next-themes?tab=readme-ov-file#with-app
       suppressHydrationWarning
-      className={`${geist.variable} ${geistMono.variable}`}
+      className={`${geist.variable} ${geistMono.variable} ${ibmPlexMono.variable} ${sourceSerifPro.variable} ${inter.variable} ${roboto.variable}`}
     >
       <head>
         <script
@@ -71,15 +100,22 @@ export default async function RootLayout({
         />
       </head>
       <body className="antialiased">
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="system"
-          enableSystem
-          disableTransitionOnChange
-        >
-          <Toaster position="top-center" />
-          <SessionProvider>{children}</SessionProvider>
-        </ThemeProvider>
+        <PostHogProvider>
+          {/* Theme locked to light mode. To enable theme switching, uncomment below and sidebar-user-nav.tsx theme toggle: */}
+          {/* <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange> */}
+          <ThemeProvider
+            attribute="class"
+            defaultTheme="light"
+            enableSystem={false}
+            disableTransitionOnChange
+          >
+            <Toaster position="top-center" />
+            <SessionProvider>
+              <PostHogIdentify />
+              {children}
+            </SessionProvider>
+          </ThemeProvider>
+        </PostHogProvider>
       </body>
     </html>
   );
