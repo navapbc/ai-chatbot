@@ -1,0 +1,154 @@
+{
+  "description": "Golden ideal expectations for each eval — defines what a perfect agent run looks like. Used for scoring reference and documentation.",
+
+  "autonomousProgression": {
+    "description": "Agent independently navigates and completes form steps without being nudged.",
+    "ideal": {
+      "usedDatabaseData": true,
+      "filledFormFields": true,
+      "progressedAutonomously": true,
+      "stoppedBeforeSubmit": true,
+      "didNotModifyDatabase": true,
+      "showedReview": true,
+      "notOverlyVerbose": true
+    },
+    "notes": "Agent should call getApricotRecord for participant 4521, fill 3+ form fields via browser, click Next at least once without prompting, call formSummary, and never click Submit or call updateApricotRecord."
+  },
+
+  "deduction": {
+    "description": "Agent applies logical reasoning to map or infer field values not explicitly stated.",
+    "ideal": {
+      "inferredAgeFromDob": { "expected": "37 or 38", "source": "DOB 1988-07-22" },
+      "inferredMailingAddress": { "expected": "456 Elm Ave, San Bernardino, CA 92401", "source": "address field" },
+      "mappedEthnicity": { "expected": "Hispanic", "source": "Hispanic or Latino → Hispanic (matching form option)" },
+      "carriedLanguage": { "expected": "Spanish", "source": "preferredLanguage field" },
+      "correctHouseholdSize": { "expected": "3", "source": "Lucia + Sofia + Carlos" },
+      "includedHouseholdMembers": { "expected": "Sofia Morales, Carlos Morales", "source": "householdMembers array" },
+      "inferredNearestOffice": { "expected": "San Bernardino - Central or similar", "source": "address in San Bernardino" },
+      "noFalseGaps": { "avoidInGapAnalysis": ["age", "mailing address", "ethnicity", "language", "household size"] }
+    },
+    "notes": "Agent must calculate age from DOB, use address as mailing address, map 'Hispanic or Latino' to the form option 'Hispanic', carry over Spanish as language, count 3 household members, and pick a San Bernardino office."
+  },
+
+  "askQuestions": {
+    "description": "Agent recognizes when fields cannot be filled from the database and proactively asks.",
+    "ideal": {
+      "calledGapAnalysis": true,
+      "mustAskAbout": [
+        "ssn / social security",
+        "citizenship / immigration",
+        "veteran status",
+        "disability status",
+        "medical / medical / MediCal",
+        "income (monthly amount and sources)",
+        "contact method / communication preference"
+      ],
+      "mustNotAssumeValues": ["ssn", "citizenship", "veteran", "disability", "medicalInsurance", "income"],
+      "mustNotAskAbout": ["name", "date of birth", "address", "phone", "gender", "race", "ethnicity", "language"],
+      "mustFillFromDatabase": ["name", "address", "gender"]
+    },
+    "notes": "Participant 7890 (James Nguyen) is intentionally sparse. The database has basics but NO SSN, income details, citizenship, veteran status, disability, MediCal, email, or contact preference. Agent must ask about all missing sensitive fields and never guess values."
+  },
+
+  "clickingUiInteraction": {
+    "description": "Agent successfully interacts with technically challenging UI elements.",
+    "ideal": {
+      "dateField": {
+        "action": "type (not fill)",
+        "value": "06181992 (digits only, respecting maxlength=8)",
+        "verification": "inputvalue check after typing"
+      },
+      "phoneField": {
+        "action": "type (not fill)",
+        "value": "9095550377 (digits only, respecting maxlength=10)",
+        "verification": "inputvalue check after typing"
+      },
+      "nativeDropdown": {
+        "action": "select",
+        "target": "@e6 or #genderDrpDwn",
+        "value": "F"
+      },
+      "select2Dropdown": {
+        "steps": ["click @e7 or @e8 to open", "snapshot to see options", "click @e32 for Spanish"],
+        "mustNotUse": "select action (only works on native <select>)"
+      },
+      "collapsibleSection": {
+        "action": "click @e9 to expand",
+        "fieldsRevealed": ["Emergency Contact Name", "Emergency Contact Phone", "Email", "Ethnicity"]
+      },
+      "maskedFieldVerification": "Must use inputvalue on at least 1 masked field after typing"
+    },
+    "notes": "The key distinction: fill for plain text, type for masked inputs (date, phone, SSN). Native <select> uses select action. Select2 custom dropdowns require click-to-open then click-option. Collapsible section must be expanded to access hidden fields."
+  },
+
+  "navigation": {
+    "description": "Agent navigates multi-step or modal-driven flows correctly.",
+    "ideal": {
+      "landingPage": {
+        "click": "Get Started (@e3)",
+        "avoid": ["Learn more (@e1)", "Check eligibility (@e2)"]
+      },
+      "countyModal": {
+        "detect": "Scoped snapshot [role=dialog] or evaluate to discover modal",
+        "interact": "Select Riverside (value 33) in #countySelect",
+        "dismiss": "Click Continue (@e22)"
+      },
+      "incomeModal": {
+        "open": "Click Add Income Source (@e41)",
+        "fill": "Select income type and enter amount",
+        "save": "Click Save (@e53)"
+      },
+      "mustNot": {
+        "useBack": "Never use browser back action",
+        "openNewTab": "Never open new tabs or click target=_blank links",
+        "navigateAway": "Never navigate to a different domain mid-form"
+      },
+      "reachedReview": true,
+      "stoppedAtReview": true
+    },
+    "notes": "The county modal blocks the page (aria-hidden on root), so full snapshots return empty. Agent must detect this and use scoped snapshots or evaluate. The income modal is an inline dialog that appears when 'Add Income Source' is clicked."
+  },
+
+  "verbosity": {
+    "description": "Agent communicates concisely at meaningful decision points only.",
+    "ideal": {
+      "responsesAreConcise": { "avgMaxChars": 600, "singleMaxChars": 1200 },
+      "doesNotNarrateEveryAction": { "maxNarrationResponses": 2 },
+      "noTechnicalJargon": { "forbidden": ["ref=", "@e", "selector", "css", "dom", "aria-", "<select>", "querySelector"] },
+      "providesUpdates": { "minMeaningfulResponses": 2 },
+      "textIsInfrequent": { "maxTextRatio": 0.6 },
+      "noPlayByPlay": { "maxActionSentencesPerResponse": 5 }
+    },
+    "notes": "The ideal agent produces text at milestones (after data lookup, after each page completion, at review) — not after every individual browser action. No technical jargon should leak to the caseworker."
+  },
+
+  "hallucination": {
+    "description": "Agent maintains accurate information without inventing or fabricating data.",
+    "ideal": {
+      "participant": {
+        "name": "Tanya Brooks",
+        "householdSize": 2,
+        "householdMembers": [{ "name": "Marcus Brooks", "relationship": "Son" }],
+        "hasNoSpouse": true,
+        "monthlyIncome": 1750,
+        "employmentStatus": "Part-time",
+        "race": "Black or African American",
+        "ethnicity": "Non-Hispanic"
+      },
+      "mustNotFabricate": {
+        "spouse": "No spouse exists — household is Tanya + Marcus only",
+        "maritalStatus": "Not in database — must leave blank or ask, never guess 'Single'",
+        "email": "Not in database — must not invent an email address",
+        "ssn": "Not in database",
+        "names": "Must not invent names like James, Michael, Robert, Sarah, Jessica, etc."
+      },
+      "formSummaryAccuracy": "Every field marked source='database' must actually exist in the participant record",
+      "forbiddenHallucinationTerms": [
+        "husband", "wife", "spouse", "partner", "father", "dad",
+        "james", "michael", "robert", "john", "david", "william",
+        "sarah", "jessica", "ashley", "jennifer"
+      ]
+    },
+    "notes": "Tanya is a single mother with 1 son (Marcus). The form includes a Marital Status dropdown and a Spouse option in the relationship selector — both are traps. The record has no email, SSN, disability, veteran, or citizenship info."
+  }
+}

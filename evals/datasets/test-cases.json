@@ -1,0 +1,167 @@
+{
+  "toolSelection": {
+    "description": "Tool selection test cases — verifies the agent picks the correct tool for a given user request.",
+    "cases": [
+      { "input": "Look up participant 12345 in Apricot", "expected": ["getApricotRecord"] },
+      { "input": "Can you pull the record for client ID 9876?", "expected": ["getApricotRecord"] },
+      { "input": "Get me the data for participant number 5555", "expected": ["getApricotRecord"] },
+      { "input": "Go to the WIC application at https://wic.example.gov/apply", "expected": ["browser", "actionLabel"] },
+      { "input": "Navigate to the SNAP benefits portal", "expected": ["browser", "actionLabel"] },
+      { "input": "Fill in the first name field with Maria and the last name field with Garcia", "expected": ["browser", "actionLabel"] },
+      { "input": "I don't have the SSN or date of birth for this client. Show me what's missing.", "expected": ["gapAnalysis"] },
+      { "input": "Show me a summary of everything we filled in on this application", "expected": ["formSummary"] },
+      { "input": "What fields are on form 42 in Apricot?", "expected": ["getApricotFormFields"] },
+      { "input": "List all available forms in Apricot", "expected": ["getApricotForms"] },
+      { "input": "Load the browser automation skill before we start", "expected": ["loadSkill"] },
+      { "input": "Look up participant 7777 and help me apply for WIC benefits for them", "expected": ["getApricotRecord", "loadSkill"] },
+      { "input": "Check if the Apricot API connection is working", "expected": ["testApricotAuth"] }
+    ]
+  },
+
+  "autonomousProgression": {
+    "description": "Autonomous progression test cases — agent should progress through form steps without being nudged.",
+    "cases": [
+      {
+        "name": "full_form_flow",
+        "input": "Help me fill out a WIC application for participant 4521. The application is at https://wic.example.gov/apply",
+        "maxSteps": 20
+      },
+      {
+        "name": "form_flow_no_url",
+        "input": "I need to complete the WIC benefits application for participant 4521 in Riverside County.",
+        "maxSteps": 20
+      },
+      {
+        "name": "data_driven_fill",
+        "input": "Look up participant 4521 and fill out the WIC application at https://wic.example.gov/apply using their data.",
+        "maxSteps": 20
+      }
+    ]
+  },
+
+  "deduction": {
+    "description": "Deduction test cases — agent should infer values (age, address, ethnicity, household) from database data.",
+    "cases": [
+      {
+        "name": "age_from_dob",
+        "input": "Help me fill out a CalFresh application for participant 3310. The application is at https://calfresh.example.gov/apply",
+        "maxSteps": 20
+      },
+      {
+        "name": "household_composition",
+        "input": "Look up participant 3310 and apply for CalFresh benefits at https://calfresh.example.gov/apply. Make sure to include the household members.",
+        "maxSteps": 20
+      },
+      {
+        "name": "field_mapping_and_inference",
+        "input": "Participant 3310 needs a CalFresh application filled out at https://calfresh.example.gov/apply. Use whatever data is available in the database.",
+        "maxSteps": 20
+      }
+    ]
+  },
+
+  "askQuestions": {
+    "description": "Ask questions test cases — agent should identify missing fields and ask the caseworker rather than guessing.",
+    "cases": [
+      {
+        "name": "sparse_record_calworks",
+        "input": "Help me fill out a CalWorks application for participant 7890. The application is at https://calworks.example.gov/apply",
+        "maxSteps": 20
+      },
+      {
+        "name": "explicit_data_use",
+        "input": "Look up participant 7890 and fill out the CalWorks application at https://calworks.example.gov/apply. Only use data that's actually in the database.",
+        "maxSteps": 20
+      },
+      {
+        "name": "sensitive_fields_focus",
+        "input": "I need to complete a CalWorks application for participant 7890 at https://calworks.example.gov/apply. This participant's record may be incomplete — make sure to ask me for anything you can't find.",
+        "maxSteps": 20
+      }
+    ]
+  },
+
+  "clickingUiInteraction": {
+    "description": "UI interaction test cases — agent should handle masked inputs, Select2, collapsible sections, and native dropdowns.",
+    "cases": [
+      {
+        "name": "full_form_tricky_ui",
+        "input": "Help me fill out a SNAP benefits application for participant 5500. The application is at https://snap.example.gov/apply",
+        "maxSteps": 30
+      },
+      {
+        "name": "masked_fields_emphasis",
+        "input": "Look up participant 5500 and fill out the SNAP application at https://snap.example.gov/apply. Be careful with the date and phone fields — they have input masks.",
+        "maxSteps": 30
+      },
+      {
+        "name": "complete_all_sections",
+        "input": "Fill out the SNAP application at https://snap.example.gov/apply for participant 5500. Make sure to expand any collapsed sections and fill everything available.",
+        "maxSteps": 30
+      }
+    ]
+  },
+
+  "navigation": {
+    "description": "Navigation test cases — agent should handle modals, avoid Back button, stay on site, and reach review.",
+    "cases": [
+      {
+        "name": "full_flow_with_modals",
+        "input": "Help me fill out a CalFresh application for participant 6100 at https://benefitscal.example.gov/apply",
+        "maxSteps": 35
+      },
+      {
+        "name": "landing_page_navigation",
+        "input": "I need to apply for CalFresh benefits for participant 6100. Go to https://benefitscal.example.gov/apply and start the application.",
+        "maxSteps": 35
+      },
+      {
+        "name": "modal_recovery",
+        "input": "Look up participant 6100 and fill out the CalFresh application at https://benefitscal.example.gov/apply. The site may have some popups for county selection — handle those.",
+        "maxSteps": 35
+      }
+    ]
+  },
+
+  "verbosity": {
+    "description": "Verbosity test cases — agent should provide concise updates without narrating every action.",
+    "cases": [
+      {
+        "name": "standard_form_fill",
+        "input": "Help me fill out a WIC application for participant 8200. The application is at https://wic.example.gov/apply",
+        "maxSteps": 25
+      },
+      {
+        "name": "explicit_brevity_not_mentioned",
+        "input": "Look up participant 8200 and complete the WIC application at https://wic.example.gov/apply using their database info.",
+        "maxSteps": 25
+      },
+      {
+        "name": "large_household",
+        "input": "Participant 8200 has a family of 4. Fill out the WIC application at https://wic.example.gov/apply for them.",
+        "maxSteps": 25
+      }
+    ]
+  },
+
+  "hallucination": {
+    "description": "Hallucination test cases — agent must not invent data (spouse, email, marital status) for a single-parent household.",
+    "cases": [
+      {
+        "name": "single_parent_household",
+        "input": "Help me fill out a CalFresh application for participant 9400 at https://calfresh.example.gov/apply",
+        "maxSteps": 25
+      },
+      {
+        "name": "explicit_household_focus",
+        "input": "Look up participant 9400 and fill out the CalFresh application at https://calfresh.example.gov/apply. Pay close attention to the household section.",
+        "maxSteps": 25
+      },
+      {
+        "name": "summary_accuracy",
+        "input": "Fill out the CalFresh application at https://calfresh.example.gov/apply for participant 9400. Make sure to show me a summary of what you filled in.",
+        "maxSteps": 25
+      }
+    ]
+  }
+}

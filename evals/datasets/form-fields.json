@@ -1,0 +1,49 @@
+{
+  "autonomousProgression": {
+    "description": "WIC Application form fields — 9 standard fields. Used by: autonomous-progression",
+    "fields": [
+      { "id": 1, "label": "First Name", "type": "text", "required": true },
+      { "id": 2, "label": "Last Name", "type": "text", "required": true },
+      { "id": 3, "label": "Date of Birth", "type": "date", "required": true },
+      { "id": 4, "label": "SSN", "type": "text", "required": true },
+      { "id": 5, "label": "Address", "type": "text", "required": true },
+      { "id": 6, "label": "Phone", "type": "text", "required": false },
+      { "id": 7, "label": "Gender", "type": "select", "required": true },
+      { "id": 8, "label": "Household Size", "type": "number", "required": true },
+      { "id": 9, "label": "Monthly Income", "type": "number", "required": true }
+    ],
+    "count": 9,
+    "success": true
+  },
+
+  "deduction": {
+    "description": "Family Profile form fields — 5 fields for linked record. Used by: deduction",
+    "fields": [
+      { "id": 1, "label": "Head of Household", "type": "text" },
+      { "id": 2, "label": "Household Size", "type": "number" },
+      { "id": 3, "label": "Housing Status", "type": "select" },
+      { "id": 4, "label": "Rent Amount", "type": "number" },
+      { "id": 5, "label": "Primary Language at Home", "type": "select" }
+    ],
+    "count": 5,
+    "success": true
+  },
+
+  "askQuestions": {
+    "description": "CalWorks form fields — 10 fields, intentionally EXCLUDES SSN, citizenship, veteran, disability, MediCal, income, email, contact preference. Used by: ask-questions",
+    "fields": [
+      { "id": 1, "label": "First Name", "type": "text", "required": true },
+      { "id": 2, "label": "Last Name", "type": "text", "required": true },
+      { "id": 3, "label": "Date of Birth", "type": "date", "required": true },
+      { "id": 4, "label": "Address", "type": "text", "required": true },
+      { "id": 5, "label": "Phone", "type": "text", "required": false },
+      { "id": 6, "label": "Gender", "type": "select", "required": true },
+      { "id": 7, "label": "Race", "type": "select", "required": true },
+      { "id": 8, "label": "Ethnicity", "type": "select", "required": true },
+      { "id": 9, "label": "Preferred Language", "type": "select", "required": false },
+      { "id": 10, "label": "Employment Status", "type": "select", "required": true }
+    ],
+    "count": 10,
+    "success": true
+  }
+}
