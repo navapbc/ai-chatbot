@@ -28,7 +28,7 @@ import {
 } from 'resumable-stream';
 import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
-import { apricotTools } from '@/lib/ai/tools/apricot';
+import { externalApiTools } from '@/lib/ai/tools/external-api';
 import { createBrowserTool } from '@/lib/ai/tools/browser';
 import { gapAnalysis } from '@/lib/ai/tools/gap-analysis';
 import { formSummary } from '@/lib/ai/tools/form-summary';
@@ -203,7 +203,7 @@ export async function POST(request: Request) {
           system: getWebAutomationSystemPrompt(),
           messages: preCompacted,
           tools: {
-            ...apricotTools,
+            ...externalApiTools,
             gapAnalysis,
             formSummary,
             actionLabel,

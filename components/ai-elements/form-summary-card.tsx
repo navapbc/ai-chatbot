@@ -305,8 +305,8 @@ export function FormSummaryCard({
                   <AutofilledBadge inferredFrom={item.inferredFrom} />
                 ) : (
                   <SourceLabel
-                    label={item.source === 'database' ? 'Apricot 360' : 'Manual'}
-                    tooltip={item.source === 'database' ? 'Filled in automatically from Apricot 360.' : 'Entered by you.'}
+                    label={item.source === 'database' ? 'Database' : 'Manual'}
+                    tooltip={item.source === 'database' ? 'Filled in automatically from the database.' : 'Entered by you.'}
                   />
                 )}
               </div>

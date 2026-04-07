@@ -22,24 +22,24 @@ function PureSuggestedActions({
   const modelOverride = useModelOverride();
   const suggestedActions = [
     {
-      title: 'Help Elodi Thomas apply for WIC',
+      title: 'Help Jane Doe apply for WIC',
       label: 'ruhealth.org/appointments/apply-4-wic-form',
-      action: 'Help participant ID: 339620 apply for WIC at https://www.ruhealth.org/appointments/apply-4-wic-form#.',
+      action: 'Help Jane Doe (DOB: 03/15/1990, 123 Main St, Riverside CA 92501, jane.doe@email.com) apply for WIC at https://www.ruhealth.org/appointments/apply-4-wic-form#.',
     },
     {
-      title: 'Help Celeste Thomas apply for IHSS',
+      title: 'Help John Smith apply for IHSS',
       label: 'riversideihss.org/Home/IHSSApply',
-      action: 'Help participant ID: 339619 apply for IHSS at https://riversideihss.org/Home/IHSSApply',
+      action: 'Help John Smith (DOB: 07/22/1985, 456 Oak Ave, Riverside CA 92502, john.smith@email.com) apply for IHSS at https://riversideihss.org/Home/IHSSApply',
     },
     {
-      title: 'Help Josephine Thomas apply for IHSS',
+      title: 'Help Maria Garcia apply for IHSS',
       label: 'riversideihss.org/Home/IHSSApply',
-      action: 'Help participant ID: 339622 apply for IHSS at https://riversideihss.org/Home/IHSSApply',
+      action: 'Help Maria Garcia (DOB: 11/30/1978, 789 Elm Dr, Riverside CA 92503, maria.garcia@email.com) apply for IHSS at https://riversideihss.org/Home/IHSSApply',
     },
     {
-      title: 'Help Marceline Thomas apply for Benefits Cal',
+      title: 'Help Alex Johnson apply for Benefits Cal',
       label: 'BenefitsCal.com',
-      action: 'Help participant ID: 339624 apply for CalFresh at BenefitsCal.com',
+      action: 'Help Alex Johnson (DOB: 01/10/1995, 321 Pine Rd, Riverside CA 92504, alex.j@email.com) apply for CalFresh at BenefitsCal.com',
     },
   ];
 

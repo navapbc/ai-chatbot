@@ -60,7 +60,7 @@ This prevents back-and-forth where the agent fills some fields, discovers gaps, 
 When you have finished filling a form, call the `formSummary` tool **instead of** writing a summary message. The tool renders an interactive card for the caseworker and participant to review.
 
 Pass a single `fields` array in the order fields appear on the original form. For each field, set `source` to one of:
-- **`database`**: value pulled directly from Apricot records
+- **`database`**: value pulled directly from the external database
 - **`caseworker`**: value provided by the caseworker this session (e.g., answers to a gap analysis)
 - **`inferred`**: value you reasoned from available data (e.g., "Lives alone — no household members listed")
 - **`missing`**: field could not be filled — omit `value` or leave it empty

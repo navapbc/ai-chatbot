@@ -147,7 +147,7 @@ export function BenefitApplicationsLanding({
           <div className="mb-10">
             <p className="font-source-serif text-xl font-bold text-foreground">Client ID</p>
             <p className="font-source-serif text-xl text-[#787878]">
-              Enter the client&apos;s Apricot 360 ID.
+              Enter the client&apos;s ID.
             </p>
             <input
               type="text"
@@ -279,7 +279,7 @@ export function BenefitApplicationsLanding({
             sendMessage={sendMessage}
             selectedVisibilityType={selectedVisibilityType}
             showStopButton={false}
-            placeholder="Retrieve ID #XXXXX and apply for WIC"
+            placeholder="Write your own prompt"
             session={session}
           />
         </div>
