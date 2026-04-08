@@ -1,10 +1,10 @@
-import type { User, UsersResponse } from './models/external-api-models';
+import type { User, UsersResponse } from './models/api-models';
 
-export type { User, UsersResponse } from './models/external-api-models';
+export type { User, UsersResponse } from './models/api-models';
 
 // ===== Configuration =====
-const baseUrl = process.env.EXTERNAL_API_BASE_URL;
-const apiKey = process.env.EXTERNAL_API_KEY;
+const baseUrl = process.env.API_BASE_URL;
+const apiKey = process.env.API_KEY;
 
 /**
  * Make an authenticated GET request to the external API.
@@ -12,7 +12,7 @@ const apiKey = process.env.EXTERNAL_API_KEY;
  */
 async function apiGet<T>(path: string): Promise<T> {
   if (!baseUrl) {
-    throw new Error('Missing required environment variable: EXTERNAL_API_BASE_URL');
+    throw new Error('Missing required environment variable: API_BASE_URL');
   }
 
   const headers: HeadersInit = { 'Content-Type': 'application/json' };

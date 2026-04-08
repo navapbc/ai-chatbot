@@ -1,6 +1,6 @@
 import { tool } from 'ai';
 import { z } from 'zod';
-import { getUserById, getUsers } from '@/lib/external-api';
+import { getUserById, getUsers } from '@/lib/api';
 
 export const getUser = tool({
   description:
@@ -40,7 +40,7 @@ export const listUsers = tool({
   },
 });
 
-export const externalApiTools = {
+export const apiTools = {
   getUser,
   listUsers,
 };

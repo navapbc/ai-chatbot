@@ -1,5 +1,5 @@
-// ===== External API Models =====
-// Customize these types to match your external API's response shape.
+// ===== API Models =====
+// Customize these types to match your API's response shape.
 
 export interface User {
   id: number | string;

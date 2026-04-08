@@ -45,4 +45,4 @@ yarn-error.log*
 .mastra/
 vertex-ai-credentials.json
 
-.claude
+.claude/
