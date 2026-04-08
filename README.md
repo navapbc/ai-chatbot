@@ -304,7 +304,13 @@ KERNEL_API_KEY=your-kernel-api-key
 | `XAI_API_KEY` | Optional | xAI Grok models |
 | `KERNEL_API_KEY` | For web automation | Kernel.sh remote browser API key |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | For shared links | Redis-backed link sharing |
+| `USE_GUEST_LOGIN` | Optional | Set to `true` to enable guest login (bypasses OAuth) |
+| `NEXT_PUBLIC_USE_GUEST_LOGIN` | Optional | Client-side flag — must match `USE_GUEST_LOGIN` |
 | `ENVIRONMENT` | Optional | `dev`, `prod`, or `preview-*` |
+
+### Guest mode
+
+To use the app without configuring OAuth providers, enable guest mode by setting both `USE_GUEST_LOGIN=true` and `NEXT_PUBLIC_USE_GUEST_LOGIN=true` in your `.env.local`. The login page will automatically sign you in as a guest user with no credentials required.
 
 See [`.env.example`](.env.example) for the full list of configurable variables.
 
