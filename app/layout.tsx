@@ -2,8 +2,6 @@ import { Toaster } from 'sonner';
 import type { Metadata } from 'next';
 import { Geist, Geist_Mono, IBM_Plex_Mono, Source_Serif_4, Inter, Roboto } from 'next/font/google';
 import { ThemeProvider } from '@/components/theme-provider';
-import { PostHogProvider, PostHogIdentify } from './providers';
-
 import './globals.css';
 import { SessionProvider } from 'next-auth/react';
 
@@ -100,7 +98,6 @@ export default async function RootLayout({
         />
       </head>
       <body className="antialiased">
-        <PostHogProvider>
           {/* Theme locked to light mode. To enable theme switching, uncomment below and sidebar-user-nav.tsx theme toggle: */}
           {/* <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange> */}
           <ThemeProvider
@@ -111,11 +108,9 @@ export default async function RootLayout({
           >
             <Toaster position="top-center" />
             <SessionProvider>
-              <PostHogIdentify />
               {children}
             </SessionProvider>
           </ThemeProvider>
-        </PostHogProvider>
       </body>
     </html>
   );
