@@ -6,7 +6,7 @@ import './globals.css';
 import { SessionProvider } from 'next-auth/react';
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://dev.labs-asp.navateam.com/home'),
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'),
   title: 'Form-Filling Assistant | Prototype',
   description: 'Form-Filling Assistant prototype using Agentic AI',
 };

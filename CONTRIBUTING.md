@@ -10,7 +10,7 @@ We are committed to providing a welcoming and respectful environment for all con
 
 Bug reports are welcome — they help us make this tool better for caseworkers and the communities they serve.
 
-When you're ready to file, [create a GitHub issue](https://github.com/navapbc/ai-chatbot/issues/new) and include:
+When you're ready to file, [create a GitHub issue](https://github.com/navapbc/labs-form-filling-agent/issues/new) and include:
 - A clear description of the bug and what you expected to happen
 - Steps to reproduce
 - Your environment (OS, Node version, browser if relevant)
@@ -20,7 +20,7 @@ When you're ready to file, [create a GitHub issue](https://github.com/navapbc/ai
 
 ## Suggesting Features
 
-We're especially interested in feedback from people who work directly with caseworkers or benefit systems. If you have an idea for how this tool could better serve that context, [open a GitHub issue](https://github.com/navapbc/ai-chatbot/issues/new) with the label `enhancement` and describe:
+We're especially interested in feedback from people who work directly with caseworkers or benefit systems. If you have an idea for how this tool could better serve that context, [open a GitHub issue](https://github.com/navapbc/labs-form-filling-agent/issues/new) with the label `enhancement` and describe:
 - The problem you're trying to solve
 - Who it would benefit
 - Any ideas you have for how it might work
