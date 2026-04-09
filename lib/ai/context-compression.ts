@@ -27,7 +27,7 @@ const COMPACTION_SYSTEM_PROMPT =
   '- Do NOT include participant PII (names, DOB, SSN, address) — it is in working memory.\n' +
   'Do NOT include browser snapshot content or raw HTML.';
 
-const log = (...args: unknown[]) => console.log('[compressor]', ...args);
+const log = (..._args: unknown[]) => {};
 
 /**
  * Detect and extract a working memory message from the beginning of the
@@ -69,7 +69,7 @@ function flattenMessage(msg: ModelMessage): string {
     // Browser tool calls: keep action + key param for context
     if (part.type === 'tool-call' && part.toolName === 'browser') {
       const a = part.args ?? {};
-      return `[browser: ${a.action ?? '?'}${a.selector ? ' ' + a.selector : a.url ? ' ' + a.url : ''}]`;
+      return `[browser: ${a.action ?? '?'}${a.selector ? ` ${a.selector}` : a.url ? ` ${a.url}` : ''}]`;
     }
     const s = typeof part === 'string' ? part : (part.text ?? JSON.stringify(part) ?? '');
     return String(s);
@@ -234,8 +234,7 @@ export function createMessageCompressor() {
     if (justCompacted) {
       justCompacted = false;
       log(
-        `skip — stale inputTokens after compaction, ` +
-        `${effectiveMessages.length} msgs, ${(usedPct * 100).toFixed(1)}% (stale)`
+        `skip — stale inputTokens after compaction, ${effectiveMessages.length} msgs, ${(usedPct * 100).toFixed(1)}% (stale)`
       );
       return { messages: prepend(effectiveMessages), compacted: false };
     }
