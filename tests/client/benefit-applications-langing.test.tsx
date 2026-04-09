@@ -3,10 +3,20 @@ import { expect, test, vi } from 'vitest'
 
 import { BenefitApplicationsLanding } from '../../components/benefit-applications-landing'
 import type { VisibilityType } from '@/components/visibility-selector'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { render } from 'vitest-browser-react'
 
-// Mock props object
-const mockProps = vi.hoisted(() => ({
+// Mock next/navigation
+vi.mock('next/navigation', () => ({
+    useRouter: () => ({ push: vi.fn() }),
+}))
+
+// Mock hooks
+vi.mock('@/hooks/use-model-override', () => ({
+    useModelOverride: () => undefined,
+}))
+
+const createMockProps = (overrides = {}) => ({
     input: '',
     setInput: vi.fn(),
     isReadonly: false,
@@ -19,40 +29,47 @@ const mockProps = vi.hoisted(() => ({
     setAttachments: vi.fn(),
     messages: [],
     setMessages: vi.fn(),
-}))
-
-test('BenefitApplicationsLanding renders', async () => {
-    const { getByText } = render(<BenefitApplicationsLanding {...mockProps} />)
-
-    await expect.element(getByText(/Get started on/)).toBeInTheDocument()
-    await expect.element(getByText(/benefit applications/)).toBeInTheDocument()
+    session: null,
+    ...overrides,
 })
 
-test('BenefitApplications Landing can handle input and enable send button', async () => {
-    mockProps.input = 'test input'
-    const { getByText, getByTestId } = render(<BenefitApplicationsLanding {...mockProps} />)
+test('BenefitApplicationsLanding renders heading', async () => {
+    const { getByText } = render(<TooltipProvider><BenefitApplicationsLanding {...createMockProps()} /></TooltipProvider>)
 
-    await expect.element(getByText(/test input/)).toBeInTheDocument()
-    await expect.element(getByTestId('send-button')).toBeEnabled()
+    await expect.element(getByText(/Let\'s start a new application./)).toBeInTheDocument()
 })
 
-test('BenefitApplications Landing can handle input and disable send button when input is empty', async () => {
-    mockProps.input = ''
-    const { getByText, getByTestId } = render(<BenefitApplicationsLanding {...mockProps} />)
+test('BenefitApplicationsLanding shows login alert when not logged in', async () => {
+    const { getByText } = render(<TooltipProvider><BenefitApplicationsLanding {...createMockProps({ session: null })} /></TooltipProvider>)
 
-    await expect.element(getByText(/test input/)).not.toBeInTheDocument()
-    await expect.element(getByTestId('send-button')).toBeDisabled()
+    await expect.element(getByText('Log in to get started').first()).toBeInTheDocument()
+    await expect.element(getByText('Log in').first()).toBeInTheDocument()
 })
 
-test('BenefitApplications Landing can route to chat page when send button is clicked', async () => {
-    mockProps.input = 'test input'
-    const { getByText, getByTestId } = render(<BenefitApplicationsLanding {...mockProps} />)
+test('BenefitApplicationsLanding hides login alert when logged in', async () => {
+    const session = { user: { id: '1', email: 'test@test.com' }, expires: '' }
+    const { getByText } = render(<TooltipProvider><BenefitApplicationsLanding {...createMockProps({ session })} /></TooltipProvider>)
 
-    await expect.element(getByText(/test input/)).toBeInTheDocument()
-    await expect.element(getByTestId('send-button')).toBeEnabled()
+    await expect.element(getByText('Log in to get started')).not.toBeInTheDocument()
+})
 
-    await getByTestId('send-button').click()
+test('BenefitApplicationsLanding disables inputs when not logged in', async () => {
+    const { getByPlaceholder } = render(<TooltipProvider><BenefitApplicationsLanding {...createMockProps({ session: null })} /></TooltipProvider>)
 
-    await expect(mockProps.sendMessage).toHaveBeenCalled()
-    await expect(window.location.pathname).toBe('/chat/test-chat-id')
+    const clientIdInput = getByPlaceholder('00000')
+    await expect.element(clientIdInput).toBeDisabled()
+})
+
+test('BenefitApplicationsLanding disables Start auto-filling when fields are empty', async () => {
+    const session = { user: { id: '1', email: 'test@test.com' }, expires: '' }
+    const { getByText } = render(<TooltipProvider><BenefitApplicationsLanding {...createMockProps({ session })} /></TooltipProvider>)
+
+    const startButton = getByText('Start auto-filling')
+    await expect.element(startButton).toBeDisabled()
+})
+
+test('BenefitApplicationsLanding shows custom prompt section', async () => {
+    const { getByText } = render(<TooltipProvider><BenefitApplicationsLanding {...createMockProps()} /></TooltipProvider>)
+
+    await expect.element(getByText('Or, write your own prompt:')).toBeInTheDocument()
 })

@@ -4,9 +4,8 @@ import { ConsentPage } from '@/components/consent-page';
 
 test('ConsentPage renders with proper content', async () => {
   const mockOnConsent = vi.fn();
-  const mockOnBack = vi.fn();
   const mockOnNavigateHome = vi.fn();
-  const { getByText } = render(<ConsentPage onConsent={mockOnConsent} onBack={mockOnBack} onNavigateHome={mockOnNavigateHome} />);
+  const { getByText } = render(<ConsentPage onConsent={mockOnConsent} onNavigateHome={mockOnNavigateHome} />);
 
   await expect.element(getByText('Consent for Agentic AI')).toBeInTheDocument();
   await expect.element(getByText('This tool uses your personal data to submit for benefit applications using artificial intelligence (AI).')).toBeInTheDocument();
@@ -15,9 +14,8 @@ test('ConsentPage renders with proper content', async () => {
 
 test('ConsentPage disables consent button when radio button is not selected', async () => {
   const mockOnConsent = vi.fn();
-  const mockOnBack = vi.fn();
   const mockOnNavigateHome = vi.fn();
-  const { getByRole } = render(<ConsentPage onConsent={mockOnConsent} onBack={mockOnBack} onNavigateHome={mockOnNavigateHome} />);
+  const { getByRole } = render(<ConsentPage onConsent={mockOnConsent} onNavigateHome={mockOnNavigateHome} />);
 
   const consentButton = getByRole('button', { name: 'Confirm choices' });
   await expect.element(consentButton).toBeDisabled();
@@ -25,9 +23,8 @@ test('ConsentPage disables consent button when radio button is not selected', as
 
 test('ConsentPage enables consent button when radio button is selected', async () => {
   const mockOnConsent = vi.fn();
-  const mockOnBack = vi.fn();
   const mockOnNavigateHome = vi.fn();
-  const { getByRole, getByTestId } = render(<ConsentPage onConsent={mockOnConsent} onBack={mockOnBack} onNavigateHome={mockOnNavigateHome} />);
+  const { getByRole, getByTestId } = render(<ConsentPage onConsent={mockOnConsent} onNavigateHome={mockOnNavigateHome} />);
 
   const radioButton = getByTestId('consent-yes');
   const consentButton = getByRole('button', { name: 'Confirm choices' });
@@ -38,9 +35,8 @@ test('ConsentPage enables consent button when radio button is selected', async (
 
 test('ConsentPage calls onConsent when consent button is clicked after radio button is selected', async () => {
   const mockOnConsent = vi.fn();
-  const mockOnBack = vi.fn();
   const mockOnNavigateHome = vi.fn();
-  const { getByRole, getByTestId } = render(<ConsentPage onConsent={mockOnConsent} onBack={mockOnBack} onNavigateHome={mockOnNavigateHome} />);
+  const { getByRole, getByTestId } = render(<ConsentPage onConsent={mockOnConsent} onNavigateHome={mockOnNavigateHome} />);
 
   const radioButton = getByTestId('consent-yes');
   const consentButton = getByRole('button', { name: 'Confirm choices' });
@@ -53,9 +49,8 @@ test('ConsentPage calls onConsent when consent button is clicked after radio but
 
 test('ConsentPage shows modal when no consent is selected and confirm button is clicked', async () => {
   const mockOnConsent = vi.fn();
-  const mockOnBack = vi.fn();
   const mockOnNavigateHome = vi.fn();
-  const { getByRole, getByTestId, getByText } = render(<ConsentPage onConsent={mockOnConsent} onBack={mockOnBack} onNavigateHome={mockOnNavigateHome} />);
+  const { getByRole, getByTestId, getByText } = render(<ConsentPage onConsent={mockOnConsent} onNavigateHome={mockOnNavigateHome} />);
 
   const radioButton = getByTestId('consent-no');
   const consentButton = getByRole('button', { name: 'Confirm choices' });
