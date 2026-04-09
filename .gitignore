@@ -50,7 +50,6 @@ yarn-error.log*
 /playwright-report/
 /blob-report/
 /playwright/*
-.mastra/
 vertex-ai-credentials.json
 
 .claude/
