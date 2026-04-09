@@ -3,6 +3,7 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   JsonToSseTransformStream,
+  pruneMessages,
   stepCountIs,
   streamText,
 } from 'ai';
@@ -164,7 +165,19 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
-        const initialModelMessages = await convertToModelMessages(uiMessages);
+        const rawModelMessages = await convertToModelMessages(uiMessages);
+
+        // Prune heavy tool results before the model ever sees them.
+        // Browser snapshots/screenshots are the biggest token hog (5-50K tokens
+        // each, called hundreds of times). Strip all but the most recent results
+        // so the agent relies on working memory + latest snapshot for state.
+        const initialModelMessages = pruneMessages({
+          messages: rawModelMessages,
+          toolCalls: [
+            { type: 'before-last-2-messages', tools: ['browser'] },
+          ],
+          emptyMessages: 'remove',
+        });
 
         // One compressor instance per request; its cache persists across all
         // prepareStep calls so generateText is not re-fired on every step.

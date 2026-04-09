@@ -88,6 +88,20 @@ Before starting each logical group of related browser actions, call the \`action
 - Call it ONCE per group, not before every individual action
 - Choose the \`category\` that best matches: \`fill\` (form filling), \`navigate\` (navigation/page load), \`interact\` (clicking/interacting), \`read\` (reading/snapshot), \`search\` (searching), \`misc\` (general)
 
+## Working Memory Protocol
+
+Working memory is your persistent state — it survives even when old browser snapshots are pruned from the conversation. **Keep it current.**
+
+**When to update**: Call \`updateWorkingMemory\` **in parallel** with your next browser action after any of these events:
+- After retrieving an Apricot record (store participant data)
+- After the caseworker answers a gap analysis (store their inputs)
+- After filling a batch of fields (update \`formState.completedFields\`)
+- After navigating to a new form page (update \`formState.currentStep\` and \`formState.currentUrl\`)
+
+**How to call in parallel**: Include \`updateWorkingMemory\` in the same response as your next browser call. For example, after filling 5 fields, emit both \`updateWorkingMemory({ formState: { completedFields: { ... } } })\` and \`browser({ action: "snapshot" })\` together. This costs zero extra round-trips.
+
+**Always send the COMPLETE state** — each call replaces the previous. Include all participant data, caseworker inputs, and form progress, not just what changed.
+
 ## Form Field Protocol
 
 Before filling fields, run gap analysis first — compare what you have against what the form needs, then use the \`gapAnalysis\` tool. When done filling, use the \`formSummary\` tool. Load the \`caseworker-communication\` skill for the full gap analysis and form summary protocols.
