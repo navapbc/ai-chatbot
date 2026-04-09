@@ -10,7 +10,7 @@ const SUMMARY_PREFIX = '[Session summary — earlier context compacted]';
 const COMPACTION_SYSTEM_PROMPT =
   'You are creating a session handoff document for a benefits form-filling agent. ' +
   'Extract and preserve ALL of the following — be explicit and complete:\n' +
-  '- PARTICIPANT DATA: Every field-value pair from the database (Apricot record) and caseworker. Format as "Field: Value" lines.\n' +
+  '- PARTICIPANT DATA: Every field-value pair from the database and caseworker. Format as "Field: Value" lines.\n' +
   '- SESSION STATE: The current form name, URL, and which page/step we are on.\n' +
   '- COMPLETED FIELDS: Every field that has already been filled and its value.\n' +
   '- PENDING FIELDS: Every field still needing input.\n' +
