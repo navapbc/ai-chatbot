@@ -125,17 +125,16 @@ export function BenefitApplicationsLanding({
       {/* Left panel — desktop only */}
       <div className="hidden md:flex md:w-[38%] md:flex-col md:justify-start md:pr-8 md:pt-10 xl:w-[40%]">
         <h1 className="font-source-serif text-4xl leading-[1.15] text-foreground">
-          Let&apos;s start a<br />
-          new application.
+          Let&apos;s start a new application.
         </h1>
         {!isLoggedIn && <div className="mt-6">{loginAlert}</div>}
       </div>
 
       {/* Right panel */}
-      <div className="flex flex-1 flex-col items-center justify-start gap-4 overflow-y-auto px-4 pt-6 pb-4 sm:px-6 md:items-end md:px-0 md:pb-6 md:pt-10">
+      <div className="flex flex-1 flex-col items-center justify-start gap-4 overflow-y-auto px-4 pt-14 pb-4 sm:px-6 md:items-end md:px-0 md:pb-6 md:pt-10">
         {/* Mobile: title + alert */}
         <div className="flex w-full max-w-[648px] flex-col gap-4 md:hidden">
-          <h1 className="font-source-serif text-3xl leading-[1.15] text-foreground">
+          <h1 className="font-source-serif text-3xl leading-[1.15] text-foreground text-center sm:text-left">
             Let&apos;s start a new application.
           </h1>
           {!isLoggedIn && loginAlert}
