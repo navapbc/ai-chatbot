@@ -222,7 +222,7 @@ export function createMessageCompressor() {
     if (lastInputTokens === undefined) {
       const pruned = pruneMessages({
         messages: effectiveMessages,
-        toolCalls: [{ type: 'before-last-2-messages', tools: ['browser'] }],
+        toolCalls: [{ type: 'before-last-5-messages', tools: ['browser'] }],
         emptyMessages: 'remove',
       });
       log(`step 0 — pruned browser tools: ${effectiveMessages.length} → ${pruned.length} msgs`);
