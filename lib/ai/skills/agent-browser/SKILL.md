@@ -101,9 +101,9 @@ Empty/minimal snapshots mean a modal is blocking — NOT that snapshots are brok
 
 1. Snapshot the page
 2. If minimal/empty content → modal is present. Try scoped snapshots in this order:
-   - `{ action: "snapshot", selector: "[role=dialog]" }`
-   - `{ action: "snapshot", selector: ".ReactModal__Overlay" }`
+   - `{ action: "snapshot", selector: ".ReactModal__Content" }` — **try this first** (BenefitsCal and React apps)
    - `{ action: "snapshot", selector: "[aria-modal=true]" }`
+   - `{ action: "snapshot", selector: "[role=dialog]:not(.d-none):not([aria-hidden=true])" }`
    - `{ action: "snapshot", selector: ".modal" }`
 3. Use refs from that snapshot to interact — if there's a native `<select>`, use `select`; if it's a custom dropdown, click to open → snapshot again → click the option
 4. After dismissing, go back to step 1 — another modal may have appeared
@@ -111,12 +111,21 @@ Empty/minimal snapshots mean a modal is blocking — NOT that snapshots are brok
 
 ### When scoped snapshots also return empty
 
-Some modals (especially on React apps like BenefitsCal) set `aria-hidden="true"` on the root div, AND the modal itself may not have standard ARIA attributes — so ALL scoped snapshots return empty. This is common with county selection modals after address entry.
+Some modals (especially on React apps like BenefitsCal) set `aria-hidden="true"` on the root `#root` div, AND the modal's ReactModalPortal wrapper may also have `aria-hidden`. This hides everything from the accessibility tree, so even scoped snapshots return empty. This is common with county selection modals after address entry.
 
-When this happens, use ONE evaluate to discover the modal structure:
+**IMPORTANT**: The page may have hidden spinner elements (`<div class="spinner d-none" role="dialog">`) that look like modals but are NOT. Always filter these out.
+
+When scoped snapshots return empty, use ONE evaluate to discover the modal — target `.ReactModal__Content` specifically:
 ```
-{ action: "evaluate", script: "document.querySelector('[aria-modal=true], .modal, [role=dialog]')?.outerHTML?.substring(0, 2000) || document.querySelector('body > div:not([aria-hidden])').outerHTML.substring(0, 2000)" }
+{ action: "evaluate", script: "document.querySelector('.ReactModal__Content')?.outerHTML?.substring(0, 2000) || 'No ReactModal found'" }
 ```
+
+If that returns nothing, try a broader search that filters out hidden elements:
+```
+{ action: "evaluate", script: "Array.from(document.querySelectorAll('[aria-modal=true], [role=dialog]')).filter(el => !el.classList.contains('d-none') && el.getAttribute('aria-hidden') !== 'true').map(el => el.outerHTML.substring(0, 2000))[0] || 'No visible modal'" }
+```
+
+If the result shows a spinner or "Please wait" element, that is NOT the modal — wait 2-3 seconds and retry. The real modal renders after the spinner.
 
 Once you see the modal HTML, identify the select element and button, then interact using CSS selectors (not evaluate):
 ```
@@ -214,7 +223,6 @@ Always use correct JSON types — the browser will error on wrong types:
 
 For detailed guidance on specific topics, use `readSkillFile` to load:
 - `references/form-submission.md` — Advanced JS debugging for stuck submit buttons (steps 5-6: finding gating variables, minimal evaluate fix)
-- `references/modals.md` — Modal workflow, county selection modals, Google Translate bar
 - `references/form-automation.md` — Custom dropdowns (Select2/Chosen/Drupal), multi-page forms, error recovery
 - `references/commands.md` — Full command reference with all options and parameters
 - `references/snapshot-refs.md` — Ref lifecycle, snapshot modes, troubleshooting
