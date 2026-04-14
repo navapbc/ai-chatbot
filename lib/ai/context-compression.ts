@@ -61,14 +61,17 @@ function flattenMessage(msg: ModelMessage): string {
   const parts = (msg.content as any[]).map((part) => {
     if (!part) return '';
     // Browser tool results: keep status, strip the heavy output payload
+    // AI SDK wraps output as ToolResultOutput: { type: 'json', value: { success, error } }
     if (part.type === 'tool-result' && part.toolName === 'browser') {
-      const r = part.result ?? part.output ?? {};
+      const raw = part.output ?? {};
+      const r = (raw as any)?.value ?? raw;
       const status = (r as any)?.success ? 'success' : `error: ${(r as any)?.error ?? 'unknown'}`;
       return `[browser result: ${status}]`;
     }
     // Browser tool calls: keep action + key param for context
+    // AI SDK uses `input` (not `args`) on ToolCallPart
     if (part.type === 'tool-call' && part.toolName === 'browser') {
-      const a = part.args ?? {};
+      const a = (part.input ?? {}) as any;
       return `[browser: ${a.action ?? '?'}${a.selector ? ' ' + a.selector : a.url ? ' ' + a.url : ''}]`;
     }
     const s = typeof part === 'string' ? part : (part.text ?? JSON.stringify(part) ?? '');
