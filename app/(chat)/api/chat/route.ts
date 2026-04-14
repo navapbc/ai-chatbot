@@ -191,7 +191,13 @@ export async function POST(request: Request) {
 
         const result = streamText({
           model: activeModel,
-          system: getWebAutomationSystemPrompt(),
+          system: {
+            role: 'system' as const,
+            content: getWebAutomationSystemPrompt(),
+            providerOptions: {
+              anthropic: { cacheControl: { type: 'ephemeral' } },
+            },
+          },
           messages: initialModelMessages,
           tools: {
             ...apricotTools,

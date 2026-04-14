@@ -4,8 +4,13 @@ import { WORKING_MEMORY_PREFIX, buildWorkingMemoryMessage } from '@/lib/ai/worki
 import { updateWorkingMemory } from '@/lib/ai/tools/working-memory';
 
 const MODEL_CONTEXT_WINDOW = 200_000; // claude-sonnet-4-6
-const COMPACT_THRESHOLD_PCT = 0.75;
+const COMPACT_THRESHOLD_PCT = 0.50;
 const KEEP_RECENT = 8;                // keep last N messages after compaction
+
+/** Anthropic cache breakpoint — attach to providerOptions on a message. */
+const CACHE_BREAKPOINT = {
+  anthropic: { cacheControl: { type: 'ephemeral' as const } },
+};
 
 const SUMMARY_PREFIX = '[Session summary — earlier context compacted]';
 
@@ -216,20 +221,44 @@ export function createMessageCompressor() {
       );
     }
 
+    // --- Prune browser tool results on every step ---
+    // Browser snapshots are 5-50K tokens each. Strip all but the most recent
+    // so the model relies on working memory + latest snapshots for state.
+    const pruned = pruneMessages({
+      messages: effectiveMessages,
+      toolCalls: [{ type: 'before-last-15-messages', tools: ['browser'] }],
+      emptyMessages: 'remove',
+    });
+    if (pruned.length !== effectiveMessages.length) {
+      log(`pruned browser tools: ${effectiveMessages.length} → ${pruned.length} msgs`);
+    }
+    effectiveMessages = pruned;
+
+    // --- Place cache breakpoints for Anthropic prompt caching ---
+    // Breakpoint 1: system prompt (set in route.ts)
+    // Breakpoint 2: working memory message (stable between compactions)
+    // Breakpoint 3: boundary between stable history and recent dynamic tail
+    if (wm) {
+      wm = { ...wm, providerOptions: { ...wm.providerOptions, ...CACHE_BREAKPOINT } };
+    }
+    // Place a breakpoint on the message just before the last 4 messages
+    // (the recent tail changes every step, everything above it is stable)
+    const cacheIdx = effectiveMessages.length - 5;
+    if (cacheIdx > 0) {
+      effectiveMessages = effectiveMessages.map((m, i) =>
+        i === cacheIdx
+          ? { ...m, providerOptions: { ...m.providerOptions, ...CACHE_BREAKPOINT } }
+          : m,
+      );
+    }
+
     const prepend = (msgs: ModelMessage[]) =>
       wm ? [wm, ...msgs] : msgs;
 
-    // Step 0: no prior inputTokens available. Prune browser tool content
-    // from older messages to avoid exceeding the main model's context window
-    // on cross-request reloads with large message histories.
+    // Step 0: no prior inputTokens available — skip compaction check.
     if (lastInputTokens === undefined) {
-      const pruned = pruneMessages({
-        messages: effectiveMessages,
-        toolCalls: [{ type: 'before-last-15-messages', tools: ['browser'] }],
-        emptyMessages: 'remove',
-      });
-      log(`step 0 — pruned browser tools: ${effectiveMessages.length} → ${pruned.length} msgs`);
-      return { messages: prepend(pruned), compacted: false };
+      log(`step 0 — ${effectiveMessages.length} msgs`);
+      return { messages: prepend(effectiveMessages), compacted: false };
     }
 
     const usedPct = lastInputTokens / MODEL_CONTEXT_WINDOW;
