@@ -174,7 +174,7 @@ export async function POST(request: Request) {
         const initialModelMessages = pruneMessages({
           messages: rawModelMessages,
           toolCalls: [
-            { type: 'before-last-5-messages', tools: ['browser'] },
+            { type: 'before-last-15-messages', tools: ['browser'] },
           ],
           emptyMessages: 'remove',
         });
