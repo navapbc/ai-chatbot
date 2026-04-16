@@ -153,10 +153,9 @@ function toCliCommand(params: Record<string, unknown>): string[] {
   }
 }
 
-interface BatchResponse {
+interface AgentBrowserResponse {
   success: boolean;
-  command?: string[];
-  result?: unknown;
+  data?: unknown;
   error?: string | null;
 }
 
@@ -241,83 +240,52 @@ NEVER navigate away from the target application domain. Do NOT click social medi
           const session = await getOrCreateBrowser(sessionId, userId);
           const agentSession = toAgentSession(session.kernelSessionId);
           const argv = toCliCommand(params);
-          const batchInput = JSON.stringify([argv]);
 
           console.log('[browser-tool] Session:', sessionId);
           console.log('[browser-tool] Executing:', params.action, JSON.stringify(params));
 
-          // First call per kernel browser: `agent-browser connect <ws>` to
-          // attach the agent-browser session to the Kernel CDP endpoint.
-          // Subsequent calls target the same session by name.
           if (!connectedSessions.has(agentSession)) {
-            const { stdout: connectOut, stderr: connectErr } = await execFileAsync(
+            await execFileAsync(
               AGENT_BROWSER_BIN,
               ['--session', agentSession, 'connect', session.cdpWsUrl],
               { timeout: COMMAND_TIMEOUT_MS },
             );
-            if (connectErr) console.log('[browser-tool] connect stderr:', connectErr);
-            if (connectOut) console.log('[browser-tool] connect stdout:', connectOut);
             connectedSessions.add(agentSession);
             console.log('[browser-tool] Connected agent-browser session:', agentSession);
           }
 
-          const child = execFileAsync(
+          const { stdout } = await execFileAsync(
             AGENT_BROWSER_BIN,
-            ['--session', agentSession, 'batch', '--json'],
-            {
-              input: batchInput,
-              timeout: COMMAND_TIMEOUT_MS,
-              maxBuffer: 32 * 1024 * 1024,
-            } as Parameters<typeof execFileAsync>[2] & { input: string },
+            ['--session', agentSession, ...argv, '--json'],
+            { timeout: COMMAND_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, signal: abortSignal },
           );
 
-          if (abortSignal) {
-            abortSignal.addEventListener('abort', () => {
-              child.child.kill('SIGTERM');
-            });
-          }
+          const parsed = JSON.parse(stdout) as AgentBrowserResponse;
 
-          const { stdout } = await child;
-
-          const parsed = JSON.parse(stdout) as BatchResponse | BatchResponse[];
-          const response: BatchResponse = Array.isArray(parsed) ? parsed[0] : parsed;
-
-          if (response.success) {
+          if (parsed.success) {
             const output =
-              typeof response.result === 'string'
-                ? response.result
-                : JSON.stringify(response.result);
+              typeof parsed.data === 'string' ? parsed.data : JSON.stringify(parsed.data);
             console.log('[browser-tool] Success. Output length:', output?.length);
             return { success: true, output, error: null };
           }
 
-          console.error('[browser-tool] Command error:', response.error);
-          return { success: false, output: null, error: response.error ?? 'unknown error' };
+          console.error('[browser-tool] Command error:', parsed.error);
+          return { success: false, output: null, error: parsed.error ?? 'unknown error' };
         } catch (error: unknown) {
-          const err = error as { message?: string; stderr?: string; stdout?: string; code?: number };
+          const err = error as { message?: string; stderr?: string | Buffer; stdout?: string | Buffer };
           const message = err.message ?? String(error);
           const stderr = err.stderr?.toString?.() ?? '';
           const stdout = err.stdout?.toString?.() ?? '';
 
-          if (abortSignal?.aborted || message.includes('stopped by user') || message.includes('SIGTERM')) {
-            console.log('[browser-tool] Command aborted by user');
-            return {
-              success: false,
-              output: null,
-              error: 'Browser command stopped by user',
-            };
+          if (abortSignal?.aborted) {
+            return { success: false, output: null, error: 'Browser command stopped by user' };
           }
 
           console.error('[browser-tool] Error:', message);
           if (stderr) console.error('[browser-tool] stderr:', stderr);
           if (stdout) console.error('[browser-tool] stdout:', stdout);
 
-          const detail = stderr.trim() || stdout.trim() || message;
-          return {
-            success: false,
-            output: null,
-            error: detail,
-          };
+          return { success: false, output: null, error: stderr.trim() || stdout.trim() || message };
         }
       });
     },
