@@ -95,75 +95,24 @@ Many form fields (SSN, birthdate, phone, state, zip) have JavaScript input masks
 
 ## Modals, Dialogs & Popups
 
-Empty/minimal snapshots mean a modal is blocking — NOT that snapshots are broken. Modals often set `aria-hidden="true"` on the page root, which hides everything from the accessibility tree. Multiple modals can appear in sequence (e.g. address validation → county selection). Always loop until the page is clear.
+Empty/minimal snapshots mean a modal is blocking — NOT that snapshots are broken. Do NOT use `evaluate` to probe when snapshots are empty. Follow these steps:
 
-### Standard Modal Workflow
-
-1. Snapshot the page
-2. If minimal/empty content → modal is present. Try scoped snapshots in this order:
-   - `{ action: "snapshot", selector: ".ReactModal__Content" }` — **try this first** (BenefitsCal and React apps)
+1. **Try scoped snapshots** in this order:
+   - `{ action: "snapshot", selector: "[role=dialog]" }`
+   - `{ action: "snapshot", selector: ".ReactModal__Overlay" }`
    - `{ action: "snapshot", selector: "[aria-modal=true]" }`
-   - `{ action: "snapshot", selector: "[role=dialog]:not(.d-none):not([aria-hidden=true])" }`
    - `{ action: "snapshot", selector: ".modal" }`
-3. Use refs from that snapshot to interact — if there's a native `<select>`, use `select`; if it's a custom dropdown, click to open → snapshot again → click the option
-4. After dismissing, go back to step 1 — another modal may have appeared
-5. When the full page is visible again, resume normal workflow
+2. **If a scoped snapshot returns content** — use refs to interact (select, click, dismiss)
+3. **If ALL scoped snapshots are empty** — the modal lacks ARIA attributes (common on React apps like BenefitsCal). Use ONE evaluate to find it:
+   ```
+   { action: "evaluate", script: "document.querySelector('[aria-modal=true], .modal, [role=dialog]')?.outerHTML?.substring(0, 2000) || document.querySelector('body > div:not([aria-hidden])').outerHTML.substring(0, 2000)" }
+   ```
+   Then interact using CSS selectors from the HTML you found.
+4. **After dismissing** — re-snapshot. Another modal may have appeared (address validation → county selection is common). Loop until the full page is visible.
 
-### When scoped snapshots also return empty
+**If select/click doesn't register on a React modal** (button stays disabled, click ignored), use `readSkillFile` to load `references/modals.md` for the React event workaround.
 
-Some modals (especially on React apps like BenefitsCal) set `aria-hidden="true"` on the root `#root` div, AND the modal's ReactModalPortal wrapper may also have `aria-hidden`. This hides everything from the accessibility tree, so even scoped snapshots return empty. This is common with county selection modals after address entry.
-
-**IMPORTANT**: The page may have hidden spinner elements (`<div class="spinner d-none" role="dialog">`) that look like modals but are NOT. Always filter these out.
-
-When scoped snapshots return empty, use ONE evaluate to discover the modal — target `.ReactModal__Content` specifically:
-```
-{ action: "evaluate", script: "document.querySelector('.ReactModal__Content')?.outerHTML?.substring(0, 2000) || 'No ReactModal found'" }
-```
-
-If that returns nothing, try a broader search that filters out hidden elements:
-```
-{ action: "evaluate", script: "Array.from(document.querySelectorAll('[aria-modal=true], [role=dialog]')).filter(el => !el.classList.contains('d-none') && el.getAttribute('aria-hidden') !== 'true').map(el => el.outerHTML.substring(0, 2000))[0] || 'No visible modal'" }
-```
-
-If the result shows a spinner or "Please wait" element, that is NOT the modal — wait 2-3 seconds and retry. The real modal renders after the spinner.
-
-Once you see the modal HTML, identify the select element and button, then interact using CSS selectors (not evaluate):
-```
-browser({ action: "select", selector: "#county", value: "33" })
-browser({ action: "click", selector: "#continueBtn" })
-```
-
-### React modals — when select/click doesn't register
-
-React apps track form values internally. Setting `select.value` programmatically or clicking via `.click()` may not trigger React's state update, so the button stays disabled or the click is ignored.
-
-**Fix: dispatch real browser events that React can detect.**
-
-For selects — clear React's value tracker and fire change events:
-```
-{ action: "evaluate", script: "var s = document.querySelector('#county'); var tracker = s._valueTracker; if (tracker) tracker.setValue(''); s.value = '33'; s.dispatchEvent(new Event('change', { bubbles: true }));" }
-```
-
-For buttons — dispatch the full mouse event sequence (not just `.click()`):
-```
-{ action: "evaluate", script: "var btn = document.querySelector('button'); btn.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window})); btn.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window})); btn.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));" }
-```
-
-After the modal closes, re-snapshot to confirm and continue.
-
-### County/Location Selection Modals
-
-These commonly appear after address entry on benefits sites. The typical flow:
-1. Try scoped snapshot (`[role=dialog]`, `[aria-modal=true]`)
-2. If empty → use evaluate to find the modal HTML (see above)
-3. Select the county value with React-aware events
-4. Click Continue with the full mouse event sequence
-5. Wait briefly (`{ action: "wait", timeout: 1000 }`) then re-snapshot
-6. If another modal appears, repeat
-
-### Google Translate Bar
-
-Government and health sites often have a Google Translate bar that blocks clicks on form fields. Dismiss it: `{ action: "evaluate", script: "document.querySelector('.VIpgJd-yAWNEb-hvhgNd')?.remove()" }`
+**Google Translate bar** blocking clicks: `{ action: "evaluate", script: "document.querySelector('.VIpgJd-yAWNEb-hvhgNd')?.remove()" }`
 
 ## Form Submission, Turnstile & CAPTCHA
 
@@ -223,6 +172,7 @@ Always use correct JSON types — the browser will error on wrong types:
 
 For detailed guidance on specific topics, use `readSkillFile` to load:
 - `references/form-submission.md` — Advanced JS debugging for stuck submit buttons (steps 5-6: finding gating variables, minimal evaluate fix)
+- `references/modals.md` — Modal workflow, county selection modals, Google Translate bar
 - `references/form-automation.md` — Custom dropdowns (Select2/Chosen/Drupal), multi-page forms, error recovery
 - `references/commands.md` — Full command reference with all options and parameters
 - `references/snapshot-refs.md` — Ref lifecycle, snapshot modes, troubleshooting
