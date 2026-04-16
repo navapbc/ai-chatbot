@@ -1,33 +1,169 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { tool, type ToolExecutionOptions } from 'ai';
 import { z } from 'zod';
-import { nanoid } from 'nanoid';
-import { executeCommand } from 'agent-browser/dist/actions.js';
-import type { Command, Response } from 'agent-browser/dist/types.js';
 import { getOrCreateBrowser } from '@/lib/kernel/browser';
 
+const execFileAsync = promisify(execFile);
+
 const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes
+const AGENT_BROWSER_BIN = 'agent-browser';
 
 /**
  * Per-session mutex to serialize browser commands.
- * Playwright's page object is not safe for concurrent access — parallel tool
- * calls from the AI SDK will race and time out. We queue them per session so
- * parallel model responses still complete correctly, just sequentially.
+ * The Rust daemon serializes within a session, but our per-process queue
+ * prevents parallel tool calls from spawning racing processes.
  */
 const sessionQueues = new Map<string, Promise<unknown>>();
 
 function withSessionQueue<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
   const prev = sessionQueues.get(sessionId) ?? Promise.resolve();
-  const next = prev.then(fn, fn); // always advance the queue even on error
-  sessionQueues.set(sessionId, next.then(() => {}, () => {})); // swallow to prevent unhandled rejection on queue chain
+  const next = prev.then(fn, fn);
+  sessionQueues.set(sessionId, next.then(() => {}, () => {}));
   return next;
 }
 
 /**
+ * Translate our structured `{ action, ... }` object into agent-browser CLI
+ * argv. Returns an array suitable for `agent-browser batch --json` stdin
+ * (a single command as `[cmd, ...args]`).
+ */
+function toCliCommand(params: Record<string, unknown>): string[] {
+  const p = params as Record<string, string | number | boolean | string[] | undefined>;
+  const action = String(p.action);
+
+  switch (action) {
+    case 'navigate':
+      return ['open', String(p.url)];
+
+    case 'snapshot': {
+      const args = ['snapshot'];
+      if (p.interactive) args.push('-i');
+      if (p.selector) args.push('-s', String(p.selector));
+      return args;
+    }
+
+    case 'click':
+      return ['click', String(p.selector)];
+
+    case 'fill':
+      return ['fill', String(p.selector), String(p.value ?? '')];
+
+    case 'type': {
+      const args = ['type', String(p.selector), String(p.text ?? '')];
+      if (p.clear) args.push('--clear');
+      return args;
+    }
+
+    case 'select': {
+      const values = Array.isArray(p.values) ? p.values : [String(p.value ?? '')];
+      return ['select', String(p.selector), ...values.map(String)];
+    }
+
+    case 'press':
+      return ['press', String(p.key)];
+
+    case 'hover':
+      return ['hover', String(p.selector)];
+
+    case 'check':
+      return ['check', String(p.selector)];
+
+    case 'uncheck':
+      return ['uncheck', String(p.selector)];
+
+    case 'scrollintoview':
+      return ['scrollintoview', String(p.selector)];
+
+    case 'wait': {
+      if (p.state) return ['wait', '--load', String(p.state)];
+      if (p.selector) return ['wait', String(p.selector)];
+      return ['wait', String(p.timeout ?? 1000)];
+    }
+
+    case 'waitforloadstate':
+      return ['wait', '--load', String(p.state ?? 'networkidle')];
+
+    case 'gettext':
+      return ['get', 'text', String(p.selector)];
+
+    case 'inputvalue':
+      return ['get', 'value', String(p.selector)];
+
+    case 'url':
+      return ['get', 'url'];
+
+    case 'title':
+      return ['get', 'title'];
+
+    case 'scroll': {
+      const dir = String(p.direction ?? 'down');
+      const amount = p.amount != null ? String(p.amount) : '300';
+      return ['scroll', dir, amount];
+    }
+
+    case 'screenshot':
+      return ['screenshot'];
+
+    case 'back':
+      return ['back'];
+
+    case 'forward':
+      return ['forward'];
+
+    case 'evaluate':
+      return ['eval', String(p.script ?? '')];
+
+    case 'tab_list':
+      return ['tab'];
+
+    case 'tab_switch':
+      return ['tab', String(p.index ?? 0)];
+
+    case 'tab_new':
+      return p.url ? ['tab', 'new', String(p.url)] : ['tab', 'new'];
+
+    case 'tab_close':
+      return p.index != null ? ['tab', 'close', String(p.index)] : ['tab', 'close'];
+
+    case 'dialog': {
+      const response = String(p.response ?? 'accept');
+      if (response === 'accept' && p.promptText) {
+        return ['dialog', 'accept', String(p.promptText)];
+      }
+      return ['dialog', response];
+    }
+
+    case 'frame':
+      return ['frame', String(p.selector)];
+
+    case 'mainframe':
+      return ['frame', 'main'];
+
+    case 'getbylabel': {
+      const sub = String(p.subaction ?? 'click');
+      const args = ['find', 'label', String(p.label), sub];
+      if (p.value != null) args.push(String(p.value));
+      return args;
+    }
+
+    default:
+      throw new Error(`Unknown browser action: ${action}`);
+  }
+}
+
+interface BatchResponse {
+  success: boolean;
+  command?: string[];
+  result?: unknown;
+  error?: string | null;
+}
+
+/**
  * Creates a browser automation tool for a specific session.
- * Uses agent-browser's BrowserManager API with Kernel for remote browser control.
- *
- * Executes commands in-process via executeCommand() — no CLI subprocess.
- * BrowserManager persists across tool calls, so ref maps survive between snapshots.
+ * Spawns the agent-browser Rust CLI in `batch --json` mode and pipes a
+ * single command via stdin. Commands target our Kernel-managed browser
+ * via `--cdp <cdp_ws_url>` (stateless per-command; no daemon session state).
  *
  * @param sessionId - The chat/session ID for browser isolation
  * @param userId - The user ID for ownership validation and security
@@ -101,47 +237,50 @@ NEVER navigate away from the target application domain. Do NOT click social medi
     ) => {
       return withSessionQueue(sessionId, async () => {
         try {
-          // Ensure we have a Kernel browser instance (creates one if needed)
           const session = await getOrCreateBrowser(sessionId, userId);
-
-          const command = {
-            id: nanoid(),
-            ...params,
-          } as Command;
+          const argv = toCliCommand(params);
+          const batchInput = JSON.stringify([argv]);
 
           console.log('[browser-tool] Session:', sessionId);
-          console.log('[browser-tool] Executing:', command.action, JSON.stringify(params));
+          console.log('[browser-tool] Executing:', params.action, JSON.stringify(params));
 
-          const response = await Promise.race([
-            executeCommand(command, session.browserManager),
-            new Promise<never>((_, reject) => {
-              const timer = setTimeout(
-                () => reject(new Error('Command timed out after 2 minutes')),
-                COMMAND_TIMEOUT_MS,
-              );
-              abortSignal?.addEventListener('abort', () => {
-                clearTimeout(timer);
-                reject(new Error('Browser command stopped by user'));
-              });
-            }),
-          ]);
+          const child = execFileAsync(
+            AGENT_BROWSER_BIN,
+            ['--cdp', session.cdpWsUrl, 'batch', '--json'],
+            {
+              input: batchInput,
+              timeout: COMMAND_TIMEOUT_MS,
+              maxBuffer: 32 * 1024 * 1024, // 32 MB — large snapshots
+            } as Parameters<typeof execFileAsync>[2] & { input: string },
+          );
+
+          if (abortSignal) {
+            abortSignal.addEventListener('abort', () => {
+              child.child.kill('SIGTERM');
+            });
+          }
+
+          const { stdout } = await child;
+
+          const parsed = JSON.parse(stdout) as BatchResponse | BatchResponse[];
+          const response: BatchResponse = Array.isArray(parsed) ? parsed[0] : parsed;
 
           if (response.success) {
             const output =
-              typeof response.data === 'string'
-                ? response.data
-                : JSON.stringify(response.data);
+              typeof response.result === 'string'
+                ? response.result
+                : JSON.stringify(response.result);
             console.log('[browser-tool] Success. Output length:', output?.length);
             return { success: true, output, error: null };
           }
 
           console.error('[browser-tool] Command error:', response.error);
-          return { success: false, output: null, error: response.error };
+          return { success: false, output: null, error: response.error ?? 'unknown error' };
         } catch (error: unknown) {
           const message =
             error instanceof Error ? error.message : String(error);
 
-          if (abortSignal?.aborted || message.includes('stopped by user')) {
+          if (abortSignal?.aborted || message.includes('stopped by user') || message.includes('SIGTERM')) {
             console.log('[browser-tool] Command aborted by user');
             return {
               success: false,

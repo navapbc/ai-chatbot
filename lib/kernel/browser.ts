@@ -1,5 +1,4 @@
 import Kernel from '@onkernel/sdk';
-import { BrowserManager } from 'agent-browser/dist/browser.js';
 
 const kernel = new Kernel();
 
@@ -12,7 +11,6 @@ export interface BrowserSession {
   liveViewUrl: string;
   cdpWsUrl: string;
   userId: string;
-  browserManager: BrowserManager;
   replayId?: string;
 }
 
@@ -87,13 +85,6 @@ export async function getOrCreateBrowser(
         browser_live_view_url: string;
       };
 
-      const manager = new BrowserManager();
-      await manager.launch({
-        id: 'launch',
-        action: 'launch',
-        cdpUrl: browser.cdp_ws_url,
-      });
-
       // Start session replay recording
       let replayId: string | undefined;
       try {
@@ -111,7 +102,6 @@ export async function getOrCreateBrowser(
         liveViewUrl: browser.browser_live_view_url,
         cdpWsUrl: browser.cdp_ws_url,
         userId,
-        browserManager: manager,
         replayId,
       };
 
@@ -199,13 +189,6 @@ export async function deleteBrowser(
     } catch (err) {
       console.error('[Kernel] Failed to stop/list replays:', err);
     }
-  }
-
-  // Close BrowserManager (disconnects Playwright from CDP)
-  try {
-    await session.browserManager.close();
-  } catch (err) {
-    console.error('[Kernel] Failed to close BrowserManager:', err);
   }
 
   // Delete from Kernel
