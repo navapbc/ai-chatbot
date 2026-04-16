@@ -9,18 +9,19 @@ const execFileAsync = promisify(execFile);
 const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes
 const AGENT_BROWSER_BIN = 'agent-browser';
 
-/**
- * Per-session mutex to serialize browser commands.
- * The Rust daemon serializes within a session, but our per-process queue
- * prevents parallel tool calls from spawning racing processes.
- */
 const sessionQueues = new Map<string, Promise<unknown>>();
+const connectedSessions = new Set<string>();
 
 function withSessionQueue<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
   const prev = sessionQueues.get(sessionId) ?? Promise.resolve();
   const next = prev.then(fn, fn);
   sessionQueues.set(sessionId, next.then(() => {}, () => {}));
   return next;
+}
+
+/** Stable agent-browser `--session` name from our kernel session id. */
+function toAgentSession(kernelSessionId: string): string {
+  return `kernel-${kernelSessionId}`;
 }
 
 /**
@@ -238,19 +239,35 @@ NEVER navigate away from the target application domain. Do NOT click social medi
       return withSessionQueue(sessionId, async () => {
         try {
           const session = await getOrCreateBrowser(sessionId, userId);
+          const agentSession = toAgentSession(session.kernelSessionId);
           const argv = toCliCommand(params);
           const batchInput = JSON.stringify([argv]);
 
           console.log('[browser-tool] Session:', sessionId);
           console.log('[browser-tool] Executing:', params.action, JSON.stringify(params));
 
+          // First call per kernel browser: `agent-browser connect <ws>` to
+          // attach the agent-browser session to the Kernel CDP endpoint.
+          // Subsequent calls target the same session by name.
+          if (!connectedSessions.has(agentSession)) {
+            const { stdout: connectOut, stderr: connectErr } = await execFileAsync(
+              AGENT_BROWSER_BIN,
+              ['--session', agentSession, 'connect', session.cdpWsUrl],
+              { timeout: COMMAND_TIMEOUT_MS },
+            );
+            if (connectErr) console.log('[browser-tool] connect stderr:', connectErr);
+            if (connectOut) console.log('[browser-tool] connect stdout:', connectOut);
+            connectedSessions.add(agentSession);
+            console.log('[browser-tool] Connected agent-browser session:', agentSession);
+          }
+
           const child = execFileAsync(
             AGENT_BROWSER_BIN,
-            ['--cdp', session.cdpWsUrl, 'batch', '--json'],
+            ['--session', agentSession, 'batch', '--json'],
             {
               input: batchInput,
               timeout: COMMAND_TIMEOUT_MS,
-              maxBuffer: 32 * 1024 * 1024, // 32 MB — large snapshots
+              maxBuffer: 32 * 1024 * 1024,
             } as Parameters<typeof execFileAsync>[2] & { input: string },
           );
 
@@ -277,8 +294,10 @@ NEVER navigate away from the target application domain. Do NOT click social medi
           console.error('[browser-tool] Command error:', response.error);
           return { success: false, output: null, error: response.error ?? 'unknown error' };
         } catch (error: unknown) {
-          const message =
-            error instanceof Error ? error.message : String(error);
+          const err = error as { message?: string; stderr?: string; stdout?: string; code?: number };
+          const message = err.message ?? String(error);
+          const stderr = err.stderr?.toString?.() ?? '';
+          const stdout = err.stdout?.toString?.() ?? '';
 
           if (abortSignal?.aborted || message.includes('stopped by user') || message.includes('SIGTERM')) {
             console.log('[browser-tool] Command aborted by user');
@@ -290,10 +309,14 @@ NEVER navigate away from the target application domain. Do NOT click social medi
           }
 
           console.error('[browser-tool] Error:', message);
+          if (stderr) console.error('[browser-tool] stderr:', stderr);
+          if (stdout) console.error('[browser-tool] stdout:', stdout);
+
+          const detail = stderr.trim() || stdout.trim() || message;
           return {
             success: false,
             output: null,
-            error: message,
+            error: detail,
           };
         }
       });
