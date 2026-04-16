@@ -237,9 +237,10 @@ NEVER navigate away from the target application domain. Do NOT click social medi
       { abortSignal }: ToolExecutionOptions,
     ) => {
       return withSessionQueue(sessionId, async () => {
+        let agentSession: string | null = null;
         try {
           const session = await getOrCreateBrowser(sessionId, userId);
-          const agentSession = toAgentSession(session.kernelSessionId);
+          agentSession = toAgentSession(session.kernelSessionId);
           const argv = toCliCommand(params);
 
           console.log('[browser-tool] Session:', sessionId);
@@ -279,6 +280,19 @@ NEVER navigate away from the target application domain. Do NOT click social medi
           const stdout = err.stdout?.toString?.() ?? '';
 
           if (abortSignal?.aborted) {
+            // SIGTERM on the CLI doesn't cancel the daemon's in-flight CDP
+            // work — the browser keeps going. Tear down the agent-browser
+            // session so the daemon drops the request; the next tool call
+            // re-runs `connect`. The Kernel browser itself stays alive.
+            if (agentSession) {
+              connectedSessions.delete(agentSession);
+              console.log('[browser-tool] Aborting — closing agent-browser session:', agentSession);
+              execFileAsync(
+                AGENT_BROWSER_BIN,
+                ['--session', agentSession, 'close'],
+                { timeout: 10_000 },
+              ).catch((e) => console.error('[browser-tool] close on abort failed:', e.message));
+            }
             return { success: false, output: null, error: 'Browser command stopped by user' };
           }
 
