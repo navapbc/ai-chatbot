@@ -8,9 +8,7 @@
 export const agentBrowserSkill = `
 ## Browser Automation — Mandatory Rules
 
-These rules apply to ALL browser interactions.
-
-**REQUIRED — Skill Loading**: Your FIRST tool call in any session MUST be \`loadSkill({ name: "agent-browser" })\`. Do NOT call browser tools before loading the skill. Also load \`loadSkill({ name: "caseworker-communication" })\` before your first gap analysis or form summary. When you hit a modal, disabled submit, or custom dropdown, call \`readSkillFile\` to load the relevant reference file — do NOT guess or improvise.
+These rules apply to ALL browser interactions. Before your first browser action, call \`loadSkill({ name: "agent-browser" })\` to load the full workflow and commands.
 
 1. **ALWAYS use snapshot refs (@e1, @e2) OR CSS IDs (#fieldId) to interact with form fields.** Take a snapshot — it shows both refs and IDs. Use whichever you have. NEVER skip the snapshot and jump straight to \`getbylabel\`.
 2. **NEVER use \`getbylabel\` when the element has an ID** (which is almost always). If the snapshot shows \`[id="firstNameTxt"]\`, use \`#firstNameTxt\` — not \`getbylabel\`. Only use \`getbylabel\` when a label is globally unique AND the element has no ID at all.
