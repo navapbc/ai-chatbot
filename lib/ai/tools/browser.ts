@@ -50,11 +50,12 @@ function toCliCommand(params: Record<string, unknown>): string[] {
     case 'fill':
       return ['fill', String(p.selector), String(p.value ?? '')];
 
-    case 'type': {
-      const args = ['type', String(p.selector), String(p.text ?? '')];
-      if (p.clear) args.push('--clear');
-      return args;
-    }
+    case 'type':
+      // Rust CLI's `type` has no --clear flag. For a clear-then-type
+      // workflow, the skill instructs the model to click + type (the
+      // preceding click focuses the field; type appends). When the field
+      // is already empty this is effectively the same as clear+type.
+      return ['type', String(p.selector), String(p.text ?? '')];
 
     case 'select': {
       const values = Array.isArray(p.values) ? p.values : [String(p.value ?? '')];
