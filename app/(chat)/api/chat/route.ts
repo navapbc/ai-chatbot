@@ -182,10 +182,43 @@ export async function POST(request: Request) {
           ? myProvider.languageModel(resolvedModelOverride)
           : webAutomationModel;
 
+        // Anthropic prompt caching — gated on model provider because
+        // `cacheControl` is Anthropic-only and other providers ignore or
+        // reject the option. Two breakpoints:
+        //   1. System prompt (covers tools + system, ~15K stable tokens)
+        //   2. Before the last 4 messages (caches growing middle history
+        //      so each step only reprocesses the recent dynamic tail)
+        // See: https://docs.claude.com/en/docs/build-with-claude/prompt-caching
+        const isAnthropic = activeModel.provider.includes('anthropic');
+        const CACHE_BREAKPOINT = {
+          anthropic: { cacheControl: { type: 'ephemeral' as const } },
+        };
+        const systemParam = isAnthropic
+          ? {
+              role: 'system' as const,
+              content: getWebAutomationSystemPrompt(),
+              providerOptions: CACHE_BREAKPOINT,
+            }
+          : getWebAutomationSystemPrompt();
+        const cachedMessages =
+          isAnthropic && initialModelMessages.length > 4
+            ? initialModelMessages.map((msg, i) =>
+                i === initialModelMessages.length - 5
+                  ? {
+                      ...msg,
+                      providerOptions: {
+                        ...(msg.providerOptions ?? {}),
+                        ...CACHE_BREAKPOINT,
+                      },
+                    }
+                  : msg,
+              )
+            : initialModelMessages;
+
         const result = streamText({
           model: activeModel,
-          system: getWebAutomationSystemPrompt(),
-          messages: initialModelMessages,
+          system: systemParam,
+          messages: cachedMessages,
           tools: {
             ...apricotTools,
             gapAnalysis,
