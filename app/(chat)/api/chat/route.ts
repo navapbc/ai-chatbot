@@ -35,7 +35,8 @@ import { actionLabel } from '@/lib/ai/tools/action-label';
 import { getWebAutomationSystemPrompt } from '@/lib/ai/prompts/web-automation';
 import { loadSkill } from '@/lib/ai/tools/load-skill';
 import { readSkillFile } from '@/lib/ai/tools/read-skill-file';
-import { createMessageCompressor } from '@/lib/ai/context-compression';
+import { prepareMessages } from '@/lib/ai/context-compression';
+import { withSlidingCacheBreakpoint } from '@/lib/ai/cache-breakpoints';
 import { registerChatAbort, clearChatAbort } from '@/lib/chat-abort-registry';
 
 export const maxDuration = 300; // 5 minutes for web automation tasks
@@ -164,24 +165,54 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
-        const initialModelMessages = await convertToModelMessages(uiMessages);
-
-        // One compressor instance per request; its cache persists across all
-        // prepareStep calls so generateText is not re-fired on every step.
-        // Compaction triggers on step 1+ using SDK-reported inputTokens
-        // (step 0 has no prior usage data, so it runs uncompacted).
-        const compressStep = createMessageCompressor();
+        const rawModelMessages = await convertToModelMessages(uiMessages);
 
         const activeModel = resolvedModelOverride
           ? myProvider.languageModel(resolvedModelOverride)
           : webAutomationModel;
-
-        // Anthropic prompt caching — gated on model provider because
-        // `cacheControl` is Anthropic-only. Single breakpoint on the
-        // system prompt caches tools + system (~15K stable tokens) for
-        // the 5-minute TTL. Every step after the first reads from cache.
-        // See: https://docs.claude.com/en/docs/build-with-claude/prompt-caching
         const isAnthropic = activeModel.provider.includes('anthropic');
+
+        // Cheap char-based token estimate (~4 chars/token) to decide whether
+        // to run the fallback compactor. We avoid a separate tokens-counting
+        // call — overshooting slightly is fine; the model-side clear_tool_uses
+        // edit also fires server-side if we're still heavy.
+        const estimatedInputTokens = Math.ceil(
+          rawModelMessages.reduce(
+            (n, m) => n + JSON.stringify(m.content ?? '').length,
+            0,
+          ) / 4,
+        );
+
+        // Fallback compaction (Haiku) — runs once, only if the request is
+        // already near the window. Vertex doesn't yet accept the Anthropic
+        // `compact_20260112` beta header, so we summarize client-side.
+        const { messages: preparedMessages, compacted, summary } =
+          await prepareMessages(rawModelMessages, estimatedInputTokens);
+        if (compacted) {
+          console.log(
+            `[compressor] summarized — estimated ${estimatedInputTokens} tokens`,
+          );
+          dataStream.write({
+            type: 'data-checkpoint',
+            data: {
+              stepNumber: 0,
+              inputTokens: estimatedInputTokens,
+              timestamp: Date.now(),
+              summary,
+            },
+            transient: true,
+          });
+        }
+
+        // Sliding cache breakpoint on the last message: combined with the
+        // system-prompt breakpoint below, every step after the first reads
+        // system + tools + history-up-to-last-turn from cache.
+        const finalMessages = isAnthropic
+          ? withSlidingCacheBreakpoint(preparedMessages)
+          : preparedMessages;
+
+        // Static cache breakpoint on the system prompt (+ tools travel with it).
+        // See https://docs.claude.com/en/docs/build-with-claude/prompt-caching
         const systemParam = isAnthropic
           ? {
               role: 'system' as const,
@@ -192,10 +223,40 @@ export async function POST(request: Request) {
             }
           : getWebAutomationSystemPrompt();
 
+        // Anthropic server-side context editing. `clear_tool_uses_20250919`
+        // replaces old tool_result payloads with `[cleared to save context]`
+        // while preserving the tool_use records so the model knows the calls
+        // happened and can re-invoke if needed. `updateWorkingMemory` is
+        // excluded because its payload is load-bearing (participant JSON).
+        //
+        // Vertex rejects `compact-2026-01-12`; when Google enables that beta
+        // we can add a `compact_20260112` edit and delete prepareMessages.
+        const contextManagementOptions = isAnthropic
+          ? {
+              anthropic: {
+                contextManagement: {
+                  edits: [
+                    {
+                      type: 'clear_tool_uses_20250919' as const,
+                      trigger: { type: 'input_tokens' as const, value: 80_000 },
+                      keep: { type: 'tool_uses' as const, value: 4 },
+                      clearAtLeast: {
+                        type: 'input_tokens' as const,
+                        value: 10_000,
+                      },
+                      excludeTools: ['updateWorkingMemory'],
+                    },
+                  ],
+                },
+              },
+            }
+          : undefined;
+
         const result = streamText({
           model: activeModel,
           system: systemParam,
-          messages: initialModelMessages,
+          messages: finalMessages,
+          providerOptions: contextManagementOptions,
           tools: {
             ...apricotTools,
             gapAnalysis,
@@ -215,38 +276,6 @@ export async function POST(request: Request) {
           // tool-call with no matching tool-result, triggering
           // AI_MissingToolResultsError on the next turn.
           stopWhen: [stepCountIs(500), () => chatAbort.signal.aborted],
-          // Compress message history when token usage approaches the context
-          // window limit (75% of 200K). First step has no prior usage data so
-          // compression is skipped (correct — first step is always small).
-          prepareStep: async ({ messages: stepMessages, steps }) => {
-            const lastInputTokens = steps.length > 0
-              ? steps[steps.length - 1].usage.inputTokens
-              : undefined;
-            const { messages: compressed, compacted, summary } = await compressStep(
-              stepMessages,
-              lastInputTokens,
-              () => {
-                dataStream.write({
-                  type: 'data-compacting',
-                  data: { timestamp: Date.now() },
-                  transient: true,
-                });
-              },
-            );
-            if (compacted) {
-              dataStream.write({
-                type: 'data-checkpoint',
-                data: {
-                  stepNumber: steps.length,
-                  inputTokens: lastInputTokens,
-                  timestamp: Date.now(),
-                  summary,
-                },
-                transient: true,
-              });
-            }
-            return { messages: compressed };
-          },
           // Emit cumulative token usage after each step so the client can
           // display it in real-time via the Context component.
           onStepFinish: ({ usage }) => {
