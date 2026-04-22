@@ -35,6 +35,7 @@ import { actionLabel } from '@/lib/ai/tools/action-label';
 import { getWebAutomationSystemPrompt } from '@/lib/ai/prompts/web-automation';
 import { loadSkill } from '@/lib/ai/tools/load-skill';
 import { readSkillFile } from '@/lib/ai/tools/read-skill-file';
+import { updateWorkingMemory } from '@/lib/ai/tools/working-memory';
 import { prepareMessages } from '@/lib/ai/context-compression';
 import { withSlidingCacheBreakpoint } from '@/lib/ai/cache-breakpoints';
 import { registerChatAbort, clearChatAbort } from '@/lib/chat-abort-registry';
@@ -265,6 +266,7 @@ export async function POST(request: Request) {
             browser: createBrowserTool(sessionId, session.user.id),
             loadSkill,
             readSkillFile,
+            updateWorkingMemory,
           },
           // request.signal.aborted is checked at each step boundary so the
           // tool loop halts even before Node's write-failure-based abort
@@ -278,7 +280,17 @@ export async function POST(request: Request) {
           stopWhen: [stepCountIs(500), () => chatAbort.signal.aborted],
           // Emit cumulative token usage after each step so the client can
           // display it in real-time via the Context component.
-          onStepFinish: ({ usage }) => {
+          onStepFinish: ({ usage, providerMetadata }) => {
+            const anthropicMeta = providerMetadata?.anthropic as any | undefined;
+            console.log(
+              '[cache]',
+              JSON.stringify({
+                input: usage.inputTokens,
+                cache_read: anthropicMeta?.usage?.cache_read_input_tokens ?? 0,
+                cache_create: anthropicMeta?.usage?.cache_creation_input_tokens ?? 0,
+                applied: anthropicMeta?.contextManagement?.appliedEdits ?? [],
+              }),
+            );
             dataStream.write({
               type: 'data-token-usage',
               data: usage,
