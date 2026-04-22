@@ -177,42 +177,25 @@ export async function POST(request: Request) {
           : webAutomationModel;
 
         // Anthropic prompt caching — gated on model provider because
-        // `cacheControl` is Anthropic-only and other providers ignore or
-        // reject the option. Two breakpoints:
-        //   1. System prompt (covers tools + system, ~15K stable tokens)
-        //   2. Before the last 4 messages (caches growing middle history
-        //      so each step only reprocesses the recent dynamic tail)
+        // `cacheControl` is Anthropic-only. Single breakpoint on the
+        // system prompt caches tools + system (~15K stable tokens) for
+        // the 5-minute TTL. Every step after the first reads from cache.
         // See: https://docs.claude.com/en/docs/build-with-claude/prompt-caching
         const isAnthropic = activeModel.provider.includes('anthropic');
-        const CACHE_BREAKPOINT = {
-          anthropic: { cacheControl: { type: 'ephemeral' as const } },
-        };
         const systemParam = isAnthropic
           ? {
               role: 'system' as const,
               content: getWebAutomationSystemPrompt(),
-              providerOptions: CACHE_BREAKPOINT,
+              providerOptions: {
+                anthropic: { cacheControl: { type: 'ephemeral' as const } },
+              },
             }
           : getWebAutomationSystemPrompt();
-        const cachedMessages =
-          isAnthropic && initialModelMessages.length > 4
-            ? initialModelMessages.map((msg, i) =>
-                i === initialModelMessages.length - 5
-                  ? {
-                      ...msg,
-                      providerOptions: {
-                        ...(msg.providerOptions ?? {}),
-                        ...CACHE_BREAKPOINT,
-                      },
-                    }
-                  : msg,
-              )
-            : initialModelMessages;
 
         const result = streamText({
           model: activeModel,
           system: systemParam,
-          messages: cachedMessages,
+          messages: initialModelMessages,
           tools: {
             ...apricotTools,
             gapAnalysis,
