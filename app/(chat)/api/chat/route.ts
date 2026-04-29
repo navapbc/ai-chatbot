@@ -33,7 +33,7 @@ import { createBrowserTool } from '@/lib/ai/tools/browser';
 import { gapAnalysis } from '@/lib/ai/tools/gap-analysis';
 import { formSummary } from '@/lib/ai/tools/form-summary';
 import { actionLabel } from '@/lib/ai/tools/action-label';
-import { getWebAutomationSystemPrompt } from '@/lib/ai/prompts/web-automation';
+import { getWebAutomationSystemPrompt, getCurrentDateString } from '@/lib/ai/prompts/web-automation';
 import { loadSkill } from '@/lib/ai/tools/load-skill';
 import { readSkillFile } from '@/lib/ai/tools/read-skill-file';
 import { createMessageCompressor, preCompactMessages } from '@/lib/ai/context-compression';
@@ -200,8 +200,20 @@ export async function POST(request: Request) {
 
         const result = streamText({
           model: activeModel,
-          system: getWebAutomationSystemPrompt(),
-          messages: preCompacted,
+          messages: [
+            {
+              role: 'system',
+              content: getWebAutomationSystemPrompt(),
+              providerOptions: {
+                anthropic: { cacheControl: { type: 'ephemeral' } },
+              },
+            },
+            {
+              role: 'system',
+              content: getCurrentDateString(),
+            },
+            ...preCompacted,
+          ],
           tools: {
             ...apricotTools,
             gapAnalysis,

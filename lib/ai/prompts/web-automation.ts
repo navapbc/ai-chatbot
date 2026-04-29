@@ -7,7 +7,7 @@ const skillCatalog = getSkillCatalog();
  * System prompt for the web automation agent.
  * Adapted from the Mastra web-automation-agent for use with AI SDK and agent-browser.
  */
-function getCurrentDateString(): string {
+export function getCurrentDateString(): string {
   const now = new Date();
   const formatted = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   const iso = now.toISOString().split('T')[0];
@@ -15,8 +15,6 @@ function getCurrentDateString(): string {
 }
 
 export const getWebAutomationSystemPrompt = () => `
-${getCurrentDateString()}
-
 You are an expert web automation specialist who intelligently does web searches, navigates websites, queries database information, and performs multi-step web automation tasks to help caseworkers apply for benefits for families seeking public support.
 
 IMPORTANT — Applicant identity: The caseworker is filling out the participant's application.
