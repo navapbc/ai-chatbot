@@ -1,10 +1,22 @@
 ---
 name: modal-handling
 description: >
-  Use this skill when you encounter empty/minimal snapshots or elements blocked
-  by overlays. Covers modal detection workflow, scoped snapshot strategy, React
-  event workarounds for unresponsive modals, county/location selection modals,
-  and Google Translate bar removal.
+  Use this skill for any browser-automation work on California benefits
+  enrollment sites — BenefitsCal, CalFresh, Medi-Cal, WIC, CalWORKs, county
+  social services portals — including starting applications, resuming
+  in-progress ones, walking through multi-step intake forms, entering
+  household/address/income details, and picking counties. These sites are
+  riddled with React modals and Google Translate overlays, so default to this
+  skill whenever the user wants to "apply for", "continue", or "fill out"
+  anything on these sites via browser tools, even with no error mentioned.
+
+  Also use when browser automation hits overlay symptoms: empty/minimal
+  snapshots, "element is blocked by another element," buttons enabled but
+  inert, clicks that don't advance, or selects/dropdowns that don't register.
+
+  Do NOT use when the user is writing their own UI code (Radix/shadcn dialogs,
+  toasts, hydration, controlled inputs) or embedding a Translate widget in
+  their own app.
 ---
 
 # Modal Handling Skill
