@@ -12,8 +12,7 @@
       { "input": "Show me a summary of everything we filled in on this application", "expected": ["formSummary"] },
       { "input": "What fields are on form 42 in Apricot?", "expected": ["getApricotFormFields"] },
       { "input": "List all available forms in Apricot", "expected": ["getApricotForms"] },
-      { "input": "Load the browser automation skill before we start", "expected": ["loadSkill"] },
-      { "input": "Look up participant 7777 and help me apply for WIC benefits for them", "expected": ["getApricotRecord", "loadSkill"] },
+      { "input": "Look up participant 7777 and help me apply for WIC benefits for them", "expected": ["getApricotRecord"] },
       { "input": "Check if the Apricot API connection is working", "expected": ["testApricotAuth"] }
     ]
   },

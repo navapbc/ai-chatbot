@@ -117,17 +117,9 @@ const stubTools = {
     execute: async () => ({ success: true, output: "", error: null }),
   }),
 
-  loadSkill: tool({
+  readReference: tool({
     description:
-      'Load a skill to get specialized instructions. Available skills: "agent-browser", "caseworker-communication".',
-    inputSchema: z.object({
-      name: z.string(),
-    }),
-    execute: async () => ({ content: "", skillDirectory: "" }),
-  }),
-
-  readSkillFile: tool({
-    description: "Read a reference file from a skill directory.",
+      'Load a reference document. Use the path the system prompt instructs you to load (e.g. "field-patterns.md", "custom-dropdowns.md", "form-submission.md", "browser-commands.md").',
     inputSchema: z.object({
       path: z.string(),
     }),
@@ -141,7 +133,7 @@ const testCases = testCaseData.toolSelection.cases;
 
 // ── Eval ────────────────────────────────────────────────────────────────
 
-const model = openai('gpt-5.4-mini');
+const model = openai('gpt-5-mini');
 
 Eval("labs-asp", {
   experimentName: "Tool Selection",
@@ -187,8 +179,8 @@ Eval("labs-asp", {
     ({ output, expected }) => {
       if (!output || output.length === 0)
         return { name: "no_hallucinated_tools", score: 1 };
-      // Allow actionLabel and loadSkill as bonus tools (always acceptable)
-      const allowList = new Set([...expected!, "actionLabel", "loadSkill"]);
+      // Allow actionLabel and readReference as bonus tools (always acceptable)
+      const allowList = new Set([...expected!, "actionLabel", "readReference"]);
       const unexpected = output.filter((t) => !allowList.has(t));
       return { name: "no_hallucinated_tools", score: unexpected.length === 0 ? 1 : 0 };
     },

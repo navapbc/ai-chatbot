@@ -197,7 +197,7 @@ function noFalseGaps(state: RunState): boolean {
 
 // ── Eval ────────────────────────────────────────────────────────────────
 
-const model = openai('gpt-5.4-mini');
+const model = openai('gpt-5-mini');
 
 Eval("labs-asp", {
   experimentName: "Deduction",

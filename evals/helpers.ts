@@ -4,9 +4,9 @@ import { z } from "zod";
 /**
  * Shared stub tool builder for evals.
  *
- * Every eval needs the same 11 Apricot / browser / skill tools with
- * identical descriptions and input schemas. Only the execute callbacks
- * differ — they return different mock data and track different state.
+ * Mirrors the live tool surface in app/(chat)/api/chat/route.ts — Apricot
+ * tools, gapAnalysis, formSummary, actionLabel, browser, readReference.
+ * Only the execute callbacks differ — they return mock data and track state.
  *
  * Pass an `overrides` object to customise individual tool execute fns.
  * Any tool not overridden gets a no-op default.
@@ -46,9 +46,8 @@ const TOOL_DESCRIPTIONS = {
     "Label the upcoming group of browser actions with a human-readable title.",
   browser:
     "Execute browser automation commands on a remote Kernel browser. Commands include navigate, snapshot, click, fill, type, select, press, hover, check, uncheck, screenshot, inputvalue, wait, evaluate, etc.",
-  loadSkill:
-    'Load a skill to get specialized instructions. Available skills: "agent-browser", "caseworker-communication".',
-  readSkillFile: "Read a reference file from a skill directory.",
+  readReference:
+    'Load a reference document. Use the path the system prompt instructs you to load (e.g. "field-patterns.md", "custom-dropdowns.md", "form-submission.md", "browser-commands.md").',
 } as const;
 
 // ── Tool execute callback types ─────────────────────────────────────────
@@ -74,8 +73,7 @@ export interface ToolOverrides {
   formSummary?: ExecuteFn;
   actionLabel?: ExecuteFn;
   browser?: ExecuteFn;
-  loadSkill?: ExecuteFn<{ name: string }>;
-  readSkillFile?: ExecuteFn<{ path: string }>;
+  readReference?: ExecuteFn<{ path: string }>;
 }
 
 // ── Default no-ops ──────────────────────────────────────────────────────
@@ -212,16 +210,10 @@ export function createBaseStubTools<S extends BaseRunState>(
       execute: wrap("browser", overrides.browser ?? (async () => ({ success: true, output: "", error: null }))),
     }),
 
-    loadSkill: tool({
-      description: TOOL_DESCRIPTIONS.loadSkill,
-      inputSchema: z.object({ name: z.string() }),
-      execute: wrap("loadSkill", overrides.loadSkill ?? (async () => ({ content: "Skill loaded.", skillDirectory: "" }))),
-    }),
-
-    readSkillFile: tool({
-      description: TOOL_DESCRIPTIONS.readSkillFile,
+    readReference: tool({
+      description: TOOL_DESCRIPTIONS.readReference,
       inputSchema: z.object({ path: z.string() }),
-      execute: wrap("readSkillFile", overrides.readSkillFile ?? (async () => ({ content: "" }))),
+      execute: wrap("readReference", overrides.readReference ?? (async () => ({ content: "" }))),
     }),
   };
 
