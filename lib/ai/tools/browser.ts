@@ -15,7 +15,7 @@ const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes
  */
 const sessionQueues = new Map<string, Promise<unknown>>();
 
-function withSessionQueue<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+export function withSessionQueue<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
   const prev = sessionQueues.get(sessionId) ?? Promise.resolve();
   const next = prev.then(fn, fn); // always advance the queue even on error
   sessionQueues.set(sessionId, next.then(() => {}, () => {})); // swallow to prevent unhandled rejection on queue chain

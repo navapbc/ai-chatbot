@@ -17,3 +17,24 @@ describe('enableSubmit tool', () => {
     expect(tool.description).toMatch(/submit/i);
   });
 });
+
+import { withSessionQueue } from '@/lib/ai/tools/browser';
+
+describe('withSessionQueue export', () => {
+  test('serializes calls per session id', async () => {
+    const events: string[] = [];
+    const a = withSessionQueue('s1', async () => {
+      events.push('a-start');
+      await new Promise((r) => setTimeout(r, 20));
+      events.push('a-end');
+      return 'a';
+    });
+    const b = withSessionQueue('s1', async () => {
+      events.push('b-start');
+      events.push('b-end');
+      return 'b';
+    });
+    await Promise.all([a, b]);
+    expect(events).toEqual(['a-start', 'a-end', 'b-start', 'b-end']);
+  });
+});
