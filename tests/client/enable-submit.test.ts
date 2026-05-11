@@ -6,9 +6,8 @@ vi.mock('@/lib/kernel/browser', () => ({
 vi.mock('agent-browser/dist/actions.js', () => ({
   executeCommand: vi.fn(),
 }));
-
 import { createEnableSubmitTool } from '@/lib/ai/tools/enable-submit';
-import { phase0LocateButton } from '@/lib/ai/tools/enable-submit-phases';
+import { phase0LocateButton, phase1CheckRequiredFields } from '@/lib/ai/tools/enable-submit-phases';
 
 describe('enableSubmit tool', () => {
   test('factory returns a tool with a description and execute fn', () => {
@@ -94,5 +93,41 @@ describe('withSessionQueue export', () => {
     });
     await Promise.all([a, b]);
     expect(events).toEqual(['a-start', 'a-end', 'b-start', 'b-end']);
+  });
+});
+
+describe('phase1CheckRequiredFields', () => {
+  const SNAPSHOT = '- textbox "First Name" [ref=e1]';
+
+  const _model = {} as any;
+
+  test('returns blocked-missing-fields when generateObject reports missing', async () => {
+    const _generateObject = vi.fn().mockResolvedValue({ object: { missing: ['First Name', 'Last Name'] } });
+    const runCommand = vi.fn().mockResolvedValue({ success: true, output: SNAPSHOT });
+    const result = await phase1CheckRequiredFields({ runCommand, _generateObject: _generateObject as any, _model });
+    expect(result.outcome).toEqual({
+      status: 'blocked-missing-fields',
+      fields: ['First Name', 'Last Name'],
+    });
+  });
+
+  test('returns null outcome when nothing is missing', async () => {
+    const _generateObject = vi.fn().mockResolvedValue({ object: { missing: [] } });
+    const runCommand = vi.fn().mockResolvedValue({ success: true, output: SNAPSHOT });
+    const result = await phase1CheckRequiredFields({ runCommand, _generateObject: _generateObject as any, _model });
+    expect(result.outcome).toBeNull();
+  });
+
+  test('falls back to "no missing" when generateObject throws', async () => {
+    const _generateObject = vi.fn().mockRejectedValue(new Error('model timeout'));
+    const runCommand = vi.fn().mockResolvedValue({ success: true, output: SNAPSHOT });
+    const result = await phase1CheckRequiredFields({ runCommand, _generateObject: _generateObject as any, _model });
+    expect(result.outcome).toBeNull();
+  });
+
+  test('returns browser-error when snapshot fails', async () => {
+    const runCommand = vi.fn().mockResolvedValue({ success: false, error: 'closed' });
+    const result = await phase1CheckRequiredFields({ runCommand });
+    expect(result.outcome).toEqual({ status: 'browser-error', error: 'closed' });
   });
 });

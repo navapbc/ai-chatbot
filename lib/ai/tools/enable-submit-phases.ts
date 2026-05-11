@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { EnableSubmitResult } from './enable-submit-types';
 
 export type RunCommand = (cmd: Record<string, unknown>) => Promise<{
@@ -6,9 +7,13 @@ export type RunCommand = (cmd: Record<string, unknown>) => Promise<{
   error?: string | null;
 }>;
 
+export type GenerateObjectFn = typeof import('ai').generateObject;
+
 export type PhaseInput = {
   runCommand: RunCommand;
   submitSelector?: string;
+  _generateObject?: GenerateObjectFn;
+  _model?: import('ai').LanguageModel;
 };
 
 export type Phase0Output = {
@@ -69,4 +74,43 @@ export async function phase0LocateButton({
   }
 
   return { outcome: null, submitSelector: selector };
+}
+
+export type Phase1Output = { outcome: EnableSubmitResult | null };
+
+const missingFieldsSchema = z.object({
+  missing: z.array(z.string()).describe('Human-readable labels of required fields that are empty or have an error message.'),
+});
+
+const PHASE1_PROMPT = `You are reviewing a form snapshot to find required fields that are NOT filled in correctly.
+
+Return the human-readable LABEL (not the ref) of each required field that:
+- Is marked required (asterisk, "required" text, aria-required) AND is empty, OR
+- Has a visible error message indicating an invalid or missing value.
+
+Return ONLY labels. Ignore optional fields. Ignore CAPTCHA/Turnstile widgets.
+If everything looks filled, return an empty list.`;
+
+export async function phase1CheckRequiredFields({ runCommand, _generateObject, _model }: PhaseInput): Promise<Phase1Output> {
+  const snap = await runCommand({ action: 'snapshot', selector: 'form' });
+  if (!snap.success || !snap.output) {
+    return { outcome: { status: 'browser-error', error: snap.error ?? 'snapshot failed' } };
+  }
+
+  const go: GenerateObjectFn = _generateObject ?? (await import('ai')).generateObject;
+  const model = _model ?? (await import('@/lib/ai/providers')).prepareStepModel;
+  try {
+    const { object } = await go({
+      model,
+      schema: missingFieldsSchema,
+      prompt: `${PHASE1_PROMPT}\n\nSNAPSHOT:\n${snap.output}`,
+    });
+    if (object.missing.length > 0) {
+      return { outcome: { status: 'blocked-missing-fields', fields: object.missing } };
+    }
+    return { outcome: null };
+  } catch (err) {
+    console.warn('[enable-submit] phase1 generateObject failed; assuming no missing fields', err);
+    return { outcome: null };
+  }
 }

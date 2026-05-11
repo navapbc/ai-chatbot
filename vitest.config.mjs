@@ -9,6 +9,9 @@ export default defineConfig({
       '@': path.resolve(__dirname, './'),
     },
   },
+  optimizeDeps: {
+    exclude: ['playwright-core', 'chromium-bidi'],
+  },
   test: {
     browser: {
       enabled: true,
