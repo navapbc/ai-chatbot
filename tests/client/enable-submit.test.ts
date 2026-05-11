@@ -21,19 +21,26 @@ describe('enableSubmit tool', () => {
 
 describe('phase0LocateButton', () => {
   const SNAPSHOT_ENABLED = `
-@e1 [textbox name="firstName"] "John"
-@e2 [button] "Submit Application"
+- textbox "First Name" [ref=e1]
+- button "Submit Application" [ref=e2]
 `.trim();
 
   const SNAPSHOT_DISABLED = `
-@e1 [textbox name="firstName"] "John"
-@e2 [button disabled] "Submit Application"
+- textbox "First Name" [ref=e1]
+- button "Submit Application" [ref=e2] [disabled]
+`.trim();
+
+  const SNAPSHOT_MULTIPLE_BUTTONS = `
+- link "Apply now" [ref=e1]
+- button "Send message" [ref=e2]
+- button "Submit Application" [ref=e9] [disabled]
 `.trim();
 
   test('returns "enabled" short-circuit when button is not disabled', async () => {
     const runCommand = vi.fn().mockResolvedValue({ success: true, output: SNAPSHOT_ENABLED });
     const result = await phase0LocateButton({ runCommand });
     expect(result.outcome).toEqual({ status: 'enabled' });
+    expect(result.submitSelector).toBe('@e2');
   });
 
   test('returns continue + selector when button is disabled', async () => {
@@ -43,12 +50,28 @@ describe('phase0LocateButton', () => {
     expect(result.submitSelector).toBe('@e2');
   });
 
-  test('respects an explicit submitSelector when passed', async () => {
-    const runCommand = vi
-      .fn()
-      .mockResolvedValueOnce({ success: true, output: '@e1 [textbox name="firstName"] "John"' })
-      .mockResolvedValueOnce({ success: true, output: 'false' });
+  test('prefers the disabled button when multiple candidates exist', async () => {
+    const runCommand = vi.fn().mockResolvedValue({ success: true, output: SNAPSHOT_MULTIPLE_BUTTONS });
+    const result = await phase0LocateButton({ runCommand });
+    expect(result.submitSelector).toBe('@e9');
+    expect(result.outcome).toBeNull();
+  });
+
+  test('ignores links even when label matches', async () => {
+    const SNAPSHOT_LINK_ONLY = '- link "Apply now" [ref=e1]';
+    const runCommand = vi.fn().mockResolvedValue({ success: true, output: SNAPSHOT_LINK_ONLY });
+    const result = await phase0LocateButton({ runCommand });
+    expect(result.outcome).toEqual({
+      status: 'blocked-unknown',
+      diagnostic: { reason: 'submit-button-not-found' },
+    });
+  });
+
+  test('respects an explicit submitSelector when passed and button is enabled', async () => {
+    const SNAPSHOT_NO_BUTTON_MATCH = '- textbox "First Name" [ref=e1]';
+    const runCommand = vi.fn().mockResolvedValue({ success: true, output: SNAPSHOT_NO_BUTTON_MATCH });
     const result = await phase0LocateButton({ runCommand, submitSelector: '#mySubmit' });
+    expect(result.outcome).toEqual({ status: 'enabled' });
     expect(result.submitSelector).toBe('#mySubmit');
   });
 });

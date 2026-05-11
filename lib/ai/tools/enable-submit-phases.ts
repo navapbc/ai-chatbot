@@ -19,19 +19,30 @@ export type Phase0Output = {
 const SUBMIT_LABEL_RE = /submit|apply|send|finish/i;
 
 function parseRefFromSnapshot(snapshot: string): string | null {
-  for (const line of snapshot.split('\n')) {
-    if (!line.includes('[button')) continue;
-    if (!SUBMIT_LABEL_RE.test(line)) continue;
-    const match = line.match(/^@e\d+/);
-    if (match) return match[0];
+  const candidates: { ref: string; disabled: boolean }[] = [];
+  for (const rawLine of snapshot.split('\n')) {
+    const line = rawLine.trimStart();
+    const match = line.match(/^-?\s*button\s+"([^"]*)".*\[ref=(e\d+)\]/);
+    if (!match) continue;
+    const [, label, refNum] = match;
+    if (!SUBMIT_LABEL_RE.test(label)) continue;
+    const disabled = /\[disabled\]/i.test(line);
+    candidates.push({ ref: `@${refNum}`, disabled });
   }
-  return null;
+  if (candidates.length === 0) return null;
+  const disabledOne = candidates.find((c) => c.disabled);
+  return disabledOne ? disabledOne.ref : candidates[candidates.length - 1].ref;
 }
 
-function snapshotShowsDisabled(snapshot: string, ref: string): boolean {
-  const line = snapshot.split('\n').find((l) => l.trim().startsWith(ref));
-  if (!line) return false;
-  return line.includes('disabled');
+function snapshotShowsDisabled(snapshot: string, selector: string): boolean {
+  if (selector.startsWith('@e')) {
+    const refNum = selector.slice(1);
+    const pattern = new RegExp(`\\[ref=${refNum}\\b[^\\]]*\\]`);
+    const line = snapshot.split('\n').find((l) => pattern.test(l));
+    if (!line) return false;
+    return /\[disabled\]/i.test(line);
+  }
+  return false;
 }
 
 export async function phase0LocateButton({
