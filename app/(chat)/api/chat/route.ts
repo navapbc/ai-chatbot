@@ -30,6 +30,7 @@ import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
 import { apricotTools } from '@/lib/ai/tools/apricot';
 import { createBrowserTool } from '@/lib/ai/tools/browser';
+import { createCheckSubmitGateTool } from '@/lib/ai/tools/check-submit-gate';
 import { gapAnalysis } from '@/lib/ai/tools/gap-analysis';
 import { formSummary } from '@/lib/ai/tools/form-summary';
 import { actionLabel } from '@/lib/ai/tools/action-label';
@@ -226,6 +227,7 @@ export async function POST(request: Request) {
             formSummary,
             actionLabel,
             browser: createBrowserTool(sessionId, session.user.id),
+            checkSubmitGate: createCheckSubmitGateTool(sessionId, session.user.id),
             loadSkill,
             readSkillFile,
           },
