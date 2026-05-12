@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { memo, useMemo, useState, useRef, useEffect } from 'react';
 import type { Vote } from '@/lib/db/schema';
 import { DocumentToolCall, DocumentToolResult } from './document';
-import { PencilEditIcon, SparklesIcon } from './icons';
+import { PencilEditIcon } from './icons';
 import { Markdown } from './markdown';
 import { MessageActions } from './message-actions';
 import { PreviewAttachment } from './preview-attachment';
@@ -19,16 +19,11 @@ import { MessageReasoning } from './message-reasoning';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import type { ChatMessage } from '@/lib/types';
 import { useDataStream } from './data-stream-provider';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from './ui/collapsible';
-import { ChevronDown } from 'lucide-react';
 import { CollapsibleWrapper } from './ui/collapsible-wrapper';
 import { getToolDisplayInfo } from './tool-icon';
 import { Spinner } from './ui/spinner';
 import { UserActionConfirmation, GapAnalysisCard, FormSummaryCard, CheckpointCard } from './ai-elements';
+import { adaptGapSections, adaptReviewSections } from '@/lib/types/form-cards';
 import type { CheckpointData } from './chat';
 import { groupMessageParts, ToolCallGroup } from './tool-call-group';
 
@@ -60,11 +55,11 @@ function parsePartnerData(text: string): { participantData: any; taskText: strin
   const jsonData = match[1].trim();
   const taskText = match[2].trim();
 
-  let parsedData;
+  let parsedData: any;
   try {
     parsedData = JSON.parse(jsonData);
-    delete parsedData.task;
-    delete parsedData.request;
+    parsedData.task = undefined;
+    parsedData.request = undefined;
   } catch {
     parsedData = jsonData;
   }
@@ -87,6 +82,7 @@ const PurePreviewMessage = ({
   sendMessage,
   isReadonly,
   isArtifactVisible,
+  hasUserReplyAfter,
   requiresScrollPadding,
 }: {
   chatId: string;
@@ -100,6 +96,7 @@ const PurePreviewMessage = ({
   sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
   isReadonly: boolean;
   isArtifactVisible: boolean;
+  hasUserReplyAfter: boolean;
   requiresScrollPadding: boolean;
 }) => {
   const [mode, setMode] = useState<'view' | 'edit'>('view');
@@ -507,8 +504,11 @@ const PurePreviewMessage = ({
                     <GapAnalysisCard
                       key={toolCallId}
                       formName={input?.formName}
-                      missingFields={input?.missingFields ?? []}
+                      clientName={input?.clientName}
+                      sections={adaptGapSections(input)}
                       sendMessage={sendMessage}
+                      isReadonly={isReadonly}
+                      hasUserReplyAfter={hasUserReplyAfter}
                     />
                   );
                 }
@@ -522,9 +522,11 @@ const PurePreviewMessage = ({
                     <FormSummaryCard
                       key={toolCallId}
                       formName={input?.formName}
-                      fields={input?.fields ?? []}
+                      clientName={input?.clientName}
+                      sections={adaptReviewSections(input)}
                       sendMessage={sendMessage}
-                      isArtifactVisible={isArtifactVisible}
+                      isReadonly={isReadonly}
+                      hasUserReplyAfter={hasUserReplyAfter}
                     />
                   );
                 }
@@ -610,8 +612,8 @@ const PurePreviewMessage = ({
                 if (cps.includes(cp)) return false;
               }
               return true;
-            }).map((cp, i) => (
-              <CheckpointCard key={`checkpoint-unplaced-${i}`} summary={cp.summary} />
+            }).map((cp) => (
+              <CheckpointCard key={`checkpoint-unplaced-${cp.summary}`} summary={cp.summary} />
             ))}
 
             {isLoading && (
