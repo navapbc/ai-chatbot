@@ -68,7 +68,11 @@ export async function runEnableSubmit(input: OrchestratorInput): Promise<EnableS
   return p6.outcome ?? { status: 'blocked-unknown', diagnostic: { reason: 'no-result' } };
 }
 
-export const createEnableSubmitTool = (sessionId: string, userId: string) =>
+export const createEnableSubmitTool = (
+  sessionId: string,
+  userId: string,
+  emitProgress?: (label: string) => void,
+) =>
   tool({
     description: `Enable the final submit button on a benefits-application form so the caseworker can review and click it.
 
@@ -108,9 +112,7 @@ This tool NEVER clicks the submit button. It only enables it.`,
             return { success: false, error: response.error ?? 'unknown' };
           };
 
-          const emit: EmitFn = () => {
-            // Wired to dataStream in Task 10
-          };
+          const emit: EmitFn = emitProgress ?? (() => {});
 
           return await Promise.race([
             runEnableSubmit({ runCommand, emit, abortSignal, submitSelector }),

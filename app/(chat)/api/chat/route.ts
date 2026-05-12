@@ -198,7 +198,13 @@ export async function POST(request: Request) {
             formSummary,
             actionLabel,
             browser: createBrowserTool(sessionId, session.user.id),
-            enableSubmit: createEnableSubmitTool(sessionId, session.user.id),
+            enableSubmit: createEnableSubmitTool(sessionId, session.user.id, (label) => {
+              dataStream.write({
+                type: 'data-submit-progress',
+                data: { label, timestamp: Date.now() },
+                transient: true,
+              });
+            }),
             readReference,
           },
           // request.signal.aborted is checked at each step boundary so the
