@@ -101,10 +101,10 @@ describe('phase1CheckRequiredFields', () => {
 
   const _model = {} as any;
 
-  test('returns blocked-missing-fields when generateObject reports missing', async () => {
-    const _generateObject = vi.fn().mockResolvedValue({ object: { missing: ['First Name', 'Last Name'] } });
+  test('returns blocked-missing-fields when generateText reports missing', async () => {
+    const _generateText = vi.fn().mockResolvedValue({ output: { missing: ['First Name', 'Last Name'] } });
     const runCommand = vi.fn().mockResolvedValue({ success: true, output: SNAPSHOT });
-    const result = await phase1CheckRequiredFields({ runCommand, _generateObject: _generateObject as any, _model });
+    const result = await phase1CheckRequiredFields({ runCommand, _generateText: _generateText as any, _model });
     expect(result.outcome).toEqual({
       status: 'blocked-missing-fields',
       fields: ['First Name', 'Last Name'],
@@ -112,16 +112,16 @@ describe('phase1CheckRequiredFields', () => {
   });
 
   test('returns null outcome when nothing is missing', async () => {
-    const _generateObject = vi.fn().mockResolvedValue({ object: { missing: [] } });
+    const _generateText = vi.fn().mockResolvedValue({ output: { missing: [] } });
     const runCommand = vi.fn().mockResolvedValue({ success: true, output: SNAPSHOT });
-    const result = await phase1CheckRequiredFields({ runCommand, _generateObject: _generateObject as any, _model });
+    const result = await phase1CheckRequiredFields({ runCommand, _generateText: _generateText as any, _model });
     expect(result.outcome).toBeNull();
   });
 
-  test('falls back to "no missing" when generateObject throws', async () => {
-    const _generateObject = vi.fn().mockRejectedValue(new Error('model timeout'));
+  test('falls back to "no missing" when generateText throws', async () => {
+    const _generateText = vi.fn().mockRejectedValue(new Error('model timeout'));
     const runCommand = vi.fn().mockResolvedValue({ success: true, output: SNAPSHOT });
-    const result = await phase1CheckRequiredFields({ runCommand, _generateObject: _generateObject as any, _model });
+    const result = await phase1CheckRequiredFields({ runCommand, _generateText: _generateText as any, _model });
     expect(result.outcome).toBeNull();
   });
 

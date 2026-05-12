@@ -7,12 +7,13 @@ export type RunCommand = (cmd: Record<string, unknown>) => Promise<{
   error?: string | null;
 }>;
 
-export type GenerateObjectFn = typeof import('ai').generateObject;
+export type GenerateTextFn = typeof import('ai').generateText;
 
 export type PhaseInput = {
   runCommand: RunCommand;
   submitSelector?: string;
-  _generateObject?: GenerateObjectFn;
+  // Underscore-prefixed fields are test-only injection points; production calls leave them undefined.
+  _generateText?: GenerateTextFn;
   _model?: import('ai').LanguageModel;
 };
 
@@ -91,26 +92,33 @@ Return the human-readable LABEL (not the ref) of each required field that:
 Return ONLY labels. Ignore optional fields. Ignore CAPTCHA/Turnstile widgets.
 If everything looks filled, return an empty list.`;
 
-export async function phase1CheckRequiredFields({ runCommand, _generateObject, _model }: PhaseInput): Promise<Phase1Output> {
+export async function phase1CheckRequiredFields({
+  runCommand,
+  _generateText,
+  _model,
+}: PhaseInput): Promise<Phase1Output> {
   const snap = await runCommand({ action: 'snapshot', selector: 'form' });
   if (!snap.success || !snap.output) {
     return { outcome: { status: 'browser-error', error: snap.error ?? 'snapshot failed' } };
   }
 
-  const go: GenerateObjectFn = _generateObject ?? (await import('ai')).generateObject;
+  const ai = await import('ai');
+  const gen: GenerateTextFn = _generateText ?? ai.generateText;
   const model = _model ?? (await import('@/lib/ai/providers')).prepareStepModel;
+
   try {
-    const { object } = await go({
+    const result = await gen({
       model,
-      schema: missingFieldsSchema,
       prompt: `${PHASE1_PROMPT}\n\nSNAPSHOT:\n${snap.output}`,
+      output: ai.Output.object({ schema: missingFieldsSchema }),
     });
-    if (object.missing.length > 0) {
-      return { outcome: { status: 'blocked-missing-fields', fields: object.missing } };
+    const missing = result.output.missing;
+    if (missing.length > 0) {
+      return { outcome: { status: 'blocked-missing-fields', fields: missing } };
     }
     return { outcome: null };
   } catch (err) {
-    console.warn('[enable-submit] phase1 generateObject failed; assuming no missing fields', err);
+    console.warn('[enable-submit] phase1 generateText failed; assuming no missing fields', err);
     return { outcome: null };
   }
 }
