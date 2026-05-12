@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { EnableSubmitResult } from './enable-submit-types';
+import type { EnableSubmitResult, EmitFn } from './enable-submit-types';
 
 export type RunCommand = (cmd: Record<string, unknown>) => Promise<{
   success: boolean;
@@ -171,5 +171,49 @@ export async function phase2ExpandSections({
     await runCommand({ action: 'click', selector: ref });
   }
   await runCommand({ action: 'snapshot', selector: 'form' });
+  return { outcome: null };
+}
+
+export type Phase3Opts = {
+  tickMs?: number;
+  maxTicks?: number;
+  emit?: EmitFn;
+  _sleep?: (ms: number) => Promise<void>;
+};
+
+const TOKEN_READ_SCRIPT = "document.querySelector('[name=cf-turnstile-response]')?.value || ''";
+
+function disabledReadScript(selector: string): string {
+  if (selector.startsWith('@')) {
+    return `(function(){const els=document.querySelectorAll('button,input[type=submit]');for(const el of els){if(/submit|apply|send|finish/i.test(el.textContent||el.value||'')){return el.disabled?'true':'false';}}return 'unknown';})()`;
+  }
+  return `document.querySelector(${JSON.stringify(selector)})?.disabled === true ? 'true' : 'false'`;
+}
+
+export async function phase3WaitForTurnstile(
+  input: PhaseInput & { submitSelector: string },
+  opts: Phase3Opts = {},
+): Promise<{ outcome: EnableSubmitResult | null }> {
+  const tickMs = opts.tickMs ?? 8000;
+  const maxTicks = opts.maxTicks ?? 4;
+  const emit = opts.emit ?? (() => {});
+  const sleep = opts._sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+
+  for (let tick = 1; tick <= maxTicks; tick++) {
+    emit(`Waiting for security check (${(tickMs * tick) / 1000}s)`);
+    await sleep(tickMs);
+
+    const tokenRes = await input.runCommand({ action: 'evaluate', script: TOKEN_READ_SCRIPT });
+    const disRes = await input.runCommand({
+      action: 'evaluate',
+      script: disabledReadScript(input.submitSelector),
+    });
+
+    if (disRes.success && disRes.output === 'false') {
+      return { outcome: { status: 'enabled' } };
+    }
+    void tokenRes;
+  }
+
   return { outcome: null };
 }

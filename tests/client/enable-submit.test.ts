@@ -7,7 +7,7 @@ vi.mock('agent-browser/dist/actions.js', () => ({
   executeCommand: vi.fn(),
 }));
 import { createEnableSubmitTool } from '@/lib/ai/tools/enable-submit';
-import { phase0LocateButton, phase1CheckRequiredFields, phase2ExpandSections } from '@/lib/ai/tools/enable-submit-phases';
+import { phase0LocateButton, phase1CheckRequiredFields, phase2ExpandSections, phase3WaitForTurnstile } from '@/lib/ai/tools/enable-submit-phases';
 
 describe('enableSubmit tool', () => {
   test('factory returns a tool with a description and execute fn', () => {
@@ -170,5 +170,51 @@ describe('phase2ExpandSections', () => {
     const runCommand = vi.fn().mockResolvedValue({ success: false, error: 'closed' });
     const result = await phase2ExpandSections({ runCommand });
     expect(result.outcome).toEqual({ status: 'browser-error', error: 'closed' });
+  });
+});
+
+describe('phase3WaitForTurnstile', () => {
+  test('returns enabled when disabled flips to false during polling', async () => {
+    const runCommand = vi
+      .fn()
+      // tick 1: token empty, disabled=true
+      .mockResolvedValueOnce({ success: true, output: '' })
+      .mockResolvedValueOnce({ success: true, output: 'true' })
+      // tick 2: token present, disabled=false -> exit
+      .mockResolvedValueOnce({ success: true, output: 'TOKEN_VAL' })
+      .mockResolvedValueOnce({ success: true, output: 'false' });
+    const emit = vi.fn();
+    const result = await phase3WaitForTurnstile(
+      { runCommand, submitSelector: '@e2' },
+      { tickMs: 1, maxTicks: 4, emit },
+    );
+    expect(result.outcome).toEqual({ status: 'enabled' });
+    expect(emit).toHaveBeenCalled();
+  });
+
+  test('returns null after maxTicks when still disabled', async () => {
+    const runCommand = vi.fn().mockResolvedValue({ success: true, output: 'true' });
+    const emit = vi.fn();
+    const result = await phase3WaitForTurnstile(
+      { runCommand, submitSelector: '@e2' },
+      { tickMs: 1, maxTicks: 2, emit },
+    );
+    expect(result.outcome).toBeNull();
+    // emit called once per tick
+    expect(emit.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('emit receives cumulative-seconds label for each tick', async () => {
+    const runCommand = vi.fn().mockResolvedValue({ success: true, output: 'true' });
+    const emit = vi.fn();
+    await phase3WaitForTurnstile(
+      { runCommand, submitSelector: '@e2' },
+      { tickMs: 2000, maxTicks: 3, emit, _sleep: async () => {} },
+    );
+    // Match labels containing "(2s)", "(4s)", "(6s)" — cumulative seconds.
+    const labels = emit.mock.calls.map((c) => c[0]);
+    expect(labels.some((l) => l.includes('(2s)'))).toBe(true);
+    expect(labels.some((l) => l.includes('(4s)'))).toBe(true);
+    expect(labels.some((l) => l.includes('(6s)'))).toBe(true);
   });
 });
