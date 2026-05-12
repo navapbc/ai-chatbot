@@ -37,6 +37,7 @@ import { getWebAutomationSystemPrompt, getCurrentDateString } from '@/lib/ai/pro
 import { loadSkill } from '@/lib/ai/tools/load-skill';
 import { readSkillFile } from '@/lib/ai/tools/read-skill-file';
 import { createMessageCompressor, preCompactMessages } from '@/lib/ai/context-compression';
+import { registerChatAbort, clearChatAbort } from '@/lib/chat-abort-registry';
 
 export const maxDuration = 300; // 5 minutes for web automation tasks
 
@@ -162,6 +163,11 @@ export async function POST(request: Request) {
     // sessionId includes both chatId and userId to ensure global uniqueness
     const sessionId = `${id}-${session.user.id}`;
 
+    // Cloud Run over HTTP/1.1 does not propagate client disconnects
+    // to request.signal, so this explicit channel is the only reliable
+    // way to abort an in-flight run from the browser via /api/chat/stop.
+    const chatAbort = registerChatAbort(id);
+
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
         // Pre-compact messages loaded from DB if they exceed the context
@@ -223,8 +229,11 @@ export async function POST(request: Request) {
             loadSkill,
             readSkillFile,
           },
-          stopWhen: stepCountIs(500),
-          abortSignal: request.signal,
+          // Abort is checked at step boundaries via stopWhen — not
+          // passed as abortSignal. Mid-tool abort would leave a
+          // tool-call with no matching tool-result, triggering
+          // AI_MissingToolResultsError on the next turn.
+          stopWhen: [stepCountIs(500), () => chatAbort.signal.aborted],
           // Compress message history when token usage approaches the context
           // window limit (75% of 200K). First step has no prior usage data so
           // compression is skipped (correct — first step is always small).
@@ -280,6 +289,7 @@ export async function POST(request: Request) {
       },
       generateId: generateUUID,
       onFinish: async ({ messages }) => {
+        clearChatAbort(id, chatAbort);
         await saveNewMessages(messages);
       },
       onError: () => {

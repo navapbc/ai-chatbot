@@ -31,9 +31,9 @@ import type { VisibilityType } from './visibility-selector';
 import type { Attachment, ChatMessage } from '@/lib/types';
 import type { Session } from 'next-auth';
 import { useRouter } from 'next/navigation';
-import { Alert, AlertDescription } from './ui/alert';
 import { isProductionEnvironment } from '@/lib/constants';
 import { ModelSelectorButton } from './model-selector-button';
+import { ContextUsage } from './context-usage';
 
 function PureMultimodalInput({
   chatId,
@@ -72,7 +72,7 @@ function PureMultimodalInput({
   const { width } = useWindowSize();
   const router = useRouter();
   const isLoggedIn = !!session;
-  const [selectedModelId, setSelectedModelId] = useLocalStorage<string>('selected-chat-model-id', '');
+  const [, setSelectedModelId] = useLocalStorage<string>('selected-chat-model-id', '');
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -126,29 +126,21 @@ function PureMultimodalInput({
   const submitForm = useCallback(() => {
     window.history.replaceState({}, '', `/chat/${chatId}`);
 
-    console.log(`[multimodal-input] selectedModelId="${selectedModelId}" isProduction=${isProductionEnvironment}`);
-    const messageBody = !isProductionEnvironment && selectedModelId
-      ? { modelOverride: selectedModelId }
-      : undefined;
-
-    sendMessage(
-      {
-        role: 'user',
-        parts: [
-          ...attachments.map((attachment) => ({
-            type: 'file' as const,
-            url: attachment.url,
-            name: attachment.name,
-            mediaType: attachment.contentType,
-          })),
-          {
-            type: 'text',
-            text: input,
-          },
-        ],
-      },
-      messageBody ? { body: messageBody } : undefined,
-    );
+    sendMessage({
+      role: 'user',
+      parts: [
+        ...attachments.map((attachment) => ({
+          type: 'file' as const,
+          url: attachment.url,
+          name: attachment.name,
+          mediaType: attachment.contentType,
+        })),
+        {
+          type: 'text',
+          text: input,
+        },
+      ],
+    });
 
     setAttachments([]);
     setLocalStorageInput('');
@@ -167,7 +159,6 @@ function PureMultimodalInput({
     setLocalStorageInput,
     width,
     chatId,
-    selectedModelId,
   ]);
 
   const uploadFile = async (file: File) => {
@@ -245,18 +236,17 @@ function PureMultimodalInput({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
             transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-            className="absolute left-1/2 bottom-48 -translate-x-1/2 z-50"
+            className="absolute inset-x-0 bottom-48 z-50 flex justify-center pointer-events-none"
           >
             <Button
               data-testid="scroll-to-bottom-button"
-              className="rounded-full"
-              size="icon"
-              variant="outline"
+              className="rounded-md px-4 shadow-md items-center pointer-events-auto"
               onClick={(event) => {
                 event.preventDefault();
                 scrollToBottom();
               }}
             >
+              Jump to latest updates
               <ArrowDown />
             </Button>
           </motion.div>
@@ -342,8 +332,9 @@ function PureMultimodalInput({
       </div>
 
       <div className="flex flex-row justify-between gap-2 mt-1">
-        <div className="flex flex-row gap-2">
+        <div className="flex flex-row items-center gap-2">
           <ModelSelectorButton onModelChange={(model) => setSelectedModelId(model.id)} />
+          <ContextUsage />
         </div>
         <div className="flex flex-row gap-2">
           {showStopButton && (
@@ -466,7 +457,7 @@ function PureSendButton({
     return (
       <Tooltip>
         <TooltipTrigger asChild>
-          <span tabIndex={0}>{button}</span>
+          <span >{button}</span>
         </TooltipTrigger>
         <TooltipContent>Log in to submit</TooltipContent>
       </Tooltip>
@@ -477,7 +468,7 @@ function PureSendButton({
     return (
       <Tooltip>
         <TooltipTrigger asChild>
-          <span tabIndex={0}>{button}</span>
+          <span >{button}</span>
         </TooltipTrigger>
         <TooltipContent>AI is still working</TooltipContent>
       </Tooltip>
