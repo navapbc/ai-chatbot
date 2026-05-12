@@ -20,6 +20,10 @@ import {
 
 const TOOL_TIMEOUT_MS = 90_000;
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error('stopped by user');
+}
+
 export type OrchestratorInput = {
   runCommand: RunCommand;
   emit: EmitFn;
@@ -31,41 +35,63 @@ export type OrchestratorInput = {
 };
 
 export async function runEnableSubmit(input: OrchestratorInput): Promise<EnableSubmitResult> {
-  const { runCommand, emit, submitSelector, _generateText, _model } = input;
+  try {
+    const { runCommand, emit, submitSelector, _generateText, _model, abortSignal } = input;
 
-  const p0 = await phase0LocateButton({ runCommand, submitSelector });
-  if (p0.outcome) return p0.outcome;
-  const selector = p0.submitSelector!;
+    // Phase 0
+    throwIfAborted(abortSignal);
+    const p0 = await phase0LocateButton({ runCommand, submitSelector, abortSignal });
+    if (p0.outcome) return p0.outcome;
+    const selector = p0.submitSelector!;
 
-  emit('Checking required fields');
-  const p1 = await phase1CheckRequiredFields({ runCommand, _generateText, _model });
-  if (p1.outcome) return p1.outcome;
+    // Phase 1
+    throwIfAborted(abortSignal);
+    emit('Checking required fields');
+    const p1 = await phase1CheckRequiredFields({ runCommand, _generateText, _model, abortSignal });
+    if (p1.outcome) return p1.outcome;
 
-  emit('Opening sections to acknowledge');
-  await phase2ExpandSections({ runCommand, _generateText, _model });
+    // Phase 2
+    throwIfAborted(abortSignal);
+    emit('Opening sections to acknowledge');
+    await phase2ExpandSections({ runCommand, _generateText, _model, abortSignal });
 
-  const p3 = await phase3WaitForTurnstile(
-    { runCommand, submitSelector: selector },
-    { emit, ...(input.phase3Opts ?? {}) },
-  );
-  if (p3.outcome) return p3.outcome;
+    // Phase 3
+    throwIfAborted(abortSignal);
+    const p3 = await phase3WaitForTurnstile(
+      { runCommand, submitSelector: selector, abortSignal },
+      { emit, ...(input.phase3Opts ?? {}) },
+    );
+    if (p3.outcome) return p3.outcome;
 
-  const p4 = await phase4Verify({ runCommand, submitSelector: selector });
-  if (p4.outcome) return p4.outcome;
+    // Phase 4
+    throwIfAborted(abortSignal);
+    const p4 = await phase4Verify({ runCommand, submitSelector: selector });
+    if (p4.outcome) return p4.outcome;
 
-  const p5 = await phase5Diagnose({ runCommand });
-  if (p5.outcome) return p5.outcome;
+    // Phase 5
+    throwIfAborted(abortSignal);
+    const p5 = await phase5Diagnose({ runCommand });
+    if (p5.outcome) return p5.outcome;
 
-  emit('Trying to enable the submit button');
-  const snap = await runCommand({ action: 'snapshot', selector: 'form' });
-  const lastSnapshot = snap.output ?? '';
-  const p6 = await phase6ForceEnable({
-    runCommand,
-    submitSelector: selector,
-    tokenPresent: p5.tokenPresent,
-    lastSnapshot,
-  });
-  return p6.outcome ?? { status: 'blocked-unknown', diagnostic: { reason: 'no-result' } };
+    // Phase 6
+    throwIfAborted(abortSignal);
+    emit('Trying to enable the submit button');
+    const snap = await runCommand({ action: 'snapshot', selector: 'form' });
+    const lastSnapshot = snap.output ?? '';
+    const p6 = await phase6ForceEnable({
+      runCommand,
+      submitSelector: selector,
+      tokenPresent: p5.tokenPresent,
+      lastSnapshot,
+    });
+    return p6.outcome ?? { status: 'blocked-unknown', diagnostic: { reason: 'no-result' } };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (input.abortSignal?.aborted || message.includes('stopped by user')) {
+      return { status: 'browser-error', error: 'stopped by user' };
+    }
+    throw err;
+  }
 }
 
 export const createEnableSubmitTool = (

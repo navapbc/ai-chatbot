@@ -13,6 +13,7 @@ export type GenerateTextFn = typeof import('ai').generateText;
 export type PhaseInput = {
   runCommand: RunCommand;
   submitSelector?: string;
+  abortSignal?: AbortSignal;
   // Underscore-prefixed fields are test-only injection points; production calls leave them undefined.
   _generateText?: GenerateTextFn;
   _model?: import('ai').LanguageModel;
@@ -201,8 +202,10 @@ export async function phase3WaitForTurnstile(
   const sleep = opts._sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
 
   for (let tick = 1; tick <= maxTicks; tick++) {
+    if (input.abortSignal?.aborted) throw new Error('stopped by user');
     emit(`Waiting for security check (${(tickMs * tick) / 1000}s)`);
     await sleep(tickMs);
+    if (input.abortSignal?.aborted) throw new Error('stopped by user');
 
     const tokenRes = await input.runCommand({ action: 'evaluate', script: TOKEN_READ_SCRIPT });
     const disRes = await input.runCommand({

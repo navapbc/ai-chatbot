@@ -402,6 +402,40 @@ describe('runEnableSubmit (orchestration)', () => {
   });
 });
 
+describe('runEnableSubmit abort behavior', () => {
+  test('aborts during Phase 3 polling when signal fires', async () => {
+    const runCommand = vi
+      .fn()
+      // Phase 0: button is disabled, continue
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit" [ref=e2] [disabled]' })
+      // Phase 1 snapshot
+      .mockResolvedValueOnce({ success: true, output: '- textbox "OK" [ref=e1]' })
+      // Phase 2 snapshot
+      .mockResolvedValueOnce({ success: true, output: '- textbox "OK" [ref=e1]' })
+      // Phase 3 polling stays disabled
+      .mockResolvedValue({ success: true, output: 'true' });
+    const _generateText = vi
+      .fn()
+      .mockResolvedValueOnce({ output: { missing: [] } })
+      .mockResolvedValueOnce({ output: { refs: [] } });
+
+    const ctrl = new AbortController();
+    // Abort after ~5ms — Phase 3 will be in its first tick
+    setTimeout(() => ctrl.abort(), 5);
+
+    const result = await runEnableSubmit({
+      runCommand,
+      emit: () => {},
+      abortSignal: ctrl.signal,
+      _generateText: _generateText as any,
+      _model: {} as any,
+      phase3Opts: { tickMs: 50, maxTicks: 4 },
+    });
+    expect(result.status).toBe('browser-error');
+    expect((result as any).error).toMatch(/stop|abort/i);
+  });
+});
+
 describe('createEnableSubmitTool emit wiring', () => {
   test('passes emit callback through to runEnableSubmit', async () => {
     // We can't easily test the real browser path, but we can verify the factory
