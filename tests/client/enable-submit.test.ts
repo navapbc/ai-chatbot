@@ -453,3 +453,106 @@ describe('createEnableSubmitTool emit wiring', () => {
     expect(typeof myTool.execute).toBe('function');
   });
 });
+
+describe('integration replays', () => {
+  test('scenario A: missing field blocks early', async () => {
+    const runCommand = vi
+      .fn()
+      // phase 0 snapshot: disabled button
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit Application" [ref=e2] [disabled]' })
+      // phase 1 snapshot
+      .mockResolvedValueOnce({ success: true, output: '- textbox "Email" [ref=e1]' });
+    const _generateText = vi.fn().mockResolvedValueOnce({ output: { missing: ['Email'] } });
+
+    const result = await runEnableSubmit({
+      runCommand,
+      emit: () => {},
+      abortSignal: undefined,
+      _generateText: _generateText as any,
+      _model: {} as any,
+    });
+    expect(result).toEqual({ status: 'blocked-missing-fields', fields: ['Email'] });
+  });
+
+  test('scenario B: turnstile resolves during polling -> enabled', async () => {
+    const runCommand = vi
+      .fn()
+      // phase 0
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit" [ref=e2] [disabled]' })
+      // phase 1 snapshot
+      .mockResolvedValueOnce({ success: true, output: '- textbox "OK" [ref=e1]' })
+      // phase 2 snapshot
+      .mockResolvedValueOnce({ success: true, output: '- textbox "OK" [ref=e1]' })
+      // phase 3 tick 1: token empty, disabled true
+      .mockResolvedValueOnce({ success: true, output: '' })
+      .mockResolvedValueOnce({ success: true, output: 'true' })
+      // phase 3 tick 2: token present, disabled false -> exits
+      .mockResolvedValueOnce({ success: true, output: 'TOK' })
+      .mockResolvedValueOnce({ success: true, output: 'false' });
+    const _generateText = vi
+      .fn()
+      .mockResolvedValueOnce({ output: { missing: [] } })
+      .mockResolvedValueOnce({ output: { refs: [] } });
+
+    const result = await runEnableSubmit({
+      runCommand,
+      emit: () => {},
+      abortSignal: undefined,
+      _generateText: _generateText as any,
+      _model: {} as any,
+      phase3Opts: { tickMs: 1, maxTicks: 4 },
+    });
+    expect(result).toEqual({ status: 'enabled' });
+  });
+
+  test('scenario C: token resolved but still disabled -> force-enable success', async () => {
+    const runCommand = vi
+      .fn()
+      // phase 0
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit" [ref=e2] [disabled]' })
+      // phase 1 snapshot
+      .mockResolvedValueOnce({ success: true, output: '- textbox "OK" [ref=e1]' })
+      // phase 2 snapshot
+      .mockResolvedValueOnce({ success: true, output: '- textbox "OK" [ref=e1]' })
+      // phase 3: token+disabled reads, NOT a snapshot. 2 ticks × 2 reads = 4 calls. Always token present, disabled true.
+      .mockResolvedValueOnce({ success: true, output: 'TOK' })
+      .mockResolvedValueOnce({ success: true, output: 'true' })
+      .mockResolvedValueOnce({ success: true, output: 'TOK' })
+      .mockResolvedValueOnce({ success: true, output: 'true' })
+      // phase 4 snapshot: still disabled
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit" [ref=e2] [disabled]' })
+      // phase 5: read token (evaluate)
+      .mockResolvedValueOnce({ success: true, output: 'TOK' })
+      // phase 6: orchestrator takes lastSnapshot
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit" [ref=e2] [disabled]' })
+      // phase 6 gate iteration: evaluate, then re-snapshot now shows not-disabled
+      .mockResolvedValueOnce({ success: true, output: 'ok' })
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit" [ref=e2]' });
+    const _generateText = vi
+      .fn()
+      .mockResolvedValueOnce({ output: { missing: [] } })
+      .mockResolvedValueOnce({ output: { refs: [] } });
+
+    const result = await runEnableSubmit({
+      runCommand,
+      emit: () => {},
+      abortSignal: undefined,
+      _generateText: _generateText as any,
+      _model: {} as any,
+      phase3Opts: { tickMs: 1, maxTicks: 2 },
+    });
+    expect(result.status).toBe('enabled-via-force');
+  });
+
+  test('scenario D: initial snapshot fails (modal-blocked-like) returns browser-error', async () => {
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ success: false, error: 'snapshot returned empty' });
+    const result = await runEnableSubmit({
+      runCommand,
+      emit: () => {},
+      abortSignal: undefined,
+    });
+    expect(result.status).toBe('browser-error');
+  });
+});
