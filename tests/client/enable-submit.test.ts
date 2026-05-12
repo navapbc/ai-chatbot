@@ -6,7 +6,7 @@ vi.mock('@/lib/kernel/browser', () => ({
 vi.mock('agent-browser/dist/actions.js', () => ({
   executeCommand: vi.fn(),
 }));
-import { createEnableSubmitTool } from '@/lib/ai/tools/enable-submit';
+import { createEnableSubmitTool, runEnableSubmit } from '@/lib/ai/tools/enable-submit';
 import { phase0LocateButton, phase1CheckRequiredFields, phase2ExpandSections, phase3WaitForTurnstile, phase4Verify, phase5Diagnose, phase6ForceEnable } from '@/lib/ai/tools/enable-submit-phases';
 import { submitGates } from '@/lib/ai/tools/enable-submit-gates';
 
@@ -321,5 +321,83 @@ describe('phase6ForceEnable', () => {
       lastSnapshot: '- button "Submit Application" [ref=e2] [disabled]',
     });
     expect(result.outcome?.status).toBe('blocked-unknown');
+  });
+});
+
+describe('runEnableSubmit (orchestration)', () => {
+  test('phase 0 short-circuits when button already enabled', async () => {
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit Application" [ref=e2]' });
+    const result = await runEnableSubmit({
+      runCommand,
+      emit: () => {},
+      abortSignal: undefined,
+    });
+    expect(result).toEqual({ status: 'enabled' });
+  });
+
+  test('phase 1 missing fields short-circuits before later phases', async () => {
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit" [ref=e2] [disabled]' }) // phase 0 snap
+      .mockResolvedValueOnce({ success: true, output: '- textbox "First Name" [ref=e1]' }); // phase 1 snap
+    const _generateText = vi.fn().mockResolvedValue({ output: { missing: ['First Name'] } });
+    const _model = {} as any;
+
+    const result = await runEnableSubmit({
+      runCommand,
+      emit: () => {},
+      abortSignal: undefined,
+      _generateText: _generateText as any,
+      _model,
+    });
+    expect(result).toEqual({ status: 'blocked-missing-fields', fields: ['First Name'] });
+  });
+
+  test('emits phase labels in order for the longer path', async () => {
+    const labels: string[] = [];
+    // Phase 0: disabled button -> continue
+    // Phase 1: no missing -> continue
+    // Phase 2: no expand sections -> continue
+    // Phase 3: still disabled after maxTicks -> continue
+    // Phase 4: still disabled -> continue
+    // Phase 5: token empty -> return pending-turnstile
+    const runCommand = vi
+      .fn()
+      // phase 0 snap
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit" [ref=e2] [disabled]' })
+      // phase 1 snap
+      .mockResolvedValueOnce({ success: true, output: '- textbox "OK" [ref=e1]' })
+      // phase 2 snap
+      .mockResolvedValueOnce({ success: true, output: '- textbox "OK" [ref=e1]' })
+      // phase 3 polling (2 ticks × 2 evals each = 4): token eval + disabled eval per tick
+      .mockResolvedValueOnce({ success: true, output: 'TOKEN' })   // tick 1 token
+      .mockResolvedValueOnce({ success: true, output: 'true' })    // tick 1 disabled
+      .mockResolvedValueOnce({ success: true, output: 'TOKEN' })   // tick 2 token
+      .mockResolvedValueOnce({ success: true, output: 'true' })    // tick 2 disabled
+      // phase 4 snap: still disabled
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit" [ref=e2] [disabled]' })
+      // phase 5 token eval: empty -> pending-turnstile
+      .mockResolvedValueOnce({ success: true, output: '' });
+    const _generateText = vi
+      .fn()
+      .mockResolvedValueOnce({ output: { missing: [] } }) // phase 1
+      .mockResolvedValueOnce({ output: { refs: [] } }); // phase 2
+
+    const result = await runEnableSubmit({
+      runCommand,
+      emit: (l) => labels.push(l),
+      abortSignal: undefined,
+      _generateText: _generateText as any,
+      _model: {} as any,
+      phase3Opts: { tickMs: 1, maxTicks: 2 },
+    });
+
+    expect(labels).toContain('Checking required fields');
+    expect(labels).toContain('Opening sections to acknowledge');
+    expect(labels.some((l) => l.startsWith('Waiting for security check'))).toBe(true);
+    // Token empty → pending-turnstile
+    expect(result.status).toBe('pending-turnstile');
   });
 });
