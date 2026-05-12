@@ -80,8 +80,11 @@ export const createCheckSubmitGateTool = (sessionId: string, userId: string) =>
           { id: nanoid(), action: 'evaluate', script: PROBE_SCRIPT } as Command,
           session.browserManager,
         );
-        if (!probe.success || !probe.data) {
+        if (!probe.success) {
           return { success: false, error: probe.error || 'probe failed', state: null, action: null };
+        }
+        if (!probe.data) {
+          return { success: false, error: 'probe returned no data', state: null, action: null };
         }
         const state = typeof probe.data === 'string' ? JSON.parse(probe.data) : probe.data;
 
@@ -103,7 +106,7 @@ export const createCheckSubmitGateTool = (sessionId: string, userId: string) =>
         );
         const action = enable.success
           ? (typeof enable.data === 'string' ? JSON.parse(enable.data) : enable.data)
-          : { error: enable.error };
+          : { error: enable.error || 'force-enable failed' };
 
         return { success: true, state, action };
       } catch (error: unknown) {
