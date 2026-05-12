@@ -62,7 +62,7 @@ const FORCE_ENABLE_SCRIPT = (selector: string, callbackName: string | null) => `
 
 export const createCheckSubmitGateTool = (sessionId: string, userId: string) =>
   tool({
-    description: `Call this AFTER formSummary, only when the submit button is disabled and the page has a Cloudflare Turnstile widget. Probes the DOM, then force-enables the button so the caseworker can take control and submit. Never clicks submit.`,
+    description: `Call when the submit button is disabled and the page has a Cloudflare Turnstile widget. Probes the DOM, then force-enables the button so the caseworker can take control and submit. Never clicks submit.`,
     inputSchema: z.object({
       forceEnable: z
         .boolean()
