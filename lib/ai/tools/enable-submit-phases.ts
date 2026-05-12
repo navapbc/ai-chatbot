@@ -122,3 +122,54 @@ export async function phase1CheckRequiredFields({
     return { outcome: null };
   }
 }
+
+export type Phase2Output = { outcome: EnableSubmitResult | null };
+
+const expandSchema = z.object({
+  refs: z.array(z.string()).describe('Refs (like @e5) of collapsible sections that look unopened.'),
+});
+
+const PHASE2_PROMPT = `Find collapsible sections in this form snapshot that look UNOPENED and likely need to be expanded for the form to submit.
+
+Look for:
+- Buttons/links with labels like "+ Expand", "Show more", "Please expand and read"
+- Sections marked with chevrons or +/- icons in a closed state
+- Acknowledgment blocks the user must open to read
+
+Return the refs (like @e5) of each. If none, return an empty list.`;
+
+export async function phase2ExpandSections({
+  runCommand,
+  _generateText,
+  _model,
+}: PhaseInput): Promise<Phase2Output> {
+  const snap = await runCommand({ action: 'snapshot', selector: 'form' });
+  if (!snap.success || !snap.output) {
+    return { outcome: { status: 'browser-error', error: snap.error ?? 'snapshot failed' } };
+  }
+
+  const ai = await import('ai');
+  const gen: GenerateTextFn = _generateText ?? ai.generateText;
+  const model = _model ?? (await import('@/lib/ai/providers')).prepareStepModel;
+
+  let refs: string[];
+  try {
+    const result = await gen({
+      model,
+      prompt: `${PHASE2_PROMPT}\n\nSNAPSHOT:\n${snap.output}`,
+      output: ai.Output.object({ schema: expandSchema }),
+    });
+    refs = result.output.refs;
+  } catch (err) {
+    console.warn('[enable-submit] phase2 generateText failed; skipping expand', err);
+    return { outcome: null };
+  }
+
+  if (refs.length === 0) return { outcome: null };
+
+  for (const ref of refs) {
+    await runCommand({ action: 'click', selector: ref });
+  }
+  await runCommand({ action: 'snapshot', selector: 'form' });
+  return { outcome: null };
+}

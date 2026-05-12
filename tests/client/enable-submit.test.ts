@@ -7,7 +7,7 @@ vi.mock('agent-browser/dist/actions.js', () => ({
   executeCommand: vi.fn(),
 }));
 import { createEnableSubmitTool } from '@/lib/ai/tools/enable-submit';
-import { phase0LocateButton, phase1CheckRequiredFields } from '@/lib/ai/tools/enable-submit-phases';
+import { phase0LocateButton, phase1CheckRequiredFields, phase2ExpandSections } from '@/lib/ai/tools/enable-submit-phases';
 
 describe('enableSubmit tool', () => {
   test('factory returns a tool with a description and execute fn', () => {
@@ -128,6 +128,47 @@ describe('phase1CheckRequiredFields', () => {
   test('returns browser-error when snapshot fails', async () => {
     const runCommand = vi.fn().mockResolvedValue({ success: false, error: 'closed' });
     const result = await phase1CheckRequiredFields({ runCommand });
+    expect(result.outcome).toEqual({ status: 'browser-error', error: 'closed' });
+  });
+});
+
+describe('phase2ExpandSections', () => {
+  const _model = {} as any;
+
+  test('clicks each ref returned by the LLM, then re-snapshots', async () => {
+    const _generateText = vi.fn().mockResolvedValue({ output: { refs: ['@e5', '@e7'] } });
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ success: true, output: '- link "+ Expand" [ref=e5]' }) // initial snapshot
+      .mockResolvedValueOnce({ success: true, output: 'ok' }) // click @e5
+      .mockResolvedValueOnce({ success: true, output: 'ok' }) // click @e7
+      .mockResolvedValueOnce({ success: true, output: 'fresh snapshot' }); // re-snapshot
+    const result = await phase2ExpandSections({ runCommand, _generateText: _generateText as any, _model });
+    expect(result.outcome).toBeNull();
+    const calls = runCommand.mock.calls.map((c) => c[0]);
+    expect(calls[1]).toEqual({ action: 'click', selector: '@e5' });
+    expect(calls[2]).toEqual({ action: 'click', selector: '@e7' });
+    expect(runCommand).toHaveBeenCalledTimes(4);
+  });
+
+  test('skips clicks and re-snapshot when LLM returns empty refs', async () => {
+    const _generateText = vi.fn().mockResolvedValue({ output: { refs: [] } });
+    const runCommand = vi.fn().mockResolvedValueOnce({ success: true, output: 'snap' });
+    const result = await phase2ExpandSections({ runCommand, _generateText: _generateText as any, _model });
+    expect(result.outcome).toBeNull();
+    expect(runCommand).toHaveBeenCalledTimes(1); // initial snapshot only
+  });
+
+  test('falls back gracefully when generateText throws', async () => {
+    const _generateText = vi.fn().mockRejectedValue(new Error('boom'));
+    const runCommand = vi.fn().mockResolvedValueOnce({ success: true, output: 'snap' });
+    const result = await phase2ExpandSections({ runCommand, _generateText: _generateText as any, _model });
+    expect(result.outcome).toBeNull();
+  });
+
+  test('returns browser-error when initial snapshot fails', async () => {
+    const runCommand = vi.fn().mockResolvedValue({ success: false, error: 'closed' });
+    const result = await phase2ExpandSections({ runCommand });
     expect(result.outcome).toEqual({ status: 'browser-error', error: 'closed' });
   });
 });
