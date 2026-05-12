@@ -7,7 +7,7 @@ vi.mock('agent-browser/dist/actions.js', () => ({
   executeCommand: vi.fn(),
 }));
 import { createEnableSubmitTool } from '@/lib/ai/tools/enable-submit';
-import { phase0LocateButton, phase1CheckRequiredFields, phase2ExpandSections, phase3WaitForTurnstile } from '@/lib/ai/tools/enable-submit-phases';
+import { phase0LocateButton, phase1CheckRequiredFields, phase2ExpandSections, phase3WaitForTurnstile, phase4Verify, phase5Diagnose } from '@/lib/ai/tools/enable-submit-phases';
 
 describe('enableSubmit tool', () => {
   test('factory returns a tool with a description and execute fn', () => {
@@ -216,5 +216,56 @@ describe('phase3WaitForTurnstile', () => {
     expect(labels.some((l) => l.includes('(2s)'))).toBe(true);
     expect(labels.some((l) => l.includes('(4s)'))).toBe(true);
     expect(labels.some((l) => l.includes('(6s)'))).toBe(true);
+  });
+});
+
+describe('phase4Verify', () => {
+  test('returns enabled when fresh snapshot shows button not disabled', async () => {
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit Application" [ref=e2]' });
+    const result = await phase4Verify({ runCommand, submitSelector: '@e2' });
+    expect(result.outcome).toEqual({ status: 'enabled' });
+  });
+
+  test('returns null when button still disabled', async () => {
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit Application" [ref=e2] [disabled]' });
+    const result = await phase4Verify({ runCommand, submitSelector: '@e2' });
+    expect(result.outcome).toBeNull();
+  });
+
+  test('returns browser-error when snapshot fails', async () => {
+    const runCommand = vi.fn().mockResolvedValueOnce({ success: false, error: 'closed' });
+    const result = await phase4Verify({ runCommand, submitSelector: '@e2' });
+    expect(result.outcome).toEqual({ status: 'browser-error', error: 'closed' });
+  });
+});
+
+describe('phase5Diagnose', () => {
+  test('returns pending-turnstile when token empty', async () => {
+    const runCommand = vi.fn().mockResolvedValueOnce({ success: true, output: '' });
+    const result = await phase5Diagnose({ runCommand });
+    expect(result.outcome).toEqual({
+      status: 'pending-turnstile',
+      message: 'Turnstile token is still empty — wait ~30s and try again.',
+    });
+    expect(result.tokenPresent).toBe(false);
+  });
+
+  test('returns null outcome + tokenPresent=true when token populated', async () => {
+    const runCommand = vi.fn().mockResolvedValueOnce({ success: true, output: 'TOKEN_VALUE' });
+    const result = await phase5Diagnose({ runCommand });
+    expect(result.outcome).toBeNull();
+    expect(result.tokenPresent).toBe(true);
+  });
+
+  test('returns pending-turnstile when token read fails', async () => {
+    const runCommand = vi.fn().mockResolvedValueOnce({ success: false, error: 'eval blocked' });
+    const result = await phase5Diagnose({ runCommand });
+    // Treat browser-eval failure same as empty token — Phase 5's job is to recommend waiting, not surface evaluate failures.
+    expect(result.outcome?.status).toBe('pending-turnstile');
+    expect(result.tokenPresent).toBe(false);
   });
 });

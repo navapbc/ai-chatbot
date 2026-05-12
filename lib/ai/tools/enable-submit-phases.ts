@@ -217,3 +217,34 @@ export async function phase3WaitForTurnstile(
 
   return { outcome: null };
 }
+
+export async function phase4Verify({
+  runCommand,
+  submitSelector,
+}: PhaseInput & { submitSelector: string }): Promise<{ outcome: EnableSubmitResult | null }> {
+  const snap = await runCommand({ action: 'snapshot', selector: 'form' });
+  if (!snap.success || !snap.output) {
+    return { outcome: { status: 'browser-error', error: snap.error ?? 'snapshot failed' } };
+  }
+  if (!snapshotShowsDisabled(snap.output, submitSelector)) {
+    return { outcome: { status: 'enabled' } };
+  }
+  return { outcome: null };
+}
+
+const PENDING_TURNSTILE_MESSAGE = 'Turnstile token is still empty — wait ~30s and try again.';
+
+export async function phase5Diagnose({
+  runCommand,
+}: PhaseInput): Promise<{ outcome: EnableSubmitResult | null; tokenPresent: boolean }> {
+  const tokenRes = await runCommand({ action: 'evaluate', script: TOKEN_READ_SCRIPT });
+  const tokenPresent = !!(tokenRes.success && tokenRes.output && tokenRes.output.length > 0);
+
+  if (!tokenPresent) {
+    return {
+      outcome: { status: 'pending-turnstile', message: PENDING_TURNSTILE_MESSAGE },
+      tokenPresent: false,
+    };
+  }
+  return { outcome: null, tokenPresent: true };
+}
