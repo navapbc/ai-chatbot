@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { EnableSubmitResult, EmitFn } from './enable-submit-types';
+import { submitGates } from './enable-submit-gates';
 
 export type RunCommand = (cmd: Record<string, unknown>) => Promise<{
   success: boolean;
@@ -247,4 +248,49 @@ export async function phase5Diagnose({
     };
   }
   return { outcome: null, tokenPresent: true };
+}
+
+export type Phase6Input = PhaseInput & {
+  submitSelector: string;
+  tokenPresent: boolean;
+  lastSnapshot: string;
+};
+
+export async function phase6ForceEnable(input: Phase6Input): Promise<{ outcome: EnableSubmitResult | null }> {
+  if (!input.tokenPresent) {
+    return {
+      outcome: {
+        status: 'pending-turnstile',
+        message: 'Turnstile token is still empty — refusing to force-enable.',
+      },
+    };
+  }
+
+  for (const gate of submitGates) {
+    if (!gate.match(input.lastSnapshot)) continue;
+
+    await input.runCommand({ action: 'evaluate', script: gate.script(input.submitSelector) });
+    const snap = await input.runCommand({ action: 'snapshot', selector: 'form' });
+    if (!snap.success || !snap.output) continue;
+
+    if (!snapshotShowsDisabled(snap.output, input.submitSelector)) {
+      return {
+        outcome: {
+          status: 'enabled-via-force',
+          warning: `I enabled the button by satisfying client-side gating (pattern: ${gate.name}). The Turnstile token is present; the server should accept the submission.`,
+        },
+      };
+    }
+  }
+
+  return {
+    outcome: {
+      status: 'blocked-unknown',
+      diagnostic: {
+        reason: 'no-gate-pattern-matched',
+        tokenPresent: input.tokenPresent,
+        submitSelector: input.submitSelector,
+      },
+    },
+  };
 }

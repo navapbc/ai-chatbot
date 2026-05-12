@@ -7,7 +7,8 @@ vi.mock('agent-browser/dist/actions.js', () => ({
   executeCommand: vi.fn(),
 }));
 import { createEnableSubmitTool } from '@/lib/ai/tools/enable-submit';
-import { phase0LocateButton, phase1CheckRequiredFields, phase2ExpandSections, phase3WaitForTurnstile, phase4Verify, phase5Diagnose } from '@/lib/ai/tools/enable-submit-phases';
+import { phase0LocateButton, phase1CheckRequiredFields, phase2ExpandSections, phase3WaitForTurnstile, phase4Verify, phase5Diagnose, phase6ForceEnable } from '@/lib/ai/tools/enable-submit-phases';
+import { submitGates } from '@/lib/ai/tools/enable-submit-gates';
 
 describe('enableSubmit tool', () => {
   test('factory returns a tool with a description and execute fn', () => {
@@ -267,5 +268,58 @@ describe('phase5Diagnose', () => {
     // Treat browser-eval failure same as empty token — Phase 5's job is to recommend waiting, not surface evaluate failures.
     expect(result.outcome?.status).toBe('pending-turnstile');
     expect(result.tokenPresent).toBe(false);
+  });
+});
+
+describe('submitGates registry', () => {
+  test('exports at least one entry with name/match/script', () => {
+    expect(submitGates.length).toBeGreaterThan(0);
+    for (const gate of submitGates) {
+      expect(typeof gate.name).toBe('string');
+      expect(typeof gate.match).toBe('function');
+      expect(typeof gate.script).toBe('function');
+    }
+  });
+});
+
+describe('phase6ForceEnable', () => {
+  test('refuses to run when tokenPresent is false (safety guard)', async () => {
+    const runCommand = vi.fn();
+    const result = await phase6ForceEnable({
+      runCommand,
+      submitSelector: '@e2',
+      tokenPresent: false,
+      lastSnapshot: 'snap',
+    });
+    expect(result.outcome?.status).toBe('pending-turnstile');
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  test('returns enabled-via-force when a gate clears the disabled attr', async () => {
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ success: true, output: 'ok' }) // evaluate gate script
+      .mockResolvedValueOnce({ success: true, output: '- button "Submit Application" [ref=e2]' }); // re-snapshot enabled
+    const result = await phase6ForceEnable({
+      runCommand,
+      submitSelector: '@e2',
+      tokenPresent: true,
+      lastSnapshot: '- button "Submit Application" [ref=e2] [disabled]',
+    });
+    expect(result.outcome?.status).toBe('enabled-via-force');
+  });
+
+  test('returns blocked-unknown when no gate clears the disabled attr', async () => {
+    const runCommand = vi.fn().mockResolvedValue({
+      success: true,
+      output: '- button "Submit Application" [ref=e2] [disabled]',
+    });
+    const result = await phase6ForceEnable({
+      runCommand,
+      submitSelector: '@e2',
+      tokenPresent: true,
+      lastSnapshot: '- button "Submit Application" [ref=e2] [disabled]',
+    });
+    expect(result.outcome?.status).toBe('blocked-unknown');
   });
 });
