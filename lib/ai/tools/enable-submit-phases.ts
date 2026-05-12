@@ -280,7 +280,7 @@ export async function phase6ForceEnable(input: Phase6Input): Promise<{ outcome: 
       return {
         outcome: {
           status: 'enabled-via-force',
-          warning: `I enabled the button by satisfying client-side gating (pattern: ${gate.name}). The Turnstile token is present; the server should accept the submission.`,
+          warning: `The submit button was enabled by satisfying client-side gating (pattern: ${gate.name}). The Turnstile token is present; the server should accept the submission.`,
         },
       };
     }

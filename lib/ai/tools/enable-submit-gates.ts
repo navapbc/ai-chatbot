@@ -11,6 +11,7 @@ const cssSelectorForJs = (selector: string): string => {
   return `document.querySelector(${JSON.stringify(selector)})`;
 };
 
+// Order matters: more specific gates first; the catch-all (match: () => true) MUST remain last.
 export const submitGates: SubmitGate[] = [
   {
     name: 'expand-and-captcha-flags',

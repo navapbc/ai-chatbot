@@ -7,7 +7,7 @@ const REFERENCES_DIR = normalize(join(process.cwd(), 'lib/ai/prompts/references'
 
 export const readReference = tool({
   description:
-    'Load a reference document. Use the path the system prompt instructs you to load (e.g. "field-patterns.md", "custom-dropdowns.md", "form-submission.md", "browser-commands.md").',
+    'Load a reference document. Use the path the system prompt instructs you to load (e.g. "field-patterns.md", "custom-dropdowns.md", "browser-commands.md").',
   inputSchema: z.object({
     path: z
       .string()
