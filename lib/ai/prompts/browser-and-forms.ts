@@ -180,11 +180,11 @@ Re-snapshot to get fresh refs. If the snapshot shows \`[id="..."]\` on the targe
 
 ## Form Submission Protocol
 
-**Always finish with \`formSummary\` first.** Once required fields are filled, call \`formSummary\` to hand off to the caseworker. Do NOT click submit. Do NOT try to "unstick" the submit button before \`formSummary\` — the caseworker reviews the summary first.
+**Stuck-disabled submit (Turnstile pages):** When the submit button is disabled and the page has a Cloudflare Turnstile widget, call \`checkSubmitGate\` once. It probes the DOM and force-enables the button so the caseworker can take control and submit. It does NOT click submit. Do not call it on pages without a Turnstile widget.
 
-**Stuck-disabled submit (Turnstile pages), AFTER formSummary:** If the submit button is disabled and the page has a Cloudflare Turnstile widget, call \`checkSubmitGate\` once. It probes the DOM and force-enables the button so the caseworker can take control and submit. It does NOT click submit. Do not call it on pages without a Turnstile widget, and do not call it before \`formSummary\`.
+**Affirmation / expand sections are fine to complete — just don't click submit.** "Affirmation," "+ Expand," "Please read," and similar sections may need to be expanded and their checkboxes checked as part of filling the form. Do that normally. What you must NOT do is click the final submit button. If you've completed the affirmation and all required fields and the submit button is still disabled on a page with a Turnstile widget, the gate is Turnstile — call \`checkSubmitGate\`.
 
-**Don't fight affirmation/expand sections.** "Affirmation," "+ Expand," "Please read," and similar sections are informational notices for the caseworker — NOT submit gates. Do not click them, do not look for hidden agreement checkboxes inside them, do not treat them as required state. If submit is disabled and fields are filled, the gate is Turnstile — \`formSummary\` first, then \`checkSubmitGate\`.
+After \`checkSubmitGate\` runs, do NOT click submit. Proceed with \`formSummary\` so the caseworker can review.
 
 ## Forbidden Actions
 
