@@ -354,6 +354,45 @@ const llmHallucinationJudge = initFunction({
   slug: "hallucination-judge",
 });
 
+const summaryAttributionJudge = initFunction({
+  projectName: "labs-asp",
+  slug: "summary-attribution-judge",
+});
+
+/**
+ * Serialize RunState into context for the summary-attribution judge.
+ * Includes the participant database record so the judge can verify
+ * which formSummary "database" attributions actually trace to real data.
+ */
+function serializeForAttributionJudge(state: RunState): string {
+  const parts: string[] = [];
+
+  parts.push("## Participant Database Record (ground truth)");
+  parts.push(JSON.stringify(mockParticipant.record, null, 2));
+
+  parts.push("\n## Form Fields Filled (selector → value)");
+  if (state.browserFills.length > 0) {
+    for (const fill of state.browserFills) {
+      parts.push(`- ${fill.selector}: "${fill.value}"`);
+    }
+  } else {
+    parts.push("(none)");
+  }
+
+  parts.push("\n## Form Summary Cards (agent's claimed source for each field)");
+  if (state.formSummaryCalls.length > 0) {
+    for (const summary of state.formSummaryCalls) {
+      for (const f of summary.fields) {
+        parts.push(`- ${f.field}: "${f.value ?? "(empty)"}" [source: ${f.source}]`);
+      }
+    }
+  } else {
+    parts.push("(agent did not call formSummary)");
+  }
+
+  return parts.join("\n");
+}
+
 /**
  * Serialize RunState into a human-readable string for the LLM judge.
  */
@@ -476,6 +515,18 @@ Eval("labs-asp", {
       };
       return {
         name: "llm_hallucination_judge",
+        score: result.score ?? 0,
+        metadata: result.metadata,
+      };
+    },
+    async ({ output }) => {
+      const serialized = serializeForAttributionJudge(output as RunState);
+      const result = (await summaryAttributionJudge({ output: serialized })) as {
+        score?: number | null;
+        metadata?: Record<string, unknown>;
+      };
+      return {
+        name: "summary_attribution_judge",
         score: result.score ?? 0,
         metadata: result.metadata,
       };

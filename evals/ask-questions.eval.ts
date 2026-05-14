@@ -1,4 +1,4 @@
-import { Eval } from "braintrust";
+import { Eval, initFunction } from "braintrust";
 import { generateText, stepCountIs, type ModelMessage } from "ai";
 import { getWebAutomationSystemPrompt } from "@/lib/ai/prompts/web-automation";
 import participants from "./datasets/participants.json";
@@ -225,6 +225,46 @@ function filledKnownFields(state: RunState): boolean {
   return hits.length >= 2; // At least 2 of the 3 known fields filled
 }
 
+// ── LLM-as-judge scorer (registered in Braintrust Scorers tab) ──────────
+
+const askQuestionsJudge = initFunction({
+  projectName: "labs-asp",
+  slug: "ask-questions-judge",
+});
+
+function serializeForAskQuestionsJudge(state: RunState): string {
+  const parts: string[] = [];
+
+  parts.push("## Participant Database Record (ground truth)");
+  parts.push(JSON.stringify(mockSparseParticipant.record, null, 2));
+
+  parts.push("\n## Form Fields the agent had to fill");
+  parts.push(JSON.stringify(formFields.askQuestions, null, 2));
+
+  parts.push("\n## Questions the agent asked the caseworker (via gapAnalysis)");
+  parts.push(
+    state.gapAnalysisFields.length > 0
+      ? state.gapAnalysisFields.map((f) => `- ${f}`).join("\n")
+      : "(none — the agent did not call gapAnalysis)"
+  );
+
+  parts.push("\n## Fields the agent eventually filled (selector → value)");
+  parts.push(
+    state.browserFills.length > 0
+      ? state.browserFills.map((f) => `- ${f.selector}: "${f.value}"`).join("\n")
+      : "(none)"
+  );
+
+  parts.push("\n## Agent text responses");
+  parts.push(
+    state.textResponses.length > 0
+      ? state.textResponses.join("\n\n")
+      : "(none)"
+  );
+
+  return parts.join("\n");
+}
+
 // ── Eval ────────────────────────────────────────────────────────────────
 
 const model = openai('gpt-5-mini');
@@ -284,5 +324,17 @@ Eval("labs-asp", {
       name: "filled_known_fields",
       score: filledKnownFields(output as RunState) ? 1 : 0,
     }),
+    async ({ output }) => {
+      const serialized = serializeForAskQuestionsJudge(output as RunState);
+      const result = (await askQuestionsJudge({ output: serialized })) as {
+        score?: number | null;
+        metadata?: Record<string, unknown>;
+      };
+      return {
+        name: "ask_questions_judge",
+        score: result.score ?? 0,
+        metadata: result.metadata,
+      };
+    },
   ],
 });

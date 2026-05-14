@@ -1,4 +1,4 @@
-import { Eval } from "braintrust";
+import { Eval, initFunction } from "braintrust";
 import { generateText, stepCountIs, type ModelMessage } from "ai";
 import { getWebAutomationSystemPrompt } from "@/lib/ai/prompts/web-automation";
 import participants from "./datasets/participants.json";
@@ -178,6 +178,22 @@ function noPlayByPlay(state: RunState): boolean {
   return true;
 }
 
+// ── LLM-as-judge scorer (registered in Braintrust Scorers tab) ──────────
+
+const verbosityJudge = initFunction({
+  projectName: "labs-asp",
+  slug: "verbosity-judge",
+});
+
+function serializeForVerbosityJudge(state: RunState): string {
+  if (state.textResponses.length === 0) {
+    return "(agent produced no text responses)";
+  }
+  return state.textResponses
+    .map((r) => `[step ${r.stepIndex}] ${r.text.trim()}`)
+    .join("\n\n");
+}
+
 // ── Eval ────────────────────────────────────────────────────────────────
 
 const model = openai('gpt-5-mini');
@@ -242,5 +258,17 @@ Eval("labs-asp", {
       name: "no_play_by_play",
       score: noPlayByPlay(output as RunState) ? 1 : 0,
     }),
+    async ({ output }) => {
+      const serialized = serializeForVerbosityJudge(output as RunState);
+      const result = (await verbosityJudge({ output: serialized })) as {
+        score?: number | null;
+        metadata?: Record<string, unknown>;
+      };
+      return {
+        name: "verbosity_judge",
+        score: result.score ?? 0,
+        metadata: result.metadata,
+      };
+    },
   ],
 });
