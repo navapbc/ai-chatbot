@@ -19,7 +19,8 @@
     "test:playwright": "export PLAYWRIGHT=True && pnpm exec playwright test",
     "test": "vitest",
     "eval": "dotenv -e .env.local -- braintrust eval evals",
-    "eval:tool-selection": "dotenv -e .env.local -- braintrust eval evals/tool-selection.eval.ts"
+    "eval:tool-selection": "dotenv -e .env.local -- braintrust eval evals/tool-selection.eval.ts",
+    "eval:ci": "braintrust eval evals"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.58",
