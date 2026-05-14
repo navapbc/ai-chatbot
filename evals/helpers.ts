@@ -242,8 +242,8 @@ export const browserOk = (output = "") => ({ success: true, output, error: null 
 /** Collect text responses from generateText result steps */
 export function collectTextResponses(steps: Array<{ text?: string }>): string[] {
   return steps
-    .filter((s) => s.text && s.text.trim().length > 0)
-    .map((s) => s.text!);
+    .filter((s): s is { text: string } => Boolean(s.text && s.text.trim().length > 0))
+    .map((s) => s.text);
 }
 
 /** Collect text responses with step index */
@@ -252,8 +252,9 @@ export function collectIndexedTextResponses(
 ): Array<{ stepIndex: number; text: string }> {
   const result: Array<{ stepIndex: number; text: string }> = [];
   for (let i = 0; i < steps.length; i++) {
-    if (steps[i].text && steps[i].text!.trim().length > 0) {
-      result.push({ stepIndex: i, text: steps[i].text! });
+    const text = steps[i].text;
+    if (text && text.trim().length > 0) {
+      result.push({ stepIndex: i, text });
     }
   }
   return result;

@@ -166,21 +166,21 @@ Eval("labs-asp", {
     ({ output, expected }) => {
       // The first tool called should be one of the expected tools
       const score =
-        output && output.length > 0 && expected!.includes(output[0]) ? 1 : 0;
+        output && output.length > 0 && expected?.includes(output[0]) ? 1 : 0;
       return { name: "first_tool_correct", score };
     },
     ({ output, expected }) => {
-      if (!output || output.length === 0)
+      if (!output || output.length === 0 || !expected || expected.length === 0)
         return { name: "all_expected_tools_called", score: 0 };
       const called = new Set(output);
-      const hits = expected!.filter((t) => called.has(t)).length;
-      return { name: "all_expected_tools_called", score: hits / expected!.length };
+      const hits = expected.filter((t) => called.has(t)).length;
+      return { name: "all_expected_tools_called", score: hits / expected.length };
     },
     ({ output, expected }) => {
       if (!output || output.length === 0)
         return { name: "no_hallucinated_tools", score: 1 };
       // Allow actionLabel and readReference as bonus tools (always acceptable)
-      const allowList = new Set([...expected!, "actionLabel", "readReference"]);
+      const allowList = new Set([...(expected ?? []), "actionLabel", "readReference"]);
       const unexpected = output.filter((t) => !allowList.has(t));
       return { name: "no_hallucinated_tools", score: unexpected.length === 0 ? 1 : 0 };
     },
