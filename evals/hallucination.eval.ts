@@ -394,12 +394,17 @@ function serializeForAttributionJudge(state: RunState): string {
 
 /**
  * Serialize RunState into a human-readable string for the LLM judge.
+ * Prepends the participant database record so the parametrized
+ * hallucination-judge has ground truth to evaluate against.
  */
 function serializeForJudge(state: RunState): string {
   const parts: string[] = [];
 
+  parts.push("## Participant Database Record (ground truth)");
+  parts.push(JSON.stringify(mockParticipant.record, null, 2));
+
   if (state.textResponses.length > 0) {
-    parts.push("## Agent Text Responses");
+    parts.push("\n## Agent Text Responses");
     for (const text of state.textResponses) {
       parts.push(text);
     }

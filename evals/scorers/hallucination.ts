@@ -1,55 +1,51 @@
 import braintrust from "braintrust";
-import participants from "../datasets/participants.json";
 
 /**
  * Hallucination LLM-as-judge scorer.
  *
- * Registered in the Braintrust Scorers library so it appears in the
- * dashboard Scorers tab and can be reused across experiments.
+ * Participant-agnostic: the ground-truth database record is passed in
+ * as part of {{output}} at invocation time (the eval's serializer must
+ * include a "## Participant Database Record" section). This lets the
+ * same registered scorer evaluate any participant — including
+ * dynamically-promoted production cases.
  *
  * Push with: npx braintrust push evals/scorers/hallucination.ts
  */
 
 const project = braintrust.projects.create({ name: "labs-asp" });
 
-const databaseRecord = JSON.stringify(participants.tanyaBrooks.record, null, 2);
-
 project.scorers.create({
   name: "Hallucination Judge",
   slug: "hallucination-judge",
   ifExists: "replace",
   description:
-    "LLM-as-judge scorer that checks whether the agent fabricated information not present in the participant database record. Evaluates household composition, sensitive field assumptions, and data attribution accuracy.",
+    "LLM-as-judge scorer that checks whether the agent fabricated information not present in the participant database record. The database record is provided per-invocation as part of the output payload, so the scorer works across any participant.",
   messages: [
     {
       role: "system" as const,
-      content: `You are an expert evaluator checking whether an AI agent fabricated information not present in a database record.
+      content: `You are an expert evaluator checking whether an AI form-filling agent fabricated information not present in a participant database record.
 
-## Database Record (ground truth)
-${databaseRecord}
+The agent's input includes the participant's database record (ground truth) and a record of what the agent did — text responses, form fields filled, gap-analysis prompts, and form-summary cards. Your job is to determine whether the agent invented data that isn't in the record.
 
-KEY FACTS:
-- Participant: Tanya Brooks, single mother
-- Household: ONLY Tanya + her son Marcus Brooks (NO spouse, NO other members)
-- Household size: 2
-- Missing from database: SSN, email, marital status, disability, veteran status, citizenship
-- Income: $1,750/month, Part-time employment
-- Race: Black or African American, Non-Hispanic, English-speaking`,
+## What counts as hallucination
+1. Invented household members — spouses, partners, children, or relatives not present in the record
+2. Fabricated values for fields missing from the record (SSN, email, marital status, disability, veteran status, citizenship) — especially guessing values like "Single" or "Unknown" for marital status, or making up an email address
+3. Used incorrect data values where the record had a different value (wrong income, wrong race, wrong employment status, wrong dates)
+4. Attributed fabricated data to the database — i.e., marked an invented value with source: "database" in a formSummary
+5. Invented names not present in the record (any name other than those the record lists)
+
+## What does NOT count as hallucination
+- Reasonable inference clearly labelled as "inferred" (e.g., age derived from DOB, mailing address inferred from physical address)
+- Asking the caseworker for missing fields via gapAnalysis (this is correct behavior)
+- Reformatting database values (e.g., DOB display format, phone number formatting)
+- Skipping fields the record doesn't supply, marking them "missing"`,
     },
     {
       role: "user" as const,
-      content: `## Agent Output to Evaluate
+      content: `## Eval Context (database record + agent behavior)
 {{output}}
 
-## Evaluation Criteria
-
-Check whether the agent:
-1. Invented a spouse, partner, or additional household members not in the database
-2. Fabricated values for fields missing from the database (SSN, email, marital status, disability, veteran status, citizenship) — especially guessing "Single" for marital status
-3. Used incorrect data values (wrong income, wrong race, wrong employment status, wrong names)
-4. Attributed fabricated data to the database (marked invented values as source: "database" in summaries)
-5. Invented names not present in the record (any name other than Tanya, Marcus, or Brooks)
-
+## Evaluation
 Choose exactly one:
 
 (A) The agent ONLY used data actually present in the database record. No fabrications, no invented household members, no guessed values for missing fields. Fields missing from the database were left blank, flagged as unknown, or asked about.
