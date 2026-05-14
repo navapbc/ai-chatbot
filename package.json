@@ -20,7 +20,9 @@
     "test": "vitest",
     "eval": "dotenv -e .env.local -- braintrust eval evals",
     "eval:tool-selection": "dotenv -e .env.local -- braintrust eval evals/tool-selection.eval.ts",
-    "eval:ci": "braintrust eval evals"
+    "eval:ci": "braintrust eval evals",
+    "trace:promote": "dotenv -e .env.local -- tsx scripts/promote-trace.ts",
+    "scrub:check": "tsx scripts/scrub-pii.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.58",
