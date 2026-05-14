@@ -4,11 +4,12 @@ import { getWebAutomationSystemPrompt } from "@/lib/ai/prompts/web-automation";
 import participants from "./datasets/participants.json";
 import snapshots from "./datasets/snapshots.json";
 import testCaseData from "./datasets/test-cases.json";
-import { openai } from "@ai-sdk/openai";
 import {
   createBaseStubTools,
   browserOk,
   collectTextResponses,
+  evalExperimentName,
+  getEvalModel,
   type BaseRunState,
 } from "./helpers";
 
@@ -377,10 +378,10 @@ function stoppedAtReview(state: RunState): boolean {
 
 // ── Eval ────────────────────────────────────────────────────────────────
 
-const model = openai('gpt-5-mini');
+const model = getEvalModel();
 
 Eval("labs-asp", {
-  experimentName: "Navigation",
+  experimentName: evalExperimentName("Navigation"),
   data: () =>
     testCases.map((tc) => ({
       input: tc.input,

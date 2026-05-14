@@ -6,8 +6,7 @@ import participants from "./datasets/participants.json";
 import snapshots from "./datasets/snapshots.json";
 import golden from "./datasets/golden.json";
 import testCaseData from "./datasets/test-cases.json";
-import { openai } from "@ai-sdk/openai";
-import { createBaseStubTools, browserOk, collectTextResponses, type BaseRunState } from "./helpers";
+import { createBaseStubTools, browserOk, collectTextResponses, evalExperimentName, getEvalModel, type BaseRunState } from "./helpers";
 
 /**
  * Hallucination Eval
@@ -436,10 +435,10 @@ function serializeForJudge(state: RunState): string {
 
 // ── Eval ────────────────────────────────────────────────────────────────
 
-const model = openai('gpt-5-mini');
+const model = getEvalModel();
 
 Eval("labs-asp", {
-  experimentName: "Hallucination",
+  experimentName: evalExperimentName("Hallucination"),
   data: () =>
     testCases.map((tc) => ({
       input: tc.input,

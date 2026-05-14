@@ -5,11 +5,12 @@ import participants from "./datasets/participants.json";
 import snapshots from "./datasets/snapshots.json";
 import formFields from "./datasets/form-fields.json";
 import testCaseData from "./datasets/test-cases.json";
-import { openai } from "@ai-sdk/openai";
 import {
   createBaseStubTools,
   browserOk,
   collectTextResponses,
+  evalExperimentName,
+  getEvalModel,
   type BaseRunState,
 } from "./helpers";
 
@@ -267,10 +268,10 @@ function serializeForAskQuestionsJudge(state: RunState): string {
 
 // ── Eval ────────────────────────────────────────────────────────────────
 
-const model = openai('gpt-5-mini');
+const model = getEvalModel();
 
 Eval("labs-asp", {
-  experimentName: "Ask Questions",
+  experimentName: evalExperimentName("Ask Questions"),
   data: () =>
     testCases.map((tc) => ({
       input: tc.input,

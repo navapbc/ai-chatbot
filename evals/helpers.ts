@@ -1,4 +1,7 @@
-import { tool, type Tool } from "ai";
+import { tool, type LanguageModel, type Tool } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { google } from "@ai-sdk/google";
+import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 
 /**
@@ -258,4 +261,45 @@ export function collectIndexedTextResponses(
     }
   }
   return result;
+}
+
+// ── Model selection (matrix-friendly) ──────────────────────────────────
+
+const DEFAULT_EVAL_MODEL = "gpt-5-mini";
+
+/**
+ * Resolve a language model for evals from the EVAL_MODEL env var.
+ *
+ * Recognised prefixes:
+ *   - gpt-* / o1* / o3*  → @ai-sdk/openai
+ *   - claude-*           → @ai-sdk/anthropic (direct Anthropic API)
+ *   - gemini-*           → @ai-sdk/google
+ *
+ * Defaults to "gpt-5-mini" when EVAL_MODEL is unset, preserving the
+ * historical per-file pin. Used by every *.eval.ts file so the CI matrix
+ * can swap models without touching eval source.
+ */
+export function getEvalModel(): LanguageModel {
+  const id = process.env.EVAL_MODEL ?? DEFAULT_EVAL_MODEL;
+  if (id.startsWith("gpt-") || id.startsWith("o1") || id.startsWith("o3")) {
+    return openai(id);
+  }
+  if (id.startsWith("claude-")) {
+    return anthropic(id);
+  }
+  if (id.startsWith("gemini-")) {
+    return google(id);
+  }
+  throw new Error(
+    `Unknown EVAL_MODEL id: "${id}". Expected gpt-*/o1*/o3*/claude-*/gemini-*.`,
+  );
+}
+
+/**
+ * Suffix a Braintrust experimentName with the active eval model so matrix
+ * runs land in separate experiments in the dashboard instead of colliding.
+ */
+export function evalExperimentName(name: string): string {
+  const id = process.env.EVAL_MODEL ?? DEFAULT_EVAL_MODEL;
+  return `${name} [${id}]`;
 }

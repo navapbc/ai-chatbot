@@ -1,12 +1,11 @@
 import { Eval } from "braintrust";
 import { generateText, stepCountIs, type ModelMessage } from "ai";
 import { getWebAutomationSystemPrompt } from "@/lib/ai/prompts/web-automation";
-import { createBaseStubTools, browserOk, collectTextResponses, type BaseRunState } from "./helpers";
+import { createBaseStubTools, browserOk, collectTextResponses, evalExperimentName, getEvalModel, type BaseRunState } from "./helpers";
 import participants from "./datasets/participants.json";
 import snapshots from "./datasets/snapshots.json";
 import formFields from "./datasets/form-fields.json";
 import testCaseData from "./datasets/test-cases.json";
-import { openai } from "@ai-sdk/openai";
 
 /**
  * Autonomous Progression Eval
@@ -107,10 +106,10 @@ function notOverlyVerbose(state: RunState): boolean {
 
 // ── Eval ────────────────────────────────────────────────────────────────
 
-const model = openai('gpt-5-mini');
+const model = getEvalModel();
 
 Eval("labs-asp", {
-  experimentName: "Autonomous Progression",
+  experimentName: evalExperimentName("Autonomous Progression"),
   data: () =>
     testCases.map((tc) => ({
       input: tc.input,

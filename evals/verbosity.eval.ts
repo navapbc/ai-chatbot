@@ -4,11 +4,12 @@ import { getWebAutomationSystemPrompt } from "@/lib/ai/prompts/web-automation";
 import participants from "./datasets/participants.json";
 import snapshots from "./datasets/snapshots.json";
 import testCaseData from "./datasets/test-cases.json";
-import { openai } from "@ai-sdk/openai";
 import {
   createBaseStubTools,
   browserOk,
   collectIndexedTextResponses,
+  evalExperimentName,
+  getEvalModel,
   type BaseRunState,
 } from "./helpers";
 
@@ -196,10 +197,10 @@ function serializeForVerbosityJudge(state: RunState): string {
 
 // ── Eval ────────────────────────────────────────────────────────────────
 
-const model = openai('gpt-5-mini');
+const model = getEvalModel();
 
 Eval("labs-asp", {
-  experimentName: "Verbosity",
+  experimentName: evalExperimentName("Verbosity"),
   data: () =>
     testCases.map((tc) => ({
       input: tc.input,

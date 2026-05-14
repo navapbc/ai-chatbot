@@ -3,7 +3,7 @@ import { generateText, stepCountIs, tool, type ModelMessage } from "ai";
 import { z } from "zod";
 import { getWebAutomationSystemPrompt } from "@/lib/ai/prompts/web-automation";
 import testCaseData from "./datasets/test-cases.json";
-import { openai } from "@ai-sdk/openai";
+import { evalExperimentName, getEvalModel } from "./helpers";
 
 /**
  * Stub tool definitions — identical schemas to production but with no-op
@@ -133,10 +133,10 @@ const testCases = testCaseData.toolSelection.cases;
 
 // ── Eval ────────────────────────────────────────────────────────────────
 
-const model = openai('gpt-5-mini');
+const model = getEvalModel();
 
 Eval("labs-asp", {
-  experimentName: "Tool Selection",
+  experimentName: evalExperimentName("Tool Selection"),
   data: () =>
     testCases.map((tc) => ({
       input: tc.input,
