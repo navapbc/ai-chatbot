@@ -253,7 +253,7 @@ export async function POST(request: Request) {
             });
           },
           experimental_telemetry: {
-            isEnabled: isProductionEnvironment,
+            isEnabled: !!process.env.BRAINTRUST_API_KEY,
             functionId: 'web-automation-agent',
           },
         });
