@@ -132,8 +132,8 @@ Empty or minimal snapshots mean a modal is blocking the page — NOT that snapsh
 
 1. Snapshot the page.
 2. If minimal/empty content, a modal is present. Try scoped snapshots in this order:
-   - \`{ action: "snapshot", selector: ".ReactModal__Content" }\` (BenefitsCal, most React apps)
    - \`{ action: "snapshot", selector: "[role=dialog]" }\`
+   - \`{ action: "snapshot", selector: ".ReactModal__Overlay" }\`
    - \`{ action: "snapshot", selector: "[aria-modal=true]" }\`
    - \`{ action: "snapshot", selector: ".modal" }\`
 3. Use refs from that snapshot to interact — native \`<select>\` → \`select\`; custom dropdown → click to open, snapshot again, click the option.
@@ -157,7 +157,7 @@ BenefitsCal commonly stacks county → address-confirmation → eligibility moda
 Some modals (especially on React apps like BenefitsCal) set \`aria-hidden="true"\` on the root div AND lack standard ARIA attributes. Use ONE evaluate to discover the modal structure:
 
 \`\`\`js
-{ action: "evaluate", script: "document.querySelector('.ReactModal__Content, [aria-modal=true], [role=dialog], .modal')?.outerHTML?.substring(0, 2000) || 'No modal found'" }
+{ action: "evaluate", script: "document.querySelector('[aria-modal=true], .modal, [role=dialog]')?.outerHTML?.substring(0, 2000) || 'No modal found'" }
 \`\`\`
 
 If that returns nothing, try:
