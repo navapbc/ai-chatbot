@@ -218,19 +218,7 @@ Re-snapshot to get fresh refs. If the snapshot shows \`[id="..."]\` on the targe
 
 **Stuck-disabled submit (Turnstile pages):** When the submit button is disabled and the page has a Cloudflare Turnstile widget, call \`checkSubmitGate\` once. It probes the DOM and force-enables the button so the caseworker can take control and submit. It does NOT click submit. Do not call it on pages without a Turnstile widget.
 
-**Affirmation / expand sections are fine to complete — just don't click submit.** Many benefit forms have collapsible "+ Expand", "Affirmation", "Please read", or "Please expand and read below information" sections that MUST be opened before submit enables. Open them and check their checkboxes as part of normal form filling. What you must NOT do is click the final submit button.
-
-**How to click an expand section:**
-
-1. Snapshot the form, find the expand element's ref, click it normally.
-2. If the snapshot doesn't give you a clickable ref (the element may be a \`<div>\` with a jQuery handler and no role), use ONE evaluate to click it by its CSS class:
-   \`\`\`json
-   { "action": "evaluate", "script": "document.querySelector('.header').click();" }
-   \`\`\`
-3. Wait briefly for the expand animation: \`{ "action": "wait", "timeout": 700 }\`
-4. Re-snapshot to reveal the newly visible fields.
-
-If you've completed the affirmation and all required fields and the submit button is still disabled on a page with a Turnstile widget, the gate is Turnstile — call \`checkSubmitGate\`.
+**Affirmation / expand sections are fine to complete — just don't click submit.** "Affirmation," "+ Expand," "Please read," and similar sections may need to be expanded and their checkboxes checked as part of filling the form. Do that normally. What you must NOT do is click the final submit button. If you've completed the affirmation and all required fields and the submit button is still disabled on a page with a Turnstile widget, the gate is Turnstile — call \`checkSubmitGate\`.
 
 After \`checkSubmitGate\` runs, do NOT click submit. Proceed with \`formSummary\` so the caseworker can review.
 
