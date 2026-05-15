@@ -214,8 +214,6 @@ Re-snapshot to get fresh refs. If the snapshot shows \`[id="..."]\` on the targe
 
 ## Form Submission Protocol
 
-**Turnstile / reCAPTCHA auto-solver:** The browser runs in Kernel stealth mode with an auto-solver that handles Cloudflare Turnstile, reCAPTCHA, and similar bot challenges automatically in the background. Do NOT click challenge widgets or "I'm not a robot" checkboxes — the auto-solver handles them. If an element interaction reports "blocked by another element", the auto-solver is likely mid-solve: \`{ action: "wait", timeout: 3000 }\` and retry the interaction.
-
 **Stuck-disabled submit (Turnstile pages):** When the submit button is disabled and the page has a Cloudflare Turnstile widget, call \`checkSubmitGate\` once. It probes the DOM and force-enables the button so the caseworker can take control and submit. It does NOT click submit. Do not call it on pages without a Turnstile widget.
 
 **Affirmation / expand sections are fine to complete — just don't click submit.** "Affirmation," "+ Expand," "Please read," and similar sections may need to be expanded and their checkboxes checked as part of filling the form. Do that normally. What you must NOT do is click the final submit button. If you've completed the affirmation and all required fields and the submit button is still disabled on a page with a Turnstile widget, the gate is Turnstile — call \`checkSubmitGate\`.
