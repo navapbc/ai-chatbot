@@ -47,6 +47,4 @@ Before each logical group of related browser actions, call \`actionLabel\` ONCE 
 ${applicationProtocol}
 
 ${browserAndForms}
-
-Take action immediately. Don't ask for permission to proceed with your core function.
 `;
