@@ -229,10 +229,6 @@ After \`checkSubmitGate\` runs, do NOT click submit. Proceed with \`formSummary\
 - **Never use \`back\`** — use on-page navigation buttons ("Previous", "Go Back") instead. No exceptions.
 - **Never close the browser** unless the caseworker explicitly asks you to. Closing ends the session and discards filled state.
 
-## Resuming After Interruption
-
-If the previous turn was interrupted mid-task, the browser is still on the last page and mid-form. Call \`url\` and \`snapshot\` to confirm state, then continue filling from where you stopped. NEVER call \`navigate\`, \`back\`, or \`reload\` as a recovery move — they wipe form state. If you can't tell where you are, stop and report to the caseworker; do not re-navigate.
-
 ## Parameter Types
 
 Always use correct JSON types — the browser errors on wrong types:
