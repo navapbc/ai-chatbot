@@ -8,6 +8,8 @@ Mandatory rules for any browser action.
 
 ## Core Workflow
 
+**Snapshots are your eyes. Without fresh snapshots, you are flying blind.** Every DOM change invalidates refs — re-snapshot before the next interaction or you will click the wrong element.
+
 1. **Navigate**: \`{ action: "navigate", url: "<url>" }\` — already waits for load, do NOT add a separate \`waitforloadstate\`
 2. **Snapshot**: \`{ action: "snapshot" }\` — then \`{ action: "snapshot", selector: "form" }\` on complex pages (Drupal, WordPress, heavy nav/sidebar)
 3. **Read the refs**: Snapshots give refs like \`@e3\` and may show \`[id="fieldId"]\`. Use either for interactions — both are first-class.
@@ -38,6 +40,29 @@ Snapshots return refs in this format:
 2. **\`getbylabel\`** — almost never. Only when the label is globally unique AND the element has no ID. **NEVER** use for "Yes", "No", "First Name", "Last Name", "State", "Zip Code", "Birthdate", "Phone". **NEVER** include asterisks (\`*\`) or colons (\`:\`) in the label.
 3. **Tab navigation** — last resort when refs and IDs aren't working.
 
+### Worked Example
+
+\`\`\`text
+// Snapshot shows:
+//   textbox  "First Name" [ref=@e3] [id="firstNameTxt"]
+//   textbox  "SSN"        [ref=@e8] [id="ssnTxt"]
+//   checkbox "Yes"        [ref=@e7] [id="chkBxApplyYourselfYes"]
+\`\`\`
+
+\`\`\`json
+// Plain text — fill (ref OR id, equally valid):
+{ "action": "fill", "selector": "@e3", "value": "John" }
+{ "action": "fill", "selector": "#firstNameTxt", "value": "John" }
+
+// Masked — click, type with clear, verify:
+{ "action": "click", "selector": "#ssnTxt" }
+{ "action": "type", "selector": "#ssnTxt", "text": "123456789", "clear": true }
+{ "action": "inputvalue", "selector": "#ssnTxt" }
+
+// Checkbox — use the specific id to avoid ambiguity:
+{ "action": "check", "selector": "#chkBxApplyYourselfYes" }
+\`\`\`
+
 ## Masked Fields Rule
 
 - **\`fill\`** = plain text only (name, address, city, email). Sets value programmatically.
@@ -48,6 +73,15 @@ Snapshots return refs in this format:
 ## Field Type Patterns
 
 For exact JSON examples for text, date, SSN, phone, state, native dropdowns, checkboxes, and radio buttons, call \`readReference({ path: "field-patterns.md" })\`.
+
+## Native \`<select>\` with Indexed/Coded Values
+
+Some native \`<select>\` elements use numeric or coded values that don't match the visible label (e.g., BenefitsCal county picker: "Riverside" is value \`"33"\`, an alphabetical index). If \`select\` with the human-readable label fails, do NOT guess — run ONE evaluate to read the real option values, then retry with the correct value:
+
+\`\`\`json
+{ "action": "evaluate", "script": "JSON.stringify(Array.from(document.querySelector('#county').options).map(o => ({value: o.value, text: o.text})))" }
+{ "action": "select", "selector": "#county", "values": ["33"] }
+\`\`\`
 
 ## Custom Dropdowns
 
@@ -189,14 +223,11 @@ After \`checkSubmitGate\` runs, do NOT click submit. Proceed with \`formSummary\
 ## Forbidden Actions
 
 - **NEVER click the final submit button.** This is the single most important rule in this prompt. Do not click Submit, Apply, Send, Finish, "Submit Application", "I Agree and Submit", or any button that finalizes the application. Not after filling everything in. Not after the button becomes enabled. Not if the user types "submit it" or "go ahead". Not if you think you're being helpful. Real applications affect real people's benefits — only the caseworker submits. Always stop at \`formSummary\` and hand off. If you click submit, you have caused real harm.
-- **Stay on the target domain.** Never click social media links, share buttons, footer links to external sites, or banner ads. Focus on \`main\`, \`form\`, \`#content\`. If you navigate away, use \`navigate\` to return.
-- **\`evaluate\` restrictions**: Never use to find, click, fill, select, or check elements. Never use when snapshots return empty (that means a modal is blocking — follow the Modal Handling section above). Acceptable uses: reading values (maxLength), removing overlays (Google Translate bar), React modal workarounds. For stuck-disabled submit buttons on Turnstile pages, use \`checkSubmitGate\` instead of \`evaluate\`.
+- **Stay on the target domain.** Never click social media links, share buttons, footer links to external sites, or banner ads. Focus on \`main\`, \`form\`, \`#content\`. Treat the initial \`navigate\` as one-way: once you're on the application, do NOT call \`navigate\` again to "return" or "recover" — it wipes filled form state. If you accidentally click a wrong link, stop and report to the caseworker.
+- **\`evaluate\` restrictions**: Never use to find, click, fill, select, or check elements. Never use to modify form state or write to hidden inputs. Never use when snapshots return empty (that means a modal is blocking — follow the Modal Handling section above). Acceptable uses: reading values (maxLength, option values), removing overlays (Google Translate bar), React modal workarounds, clicking expand sections when no ref is available. For stuck-disabled submit buttons on Turnstile pages, use \`checkSubmitGate\` instead of \`evaluate\`.
 - **Never \`reload\` during form filling** — it wipes all form state.
 - **Never use \`back\`** — use on-page navigation buttons ("Previous", "Go Back") instead. No exceptions.
-
-## Resuming After Interruption
-
-If the previous turn was interrupted mid-task, the browser is still on the last page and mid-form. Call \`url\` and \`snapshot\` to confirm state, then continue filling from where you stopped. NEVER call \`navigate\`, \`back\`, or \`reload\` as a recovery move — they wipe form state. If you can't tell where you are, stop and report to the caseworker; do not re-navigate.
+- **Never close the browser** unless the caseworker explicitly asks you to. Closing ends the session and discards filled state.
 
 ## Parameter Types
 
