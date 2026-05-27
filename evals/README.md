@@ -7,7 +7,7 @@ The goal: catch regressions when prompts, tools, or models change — before the
 ## Quick start
 
 ```bash
-# Run all 8 suites against the default model (gpt-5-mini)
+# Run all 10 suites against the default model (gpt-5-mini)
 pnpm eval
 
 # Run a single suite
@@ -22,7 +22,7 @@ pnpm eval:ci
 
 `pnpm eval` uses `dotenv-cli` to load `.env.local`. `pnpm eval:ci` expects env vars to already be in the shell — used by the GitHub Actions matrix.
 
-## The 8 suites
+## The 10 suites
 
 | Suite | What it measures | Heuristic scorers | LLM-as-judge |
 |-------|------------------|-------------------|--------------|
@@ -35,6 +35,8 @@ pnpm eval:ci
 | **deduction** | Agent infers age from DOB, mailing from physical, ethnicity mapping, language carry-over, household composition | inferred-age-from-dob, inferred-mailing-address, mapped-ethnicity, carried-language, correct-household-size, included-household-members, inferred-nearest-office, no-false-gaps | — |
 | **hallucination** | Agent doesn't invent household members, fabricate SSNs/emails, or attribute invented data to "database" | did-not-invent-spouse, correct-household-size, correct-household-member, no-fabricated-names, accurate-data-values, did-not-fabricate-marital-status, form-summary-sources-accurate, did-not-fabricate-email | **hallucination-judge**, **summary-attribution-judge** |
 | **verbosity** | Agent communicates concisely, no play-by-play, no technical jargon, no wall-of-text | responses-are-concise, does-not-narrate-every-action, no-technical-jargon, provides-updates, text-is-infrequent, no-play-by-play | **verbosity-judge** |
+| **regression-scenarios** | Cross-walked from [cwilkes-npbc/AI-Evaluations](https://github.com/cwilkes-npbc/AI-Evaluations) (Rosa 339688 × WIC/IHSS, Carolina 339702 × WIC/IHSS). Form-specific gap behaviors not exercised by the per-category suites. Scorers return `null` for non-applicable scenarios. | checked-wic-auth, selected-applying-for-self, mapped-gender-to-sex, asked-mother-eligibility, selected-blind-from-flag | — |
+| **session-carryover** | Multi-turn sessions — agent must persist the participant identity across sequential user messages (WIC → IHSS → BenefitsCal) and answer cross-context Q&A from existing context. | same-user-across-turns, did-not-reask-for-user, answered-age, answered-last-name | — |
 
 ## Scoring
 
@@ -88,13 +90,27 @@ The `Eval()` calls invoke registered scorers via `initFunction({ projectName: "l
 
 | File | Contents |
 |------|----------|
-| `datasets/participants.json` | Synthetic participant database records — names, addresses, household composition, income, ethnicity, language. Each suite picks a participant whose data shape matches the scenario (sparse for ask-questions, household for hallucination/deduction, etc). |
+| `datasets/participants.json` | Synthetic participant database records — names, addresses, household composition, income, ethnicity, language. Each suite picks a participant whose data shape matches the scenario (sparse for ask-questions, household for hallucination/deduction, etc). Includes `rosaFlores` (339688) and `carolinaDelgado` (339702), which mirror the real A360 PREVIEW_JSON payloads from the AI-Evaluations manual harness — used by `regression-scenarios` and `session-carryover`. |
 | `datasets/snapshots.json` | Browser DOM snapshots for each page of each mock form. The stub `browser` tool returns these when the agent calls `action: "snapshot"`. Snapshots are keyed by suite → page name. |
 | `datasets/form-fields.json` | Form-field definitions returned by the stubbed `getApricotFormFields` tool. |
 | `datasets/test-cases.json` | Per-suite test case lists — input prompts, expected outputs (for tool-selection), max step counts. |
 | `datasets/golden.json` | Forbidden-term lists and ideal-behavior references for the hallucination suite. |
 
 When you change a participant's data, also update any heuristic scorer that hardcodes that participant's expected values. The `hallucination-judge` registered scorer also has Tanya Brooks's record baked into its system prompt — that's a known limitation (see the audit notes in commit `453311e`).
+
+## AI-Evaluations cross-walk
+
+The `regression-scenarios` and `session-carryover` suites cover the 57-step regression rubric from the manual harness at [cwilkes-npbc/AI-Evaluations](https://github.com/cwilkes-npbc/AI-Evaluations) (TC1 Rosa + TC2 Carolina). Coverage status:
+
+| Status | Steps | Where |
+|--------|-------|-------|
+| Fully covered | 40 | Existing per-category suites (autonomous-progression, deduction, ask-questions, navigation, clicking-ui-interaction, verbosity, hallucination) |
+| Generic scorer applies, scenario-specific fixture missing | 8 | Existing suites — could be tightened by adding Rosa/Carolina rows |
+| Form-specific gaps | 5 | `regression-scenarios.eval.ts` — WIC auth (#4), applying-for-self (#13), gender→sex (#15), mother eligibility (#43), blind-from-special-needs-flag (#49) |
+| Multi-turn carryover gaps | 6 | `session-carryover.eval.ts` — Q&A age (#9), same-user transitions (#10, #25, #46, #52), cross-context last name (#38) |
+| Manual-only (UI-bound) | 1 | Step #23 — agent force-enabling a disabled submit DOM button. No offline equivalent; remains a manual check in the AI-Evaluations SOP. |
+
+The original manual harness drives a live browser at the Preview / Dev / Production deployment and a human scores each step. The offline suites here run the agent against mocked tool surfaces, so they cost nothing per run, are deterministic, and can be wired into CI on every PR — at the cost of not exercising the real DOM (which is why step #23 stays manual).
 
 ## Production tracing
 

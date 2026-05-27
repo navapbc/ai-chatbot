@@ -162,5 +162,113 @@
         "maxSteps": 25
       }
     ]
+  },
+
+  "sessionCarryover": {
+    "description": "AI-Evaluations multi-turn rubric — agent must persist the same participant across sequential user messages (no re-asking who) and answer cross-context Q&A correctly. Covers steps 9, 10, 25, 38, 46, 52.",
+    "cases": [
+      {
+        "name": "rosa_qa_age",
+        "scenario": "qa_age",
+        "participantId": 339688,
+        "expectedAnswer": "37",
+        "turns": [
+          "Retrieve 339688 and fill out the WIC form at https://wic.example.gov/apply",
+          "How old is Rosa?"
+        ],
+        "maxStepsPerTurn": 15
+      },
+      {
+        "name": "rosa_same_user_ihss",
+        "scenario": "same_user_carryover",
+        "participantId": 339688,
+        "turns": [
+          "Retrieve 339688 and fill out the WIC form at https://wic.example.gov/apply",
+          "now fill out IHSS at https://ihss.example.gov/apply"
+        ],
+        "maxStepsPerTurn": 15
+      },
+      {
+        "name": "rosa_same_user_benefitscal",
+        "scenario": "same_user_carryover",
+        "participantId": 339688,
+        "turns": [
+          "Retrieve 339688 and fill out the WIC form at https://wic.example.gov/apply",
+          "now fill out IHSS at https://ihss.example.gov/apply",
+          "ok now fill out BenefitsCal at https://benefitscal.example.gov/apply"
+        ],
+        "maxStepsPerTurn": 15
+      },
+      {
+        "name": "rosa_qa_last_name_cross_context",
+        "scenario": "qa_last_name",
+        "participantId": 339688,
+        "expectedAnswer": "Flores",
+        "turns": [
+          "Retrieve 339688 and fill out the WIC form at https://wic.example.gov/apply",
+          "now fill out IHSS at https://ihss.example.gov/apply",
+          "What's Rosa's last name?"
+        ],
+        "maxStepsPerTurn": 15
+      },
+      {
+        "name": "carolina_same_user_ihss",
+        "scenario": "same_user_carryover",
+        "participantId": 339702,
+        "turns": [
+          "Retrieve 339702 and fill out the WIC form at https://wic.example.gov/apply",
+          "now fill out IHSS at https://ihss.example.gov/apply"
+        ],
+        "maxStepsPerTurn": 15
+      },
+      {
+        "name": "carolina_same_user_benefitscal",
+        "scenario": "same_user_carryover",
+        "participantId": 339702,
+        "turns": [
+          "Retrieve 339702 and fill out the WIC form at https://wic.example.gov/apply",
+          "ok now fill out BenefitsCal at https://benefitscal.example.gov/apply"
+        ],
+        "maxStepsPerTurn": 15
+      }
+    ]
+  },
+
+  "regressionScenarios": {
+    "description": "AI-Evaluations cross-walk — Rosa Flores (339688) and Carolina Delgado (339702) against WIC + IHSS forms. Each case targets a specific gap-coverage scorer (auth checkbox, applying-for-self, gender→sex, mother eligibility ask, blind from special-needs flag).",
+    "cases": [
+      {
+        "name": "rosa_wic",
+        "input": "Retrieve 339688 and fill out the WIC form at https://www.ruhealth.org/appointments/apply-4-wic-form",
+        "maxSteps": 25,
+        "scenario": "wic_auth",
+        "participantId": 339688,
+        "form": "wic"
+      },
+      {
+        "name": "rosa_ihss",
+        "input": "Look up participant 339688 and fill out the IHSS application at https://riversideihss.org/Home/IHSSApply",
+        "maxSteps": 25,
+        "scenario": "applying_for_self_and_gender_to_sex",
+        "participantId": 339688,
+        "form": "ihss"
+      },
+      {
+        "name": "carolina_wic",
+        "input": "Retrieve 339702 and fill out the WIC form at https://www.ruhealth.org/appointments/apply-4-wic-form",
+        "maxSteps": 25,
+        "scenario": "mother_eligibility",
+        "participantId": 339702,
+        "form": "wic"
+      },
+      {
+        "name": "carolina_ihss",
+        "input": "Look up participant 339702 and fill out the IHSS application at https://riversideihss.org/Home/IHSSApply",
+        "maxSteps": 25,
+        "scenario": "blind_from_flag",
+        "participantId": 339702,
+        "form": "ihss"
+      }
+    ]
   }
 }

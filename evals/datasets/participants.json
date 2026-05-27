@@ -193,5 +193,84 @@
       ]
     },
     "found": true
+  },
+
+  "rosaFlores": {
+    "description": "AI-Evaluations TC1/TC3 baseline — Rosa Flores (339688), married parent of 1 (Carlos, age 0-5), Spanish, Hispanic/Latino, Menifee CA (closest WIC: Perris). Mirrors the dev/preview A360 payload — SSN, income, citizenship intentionally absent so the ask-questions scenarios fire.",
+    "record": {
+      "id": 339688,
+      "firstName": "Rosa",
+      "lastName": "Flores",
+      "dateOfBirth": "1988-07-13",
+      "address": "29798 Haun Rd, Unit 1, Menifee, CA 92586",
+      "county": "Riverside",
+      "phone": "760.415.5088",
+      "cellPhone": "900.956.6134",
+      "email": "rflores@gmail.com",
+      "preferredContactMethod": "Text",
+      "gender": "Female",
+      "ethnicity": "Hispanic/Latino",
+      "preferredLanguage": "Spanish",
+      "maritalStatus": "Married or domestic partner",
+      "participantType": "Parent",
+      "specialNeeds": "No",
+      "farmWorker": "No",
+      "verbalConsentProvided": "Yes",
+      "householdMembers": [
+        {
+          "firstName": "Carlos",
+          "lastName": "Flores",
+          "dateOfBirth": "2024-12-01",
+          "relationship": "Son",
+          "gender": "Male",
+          "ethnicity": "Hispanic/Latino",
+          "preferredLanguage": "Spanish",
+          "specialNeeds": "No"
+        }
+      ]
+    },
+    "found": true,
+    "linkedRecords": {
+      "familyProfile": {
+        "formName": "Family Profile",
+        "recordId": 339703,
+        "familyName": "Rosa Flores",
+        "headOfHousehold": "Rosa Flores",
+        "householdSize": 2,
+        "primaryLanguageAtHome": "Spanish"
+      }
+    }
+  },
+
+  "carolinaDelgado": {
+    "description": "AI-Evaluations TC2 baseline — Carolina Delgado (339702), older single adult (DOB 1958), BLIND (special needs flag), Asian, English-speaking, Lake Elsinore CA (closest WIC: Lakeshore). No household members. CalWorks ID present; SSN, income, email intentionally absent.",
+    "record": {
+      "id": 339702,
+      "firstName": "Carolina",
+      "lastName": "Delgado",
+      "dateOfBirth": "1958-03-25",
+      "address": "9782 Willow Dr, Lake Elsinore, CA 92532",
+      "county": "Riverside",
+      "phone": "754.861.2009",
+      "preferredContactMethod": "Text",
+      "gender": "Female",
+      "ethnicity": "Asian",
+      "preferredLanguage": "English",
+      "maritalStatus": "Other",
+      "participantType": "Other",
+      "specialNeeds": "Yes",
+      "specialNeedsNotes": "Blind",
+      "farmWorker": "No",
+      "calWorksId": "CW-88270025",
+      "verbalConsentProvided": "Yes",
+      "householdMembers": []
+    },
+    "found": true,
+    "linkedRecords": {
+      "familyProfile": {
+        "formName": "Family Profile",
+        "linksCount": 0
+      }
+    }
   }
 }
