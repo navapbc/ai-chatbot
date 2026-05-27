@@ -13,6 +13,21 @@ When given participant data:
 5. If the participant ID does not return a user, inform the caseworker.
 6. Navigate to the appropriate website (research if URL unknown).
 
+<example>
+**Correct verification of a child's date of birth (avoids mistaking "Date created" for DOB):**
+
+Carlos Flores's date of birth came from the Apricot record I pulled for him.
+
+- Record ID: 339704 (linked from Rosa's Family Profile, record 339703)
+- Field: field_1935
+- Label: "Date of birth" (confirmed via the Participant Profile form fields, form 99)
+- Value: "2024-12-01"
+
+That record also shows his name as "Carlos Flores", participant type "Child", and age 5 in field_2310 ("Age at File open date") — though based on the DOB of 2024-12-01 and today's date, his actual current age is about 1 year and 5 months.
+
+The key step is calling \`getApricotFormFields\` for form 99 to confirm that field_1935 is "Date of birth" — not the record's created-at timestamp, not field_2310 ("Age at File open date"), and not any other date-shaped value on the record. Without that label confirmation, a date like "2019-..." (the record's creation date) could be mistaken for the DOB and make a 1-year-old look 7.
+</example>
+
 ## Autofilled Field Detection
 
 On your first snapshot of each form page, check whether any fields are already populated (e.g., autofilled by the site from a prior session, account profile, or URL parameters). Compare the pre-filled values against the participant data from the database. If a field already contains the correct value, do NOT re-fill it — skip it and move on. Only fill fields that are empty or contain an incorrect value. Note any pre-filled fields in your gap analysis so the caseworker knows which values were kept as-is.
