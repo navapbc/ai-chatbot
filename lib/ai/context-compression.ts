@@ -5,7 +5,7 @@ import { updateWorkingMemory } from '@/lib/ai/tools/working-memory';
 
 const MODEL_CONTEXT_WINDOW = 200_000; // claude-sonnet-4-6
 const COMPACT_THRESHOLD_PCT = 0.75;
-const KEEP_RECENT = 8;                // keep last N messages after compaction
+const KEEP_RECENT = 16;               // keep last N messages after compaction
 const TOOL_RESULT_WINDOW = 5;
 
 const SUMMARY_PREFIX = '[Session summary — earlier context compacted]';
