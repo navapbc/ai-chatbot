@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import type { ModelMessage } from 'ai';
-import { __test__ } from '@/lib/ai/context-compression';
+import { __test__, createMessageCompressor } from '@/lib/ai/context-compression';
 
 const { maxRecentToolResultTokens, estimateMessageTokens } = __test__;
 
@@ -20,6 +20,10 @@ function toolMsg(payload: unknown): ModelMessage {
 
 function userMsg(text: string): ModelMessage {
   return { role: 'user', content: text } as ModelMessage;
+}
+
+function assistantMsg(text: string): ModelMessage {
+  return { role: 'assistant', content: text } as ModelMessage;
 }
 
 describe('estimateMessageTokens', () => {
@@ -79,4 +83,89 @@ describe('maxRecentToolResultTokens', () => {
     const result = maxRecentToolResultTokens(messages);
     expect(result).toBeGreaterThan(50_000);
   });
+});
+
+// 200K window; 75% threshold = 150K
+const UNDER_THRESHOLD_TOKENS = 130_000;
+const ABOVE_THRESHOLD_TOKENS = 160_000;
+
+const hasApi =
+  !!process.env.ANTHROPIC_API_KEY ||
+  !!process.env.GOOGLE_VERTEX_PROJECT ||
+  !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+describe('createMessageCompressor — proactive projection', () => {
+  test('does NOT compact when projection stays under threshold', async () => {
+    const compressor = createMessageCompressor();
+    const small = toolMsg({ ok: true });
+    const filler: ModelMessage[] = Array.from({ length: 20 }, (_, i) =>
+      i % 2 === 0 ? userMsg(`u${i}`) : assistantMsg(`a${i}`),
+    );
+    const messages = [...filler, small, small, small, small, small];
+
+    // 130K + ~1K headroom = ~131K → below 150K threshold, no compaction.
+    const result = await compressor(messages, UNDER_THRESHOLD_TOKENS);
+
+    expect(result.compacted).toBe(false);
+  });
+
+  test('projection triggers compaction without a Haiku call', async () => {
+    const stubSummary = {
+      summary: 'test summary',
+      workingMemory: null,
+      recentMessages: [] as ModelMessage[],
+      splitAt: 5,
+    };
+    const summarizeSpy = vi.fn().mockResolvedValue(stubSummary);
+    const compressor = createMessageCompressor(summarizeSpy);
+    const big = toolMsg({ snapshot: 'x'.repeat(60_000 * 4) }); // ~60K headroom
+    const filler: ModelMessage[] = Array.from({ length: 20 }, (_, i) =>
+      i % 2 === 0 ? userMsg(`u${i}`) : assistantMsg(`a${i}`),
+    );
+    const messages = [...filler, big];
+
+    // 130K (65% — under reactive threshold) + 60K headroom = 190K projected (95%)
+    // → projection trigger fires. With the old reactive logic this would NOT have
+    // compacted.
+    const result = await compressor(messages, UNDER_THRESHOLD_TOKENS);
+
+    expect(summarizeSpy).toHaveBeenCalledTimes(1);
+    expect(result.compacted).toBe(true);
+    expect(result.summary).toBe('test summary');
+  });
+
+  test.skipIf(!hasApi)(
+    'compacts when lastInputTokens + headroom crosses threshold',
+    async () => {
+      const compressor = createMessageCompressor();
+      const big = toolMsg({ snapshot: 'x'.repeat(60_000 * 4) }); // ~60K tokens
+      const filler: ModelMessage[] = Array.from({ length: 20 }, (_, i) =>
+        i % 2 === 0 ? userMsg(`u${i}`) : assistantMsg(`a${i}`),
+      );
+      const messages = [...filler, big];
+
+      // 130K + 60K headroom = 190K (95%) → compaction triggers even though
+      // lastInputTokens alone (130K = 65%) was below the 75% threshold.
+      const result = await compressor(messages, UNDER_THRESHOLD_TOKENS);
+
+      expect(result.compacted).toBe(true);
+      expect(result.messages.length).toBeLessThan(messages.length);
+    },
+    60_000,
+  );
+
+  test.skipIf(!hasApi)(
+    'still compacts when lastInputTokens alone crosses threshold',
+    async () => {
+      const compressor = createMessageCompressor();
+      const filler: ModelMessage[] = Array.from({ length: 20 }, (_, i) =>
+        i % 2 === 0 ? userMsg(`u${i}`) : assistantMsg(`a${i}`),
+      );
+
+      const result = await compressor(filler, ABOVE_THRESHOLD_TOKENS);
+
+      expect(result.compacted).toBe(true);
+    },
+    60_000,
+  );
 });

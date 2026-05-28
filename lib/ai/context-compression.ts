@@ -208,7 +208,9 @@ function buildSummaryMessage(summary: string): ModelMessage {
  * original messages that were summarized) and re-apply it on every
  * subsequent prepareStep call.
  */
-export function createMessageCompressor() {
+export function createMessageCompressor(
+  summarize: typeof summarizeMessages = summarizeMessages,
+) {
   let justCompacted = false;
 
   // Persisted compaction state — survives across prepareStep calls
@@ -253,28 +255,31 @@ export function createMessageCompressor() {
       return { messages: prepend(pruned), compacted: false };
     }
 
-    const usedPct = lastInputTokens / MODEL_CONTEXT_WINDOW;
+    const headroomTokens = maxRecentToolResultTokens(effectiveMessages);
+    const projectedTokens = lastInputTokens + headroomTokens;
+    const projectedPct = projectedTokens / MODEL_CONTEXT_WINDOW;
 
     if (justCompacted) {
       justCompacted = false;
       log(
-        `skip — stale inputTokens after compaction, ${effectiveMessages.length} msgs, ${(usedPct * 100).toFixed(1)}% (stale)`
+        `skip — stale inputTokens after compaction, ${effectiveMessages.length} msgs, ` +
+        `${((lastInputTokens / MODEL_CONTEXT_WINDOW) * 100).toFixed(1)}% (stale)`
       );
       return { messages: prepend(effectiveMessages), compacted: false };
     }
 
     log(
       `step check — ${effectiveMessages.length} msgs (raw ${stepMessages.length}${wm ? ', +WM' : ''}), ` +
-      `inputTokens=${lastInputTokens ?? 'n/a'}, ` +
-      `${(usedPct * 100).toFixed(1)}% of ${MODEL_CONTEXT_WINDOW} context window, ` +
+      `inputTokens=${lastInputTokens}, headroom=${headroomTokens}, ` +
+      `projected=${projectedTokens} (${(projectedPct * 100).toFixed(1)}%), ` +
       `threshold=${(COMPACT_THRESHOLD_PCT * 100).toFixed(0)}%`
     );
 
-    if (usedPct < COMPACT_THRESHOLD_PCT) {
+    if (projectedPct < COMPACT_THRESHOLD_PCT) {
       return { messages: prepend(effectiveMessages), compacted: false };
     }
 
-    const result = await summarizeMessages(effectiveMessages, '', onCompacting);
+    const result = await summarize(effectiveMessages, '', onCompacting);
     if (!result) {
       justCompacted = true;
       return { messages: prepend(effectiveMessages), compacted: false };
