@@ -6,8 +6,21 @@ import { updateWorkingMemory } from '@/lib/ai/tools/working-memory';
 const MODEL_CONTEXT_WINDOW = 200_000; // claude-sonnet-4-6
 const COMPACT_THRESHOLD_PCT = 0.75;
 const KEEP_RECENT = 8;                // keep last N messages after compaction
+const TOOL_RESULT_WINDOW = 5;
 
 const SUMMARY_PREFIX = '[Session summary — earlier context compacted]';
+
+function estimateMessageTokens(m: ModelMessage): number {
+  return Math.ceil(JSON.stringify(m.content).length / 4);
+}
+
+function maxRecentToolResultTokens(messages: ModelMessage[]): number {
+  const toolMessages = messages
+    .filter((m) => m.role === 'tool')
+    .slice(-TOOL_RESULT_WINDOW);
+  if (toolMessages.length === 0) return 0;
+  return Math.max(...toolMessages.map(estimateMessageTokens));
+}
 
 const COMPACTION_SYSTEM_PROMPT =
   'You are creating a session handoff document for a benefits form-filling agent. ' +
@@ -289,3 +302,5 @@ export function createMessageCompressor() {
     return { messages: prepend([newSummaryMessage, ...result.recentMessages]), compacted: true, summary: result.summary };
   };
 }
+
+export const __test__ = { estimateMessageTokens, maxRecentToolResultTokens };
