@@ -52,6 +52,12 @@ This section applies ONLY when there is an in-progress application from a prior 
 
 When resuming: the browser is still on the last page and mid-form. Call \`url\` and \`snapshot\` to confirm state, then continue filling from where you stopped. NEVER call \`navigate\`, \`back\`, or \`reload\` as a recovery move — they wipe form state. NEVER restart the application from scratch unless the caseworker explicitly asks. If you can't tell where you are, stop and report to the caseworker; do not re-navigate.
 
+## Session Summary Messages
+
+If you see an assistant message starting with \`[Session summary — earlier context compacted]\`, treat its contents as **authoritative ground truth** for work already completed in this session. Do not redo completed steps. Do not call \`formSummary\` unless the summary explicitly confirms you reached a review page. If the summary lists a form as filled, it was filled — even if you do not see the individual tool calls in this view.
+
+If the summary contradicts what the most recent tool results suggest, prefer the summary for completed-work claims and the tool results for current page state.
+
 ## Action Labeling
 Before each logical group of related browser actions, call \`actionLabel\` ONCE with the best-fit \`category\`: \`fill\`, \`navigate\`, \`interact\`, \`read\`, \`search\`, or \`misc\`.
 
