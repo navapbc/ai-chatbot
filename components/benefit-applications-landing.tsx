@@ -132,7 +132,7 @@ export function BenefitApplicationsLanding({
 
         {!isLoggedIn && loginAlert}
 
-        <div className="flex w-full flex-col rounded-xl bg-card text-card-foreground shadow-sm md:h-[538px] md:w-[648px]">
+        <div className="flex w-full flex-col rounded-xl bg-card text-card-foreground shadow-sm md:min-h-[538px] md:w-[648px]">
           {/* Tabs */}
           <div className="px-6 pt-6 sm:px-8">
             <div
@@ -166,8 +166,8 @@ export function BenefitApplicationsLanding({
             <div className="flex-1 px-6 py-6 sm:px-8">
               {/* Client ID */}
               <div className="mb-12">
-                <p className="font-source-serif text-lg font-bold text-foreground sm:text-xl">Client ID</p>
-                <p className="mt-1 font-inter text-sm text-muted-foreground sm:text-base">
+                <p className="font-source-serif text-lg font-semibold text-foreground sm:text-xl">Client ID</p>
+                <p className="mt-1 font-source-serif text-sm text-muted-foreground sm:text-base">
                   Enter the client&apos;s Apricot 360 ID.
                 </p>
                 <input
@@ -176,17 +176,17 @@ export function BenefitApplicationsLanding({
                   value={clientId}
                   onChange={(e) => setClientId(e.target.value)}
                   disabled={!isLoggedIn}
-                  className="mt-6 h-[52px] w-[129px] rounded-[10px] border border-[#b5b5b5] px-4 font-inter text-base placeholder:text-[#b5b5b5] focus:border-primary focus:shadow-[0px_0px_8px_0px_rgba(177,64,146,0.25)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+                  className="mt-3 h-[52px] w-[129px] rounded-[10px] border border-[#b5b5b5] px-4 font-inter text-base placeholder:text-[#b5b5b5] focus:border-primary focus:shadow-[0px_0px_8px_0px_rgba(177,64,146,0.25)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
                 />
               </div>
 
               {/* Application */}
               <div>
-                <p className="font-source-serif text-lg font-bold text-foreground sm:text-xl">Application</p>
-                <p className="mt-1 font-inter text-sm text-muted-foreground sm:text-base">
+                <p className="font-source-serif text-lg font-semibold text-foreground sm:text-xl">Application</p>
+                <p className="mt-1 font-source-serif text-sm text-muted-foreground sm:text-base">
                   Select a program or paste an application URL.
                 </p>
-                <div ref={comboRef} className="relative mt-6">
+                <div ref={comboRef} className="relative mt-3">
                   <div
                     className={`flex h-[52px] w-full items-center rounded-[10px] border bg-card px-4 transition-colors ${
                       isComboOpen ? 'border-primary ring-2 ring-primary/20' : 'border-[#b5b5b5]'
@@ -272,13 +272,13 @@ export function BenefitApplicationsLanding({
             </div>
           ) : (
             <div className="flex flex-1 flex-col px-6 py-6 sm:px-8">
-              <p className="font-source-serif text-lg font-bold text-foreground sm:text-xl">
+              <p className="font-source-serif text-lg font-semibold text-foreground sm:text-xl">
                 Describe what you need
               </p>
-              <p className="mt-1 font-inter text-sm text-muted-foreground sm:text-base">
+              <p className="mt-1 font-source-serif text-sm text-muted-foreground sm:text-base">
                 Use this for clients without an Apricot 360 ID, multiple programs, or programs not in the list.
               </p>
-              <div className="mt-4 flex flex-1 flex-col">
+              <div className="mt-3 flex flex-1 flex-col">
                 <MultimodalInput
                   chatId={chatId}
                   input={input}
@@ -292,6 +292,7 @@ export function BenefitApplicationsLanding({
                   sendMessage={sendMessage}
                   selectedVisibilityType={selectedVisibilityType}
                   showStopButton={false}
+                  fullWidthSubmit
                   placeholder="Apply [ID ####] for [Program URL]"
                   session={session}
                 />
