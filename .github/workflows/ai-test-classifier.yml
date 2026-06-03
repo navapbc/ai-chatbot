@@ -4,14 +4,14 @@ on:
     types: [opened, synchronize, reopened]
 jobs:
   classify:
-    # Pinned to PR #22 (navapbc/ai-transformation-delivery-systems@c159a2a,
+    # Pinned to PR #22 (navapbc/ai-transformation-delivery-systems@76f91c8,
     # branch classifier-agent-runs-suite) — the design where the agent runs the
     # repo's suite itself for OBSERVED verdicts. NOT @pilot (older design).
     # Both refs are pinned: the `uses:` ref selects the reusable workflow YAML,
     # and `ref:` selects the bundle scripts/SKILL.md it checks out.
-    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@c159a2ac5c7ea469a1ffe19ed992cc1d05a78969
+    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@76f91c87c100b0b605780c7ed84fbfdbfdba6b36
     with:
       tool: claude
-      ref: c159a2ac5c7ea469a1ffe19ed992cc1d05a78969
+      ref: 76f91c87c100b0b605780c7ed84fbfdbfdba6b36
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
