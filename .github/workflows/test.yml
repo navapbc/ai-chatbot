@@ -28,7 +28,7 @@ jobs:
         run: |
           mkdir -p test-results
           set -o pipefail
-          pnpm test --run \
+          pnpm exec vitest run \
             --reporter=default --reporter=junit \
             --outputFile.junit=test-results/junit.xml \
             2>&1 | tee test-results/test-log.txt
