@@ -132,7 +132,7 @@ export function BenefitApplicationsLanding({
 
         {!isLoggedIn && loginAlert}
 
-        <div className="flex w-full flex-col rounded-xl bg-card text-card-foreground shadow-sm md:min-h-[538px] md:w-[648px]">
+        <div className="flex w-full flex-col rounded-xl bg-card text-card-foreground shadow-sm md:min-h-[500px] md:w-[648px]">
           {/* Tabs */}
           <div className="px-6 pt-6 sm:px-8">
             <div
