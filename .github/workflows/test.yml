@@ -25,4 +25,17 @@ jobs:
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
       - name: Run tests
-        run: pnpm test --run
+        run: |
+          mkdir -p test-results
+          set -o pipefail
+          pnpm test --run \
+            --reporter=default --reporter=junit \
+            --outputFile.junit=test-results/junit.xml \
+            2>&1 | tee test-results/test-log.txt
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-test-results
+          path: test-results/
+          if-no-files-found: warn
