@@ -1,0 +1,11 @@
+name: AI test classifier
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  classify:
+    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@pilot
+    with:
+      tool: claude
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
