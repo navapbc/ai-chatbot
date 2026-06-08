@@ -34,6 +34,7 @@ import { useRouter } from 'next/navigation';
 import { isProductionEnvironment } from '@/lib/constants';
 import { ModelSelectorButton } from './model-selector-button';
 import { ContextUsage } from './context-usage';
+import { FeatureFlagsMenu } from './feature-flags-menu';
 
 function PureMultimodalInput({
   chatId,
@@ -51,6 +52,7 @@ function PureMultimodalInput({
   showStopButton = true,
   placeholder = 'Write something...',
   fullWidthSubmit = false,
+  stackToolbar = false,
   session,
 }: {
   chatId: string;
@@ -68,6 +70,7 @@ function PureMultimodalInput({
   showStopButton?: boolean;
   placeholder?: string;
   fullWidthSubmit?: boolean;
+  stackToolbar?: boolean;
   session: Session | null;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -350,14 +353,36 @@ function PureMultimodalInput({
             <div className="flex flex-row items-center gap-2">
               <ModelSelectorButton onModelChange={(model) => setSelectedModelId(model.id)} />
               <ContextUsage />
+              <FeatureFlagsMenu />
             </div>
           )}
+        </div>
+      ) : stackToolbar ? (
+        <div className="flex flex-col gap-2 mt-1">
+          <div className="flex flex-row justify-end gap-2">
+            {showStopButton && (
+              <StopButton status={status} stop={stop} setMessages={setMessages} />
+            )}
+            <SendButton
+              input={input}
+              submitForm={submitForm}
+              uploadQueue={uploadQueue}
+              status={status}
+              isLoggedIn={isLoggedIn}
+            />
+          </div>
+          <div className="flex flex-row flex-wrap items-center gap-2">
+            <ModelSelectorButton onModelChange={(model) => setSelectedModelId(model.id)} />
+            <ContextUsage />
+            <FeatureFlagsMenu />
+          </div>
         </div>
       ) : (
         <div className="flex flex-row justify-between gap-2 mt-1">
           <div className="flex flex-row items-center gap-2">
             <ModelSelectorButton onModelChange={(model) => setSelectedModelId(model.id)} />
             <ContextUsage />
+            <FeatureFlagsMenu />
           </div>
           <div className="flex flex-row gap-2">
             {showStopButton && (

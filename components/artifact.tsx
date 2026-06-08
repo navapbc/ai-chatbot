@@ -397,6 +397,7 @@ function PureArtifact({
                       setMessages={setMessages}
                       selectedVisibilityType={selectedVisibilityType}
                       session={session ?? null}
+                      stackToolbar
                     />
 
                   </form>
