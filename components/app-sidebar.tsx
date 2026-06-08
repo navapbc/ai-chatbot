@@ -82,7 +82,7 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                 >
                   <PlusIcon size={16} />
                   <span className="text-[14px] font-medium text-sidebar-foreground leading-[24px] not-italic font-inter">
-                    New chat
+                    New application
                   </span>
                 </Button>
               </div>

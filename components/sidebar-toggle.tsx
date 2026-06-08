@@ -7,7 +7,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 
-import { SidebarLeftIcon } from './icons';
+import { CrossIcon, MenuIcon } from './icons';
 import { Button } from './ui/button';
 import { useArtifact } from '@/hooks/use-artifact';
 import { cn } from '@/lib/utils';
@@ -15,8 +15,10 @@ import { cn } from '@/lib/utils';
 export function SidebarToggle({
   className,
 }: ComponentProps<typeof SidebarTrigger>) {
-  const { toggleSidebar } = useSidebar();
+  const { toggleSidebar, state } = useSidebar();
   const { metadata, artifact } = useArtifact();
+
+  const isExpanded = state === 'expanded';
   
   // Check if browser artifact sheet is open
   const isSheetOpen = artifact.kind === 'browser' && metadata?.isSheetOpen;
@@ -33,11 +35,11 @@ export function SidebarToggle({
             isSheetOpen && "opacity-30 cursor-not-allowed pointer-events-auto bg-gray-100 dark:bg-gray-800"
           )}
         >
-          <SidebarLeftIcon size={16} />
+          {isExpanded ? <CrossIcon size={16} /> : <MenuIcon size={16} />}
         </Button>
       </TooltipTrigger>
       <TooltipContent align="start" side="bottom" sideOffset={8}>
-        Toggle sidebar
+        {isExpanded ? 'Close' : 'Menu'}
       </TooltipContent>
     </Tooltip>
   );

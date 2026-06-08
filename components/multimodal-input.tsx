@@ -50,7 +50,7 @@ function PureMultimodalInput({
   className,
   selectedVisibilityType,
   showStopButton = true,
-  placeholder = 'Write something...',
+  placeholder = 'Add information or give direction...',
   fullWidthSubmit = false,
   stackToolbar = false,
   session,
