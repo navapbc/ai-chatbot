@@ -269,7 +269,7 @@ export function FormSummaryCard({
           <div className="font-source-serif text-[14px]">
             <div className="flex items-center gap-2 mb-2">
               <Info size={14} className="text-primary flex-shrink-0" />
-              <p className="font-bold">{hasIssues ? 'Ready to review' : 'Ready to submit'}</p>
+              <p className="font-bold">Ready for review</p>
             </div>
             <p className="mb-4">
               Confirm each field is accurate. You&rsquo;ll see how each one was filled.
@@ -292,11 +292,11 @@ export function FormSummaryCard({
           <div className="flex items-center gap-2 mb-2">
             <Info size={14} className="text-primary flex-shrink-0" />
             <p className="font-source-serif text-[14px] font-bold">
-              {hasIssues ? 'Ready to review' : 'Ready to submit'}
+              Ready for review
             </p>
           </div>
           <p className="font-source-serif text-[14px] mb-4">
-            Confirm each field is accurate before submitting. You&rsquo;ll see how each one was filled.
+            Confirm each field is accurate. You&rsquo;ll see how each one was filled.
           </p>
           <div className="flex gap-2">
             <button
