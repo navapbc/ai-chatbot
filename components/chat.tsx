@@ -83,6 +83,12 @@ export function Chat({
   const stoppedRef = useRef(false);
 
   const [selectedModelId] = useLocalStorage<string>('selected-chat-model-id', '');
+  // useChat captures the transport (and its prepareSendMessagesRequest closure)
+  // once at first render, so reading selectedModelId directly there would freeze
+  // it at the initial value. Route reads through a ref updated every render so
+  // each send picks up the current model selection.
+  const selectedModelIdRef = useRef(selectedModelId);
+  selectedModelIdRef.current = selectedModelId;
 
   const {
     messages,
@@ -108,8 +114,8 @@ export function Chat({
           message: messages.at(-1),
           selectedChatModel: initialChatModel,
           selectedVisibilityType: visibilityType,
-          ...(!isProductionEnvironment && selectedModelId
-            ? { modelOverride: selectedModelId }
+          ...(!isProductionEnvironment && selectedModelIdRef.current
+            ? { modelOverride: selectedModelIdRef.current }
             : {}),
           ...body,
         },
