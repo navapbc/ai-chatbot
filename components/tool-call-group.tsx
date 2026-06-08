@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/collapsible';
 import { getToolDisplayInfo, isSpecificToolAction } from './tool-icon';
 import { cn } from '@/lib/utils';
-import { isProductionEnvironment } from '@/lib/constants';
+import { useFeatureFlag } from '@/hooks/use-feature-flag';
 import { Shimmer } from '@/components/ai-elements/shimmer';
 
 // --- Types ---
@@ -281,6 +281,8 @@ export function ToolCallGroup({
   isStreaming = false,
 }: ToolCallGroupProps) {
   const [open, setOpen] = useState(false);
+  // When enabled, hide generic actions and show only value-bearing tool calls.
+  const declutter = useFeatureFlag('declutterToolCalls');
 
   // Deduplicate: keep only the latest state per toolCallId
   const deduped = deduplicateParts(parts);
@@ -290,26 +292,24 @@ export function ToolCallGroup({
   const completedParts = deduped.filter((p) => p.state === 'output-available' && !LABEL_TOOL_TYPES.has(p.type));
   const candidateParts = (isInProgress ? completedParts : deduped).filter((p) => !LABEL_TOOL_TYPES.has(p.type));
 
-  // In production, hide generic actions — show only value-bearing tool calls.
-  // Dev/preview keeps everything.
-  const visibleParts = isProductionEnvironment
+  const visibleParts = declutter
     ? candidateParts.filter((p) => isSpecificToolAction(p.type, p.input))
     : candidateParts;
 
   const { label, Icon: TitleIcon } = getGroupTitle(deduped, isInProgress);
 
-  // Single part → render the bare line when it's shown; in production a lone
-  // generic action collapses to the summary line instead.
+  // Single part → render the bare line when it's shown; when decluttering, a
+  // lone generic action collapses to the summary line instead.
   if (deduped.length === 1) {
     const part = deduped[0];
-    if (!isProductionEnvironment || isSpecificToolAction(part.type, part.input)) {
+    if (!declutter || isSpecificToolAction(part.type, part.input)) {
       return <SingleToolLine part={part} />;
     }
     return <GroupSummaryCard label={label} Icon={TitleIcon} isInProgress={isInProgress} />;
   }
 
-  // Nothing specific to show (production) → summary line, no expander.
-  if (isProductionEnvironment && visibleParts.length === 0) {
+  // Nothing specific to show (decluttered) → summary line, no expander.
+  if (declutter && visibleParts.length === 0) {
     return <GroupSummaryCard label={label} Icon={TitleIcon} isInProgress={isInProgress} />;
   }
 

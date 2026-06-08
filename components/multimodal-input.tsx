@@ -34,6 +34,7 @@ import { useRouter } from 'next/navigation';
 import { isProductionEnvironment } from '@/lib/constants';
 import { ModelSelectorButton } from './model-selector-button';
 import { ContextUsage } from './context-usage';
+import { FeatureFlagsMenu } from './feature-flags-menu';
 
 function PureMultimodalInput({
   chatId,
@@ -350,6 +351,7 @@ function PureMultimodalInput({
             <div className="flex flex-row items-center gap-2">
               <ModelSelectorButton onModelChange={(model) => setSelectedModelId(model.id)} />
               <ContextUsage />
+              <FeatureFlagsMenu />
             </div>
           )}
         </div>
@@ -358,6 +360,7 @@ function PureMultimodalInput({
           <div className="flex flex-row items-center gap-2">
             <ModelSelectorButton onModelChange={(model) => setSelectedModelId(model.id)} />
             <ContextUsage />
+            <FeatureFlagsMenu />
           </div>
           <div className="flex flex-row gap-2">
             {showStopButton && (
