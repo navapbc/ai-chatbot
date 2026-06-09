@@ -35,7 +35,8 @@ import { formSummary } from '@/lib/ai/tools/form-summary';
 import { actionLabel } from '@/lib/ai/tools/action-label';
 import { getWebAutomationSystemPrompt, getCurrentDateString } from '@/lib/ai/prompts/web-automation';
 import { readReference } from '@/lib/ai/tools/read-reference';
-import { createMessageCompressor } from '@/lib/ai/context-compression';
+import { prepareMessages } from '@/lib/ai/context-compression';
+import { withSlidingCacheBreakpoint } from '@/lib/ai/cache-breakpoints';
 import { registerChatAbort, clearChatAbort } from '@/lib/chat-abort-registry';
 
 export const maxDuration = 300; // 5 minutes for web automation tasks
@@ -164,17 +165,84 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
-        const initialModelMessages = await convertToModelMessages(uiMessages);
-
-        // One compressor instance per request; its cache persists across all
-        // prepareStep calls so generateText is not re-fired on every step.
-        // Compaction triggers on step 1+ using SDK-reported inputTokens
-        // (step 0 has no prior usage data, so it runs uncompacted).
-        const compressStep = createMessageCompressor();
+        const rawModelMessages = await convertToModelMessages(uiMessages);
 
         const activeModel = resolvedModelOverride
           ? myProvider.languageModel(resolvedModelOverride)
           : webAutomationModel;
+        const isAnthropic = activeModel.provider.includes('anthropic');
+
+        // Cheap char-based token estimate (~4 chars/token) to decide whether
+        // to run the one-shot fallback compactor before the step loop starts.
+        // Overshooting slightly is fine — the server-side clear_tool_uses edit
+        // below also bounds context growth during the run.
+        const estimatedInputTokens = Math.ceil(
+          rawModelMessages.reduce(
+            (n, m) => n + JSON.stringify(m.content ?? '').length,
+            0,
+          ) / 4,
+        );
+
+        // Fallback compaction (Haiku) — runs at most once, only if the request
+        // already starts near the window. Vertex doesn't yet accept the
+        // Anthropic `compact_20260112` beta header, so we summarize in-app.
+        const { messages: preparedMessages, compacted, summary } =
+          await prepareMessages(rawModelMessages, estimatedInputTokens, () => {
+            dataStream.write({
+              type: 'data-compacting',
+              data: { timestamp: Date.now() },
+              transient: true,
+            });
+          });
+        if (compacted) {
+          dataStream.write({
+            type: 'data-checkpoint',
+            data: {
+              stepNumber: 0,
+              inputTokens: estimatedInputTokens,
+              timestamp: Date.now(),
+              summary,
+            },
+            transient: true,
+          });
+        }
+
+        // Sliding cache breakpoint on the last message. Combined with the
+        // system-prompt breakpoint below, every step (and every later turn)
+        // reads system + tools + prior history from cache instead of
+        // reprocessing it at full price. No-op for non-Anthropic providers.
+        const historyMessages = isAnthropic
+          ? withSlidingCacheBreakpoint(preparedMessages)
+          : preparedMessages;
+
+        // Anthropic server-side context editing. `clear_tool_uses_20250919`
+        // replaces old tool_result payloads with a placeholder once input
+        // crosses 80K tokens, keeping the last 4 tool_uses intact — so the
+        // step loop stays bounded without us rewriting (and invalidating) the
+        // cached message prefix in JS. `updateWorkingMemory` is excluded
+        // because its payload is load-bearing participant data.
+        // Verified accepted on Vertex via scripts/probe-context-management.ts;
+        // when Google enables `compact-2026-01-12` we can add a compact edit.
+        const contextManagementOptions = isAnthropic
+          ? {
+              anthropic: {
+                contextManagement: {
+                  edits: [
+                    {
+                      type: 'clear_tool_uses_20250919' as const,
+                      trigger: { type: 'input_tokens' as const, value: 80_000 },
+                      keep: { type: 'tool_uses' as const, value: 4 },
+                      clearAtLeast: {
+                        type: 'input_tokens' as const,
+                        value: 10_000,
+                      },
+                      excludeTools: ['updateWorkingMemory'],
+                    },
+                  ],
+                },
+              },
+            }
+          : undefined;
 
         const result = streamText({
           model: activeModel,
@@ -190,8 +258,9 @@ export async function POST(request: Request) {
               role: 'system',
               content: getCurrentDateString(),
             },
-            ...initialModelMessages,
+            ...historyMessages,
           ],
+          providerOptions: contextManagementOptions,
           tools: {
             ...apricotTools,
             gapAnalysis,
@@ -211,41 +280,27 @@ export async function POST(request: Request) {
           // tool-call with no matching tool-result, triggering
           // AI_MissingToolResultsError on the next turn.
           stopWhen: [stepCountIs(500), () => chatAbort.signal.aborted],
-          // Compress message history when token usage approaches the context
-          // window limit (75% of 200K). First step has no prior usage data so
-          // compression is skipped (correct — first step is always small).
-          prepareStep: async ({ messages: stepMessages, steps }) => {
-            const lastInputTokens = steps.length > 0
-              ? steps[steps.length - 1].usage.inputTokens
-              : undefined;
-            const { messages: compressed, compacted, summary } = await compressStep(
-              stepMessages,
-              lastInputTokens,
-              () => {
-                dataStream.write({
-                  type: 'data-compacting',
-                  data: { timestamp: Date.now() },
-                  transient: true,
-                });
-              },
-            );
-            if (compacted) {
-              dataStream.write({
-                type: 'data-checkpoint',
-                data: {
-                  stepNumber: steps.length,
-                  inputTokens: lastInputTokens,
-                  timestamp: Date.now(),
-                  summary,
-                },
-                transient: true,
-              });
-            }
-            return { messages: compressed };
-          },
+          // Context growth during the loop is bounded server-side by the
+          // clear_tool_uses edit above (no per-step JS compaction, so the
+          // cached message prefix stays byte-stable across steps). The
+          // one-shot prepareMessages call before streamText handles requests
+          // that already start near the window.
+          //
           // Emit cumulative token usage after each step so the client can
-          // display it in real-time via the Context component.
-          onStepFinish: ({ usage }) => {
+          // display it in real-time via the Context component, and log
+          // Anthropic cache hit/write counts for verification.
+          onStepFinish: ({ usage, providerMetadata }) => {
+            const cache = (providerMetadata?.anthropic?.usage ?? {}) as Record<
+              string,
+              number
+            >;
+            if (cache.cache_read_input_tokens || cache.cache_creation_input_tokens) {
+              console.log(
+                `[cache] read=${cache.cache_read_input_tokens ?? 0} ` +
+                  `write=${cache.cache_creation_input_tokens ?? 0} ` +
+                  `uncached=${usage.inputTokens ?? '?'}`,
+              );
+            }
             dataStream.write({
               type: 'data-token-usage',
               data: usage,

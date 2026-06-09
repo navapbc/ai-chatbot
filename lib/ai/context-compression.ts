@@ -1,10 +1,11 @@
-import { generateText, pruneMessages, type ModelMessage } from 'ai';
+import { generateText, type ModelMessage } from 'ai';
 import { prepareStepModel } from '@/lib/ai/providers';
 import { WORKING_MEMORY_PREFIX, buildWorkingMemoryMessage } from '@/lib/ai/working-memory';
 import { updateWorkingMemory } from '@/lib/ai/tools/working-memory';
 
 const MODEL_CONTEXT_WINDOW = 200_000; // claude-sonnet-4-6
 const COMPACT_THRESHOLD_PCT = 0.75;
+const COMPACT_THRESHOLD_TOKENS = MODEL_CONTEXT_WINDOW * COMPACT_THRESHOLD_PCT; // 150K
 const KEEP_RECENT = 8;                // keep last N messages after compaction
 
 const SUMMARY_PREFIX = '[Session summary — earlier context compacted]';
@@ -184,108 +185,55 @@ function buildSummaryMessage(summary: string): ModelMessage {
 }
 
 /**
- * Returns a stateful compression function for a single streamText request.
+ * Stateless fallback compaction. Called ONCE at the top of a request, never
+ * inside the tool loop.
  *
- * IMPORTANT: The AI SDK's prepareStep does NOT persist message overrides
- * between steps (see https://github.com/vercel/ai/issues/9631). Each call
- * to prepareStep receives [...initialMessages, ...allResponseMessages],
- * ignoring any prior compaction.
+ * This replaces the old per-step `createMessageCompressor`, which re-extracted
+ * and re-prepended working memory and re-applied compaction on every step.
+ * That per-step rewriting shifted the message prefix between steps, so an
+ * Anthropic cache breakpoint placed on the history never stayed byte-stable
+ * long enough to earn cache reads. Keeping the prefix stable across the step
+ * loop is what lets the sliding cache breakpoint (see cache-breakpoints.ts)
+ * pay off; mid-run context growth is bounded server-side by the
+ * `clear_tool_uses_20250919` context-management edit instead.
  *
- * Workaround: we store the compaction state (summary message + count of
- * original messages that were summarized) and re-apply it on every
- * subsequent prepareStep call.
+ * Contract:
+ * - Below the threshold, returns messages unchanged (cache-stable prefix).
+ * - Above, runs one summarization pass (reusing `summarizeMessages`) and
+ *   returns `[wm?, summary, ...recentMessages]`.
+ * - On any failure, returns the original messages (compaction is best-effort).
  */
-export function createMessageCompressor() {
-  let justCompacted = false;
+export async function prepareMessages(
+  messages: ModelMessage[],
+  estimatedInputTokens: number,
+  onCompacting?: () => void,
+): Promise<{ messages: ModelMessage[]; compacted: boolean; summary?: string }> {
+  if (estimatedInputTokens < COMPACT_THRESHOLD_TOKENS) {
+    return { messages, compacted: false };
+  }
 
-  // Persisted compaction state — survives across prepareStep calls
-  let storedSummaryMessage: ModelMessage | null = null;
-  let storedWmMessage: ModelMessage | null = null;
-  let summarizedCount = 0; // how many original messages were folded into the summary
+  // Working memory is always preserved verbatim — never folded into a summary.
+  const { wmMessage: incomingWm, rest } = extractWorkingMemory(messages);
 
-  return async function compress(
-    stepMessages: ModelMessage[],
-    lastInputTokens: number | undefined,
-    onCompacting?: () => void,
-  ): Promise<{ messages: ModelMessage[]; compacted: boolean; summary?: string }> {
+  const result = await summarizeMessages(rest, '', onCompacting);
+  if (!result) {
+    log(`over threshold (~${estimatedInputTokens} tokens) but compaction skipped/failed`);
+    return { messages, compacted: false };
+  }
 
-    // --- Extract working memory — never compact it ---
-    const { wmMessage: incomingWm, rest: rawMessages } = extractWorkingMemory(stepMessages);
-    let wm = storedWmMessage ?? incomingWm;
+  const wm = result.workingMemory
+    ? buildWorkingMemoryMessage(result.workingMemory)
+    : incomingWm;
 
-    // --- Re-apply prior compaction ---
-    let effectiveMessages = rawMessages;
-    if (storedSummaryMessage && summarizedCount > 0) {
-      const newMessages = rawMessages.slice(summarizedCount);
-      effectiveMessages = [storedSummaryMessage, ...newMessages];
-      log(
-        `re-applied prior compaction — stripped ${summarizedCount} original msgs, ` +
-        `${effectiveMessages.length} effective msgs (1 summary + ${newMessages.length} new)`
-      );
-    }
+  const out: ModelMessage[] = [];
+  if (wm) out.push(wm);
+  out.push(buildSummaryMessage(result.summary));
+  out.push(...result.recentMessages);
 
-    const prepend = (msgs: ModelMessage[]) =>
-      wm ? [wm, ...msgs] : msgs;
+  log(
+    `compacted — ~${estimatedInputTokens} tokens → 1 summary + ` +
+    `${result.recentMessages.length} recent${wm ? ' +WM' : ''}`
+  );
 
-    // Step 0: no prior inputTokens available. Prune browser tool content
-    // from older messages to avoid exceeding the main model's context window
-    // on cross-request reloads with large message histories.
-    if (lastInputTokens === undefined) {
-      const pruned = pruneMessages({
-        messages: effectiveMessages,
-        toolCalls: [{ type: 'before-last-2-messages', tools: ['browser'] }],
-        emptyMessages: 'remove',
-      });
-      log(`step 0 — pruned browser tools: ${effectiveMessages.length} → ${pruned.length} msgs`);
-      return { messages: prepend(pruned), compacted: false };
-    }
-
-    const usedPct = lastInputTokens / MODEL_CONTEXT_WINDOW;
-
-    if (justCompacted) {
-      justCompacted = false;
-      log(
-        `skip — stale inputTokens after compaction, ${effectiveMessages.length} msgs, ${(usedPct * 100).toFixed(1)}% (stale)`
-      );
-      return { messages: prepend(effectiveMessages), compacted: false };
-    }
-
-    log(
-      `step check — ${effectiveMessages.length} msgs (raw ${stepMessages.length}${wm ? ', +WM' : ''}), ` +
-      `inputTokens=${lastInputTokens ?? 'n/a'}, ` +
-      `${(usedPct * 100).toFixed(1)}% of ${MODEL_CONTEXT_WINDOW} context window, ` +
-      `threshold=${(COMPACT_THRESHOLD_PCT * 100).toFixed(0)}%`
-    );
-
-    if (usedPct < COMPACT_THRESHOLD_PCT) {
-      return { messages: prepend(effectiveMessages), compacted: false };
-    }
-
-    const result = await summarizeMessages(effectiveMessages, '', onCompacting);
-    if (!result) {
-      justCompacted = true;
-      return { messages: prepend(effectiveMessages), compacted: false };
-    }
-
-    const newSummaryMessage = buildSummaryMessage(result.summary);
-
-    storedSummaryMessage = newSummaryMessage;
-    if (result.workingMemory) {
-      storedWmMessage = buildWorkingMemoryMessage(result.workingMemory);
-      wm = storedWmMessage;
-    }
-    if (summarizedCount === 0) {
-      summarizedCount = result.splitAt;
-    } else {
-      summarizedCount += result.splitAt - 1;
-    }
-
-    log(
-      `compaction persisted — summarizedCount=${summarizedCount}, ` +
-      `returning ${1 + result.recentMessages.length} msgs${wm ? ' +WM' : ''}`
-    );
-
-    justCompacted = true;
-    return { messages: prepend([newSummaryMessage, ...result.recentMessages]), compacted: true, summary: result.summary };
-  };
+  return { messages: out, compacted: true, summary: result.summary };
 }
