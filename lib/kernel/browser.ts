@@ -4,6 +4,7 @@ import { KERNEL_TIMEOUT_SECONDS } from './session-config';
 import {
   buildSessionStatus,
   cacheKey,
+  isProfileUsable,
   profileNameFor,
   type SessionStatus,
 } from './session-store';
@@ -47,6 +48,32 @@ export type { SessionStatus };
 
 const sessions = new Map<string, BrowserSession>();
 const pendingCreations = new Map<string, Promise<BrowserSession>>();
+
+/**
+ * Ensure a Kernel profile exists so it can be loaded into a browser session.
+ *
+ * Kernel requires profiles to be created *beforehand* — passing the name of a
+ * non-existent profile to `browsers.create` fails with `400 profile not found`.
+ * Creating is idempotent from our side: a name that already exists returns a
+ * 409 conflict, which we treat as success.
+ *
+ * Returns true if the profile is ready to use, false if it could not be
+ * ensured (caller should then create a browser without a profile rather than
+ * fail outright).
+ */
+async function ensureProfile(profileName: string): Promise<boolean> {
+  try {
+    await kernel.profiles.create({ name: profileName });
+    return true;
+  } catch (err: unknown) {
+    const status = (err as { status?: number }).status;
+    // 409 (already exists) is success for us; any other status is a real
+    // failure — log it and let the caller fall back to a profile-less browser.
+    if (isProfileUsable(status)) return true;
+    console.error('[Kernel] Failed to ensure profile:', err);
+    return false;
+  }
+}
 
 // =============================================================================
 // Core operations
@@ -93,14 +120,21 @@ export async function getOrCreateBrowser(
         : { width: 1280, height: 800 };
       const profileName = profileNameFor(sessionId);
 
+      // A persistent profile lets standby → reconnect restore the exact browser
+      // state. The profile must exist before it's referenced, so create it
+      // first. If that fails for any reason, fall back to a profile-less
+      // browser so session creation never breaks — standby reconnect just
+      // starts fresh instead of restoring state.
+      const hasProfile = await ensureProfile(profileName);
+
       const browser = (await kernel.browsers.create({
         viewport,
         timeout_seconds: KERNEL_TIMEOUT_SECONDS,
         kiosk_mode: false,
         stealth: true,
-        // Persistent profile: created on first use, state saved back on session
-        // end so standby → reconnect restores the exact browser state.
-        profile: { name: profileName, save_changes: true },
+        ...(hasProfile
+          ? { profile: { name: profileName, save_changes: true } }
+          : {}),
       })) as {
         session_id: string;
         cdp_ws_url: string;

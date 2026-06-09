@@ -30,6 +30,20 @@ export function cacheKey(userId: string, sessionId: string): string {
 }
 
 /**
+ * Decide whether a profile is usable after a `profiles.create` attempt, given
+ * the error status (if any).
+ * - no error      → created, usable
+ * - 409 conflict  → already exists, usable (create is idempotent for us)
+ * - anything else → not usable; caller should fall back to no profile
+ *
+ * Kept pure so the resilience policy can be unit-tested without the SDK.
+ */
+export function isProfileUsable(errorStatus: number | undefined): boolean {
+  if (errorStatus === undefined) return true;
+  return errorStatus === 409;
+}
+
+/**
  * Stable, Kernel-valid profile name for a session. Kernel requires 1-255 chars
  * of letters, numbers, dots, underscores, or hyphens — sanitize the sessionId
  * (which is `${chatId}-${userId}`) accordingly.

@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 import {
   buildSessionStatus,
   cacheKey,
+  isProfileUsable,
   profileNameFor,
   type SessionLike,
 } from '@/lib/kernel/session-store';
@@ -57,4 +58,20 @@ test('buildSessionStatus never leaks a live view URL while in standby', () => {
   expect(status.standby).toBe(true);
   // The browser is paused — handing back its URL would point at a dead view.
   expect(status.liveViewUrl).toBeNull();
+});
+
+test('isProfileUsable: created (no error) is usable', () => {
+  expect(isProfileUsable(undefined)).toBe(true);
+});
+
+test('isProfileUsable: 409 conflict (already exists) is usable', () => {
+  expect(isProfileUsable(409)).toBe(true);
+});
+
+test('isProfileUsable: other errors are not usable (fall back to no profile)', () => {
+  // 400 is the "profile not found" class of failure that broke creation;
+  // 500/403 etc. should likewise degrade gracefully rather than block.
+  expect(isProfileUsable(400)).toBe(false);
+  expect(isProfileUsable(403)).toBe(false);
+  expect(isProfileUsable(500)).toBe(false);
 });
