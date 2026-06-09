@@ -3,6 +3,10 @@ import {
   getOrCreateBrowser,
   deleteBrowser,
   getBrowser,
+  touchActivity,
+  getSessionStatus,
+  standbyBrowser,
+  reconnectBrowser,
 } from '@/lib/kernel/browser';
 
 export async function POST(request: Request) {
@@ -17,10 +21,7 @@ export async function POST(request: Request) {
     const { action, sessionId, isMobile } = await request.json();
 
     if (!sessionId) {
-      return Response.json(
-        { error: 'sessionId is required' },
-        { status: 400 },
-      );
+      return Response.json({ error: 'sessionId is required' }, { status: 400 });
     }
 
     // Validate session ownership: sessionId must end with `-{userId}`
@@ -68,6 +69,33 @@ export async function POST(request: Request) {
       return Response.json({
         success: true,
         liveViewUrl: browser.liveViewUrl,
+      });
+    }
+
+    // Record a user action (click/type in takeover), resetting the idle timer.
+    if (action === 'activity') {
+      const touched = touchActivity(sessionId, userId);
+      return Response.json({ success: touched });
+    }
+
+    // Lifecycle snapshot the client uses to drive its idle/cap timers.
+    if (action === 'status') {
+      return Response.json(getSessionStatus(sessionId, userId));
+    }
+
+    // Idle expiry: drop CDP so Kernel moves the browser to standby (no cost,
+    // state preserved). The session stays reconnectable.
+    if (action === 'standby') {
+      const ok = await standbyBrowser(sessionId, userId);
+      return Response.json({ success: ok });
+    }
+
+    // Wake a standby session, restoring its state.
+    if (action === 'reconnect') {
+      const browser = await reconnectBrowser(sessionId, userId, { isMobile });
+      return Response.json({
+        liveViewUrl: browser.liveViewUrl,
+        sessionId: browser.kernelSessionId,
       });
     }
 

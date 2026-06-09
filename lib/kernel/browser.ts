@@ -1,5 +1,6 @@
 import Kernel from '@onkernel/sdk';
 import { BrowserManager } from 'agent-browser/dist/browser.js';
+import { KERNEL_TIMEOUT_SECONDS } from './session-config';
 
 const kernel = new Kernel();
 
@@ -14,6 +15,29 @@ export interface BrowserSession {
   userId: string;
   browserManager: BrowserManager;
   replayId?: string;
+  /** Kernel profile name backing this session, so state survives standby. */
+  profileName: string;
+  /** Epoch ms when the session was first created (drives the hard cap). */
+  startedAt: number;
+  /** Epoch ms of the last agent or user action (drives the idle timer). */
+  lastActivityAt: number;
+  /**
+   * True while the CDP connection is intentionally disconnected so Kernel can
+   * drop the browser to standby (no cost, state preserved). The Kernel browser
+   * still exists and can be reconnected.
+   */
+  standby: boolean;
+}
+
+/** Lifecycle snapshot returned to the client so it can drive its timers. */
+export interface SessionStatus {
+  exists: boolean;
+  standby: boolean;
+  liveViewUrl: string | null;
+  startedAt: number;
+  lastActivityAt: number;
+  /** Epoch ms (server clock) at the moment this status was produced. */
+  now: number;
 }
 
 // =============================================================================
@@ -31,6 +55,15 @@ function cacheKey(userId: string, sessionId: string): string {
   return `${userId}:${sessionId}`;
 }
 
+/**
+ * Stable, Kernel-valid profile name for a session. Kernel requires 1-255 chars
+ * of letters, numbers, dots, underscores, or hyphens — sanitize the sessionId
+ * (which is `${chatId}-${userId}`) accordingly.
+ */
+function profileNameFor(sessionId: string): string {
+  return `sess-${sessionId.replace(/[^a-zA-Z0-9._-]/g, '-')}`.slice(0, 255);
+}
+
 // =============================================================================
 // Core operations
 // =============================================================================
@@ -39,8 +72,8 @@ function cacheKey(userId: string, sessionId: string): string {
  * Get or create a browser session for a user's chat.
  *
  * Uses in-memory cache to dedup. If a create is already in-flight for this
- * session, awaits it instead of creating a duplicate. Kernel handles all
- * timeout/lifecycle logic.
+ * session, awaits it instead of creating a duplicate. A per-session Kernel
+ * profile backs the browser so its state survives standby/reconnect.
  */
 export async function getOrCreateBrowser(
   sessionId: string,
@@ -48,14 +81,17 @@ export async function getOrCreateBrowser(
   options?: { isMobile?: boolean },
 ): Promise<BrowserSession> {
   if (!userId) {
-    throw new Error('[Kernel] userId is required for browser session isolation');
+    throw new Error(
+      '[Kernel] userId is required for browser session isolation',
+    );
   }
 
   const key = cacheKey(userId, sessionId);
 
-  // 1. Check in-memory cache
+  // 1. Check in-memory cache. A cached session counts as agent activity.
   const cached = sessions.get(key);
   if (cached) {
+    cached.lastActivityAt = Date.now();
     return cached;
   }
 
@@ -71,12 +107,16 @@ export async function getOrCreateBrowser(
       const viewport = options?.isMobile
         ? { width: 1024, height: 768 }
         : { width: 1280, height: 800 };
+      const profileName = profileNameFor(sessionId);
 
       const browser = (await kernel.browsers.create({
         viewport,
-        timeout_seconds: 600,
+        timeout_seconds: KERNEL_TIMEOUT_SECONDS,
         kiosk_mode: false,
         stealth: true,
+        // Persistent profile: created on first use, state saved back on session
+        // end so standby → reconnect restores the exact browser state.
+        profile: { name: profileName, save_changes: true },
       })) as {
         session_id: string;
         cdp_ws_url: string;
@@ -99,6 +139,7 @@ export async function getOrCreateBrowser(
         console.error('[Kernel] Failed to start replay recording:', err);
       }
 
+      const now = Date.now();
       const session: BrowserSession = {
         kernelSessionId: browser.session_id,
         liveViewUrl: browser.browser_live_view_url,
@@ -106,6 +147,10 @@ export async function getOrCreateBrowser(
         userId,
         browserManager: manager,
         replayId,
+        profileName,
+        startedAt: now,
+        lastActivityAt: now,
+        standby: false,
       };
 
       sessions.set(key, session);
@@ -149,6 +194,114 @@ export async function getBrowser(
 }
 
 /**
+ * Record an agent or user action against a session, resetting its idle timer.
+ * No-op if the session isn't cached (e.g. already torn down).
+ */
+export function touchActivity(sessionId: string, userId: string): boolean {
+  const session = sessions.get(cacheKey(userId, sessionId));
+  if (!session) return false;
+  session.lastActivityAt = Date.now();
+  return true;
+}
+
+/** Lifecycle snapshot for the client's idle/cap timers. */
+export function getSessionStatus(
+  sessionId: string,
+  userId: string,
+): SessionStatus {
+  const session = sessions.get(cacheKey(userId, sessionId));
+  const now = Date.now();
+  if (!session) {
+    return {
+      exists: false,
+      standby: false,
+      liveViewUrl: null,
+      startedAt: 0,
+      lastActivityAt: 0,
+      now,
+    };
+  }
+  return {
+    exists: true,
+    standby: session.standby,
+    liveViewUrl: session.standby ? null : session.liveViewUrl,
+    startedAt: session.startedAt,
+    lastActivityAt: session.lastActivityAt,
+    now,
+  };
+}
+
+/**
+ * Move a session to standby: drop the CDP connection so Kernel snapshots the
+ * browser and scales to zero (no cost), while the Kernel browser and its
+ * profile state are preserved for reconnect. Does NOT delete the browser.
+ */
+export async function standbyBrowser(
+  sessionId: string,
+  userId: string,
+): Promise<boolean> {
+  const session = sessions.get(cacheKey(userId, sessionId));
+  if (!session || session.standby) return false;
+
+  session.standby = true;
+
+  // Closing the BrowserManager disconnects Playwright/CDP. Kernel treats an
+  // idle CDP connection as the trigger to drop the unikernel into standby.
+  try {
+    await session.browserManager.close();
+  } catch (err) {
+    console.error('[Kernel] Failed to close BrowserManager for standby:', err);
+  }
+
+  return true;
+}
+
+/**
+ * Reconnect a standby session: re-establish CDP to the same Kernel browser,
+ * waking it from standby with its state intact. If the underlying Kernel
+ * browser is gone (reaped past its timeout), recreate it from the persistent
+ * profile so state is still restored.
+ */
+export async function reconnectBrowser(
+  sessionId: string,
+  userId: string,
+  options?: { isMobile?: boolean },
+): Promise<BrowserSession> {
+  const key = cacheKey(userId, sessionId);
+  const session = sessions.get(key);
+
+  // No cached session (or its Kernel browser may be gone) → recreate from
+  // profile. getOrCreateBrowser reuses the same profile name, restoring state.
+  if (!session) {
+    sessions.delete(key);
+    return getOrCreateBrowser(sessionId, userId, options);
+  }
+
+  // Try to wake the existing browser by reconnecting CDP.
+  try {
+    const manager = new BrowserManager();
+    await manager.launch({
+      id: 'launch',
+      action: 'launch',
+      cdpUrl: session.cdpWsUrl,
+    });
+
+    session.browserManager = manager;
+    session.standby = false;
+    session.lastActivityAt = Date.now();
+    return session;
+  } catch (err) {
+    // Kernel browser likely reaped — recreate from the persistent profile.
+    console.error(
+      '[Kernel] CDP reconnect failed, recreating from profile:',
+      err,
+    );
+    sessions.delete(key);
+    return getOrCreateBrowser(sessionId, userId, options);
+  }
+}
+
+/**
  * Delete a browser session.
  * Removes from cache, then tells Kernel to destroy the browser instance.
  */
@@ -170,9 +323,7 @@ export async function deleteBrowser(
       await kernel.browsers.replays.stop(session.replayId, {
         id: session.kernelSessionId,
       });
-      await kernel.browsers.replays.list(
-        session.kernelSessionId,
-      );
+      await kernel.browsers.replays.list(session.kernelSessionId);
     } catch (err) {
       console.error('[Kernel] Failed to stop/list replays:', err);
     }
@@ -195,4 +346,3 @@ export async function deleteBrowser(
     }
   }
 }
-
