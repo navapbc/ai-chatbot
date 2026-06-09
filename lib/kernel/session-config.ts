@@ -16,19 +16,13 @@
 
 const MINUTE_MS = 60_000;
 
-// =============================================================================
-// TEMPORARY SHORT TIMINGS FOR TESTING
-// TODO: restore production timings (12-min warning, 3-min countdown, 60-min
-// cap, 5-min cap warning) before merging. See PRODUCTION values below.
-// =============================================================================
-
 // --- Idle policy ----------------------------------------------------------
 
 /** Inactivity before the idle warning modal appears. */
-export const IDLE_WARNING_AFTER_MS = 1 * MINUTE_MS; // PROD: 12 * MINUTE_MS
+export const IDLE_WARNING_AFTER_MS = 12 * MINUTE_MS;
 
 /** Countdown shown in the warning modal before disconnecting to standby. */
-export const IDLE_COUNTDOWN_MS = 1 * MINUTE_MS; // PROD: 3 * MINUTE_MS
+export const IDLE_COUNTDOWN_MS = 3 * MINUTE_MS;
 
 /** Total inactivity before disconnect (warning + countdown). */
 export const IDLE_DISCONNECT_AFTER_MS =
@@ -37,10 +31,10 @@ export const IDLE_DISCONNECT_AFTER_MS =
 // --- Hard cap -------------------------------------------------------------
 
 /** Maximum lifetime of a session regardless of activity. */
-export const HARD_CAP_MS = 10 * MINUTE_MS; // PROD: 60 * MINUTE_MS
+export const HARD_CAP_MS = 60 * MINUTE_MS;
 
 /** Warning shown before the hard cap ends the session. */
-export const CAP_WARNING_BEFORE_MS = 2 * MINUTE_MS; // PROD: 5 * MINUTE_MS
+export const CAP_WARNING_BEFORE_MS = 5 * MINUTE_MS;
 
 // --- Kernel server-side backstop -----------------------------------------
 
@@ -52,12 +46,12 @@ export const CAP_WARNING_BEFORE_MS = 2 * MINUTE_MS; // PROD: 5 * MINUTE_MS
  *
  * Trade-off: a session that has gone to standby is, by definition, network-idle
  * — so Kernel's timer is running against it. This value therefore also bounds
- * how long after standby a user can reconnect before Kernel reaps the browser
- * (after which reconnect recreates from the persistent profile, restoring
- * state). Keep it short for cost safety; reconnect-from-profile covers the rest.
- * Kernel min is 10s, max 72h.
+ * how long after standby a user can reconnect to the SAME browser (CDP wake,
+ * state intact) before Kernel reaps it; after that, reconnect recreates from
+ * the persistent profile (state still restored). 5 min balances a comfortable
+ * reconnect window against bounded cost. Kernel min is 10s, max 72h.
  */
-export const KERNEL_TIMEOUT_SECONDS = 90; // PROD: consider 5–10 min
+export const KERNEL_TIMEOUT_SECONDS = 5 * 60;
 
 // --- Client polling -------------------------------------------------------
 
