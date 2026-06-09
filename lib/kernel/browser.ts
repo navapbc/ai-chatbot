@@ -1,6 +1,12 @@
 import Kernel from '@onkernel/sdk';
 import { BrowserManager } from 'agent-browser/dist/browser.js';
 import { KERNEL_TIMEOUT_SECONDS } from './session-config';
+import {
+  buildSessionStatus,
+  cacheKey,
+  profileNameFor,
+  type SessionStatus,
+} from './session-store';
 
 const kernel = new Kernel();
 
@@ -29,16 +35,7 @@ export interface BrowserSession {
   standby: boolean;
 }
 
-/** Lifecycle snapshot returned to the client so it can drive its timers. */
-export interface SessionStatus {
-  exists: boolean;
-  standby: boolean;
-  liveViewUrl: string | null;
-  startedAt: number;
-  lastActivityAt: number;
-  /** Epoch ms (server clock) at the moment this status was produced. */
-  now: number;
-}
+export type { SessionStatus };
 
 // =============================================================================
 // In-memory session cache
@@ -50,19 +47,6 @@ export interface SessionStatus {
 
 const sessions = new Map<string, BrowserSession>();
 const pendingCreations = new Map<string, Promise<BrowserSession>>();
-
-function cacheKey(userId: string, sessionId: string): string {
-  return `${userId}:${sessionId}`;
-}
-
-/**
- * Stable, Kernel-valid profile name for a session. Kernel requires 1-255 chars
- * of letters, numbers, dots, underscores, or hyphens — sanitize the sessionId
- * (which is `${chatId}-${userId}`) accordingly.
- */
-function profileNameFor(sessionId: string): string {
-  return `sess-${sessionId.replace(/[^a-zA-Z0-9._-]/g, '-')}`.slice(0, 255);
-}
 
 // =============================================================================
 // Core operations
@@ -210,25 +194,7 @@ export function getSessionStatus(
   userId: string,
 ): SessionStatus {
   const session = sessions.get(cacheKey(userId, sessionId));
-  const now = Date.now();
-  if (!session) {
-    return {
-      exists: false,
-      standby: false,
-      liveViewUrl: null,
-      startedAt: 0,
-      lastActivityAt: 0,
-      now,
-    };
-  }
-  return {
-    exists: true,
-    standby: session.standby,
-    liveViewUrl: session.standby ? null : session.liveViewUrl,
-    startedAt: session.startedAt,
-    lastActivityAt: session.lastActivityAt,
-    now,
-  };
+  return buildSessionStatus(session, Date.now());
 }
 
 /**

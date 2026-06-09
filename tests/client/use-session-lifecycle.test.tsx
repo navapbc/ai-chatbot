@@ -69,3 +69,33 @@ test('cap warning beats idle standby when both apply', () => {
   );
   expect(action).toMatchObject({ kind: 'warn', reason: 'cap' });
 });
+
+test('idle warning countdown shrinks as inactivity grows', () => {
+  const justWarned = evaluateLifecycle(
+    NOW,
+    NOW - 60_000,
+    NOW - (IDLE_WARNING_AFTER_MS + 1_000),
+  );
+  const almostOut = evaluateLifecycle(
+    NOW,
+    NOW - 60_000,
+    NOW - (IDLE_DISCONNECT_AFTER_MS - 5_000),
+  );
+  if (justWarned.kind === 'warn' && almostOut.kind === 'warn') {
+    expect(almostOut.countdownSeconds).toBeLessThan(
+      justWarned.countdownSeconds,
+    );
+    expect(almostOut.countdownSeconds).toBeLessThanOrEqual(5);
+  } else {
+    throw new Error('expected both to be warn actions');
+  }
+});
+
+test('exactly at the idle disconnect threshold triggers standby', () => {
+  const action = evaluateLifecycle(
+    NOW,
+    NOW - 60_000,
+    NOW - IDLE_DISCONNECT_AFTER_MS,
+  );
+  expect(action.kind).toBe('standby');
+});
