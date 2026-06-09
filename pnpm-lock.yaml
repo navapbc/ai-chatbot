@@ -51,8 +51,8 @@ importers:
         specifier: ^7.17.0
         version: 7.17.0
       '@onkernel/sdk':
-        specifier: ^0.28.0
-        version: 0.28.0
+        specifier: ^0.62.0
+        version: 0.62.0
       '@opentelemetry/api':
         specifier: ^1.9.0
         version: 1.9.0
@@ -1487,8 +1487,8 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@onkernel/sdk@0.28.0':
-    resolution: {integrity: sha512-0m6ReJxXtGKIj4BJgbPGsS4amF3KsnSgCYADjPkH+Tqre9pYH/muku5pFQ4dOAybNkVxJ+UEUo9B5i+aMgG6sw==}
+  '@onkernel/sdk@0.62.0':
+    resolution: {integrity: sha512-EubnlM6xRHZKziN48cMa0Zl6SBWF4C+5NWTDjiVz0TBT2nd2nXI54io9IAIRhTpqK1/3q2bxM7YFrqgu+bVNaA==}
 
   '@opentelemetry/api-logs@0.200.0':
     resolution: {integrity: sha512-IKJBQxh91qJ+3ssRly5hYEJ8NDHu9oY/B1PXVSCWf7zytmYO9RNLB0Ox9XQ/fJ8m6gY6Q6NtBWlmXfaXt5Uc4Q==}
@@ -5718,7 +5718,7 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.19.1
 
-  '@onkernel/sdk@0.28.0': {}
+  '@onkernel/sdk@0.62.0': {}
 
   '@opentelemetry/api-logs@0.200.0':
     dependencies:
