@@ -10,7 +10,7 @@ export const BrowserLoadingState = () => (
     <div className="flex flex-col w-full max-w-4xl">
       {/* Browser chrome header */}
       <div className="bg-[#ececec] h-[30px] rounded-tl-lg rounded-tr-lg" />
-      
+
       {/* Main content area */}
       <div className="flex-1 bg-[rgba(235,235,235,0.2)] flex flex-col items-center justify-center py-20">
         {/* Spinning icon with circular background */}
@@ -19,7 +19,7 @@ export const BrowserLoadingState = () => (
             <RefreshCwIcon className="size-8 animate-spin" />
           </div>
         </div>
-        
+
         {/* Text content */}
         <p className="text-sm font-medium font-source-serif">
           Setting up the browser
@@ -36,14 +36,13 @@ export const BrowserErrorState = ({ onRetry }: BrowserStateProps) => (
   <div className="flex items-center justify-center h-full bg-card text-gray-500">
     <div className="text-center">
       <MonitorX className="size-8 mx-auto mb-2" />
-      <p className="text-sm font-medium font-source-serif">Failed to connect to browser</p>
-      <p className="text-xs opacity-75 font-inter">Wait a few moments and try again</p>
-      <Button 
-        variant="outline" 
-        size="sm" 
-        className="mt-2"
-        onClick={onRetry}
-      >
+      <p className="text-sm font-medium font-source-serif">
+        Failed to connect to browser
+      </p>
+      <p className="text-xs opacity-75 font-inter">
+        Wait a few moments and try again
+      </p>
+      <Button variant="outline" size="sm" className="mt-2" onClick={onRetry}>
         <RefreshCwIcon className="size-4 mr-1" />
         Retry
       </Button>
@@ -55,16 +54,38 @@ export const BrowserTimeoutState = ({ onRetry }: BrowserStateProps) => (
   <div className="flex items-center justify-center h-full bg-card text-gray-500">
     <div className="text-center">
       <ClockFading className="size-8 mx-auto mb-2" />
-      <p className="text-xs sm:text-sm font-medium font-source-serif">Your session was paused due to inactivity</p>
-      <p className="text-xs opacity-75 font-inter">Refresh the connection and try again</p>
-      <Button
-        variant="outline"
-        size="sm"
-        className="mt-2"
-        onClick={onRetry}
-      >
+      <p className="text-xs sm:text-sm font-medium font-source-serif">
+        Your session was paused due to inactivity
+      </p>
+      <p className="text-xs opacity-75 font-inter">
+        Refresh the connection and try again
+      </p>
+      <Button variant="outline" size="sm" className="mt-2" onClick={onRetry}>
         <RefreshCwIcon className="size-4 mr-1" />
         Retry
+      </Button>
+    </div>
+  </div>
+);
+
+/**
+ * Shown after the idle timeout moves the browser to standby. The browser state
+ * is preserved (no cost while idle); reconnecting restores it exactly.
+ */
+export const BrowserStandbyState = ({ onRetry }: BrowserStateProps) => (
+  <div className="flex items-center justify-center h-full bg-card text-gray-500">
+    <div className="text-center">
+      <ClockFading className="size-8 mx-auto mb-2" />
+      <p className="text-xs sm:text-sm font-medium font-source-serif">
+        Your session is on standby
+      </p>
+      <p className="text-xs opacity-75 font-inter">
+        We paused the browser after inactivity. Your progress is saved —
+        reconnect to pick up where you left off.
+      </p>
+      <Button variant="outline" size="sm" className="mt-2" onClick={onRetry}>
+        <RefreshCwIcon className="size-4 mr-1" />
+        Reconnect
       </Button>
     </div>
   </div>
