@@ -56,7 +56,7 @@ export function LayoutHeader() {
             </Button>
           </TooltipTrigger>
           <TooltipContent align="start" side="right" sideOffset={8}>
-            New Chat
+            New application
           </TooltipContent>
         </Tooltip>
       </div>

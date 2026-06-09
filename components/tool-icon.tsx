@@ -201,6 +201,37 @@ const parseBrowserAction = (input?: Record<string, any>): { text: string; icon: 
   return { text: mapping.verb, icon: mapping.icon };
 };
 
+const hasValue = (v: any): boolean =>
+  Array.isArray(v) ? v.length > 0 : v != null && String(v).length > 0;
+
+// A tool call is "specific" when it carries a concrete user-visible value
+// (a typed value, a chosen option, a destination URL) rather than a generic
+// navigation/inspection action (click, snapshot, scroll, wait, ...).
+export const isSpecificToolAction = (toolName: string, input?: any): boolean => {
+  const cleanToolName = toolName.replace('tool-', '');
+
+  if (cleanToolName === 'browser') {
+    const action = input?.action ? String(input.action).toLowerCase() : '';
+    switch (action) {
+      case 'fill': return hasValue(input?.value);
+      case 'type': return hasValue(input?.text);
+      case 'select': return hasValue(input?.values);
+      case 'navigate': return hasValue(input?.url);
+      case 'getbylabel': return input?.subaction === 'fill';
+      default: return false;
+    }
+  }
+
+  // Legacy browser_* / playwright_browser_* tool formats
+  const base = cleanToolName.replace(/^playwright_/, '');
+  switch (base) {
+    case 'browser_type': return hasValue(input?.text);
+    case 'browser_select_option': return hasValue(input?.values);
+    case 'browser_navigate': return hasValue(input?.url);
+    default: return false;
+  }
+};
+
 // Helper function to get tool display name with icon
 export const getToolDisplayInfo = (toolName: string, input?: any): { text: string; icon: React.ComponentType<any> } => {
   // Handle AI SDK browser tool (agent-browser)

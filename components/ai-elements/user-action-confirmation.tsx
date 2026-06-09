@@ -26,7 +26,7 @@ interface UserActionConfirmationProps {
 export function UserActionConfirmation({
   approval,
   state = 'approval-requested',
-  requestTitle = 'Action required',
+  requestTitle = 'Your turn to submit',
   requestMessage,
   acceptedMessage = 'You approved this action',
   rejectedMessage = 'You rejected this action',

@@ -15,7 +15,7 @@ test('UserActionConfirmation renders with proper content in approval-requested s
     />
   );
 
-  await expect.element(getByText('Action required')).toBeInTheDocument();
+  await expect.element(getByText('Your turn to submit')).toBeInTheDocument();
   await expect.element(getByText('Complete the CAPTCHA and submit the application.')).toBeInTheDocument();
   await expect.element(getByText('Take control')).toBeInTheDocument();
   await expect.element(getByText('Skip for now')).toBeInTheDocument();

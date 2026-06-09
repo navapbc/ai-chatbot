@@ -314,7 +314,7 @@ const PurePreviewMessage = ({
                         <UserActionConfirmation
                           approval={{ id: `action-${message.id}`, approved: undefined }}
                           state="approval-requested"
-                          requestMessage='Manual action required to proceed.'
+                          requestMessage='Open the application and press submit.'
                           onApprove={(approvalId) => {
                             // Trigger browser control switch to user mode
                             const event = new CustomEvent('switch-browser-control', { 
@@ -616,7 +616,7 @@ const PurePreviewMessage = ({
               <div className="flex items-center gap-2 p-3 border-0 rounded-md">
                 <div className="text-[10px] leading-[150%] font-ibm-plex-mono text-muted-foreground flex items-center gap-2">
                   <Spinner className="size-3 shrink-0 text-primary" />
-                  {isCompacting ? 'Summarizing the conversation...' : 'Processing...'}
+                  {isCompacting ? 'Still processing, may take a moment...' : 'Processing...'}
                 </div>
               </div>
             )}
