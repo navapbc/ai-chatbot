@@ -232,28 +232,86 @@ export function getSessionStatus(
 }
 
 /**
- * Move a session to standby: drop the CDP connection so Kernel snapshots the
- * browser and scales to zero (no cost), while the Kernel browser and its
- * profile state are preserved for reconnect. Does NOT delete the browser.
+ * Move a session to standby so we stop being billed for idle time.
+ *
+ * Kernel drops a browser to standby only when ALL network activity ends — that
+ * means BOTH the CDP connection (closed here) AND the live-view websocket (the
+ * client unmounts its iframe on standby) must go idle. Because we cannot fully
+ * trust that from the server, we VERIFY: poll the browser's `uptime_ms`, which
+ * only advances while the session is actively running. If it stops advancing,
+ * standby worked. If it keeps climbing, standby failed — so we DELETE the
+ * browser outright, which guarantees billing stops (reconnect then recreates
+ * from the persistent profile, restoring state).
+ *
+ * Returns true if the session reached standby (or was deleted as a fallback —
+ * either way it is no longer billing).
  */
 export async function standbyBrowser(
   sessionId: string,
   userId: string,
 ): Promise<boolean> {
-  const session = sessions.get(cacheKey(userId, sessionId));
+  const key = cacheKey(userId, sessionId);
+  const session = sessions.get(key);
   if (!session || session.standby) return false;
 
   session.standby = true;
 
-  // Closing the BrowserManager disconnects Playwright/CDP. Kernel treats an
-  // idle CDP connection as the trigger to drop the unikernel into standby.
+  // 1. Close CDP (Playwright). This is one of the two connections Kernel
+  //    watches; the client drops the live-view iframe in parallel.
   try {
     await session.browserManager.close();
   } catch (err) {
     console.error('[Kernel] Failed to close BrowserManager for standby:', err);
   }
 
+  // 2. Verify the session actually went idle. uptime_ms only grows while the
+  //    browser is actively running; a standby browser's uptime plateaus.
+  const wentIdle = await verifyWentIdle(session.kernelSessionId);
+
+  if (wentIdle) {
+    console.log(
+      `[Kernel] Session ${session.kernelSessionId} confirmed idle (standby).`,
+    );
+    return true;
+  }
+
+  // 3. Standby did not take — the browser is still billing. Delete it so we
+  //    stop paying. State is preserved by the profile; reconnect recreates.
+  console.warn(
+    `[Kernel] Session ${session.kernelSessionId} did not go idle after standby; deleting to stop billing.`,
+  );
+  await deleteBrowser(sessionId, userId);
   return true;
+}
+
+/**
+ * Poll a browser's `uptime_ms` to confirm it stopped running (standby). Returns
+ * true if uptime plateaued (idle), false if it kept advancing (still billing)
+ * or we couldn't tell.
+ */
+async function verifyWentIdle(kernelSessionId: string): Promise<boolean> {
+  const readUptime = async (): Promise<number | null> => {
+    try {
+      const b = (await kernel.browsers.retrieve(kernelSessionId)) as {
+        usage?: { uptime_ms?: number };
+      };
+      return b.usage?.uptime_ms ?? null;
+    } catch {
+      // If retrieve 404s, the browser is gone → definitely not billing.
+      return null;
+    }
+  };
+
+  const first = await readUptime();
+  if (first === null) return true; // gone or unknown → treat as not billing
+  // Give Kernel a moment to settle into standby, then re-read.
+  await new Promise((r) => setTimeout(r, 6_000));
+  const second = await readUptime();
+  if (second === null) return true; // disappeared → not billing
+
+  // Allow a small slop for the settle window; if uptime barely moved, it's idle.
+  const grewMs = second - first;
+  return grewMs <= 1_000;
 }
 
 /**

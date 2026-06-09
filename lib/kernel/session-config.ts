@@ -16,13 +16,19 @@
 
 const MINUTE_MS = 60_000;
 
+// =============================================================================
+// TEMPORARY SHORT TIMINGS FOR TESTING
+// TODO: restore production timings (12-min warning, 3-min countdown, 60-min
+// cap, 5-min cap warning) before merging. See PRODUCTION values below.
+// =============================================================================
+
 // --- Idle policy ----------------------------------------------------------
 
 /** Inactivity before the idle warning modal appears. */
-export const IDLE_WARNING_AFTER_MS = 12 * MINUTE_MS;
+export const IDLE_WARNING_AFTER_MS = 1 * MINUTE_MS; // PROD: 12 * MINUTE_MS
 
 /** Countdown shown in the warning modal before disconnecting to standby. */
-export const IDLE_COUNTDOWN_MS = 3 * MINUTE_MS;
+export const IDLE_COUNTDOWN_MS = 1 * MINUTE_MS; // PROD: 3 * MINUTE_MS
 
 /** Total inactivity before disconnect (warning + countdown). */
 export const IDLE_DISCONNECT_AFTER_MS =
@@ -31,24 +37,27 @@ export const IDLE_DISCONNECT_AFTER_MS =
 // --- Hard cap -------------------------------------------------------------
 
 /** Maximum lifetime of a session regardless of activity. */
-export const HARD_CAP_MS = 60 * MINUTE_MS;
+export const HARD_CAP_MS = 10 * MINUTE_MS; // PROD: 60 * MINUTE_MS
 
 /** Warning shown before the hard cap ends the session. */
-export const CAP_WARNING_BEFORE_MS = 5 * MINUTE_MS;
+export const CAP_WARNING_BEFORE_MS = 2 * MINUTE_MS; // PROD: 5 * MINUTE_MS
 
 // --- Kernel server-side backstop -----------------------------------------
 
 /**
- * Inactivity timeout passed to Kernel's `browsers.create`. Kernel counts CDP +
- * live-view connections as activity, so while the tab is open this never fires;
- * it only reaps orphaned sessions (closed tab, crashed client). We set it
- * comfortably above the hard cap so our own controller, not Kernel, governs the
- * happy path, while standby sessions (CDP intentionally disconnected) survive
- * long enough to be reconnected within the cap.
+ * Inactivity timeout passed to Kernel's `browsers.create`. This is the hard
+ * cost safety net: if our own standby/cleanup ever fails to disconnect a
+ * session, Kernel reaps it after this much network inactivity so billing
+ * stops no matter what.
+ *
+ * Trade-off: a session that has gone to standby is, by definition, network-idle
+ * — so Kernel's timer is running against it. This value therefore also bounds
+ * how long after standby a user can reconnect before Kernel reaps the browser
+ * (after which reconnect recreates from the persistent profile, restoring
+ * state). Keep it short for cost safety; reconnect-from-profile covers the rest.
+ * Kernel min is 10s, max 72h.
  */
-export const KERNEL_TIMEOUT_SECONDS = Math.ceil(
-  (HARD_CAP_MS + 10 * MINUTE_MS) / 1000,
-);
+export const KERNEL_TIMEOUT_SECONDS = 90; // PROD: consider 5–10 min
 
 // --- Client polling -------------------------------------------------------
 
