@@ -1,6 +1,9 @@
 'use client';
 
-import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
+import {
+  DefaultChatTransport,
+  lastAssistantMessageIsCompleteWithToolCalls,
+} from 'ai';
 import { useChat } from '@ai-sdk/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSWRConfig } from 'swr';
@@ -23,8 +26,13 @@ import type { Attachment, ChatMessage } from '@/lib/types';
 import { useDataStream } from './data-stream-provider';
 import { BenefitApplicationsLanding } from './benefit-applications-landing';
 import { TokenUsageProvider } from '@/hooks/use-token-usage';
+import { useSessionMapping } from '@/hooks/use-session-mapping';
 
-export type CheckpointData = { messageId: string; stepNumber: number; summary: string };
+export type CheckpointData = {
+  messageId: string;
+  stepNumber: number;
+  summary: string;
+};
 
 export function Chat({
   id,
@@ -62,14 +70,17 @@ export function Chat({
     outputTokens: number;
     cachedInputTokens: number;
     currentInputTokens: number;
-  }>({ inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, currentInputTokens: 0 });
+  }>({
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    currentInputTokens: 0,
+  });
 
   // Track compaction checkpoints. Each entry records the message ID,
   // the number of parts that message had at checkpoint time, and the summary.
   // This lets us render the card between parts at the right position.
-  const [checkpoints, setCheckpoints] = useState<CheckpointData[]>(
-    []
-  );
+  const [checkpoints, setCheckpoints] = useState<CheckpointData[]>([]);
   // True while the compressor is running the Sonnet summary call
   const [isCompacting, setIsCompacting] = useState(false);
   // Ref to always have the latest messages in the onData closure
@@ -104,7 +115,8 @@ export function Chat({
     experimental_throttle: 100,
     generateId: generateUUID,
     sendAutomaticallyWhen: ({ messages }) =>
-      !stoppedRef.current && lastAssistantMessageIsCompleteWithToolCalls({ messages }),
+      !stoppedRef.current &&
+      lastAssistantMessageIsCompleteWithToolCalls({ messages }),
     transport: new DefaultChatTransport({
       api: '/api/chat',
       fetch: fetchWithErrorHandlers,
@@ -187,6 +199,15 @@ export function Chat({
   // Keep ref in sync so onData closure always has latest messages
   messagesRef.current = messages;
 
+  // Report the PostHog session id for this chat once the chat is persisted.
+  // An assistant message only exists after the server's POST handler ran,
+  // which creates the chat row before streaming — so this guarantees the
+  // ownership check in /api/session-mapping will find the chat.
+  useSessionMapping({
+    chatId: id,
+    ready: messages.some((m) => m.role === 'assistant'),
+  });
+
   const stop = async () => {
     stoppedRef.current = true;
     // Explicit server-side cancel. Cloud Run over HTTP/1.1 does not
@@ -233,7 +254,8 @@ export function Chat({
   const [attachments, setAttachments] = useState<Array<Attachment>>([]);
   const isArtifactVisible = useArtifactSelector((state) => state.isVisible);
   const { setArtifact, artifact } = useArtifact();
-  const [browserArtifactDismissed, setBrowserArtifactDismissed] = useState(false);
+  const [browserArtifactDismissed, setBrowserArtifactDismissed] =
+    useState(false);
 
   // Derive once — whether any message contains a browser tool call
   const hasBrowserToolCall = useMemo(
@@ -270,8 +292,10 @@ export function Chat({
     if (status !== 'streaming') return;
 
     if (hasBrowserToolCall && !isArtifactVisible && !browserArtifactDismissed) {
-      const userMessage = messages.find(msg => msg.role === 'user');
-      const messageText = userMessage?.parts.find(part => part.type === 'text')?.text || 'Web Automation';
+      const userMessage = messages.find((msg) => msg.role === 'user');
+      const messageText =
+        userMessage?.parts.find((part) => part.type === 'text')?.text ||
+        'Web Automation';
       const title = `Browser: ${messageText}`;
 
       setArtifact({
@@ -289,14 +313,31 @@ export function Chat({
         },
       });
     }
-  }, [hasBrowserToolCall, isArtifactVisible, browserArtifactDismissed, status, messages, setArtifact]);
+  }, [
+    hasBrowserToolCall,
+    isArtifactVisible,
+    browserArtifactDismissed,
+    status,
+    messages,
+    setArtifact,
+  ]);
 
   // Track when user manually closes the browser artifact
   useEffect(() => {
-    if (!isArtifactVisible && !browserArtifactDismissed && hasBrowserToolCall && initialChatModel === 'web-automation-model') {
+    if (
+      !isArtifactVisible &&
+      !browserArtifactDismissed &&
+      hasBrowserToolCall &&
+      initialChatModel === 'web-automation-model'
+    ) {
       setBrowserArtifactDismissed(true);
     }
-  }, [isArtifactVisible, browserArtifactDismissed, hasBrowserToolCall, initialChatModel]);
+  }, [
+    isArtifactVisible,
+    browserArtifactDismissed,
+    hasBrowserToolCall,
+    initialChatModel,
+  ]);
 
   // Reset dismissed state when a new user message arrives
   useEffect(() => {
@@ -381,7 +422,7 @@ export function Chat({
               checkpoints={checkpoints}
               isCompacting={isCompacting}
             />
-  
+
             <div className="shrink-0 mx-auto px-4 pt-6 bg-chat-background pb-4 md:pb-6 w-full">
               {!isReadonly && (
                 <form className="flex gap-2 w-full md:max-w-3xl mx-auto">

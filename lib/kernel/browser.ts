@@ -1,5 +1,6 @@
 import Kernel from '@onkernel/sdk';
 import { BrowserManager } from 'agent-browser/dist/browser.js';
+import { upsertSessionMapping } from '@/lib/db/queries';
 import { KERNEL_TIMEOUT_SECONDS } from './session-config';
 import {
   buildSessionStatus,
@@ -172,6 +173,26 @@ export async function getOrCreateBrowser(
       };
 
       sessions.set(key, session);
+
+      // Record the kernel session/replay ids against the chat so they can be
+      // correlated with the PostHog session (reported from the client). The
+      // sessionId is `${chatId}-${userId}`, so the chatId is everything before
+      // the trailing `-${userId}`. Best-effort: never fail browser creation.
+      const chatId = sessionId.endsWith(`-${userId}`)
+        ? sessionId.slice(0, -(userId.length + 1))
+        : null;
+      if (chatId) {
+        try {
+          await upsertSessionMapping({
+            chatId,
+            userId,
+            kernelSessionId: browser.session_id,
+            kernelReplayId: replayId,
+          });
+        } catch (err) {
+          console.error('[Kernel] Failed to record session mapping:', err);
+        }
+      }
 
       return session;
     } finally {

@@ -9,6 +9,7 @@ import {
   primaryKey,
   foreignKey,
   boolean,
+  unique,
 } from 'drizzle-orm/pg-core';
 
 export const user = pgTable('User', {
@@ -113,7 +114,9 @@ export const document = pgTable(
     createdAt: timestamp('createdAt').notNull(),
     title: text('title').notNull(),
     content: text('content'),
-    kind: varchar('text', { enum: ['text', 'code', 'image', 'sheet', 'browser'] })
+    kind: varchar('text', {
+      enum: ['text', 'code', 'image', 'sheet', 'browser'],
+    })
       .notNull()
       .default('text'),
     userId: uuid('userId')
@@ -172,3 +175,31 @@ export const stream = pgTable(
 );
 
 export type Stream = InferSelectModel<typeof stream>;
+
+// Mapping table correlating a chat with its PostHog session and Kernel browser
+// session/replay. Populated from two directions: the client supplies the
+// PostHog session id (only knowable in the browser), the server supplies the
+// Kernel session/replay ids (only knowable when the browser is created). One
+// row per chat — fields fill in as each id materializes (upsert on chatId).
+export const sessionMapping = pgTable(
+  'SessionMapping',
+  {
+    id: uuid('id').primaryKey().notNull().defaultRandom(),
+    chatId: uuid('chatId')
+      .notNull()
+      .references(() => chat.id),
+    userId: uuid('userId')
+      .notNull()
+      .references(() => user.id),
+    posthogSessionId: text('posthogSessionId'),
+    kernelSessionId: text('kernelSessionId'),
+    kernelReplayId: text('kernelReplayId'),
+    createdAt: timestamp('createdAt').notNull(),
+    updatedAt: timestamp('updatedAt').notNull(),
+  },
+  (table) => ({
+    chatUnique: unique('SessionMapping_chatId_unique').on(table.chatId),
+  }),
+);
+
+export type SessionMapping = InferSelectModel<typeof sessionMapping>;
