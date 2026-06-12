@@ -19,15 +19,15 @@ export interface UploadResult {
 export async function uploadFile(
   filename: string,
   fileBuffer: ArrayBuffer,
-  contentType: string
+  contentType: string,
 ): Promise<UploadResult> {
   try {
     // Generate a unique filename to avoid conflicts
     const timestamp = Date.now();
     const uniqueFilename = `chat-uploads/${timestamp}-${filename}`;
-    
+
     const file = bucket.file(uniqueFilename);
-    
+
     // Upload the file
     await file.save(Buffer.from(fileBuffer), {
       metadata: {
@@ -38,7 +38,7 @@ export async function uploadFile(
 
     // Get the public URL
     const publicUrl = `https://storage.googleapis.com/${bucketName}/${uniqueFilename}`;
-    
+
     return {
       url: publicUrl,
       downloadUrl: publicUrl,
@@ -61,5 +61,29 @@ export async function deleteFile(pathname: string): Promise<void> {
 }
 
 export async function getFileUrl(pathname: string): Promise<string> {
+  return `https://storage.googleapis.com/${bucketName}/${pathname}`;
+}
+
+/**
+ * Upload a kernel browser replay video to object storage under a stable,
+ * chat-scoped path: `replays/<chatId>/<kernelSessionId>.mp4`. Deterministic
+ * (no timestamp) so a re-run overwrites rather than duplicates. Returns the
+ * stored URL to persist on the session mapping.
+ *
+ * Note: objects under `replays/` should be excluded from the bucket's default
+ * deletion lifecycle rule (see terraform/storage.tf) so videos are retained.
+ */
+export async function uploadReplayVideo(
+  chatId: string,
+  kernelSessionId: string,
+  videoBuffer: ArrayBuffer,
+): Promise<string> {
+  const pathname = `replays/${chatId}/${kernelSessionId}.mp4`;
+  const file = bucket.file(pathname);
+
+  await file.save(Buffer.from(videoBuffer), {
+    metadata: { contentType: 'video/mp4' },
+  });
+
   return `https://storage.googleapis.com/${bucketName}/${pathname}`;
 }

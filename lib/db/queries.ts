@@ -627,14 +627,18 @@ export async function upsertSessionMapping({
   chatId,
   userId,
   posthogSessionId,
+  posthogReplayUrl,
   kernelSessionId,
   kernelReplayId,
+  kernelReplayUrl,
 }: {
   chatId: string;
   userId: string;
   posthogSessionId?: string;
+  posthogReplayUrl?: string;
   kernelSessionId?: string;
   kernelReplayId?: string;
+  kernelReplayUrl?: string;
 }) {
   try {
     const now = new Date();
@@ -644,10 +648,14 @@ export async function upsertSessionMapping({
     const setOnConflict: Record<string, unknown> = { updatedAt: now };
     if (posthogSessionId !== undefined)
       setOnConflict.posthogSessionId = posthogSessionId;
+    if (posthogReplayUrl !== undefined)
+      setOnConflict.posthogReplayUrl = posthogReplayUrl;
     if (kernelSessionId !== undefined)
       setOnConflict.kernelSessionId = kernelSessionId;
     if (kernelReplayId !== undefined)
       setOnConflict.kernelReplayId = kernelReplayId;
+    if (kernelReplayUrl !== undefined)
+      setOnConflict.kernelReplayUrl = kernelReplayUrl;
 
     return await db
       .insert(sessionMapping)
@@ -655,8 +663,10 @@ export async function upsertSessionMapping({
         chatId,
         userId,
         posthogSessionId,
+        posthogReplayUrl,
         kernelSessionId,
         kernelReplayId,
+        kernelReplayUrl,
         createdAt: now,
         updatedAt: now,
       })

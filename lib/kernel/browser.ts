@@ -1,6 +1,7 @@
 import Kernel from '@onkernel/sdk';
 import { BrowserManager } from 'agent-browser/dist/browser.js';
 import { upsertSessionMapping } from '@/lib/db/queries';
+import { uploadReplayVideo } from '@/lib/storage/gcs';
 import { KERNEL_TIMEOUT_SECONDS } from './session-config';
 import {
   buildSessionStatus,
@@ -396,15 +397,42 @@ export async function deleteBrowser(
   // Remove from cache first
   sessions.delete(key);
 
-  // Stop replay recording and log the view URL
+  // Stop the replay recording, then download the finished video and archive it
+  // to object storage. Stopping first ensures the recording is complete before
+  // we download it. All best-effort — teardown must not fail on archival.
   if (session.replayId) {
     try {
       await kernel.browsers.replays.stop(session.replayId, {
         id: session.kernelSessionId,
       });
-      await kernel.browsers.replays.list(session.kernelSessionId);
+
+      const chatId = sessionId.endsWith(`-${userId}`)
+        ? sessionId.slice(0, -(userId.length + 1))
+        : null;
+
+      if (chatId) {
+        try {
+          const videoResponse = await kernel.browsers.replays.download(
+            session.replayId,
+            { id: session.kernelSessionId },
+          );
+          const videoBuffer = await videoResponse.arrayBuffer();
+          const url = await uploadReplayVideo(
+            chatId,
+            session.kernelSessionId,
+            videoBuffer,
+          );
+          await upsertSessionMapping({
+            chatId,
+            userId,
+            kernelReplayUrl: url,
+          });
+        } catch (err) {
+          console.error('[Kernel] Failed to archive replay video:', err);
+        }
+      }
     } catch (err) {
-      console.error('[Kernel] Failed to stop/list replays:', err);
+      console.error('[Kernel] Failed to stop replay:', err);
     }
   }
 

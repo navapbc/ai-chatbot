@@ -192,8 +192,15 @@ export const sessionMapping = pgTable(
       .notNull()
       .references(() => user.id),
     posthogSessionId: text('posthogSessionId'),
+    // Deep-link to the PostHog-hosted session replay. PostHog has no video
+    // export, so we keep the link rather than re-storing the recording.
+    posthogReplayUrl: text('posthogReplayUrl'),
     kernelSessionId: text('kernelSessionId'),
     kernelReplayId: text('kernelReplayId'),
+    // Stored location of the kernel browser video, downloaded from Kernel and
+    // uploaded to object storage on browser teardown. Null until the video
+    // lands. Storage-agnostic (currently a GCS URL).
+    kernelReplayUrl: text('kernelReplayUrl'),
     createdAt: timestamp('createdAt').notNull(),
     updatedAt: timestamp('updatedAt').notNull(),
   },
