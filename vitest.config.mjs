@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config';
-import path from 'path';
+import path from 'node:path';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
@@ -8,6 +8,25 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './'),
     },
+  },
+  // Pre-bundle UI deps so the optimizer doesn't discover them mid-run and force
+  // a reload (which nulls React and breaks Radix-based component tests).
+  optimizeDeps: {
+    include: [
+      'react',
+      'react-dom',
+      'react/jsx-dev-runtime',
+      '@radix-ui/react-alert-dialog',
+      '@radix-ui/react-checkbox',
+      '@radix-ui/react-collapsible',
+      '@radix-ui/react-dialog',
+      '@radix-ui/react-dropdown-menu',
+      '@radix-ui/react-label',
+      '@radix-ui/react-radio-group',
+      '@radix-ui/react-select',
+      '@radix-ui/react-switch',
+      '@radix-ui/react-tooltip',
+    ],
   },
   test: {
     browser: {
@@ -18,6 +37,7 @@ export default defineConfig({
       ],
     },
     globals: true,
+    setupFiles: ['./tests/setup.ts'],
     exclude: [
       '**/node_modules/**',
       '**/dist/**',

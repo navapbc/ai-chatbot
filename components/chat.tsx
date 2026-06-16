@@ -1,11 +1,15 @@
 'use client';
 
-import { DefaultChatTransport } from 'ai';
+import {
+  DefaultChatTransport,
+  lastAssistantMessageIsCompleteWithToolCalls,
+} from 'ai';
 import { useChat } from '@ai-sdk/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import useSWR, { useSWRConfig } from 'swr';
-import type { Vote } from '@/lib/db/schema';
-import { fetcher, fetchWithErrorHandlers, generateUUID } from '@/lib/utils';
+import { useSWRConfig } from 'swr';
+import { useLocalStorage } from 'usehooks-ts';
+import { fetchWithErrorHandlers, generateUUID } from '@/lib/utils';
+import { isProductionEnvironment } from '@/lib/constants';
 import { Artifact } from './artifact';
 import { MultimodalInput } from './multimodal-input';
 import { Messages } from './messages';
@@ -22,8 +26,13 @@ import type { Attachment, ChatMessage } from '@/lib/types';
 import { useDataStream } from './data-stream-provider';
 import { BenefitApplicationsLanding } from './benefit-applications-landing';
 import { TokenUsageProvider } from '@/hooks/use-token-usage';
+import { useSessionMapping } from '@/hooks/use-session-mapping';
 
-export type CheckpointData = { messageId: string; stepNumber: number; summary: string };
+export type CheckpointData = {
+  messageId: string;
+  stepNumber: number;
+  summary: string;
+};
 
 export function Chat({
   id,
@@ -54,31 +63,48 @@ export function Chat({
 
   const [input, setInput] = useState<string>('');
 
-  // Local state; passed to TokenUsageProvider so SideChatHeader can read it
-  // without prop threading through the Artifact memo boundary.
+  // Local state; exposed via TokenUsageProvider so ContextUsage (and any
+  // other consumer) can read it without prop threading through memo boundaries.
   const [tokenUsage, setTokenUsage] = useState<{
     inputTokens: number;
     outputTokens: number;
     cachedInputTokens: number;
     currentInputTokens: number;
-  }>({ inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, currentInputTokens: 0 });
+  }>({
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    currentInputTokens: 0,
+  });
 
   // Track compaction checkpoints. Each entry records the message ID,
   // the number of parts that message had at checkpoint time, and the summary.
   // This lets us render the card between parts at the right position.
-  const [checkpoints, setCheckpoints] = useState<CheckpointData[]>(
-    []
-  );
+  const [checkpoints, setCheckpoints] = useState<CheckpointData[]>([]);
   // True while the compressor is running the Sonnet summary call
   const [isCompacting, setIsCompacting] = useState(false);
   // Ref to always have the latest messages in the onData closure
   const messagesRef = useRef<ChatMessage[]>([]);
 
+  // When the user presses Stop, useChat aborts the in-flight fetch but
+  // auto-continues the tool loop on the next render (because the last
+  // assistant message ends with a completed tool call). We guard the
+  // auto-send with this flag so Stop actually halts the loop. Reset
+  // on the next user-initiated send.
+  const stoppedRef = useRef(false);
+
+  const [selectedModelId] = useLocalStorage<string>('selected-chat-model-id', '');
+  // useChat captures the transport (and its prepareSendMessagesRequest closure)
+  // once at first render, so reading selectedModelId directly there would freeze
+  // it at the initial value. Route reads through a ref updated every render so
+  // each send picks up the current model selection.
+  const selectedModelIdRef = useRef(selectedModelId);
+  selectedModelIdRef.current = selectedModelId;
 
   const {
     messages,
     setMessages,
-    sendMessage,
+    sendMessage: rawSendMessage,
     status,
     stop: originalStop,
     regenerate,
@@ -88,6 +114,9 @@ export function Chat({
     messages: initialMessages,
     experimental_throttle: 100,
     generateId: generateUUID,
+    sendAutomaticallyWhen: ({ messages }) =>
+      !stoppedRef.current &&
+      lastAssistantMessageIsCompleteWithToolCalls({ messages }),
     transport: new DefaultChatTransport({
       api: '/api/chat',
       fetch: fetchWithErrorHandlers,
@@ -97,6 +126,9 @@ export function Chat({
           message: messages.at(-1),
           selectedChatModel: initialChatModel,
           selectedVisibilityType: visibilityType,
+          ...(!isProductionEnvironment && selectedModelIdRef.current
+            ? { modelOverride: selectedModelIdRef.current }
+            : {}),
           ...body,
         },
       }),
@@ -112,13 +144,6 @@ export function Chat({
         setIsCompacting(false);
         const currentMessages = messagesRef.current;
         const lastMsg = currentMessages[currentMessages.length - 1];
-        console.log(
-          '[checkpoint] received data-checkpoint event',
-          'messagesCount:', currentMessages.length,
-          'lastMsgId:', lastMsg?.id,
-          'lastMsgRole:', lastMsg?.role,
-          'lastMsgParts:', lastMsg?.parts?.length,
-        );
         if (lastMsg) {
           const data = part.data as any;
           const summary = data?.summary ?? '';
@@ -174,8 +199,32 @@ export function Chat({
   // Keep ref in sync so onData closure always has latest messages
   messagesRef.current = messages;
 
+  // Report the PostHog session id for this chat once the chat is persisted.
+  // An assistant message only exists after the server's POST handler ran,
+  // which creates the chat row before streaming — so this guarantees the
+  // ownership check in /api/session-mapping will find the chat.
+  useSessionMapping({
+    chatId: id,
+    ready: messages.some((m) => m.role === 'assistant'),
+  });
+
   const stop = async () => {
+    stoppedRef.current = true;
+    // Explicit server-side cancel. Cloud Run over HTTP/1.1 does not
+    // propagate the fetch abort, so we POST to /api/chat/stop to trigger
+    // the server's AbortController directly. Fire-and-forget — errors
+    // here shouldn't block the local stop().
+    fetch('/api/chat/stop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId: id }),
+    }).catch((err) => console.error('[stop] server cancel failed', err));
     originalStop();
+  };
+
+  const sendMessage: typeof rawSendMessage = (...args) => {
+    stoppedRef.current = false;
+    return rawSendMessage(...args);
   };
 
   const [hasAppendedQuery, setHasAppendedQuery] = useState(false);
@@ -205,7 +254,8 @@ export function Chat({
   const [attachments, setAttachments] = useState<Array<Attachment>>([]);
   const isArtifactVisible = useArtifactSelector((state) => state.isVisible);
   const { setArtifact, artifact } = useArtifact();
-  const [browserArtifactDismissed, setBrowserArtifactDismissed] = useState(false);
+  const [browserArtifactDismissed, setBrowserArtifactDismissed] =
+    useState(false);
 
   // Derive once — whether any message contains a browser tool call
   const hasBrowserToolCall = useMemo(
@@ -242,8 +292,10 @@ export function Chat({
     if (status !== 'streaming') return;
 
     if (hasBrowserToolCall && !isArtifactVisible && !browserArtifactDismissed) {
-      const userMessage = messages.find(msg => msg.role === 'user');
-      const messageText = userMessage?.parts.find(part => part.type === 'text')?.text || 'Web Automation';
+      const userMessage = messages.find((msg) => msg.role === 'user');
+      const messageText =
+        userMessage?.parts.find((part) => part.type === 'text')?.text ||
+        'Web Automation';
       const title = `Browser: ${messageText}`;
 
       setArtifact({
@@ -261,14 +313,31 @@ export function Chat({
         },
       });
     }
-  }, [hasBrowserToolCall, isArtifactVisible, browserArtifactDismissed, status, messages, setArtifact]);
+  }, [
+    hasBrowserToolCall,
+    isArtifactVisible,
+    browserArtifactDismissed,
+    status,
+    messages,
+    setArtifact,
+  ]);
 
   // Track when user manually closes the browser artifact
   useEffect(() => {
-    if (!isArtifactVisible && !browserArtifactDismissed && hasBrowserToolCall && initialChatModel === 'web-automation-model') {
+    if (
+      !isArtifactVisible &&
+      !browserArtifactDismissed &&
+      hasBrowserToolCall &&
+      initialChatModel === 'web-automation-model'
+    ) {
       setBrowserArtifactDismissed(true);
     }
-  }, [isArtifactVisible, browserArtifactDismissed, hasBrowserToolCall, initialChatModel]);
+  }, [
+    isArtifactVisible,
+    browserArtifactDismissed,
+    hasBrowserToolCall,
+    initialChatModel,
+  ]);
 
   // Reset dismissed state when a new user message arrives
   useEffect(() => {
@@ -353,7 +422,7 @@ export function Chat({
               checkpoints={checkpoints}
               isCompacting={isCompacting}
             />
-  
+
             <div className="shrink-0 mx-auto px-4 pt-6 bg-chat-background pb-4 md:pb-6 w-full">
               {!isReadonly && (
                 <form className="flex gap-2 w-full md:max-w-3xl mx-auto">

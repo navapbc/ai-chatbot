@@ -19,7 +19,6 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar';
 import Link from 'next/link';
-import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { useBrowserSessionExit } from '@/hooks/use-browser-session-exit';
 import { ExitWarningModal } from '@/components/exit-warning-modal';
 
@@ -83,7 +82,7 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                 >
                   <PlusIcon size={16} />
                   <span className="text-[14px] font-medium text-sidebar-foreground leading-[24px] not-italic font-inter">
-                    New chat
+                    New application
                   </span>
                 </Button>
               </div>

@@ -86,8 +86,7 @@ const getToolIcon = (toolName: string) => {
     'get-participant-with-household': Database,
     'gapAnalysis': FileText,
     'actionLabel': Layers,
-    'loadSkill': Download,
-    'readSkillFile': FileText,
+    'readReference': FileText,
   };
 
   return iconMap[cleanToolName] || FileText; // Default icon
@@ -153,21 +152,21 @@ const parseBrowserAction = (input?: Record<string, any>): { text: string; icon: 
   // Navigate — show URL
   if (action === 'navigate' && input.url) {
     const url = String(input.url);
-    const displayUrl = url.length > 40 ? url.substring(0, 40) + '...' : url;
+    const displayUrl = url.length > 40 ? `${url.substring(0, 40)}...` : url;
     return { text: `${mapping.verb} ${displayUrl}`, icon: mapping.icon };
   }
 
   // Fill — show value
   if (action === 'fill' && input.value) {
     const value = String(input.value);
-    const display = value.length > 35 ? value.substring(0, 35) + '...' : value;
+    const display = value.length > 35 ? `${value.substring(0, 35)}...` : value;
     return { text: `${mapping.verb} "${display}"`, icon: mapping.icon };
   }
 
   // Type — show text
   if (action === 'type' && input.text) {
     const text = String(input.text);
-    const display = text.length > 35 ? text.substring(0, 35) + '...' : text;
+    const display = text.length > 35 ? `${text.substring(0, 35)}...` : text;
     return { text: `${mapping.verb} "${display}"`, icon: mapping.icon };
   }
 
@@ -179,7 +178,7 @@ const parseBrowserAction = (input?: Record<string, any>): { text: string; icon: 
   // Select — show values
   if (action === 'select' && input.values) {
     const vals = Array.isArray(input.values) ? input.values.join(', ') : String(input.values);
-    const display = vals.length > 35 ? vals.substring(0, 35) + '...' : vals;
+    const display = vals.length > 35 ? `${vals.substring(0, 35)}...` : vals;
     return { text: `${mapping.verb} "${display}"`, icon: mapping.icon };
   }
 
@@ -193,13 +192,44 @@ const parseBrowserAction = (input?: Record<string, any>): { text: string; icon: 
   // getbylabel — show label and subaction
   if (action === 'getbylabel' && input.label) {
     const label = String(input.label);
-    const display = label.length > 30 ? label.substring(0, 30) + '...' : label;
+    const display = label.length > 30 ? `${label.substring(0, 30)}...` : label;
     const subVerb = input.subaction === 'fill' ? 'Filling' : input.subaction === 'click' ? 'Clicking' : 'Using';
     return { text: `${subVerb} "${display}"`, icon: input.subaction === 'fill' ? Type : MousePointer };
   }
 
   // Fallback — just show the verb
   return { text: mapping.verb, icon: mapping.icon };
+};
+
+const hasValue = (v: any): boolean =>
+  Array.isArray(v) ? v.length > 0 : v != null && String(v).length > 0;
+
+// A tool call is "specific" when it carries a concrete user-visible value
+// (a typed value, a chosen option, a destination URL) rather than a generic
+// navigation/inspection action (click, snapshot, scroll, wait, ...).
+export const isSpecificToolAction = (toolName: string, input?: any): boolean => {
+  const cleanToolName = toolName.replace('tool-', '');
+
+  if (cleanToolName === 'browser') {
+    const action = input?.action ? String(input.action).toLowerCase() : '';
+    switch (action) {
+      case 'fill': return hasValue(input?.value);
+      case 'type': return hasValue(input?.text);
+      case 'select': return hasValue(input?.values);
+      case 'navigate': return hasValue(input?.url);
+      case 'getbylabel': return input?.subaction === 'fill';
+      default: return false;
+    }
+  }
+
+  // Legacy browser_* / playwright_browser_* tool formats
+  const base = cleanToolName.replace(/^playwright_/, '');
+  switch (base) {
+    case 'browser_type': return hasValue(input?.text);
+    case 'browser_select_option': return hasValue(input?.values);
+    case 'browser_navigate': return hasValue(input?.url);
+    default: return false;
+  }
 };
 
 // Helper function to get tool display name with icon
@@ -259,8 +289,7 @@ export const getToolDisplayInfo = (toolName: string, input?: any): { text: strin
     'search-participants-by-name': (input) => input?.name ? `Searched for participant "${input.name}"` : 'Searched for participant',
     'get-participant-with-household': () => 'Retrieved participant data',
     'gapAnalysis': () => 'Gap analysis',
-    'loadSkill': (input) => input?.name ? `Loaded ${input.name} skill` : 'Loaded skill',
-    'readSkillFile': () => 'Loaded reference file',
+    'readReference': (input) => input?.path ? `Loaded ${input.path}` : 'Loaded reference file',
   };
 
   const mapper = toolMappings[cleanToolName];

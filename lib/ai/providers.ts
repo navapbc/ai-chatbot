@@ -4,7 +4,6 @@ import {
   wrapLanguageModel,
 } from 'ai';
 import { openai } from '@ai-sdk/openai';
-import { gateway } from '@ai-sdk/gateway';
 import { vertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
 import {
   artifactModel,
@@ -15,7 +14,7 @@ import {
 import { isTestEnvironment } from '../constants';
 
 // Anthropic model for web automation via Vertex AI
-export const webAutomationModel = vertexAnthropic('claude-sonnet-4-6');
+export const webAutomationModel = vertexAnthropic('claude-opus-4-7');
 export const prepareStepModel = vertexAnthropic('claude-haiku-4-5');
 
 export const myProvider = isTestEnvironment
@@ -37,10 +36,12 @@ export const myProvider = isTestEnvironment
         'title-model': openai('gpt-4o-mini'),
         'artifact-model': openai('gpt-4o'),
         // Dev-only selectable models (shown in ModelSelectorButton, hidden in production)
-        'gpt-5.4': openai('gpt-5.4'),
-        'gpt-5.4-pro': openai('gpt-5.4-pro'),
-        'gpt-5.4-mini': openai('gpt-5.4-mini'),
-        'gpt-5.4-nano': openai('gpt-5.4-nano'),
+        'gpt-5.5': openai('gpt-5.5'),
+        'gpt-5.5-pro': openai('gpt-5.5-pro'),
+        'gpt-5.5-mini': openai('gpt-5.5-mini'),
+        'gpt-5.5-nano': openai('gpt-5.5-nano'),
+        'claude-opus-4-7': vertexAnthropic('claude-opus-4-7'),
+        'claude-opus-4-8': vertexAnthropic('claude-opus-4-8'),
         'claude-sonnet-4-6': vertexAnthropic('claude-sonnet-4-6'),
         'claude-haiku-4-5': vertexAnthropic('claude-haiku-4-5'),
       },

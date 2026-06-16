@@ -5,7 +5,13 @@ import { Button } from '@/components/ui/button';
 import { MousePointerClick, RefreshCw, Monitor } from 'lucide-react';
 import { toast } from 'sonner';
 import { AgentStatusIndicator } from '@/components/agent-status-indicator';
-import { BrowserLoadingState, BrowserErrorState, BrowserTimeoutState } from './browser-states';
+import {
+  BrowserLoadingState,
+  BrowserErrorState,
+  BrowserStandbyState,
+} from './browser-states';
+import { SessionTimeoutModal } from '@/components/session-timeout-modal';
+import { useSessionLifecycle } from '@/hooks/use-session-lifecycle';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
   Sheet,
@@ -67,74 +73,78 @@ export function KernelBrowserClient({
   const initializedSessionRef = useRef<string | null>(null);
   const initInFlightRef = useRef(false);
 
-  // Diagnostic: track mount/unmount to find stale iframe root cause
-  useEffect(() => {
-    console.log('[KernelBrowserClient] MOUNTED, sessionId:', sessionId);
-    return () => {
-      console.log('[KernelBrowserClient] UNMOUNTED, sessionId:', sessionId);
-    };
-  }, [sessionId]);
-
-  const initBrowser = useCallback(async (force = false) => {
-    // Skip if already initialized for this session (unless forced)
-    if (!force && initializedSessionRef.current === sessionId && liveViewUrlRef.current) {
-      return;
-    }
-    // Skip if a request is already in-flight
-    if (initInFlightRef.current) {
-      return;
-    }
-
-    try {
-      initInFlightRef.current = true;
-      setLoading(true);
-      setError(null);
-
-      // force=true (refresh button) → create a new browser directly
-      // force=false (normal mount) → poll for the browser the tool creates
-      const action = force ? 'create' : 'get';
-      const maxAttempts = force ? 1 : 30; // poll up to 30s for tool to create
-      let attempts = 0;
-
-      while (attempts < maxAttempts) {
-        const response = await fetch('/api/kernel-browser', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, sessionId, isMobile: isMobileRef.current }),
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          if (data.liveViewUrl) {
-            setLiveViewUrl(data.liveViewUrl);
-            setIsConnected(true);
-            initializedSessionRef.current = sessionId;
-            onConnectionChangeRef.current?.(true);
-            return;
-          }
-        } else if (force) {
-          // For create, surface error immediately
-          const data = await response.json();
-          throw new Error(data.error || 'Failed to create browser');
-        }
-
-        attempts++;
-        if (attempts < maxAttempts) {
-          await new Promise((r) => setTimeout(r, 1000));
-        }
+  const initBrowser = useCallback(
+    async (force = false) => {
+      // Skip if already initialized for this session (unless forced)
+      if (
+        !force &&
+        initializedSessionRef.current === sessionId &&
+        liveViewUrlRef.current
+      ) {
+        return;
+      }
+      // Skip if a request is already in-flight
+      if (initInFlightRef.current) {
+        return;
       }
 
-      throw new Error('Browser session not available yet. Please try again.');
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to connect';
-      setError(message);
-      setIsConnected(false);
-      onConnectionChangeRef.current?.(false);
-    } finally {
-      setLoading(false);
-      initInFlightRef.current = false;
-    }
-  }, [sessionId]);
+      try {
+        initInFlightRef.current = true;
+        setLoading(true);
+        setError(null);
+
+        // force=true (refresh button) → create a new browser directly
+        // force=false (normal mount) → poll for the browser the tool creates
+        const action = force ? 'create' : 'get';
+        const maxAttempts = force ? 1 : 30; // poll up to 30s for tool to create
+        let attempts = 0;
+
+        while (attempts < maxAttempts) {
+          const response = await fetch('/api/kernel-browser', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action,
+              sessionId,
+              isMobile: isMobileRef.current,
+            }),
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            if (data.liveViewUrl) {
+              setLiveViewUrl(data.liveViewUrl);
+              setIsConnected(true);
+              initializedSessionRef.current = sessionId;
+              onConnectionChangeRef.current?.(true);
+              return;
+            }
+          } else if (force) {
+            // For create, surface error immediately
+            const data = await response.json();
+            throw new Error(data.error || 'Failed to create browser');
+          }
+
+          attempts++;
+          if (attempts < maxAttempts) {
+            await new Promise((r) => setTimeout(r, 1000));
+          }
+        }
+
+        throw new Error('Browser session not available yet. Please try again.');
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Failed to connect';
+        setError(message);
+        setIsConnected(false);
+        onConnectionChangeRef.current?.(false);
+      } finally {
+        setLoading(false);
+        initInFlightRef.current = false;
+      }
+    },
+    [sessionId],
+  );
 
   // Keep sessionId in a ref so the beforeunload handler always has the latest value
   const sessionIdRef = useRef(sessionId);
@@ -152,8 +162,10 @@ export function KernelBrowserClient({
   useEffect(() => {
     const cleanup = () => {
       try {
-        console.log('[KernelBrowserClient] CLEANUP firing — sending delete for session:', sessionIdRef.current);
-        const payload = JSON.stringify({ action: 'delete', sessionId: sessionIdRef.current });
+        const payload = JSON.stringify({
+          action: 'delete',
+          sessionId: sessionIdRef.current,
+        });
         navigator.sendBeacon(
           '/api/kernel-browser',
           new Blob([payload], { type: 'application/json' }),
@@ -184,10 +196,16 @@ export function KernelBrowserClient({
       }
     };
 
-    window.addEventListener('switch-browser-control', handleSwitchControl as EventListener);
+    window.addEventListener(
+      'switch-browser-control',
+      handleSwitchControl as EventListener,
+    );
 
     return () => {
-      window.removeEventListener('switch-browser-control', handleSwitchControl as EventListener);
+      window.removeEventListener(
+        'switch-browser-control',
+        handleSwitchControl as EventListener,
+      );
     };
   }, []);
 
@@ -212,9 +230,20 @@ export function KernelBrowserClient({
       return;
     }
 
-    console.log(`[Kernel] Switching control mode to: ${mode}`);
+    console.log('[Kernel] switchControlMode', {
+      from: controlMode,
+      to: mode,
+      sessionId,
+      chatStatus,
+      willStop: mode === 'user' && Boolean(stop),
+      willResume: mode === 'agent' && Boolean(sendMessage),
+    });
 
     if (mode === 'user') {
+      // Taking control is a user action — reset the idle timer. (We can't see
+      // clicks/keystrokes inside the cross-origin live view iframe, so entering
+      // takeover is our user-activity signal.)
+      lifecycleRef.current?.recordUserActivity();
       // Stop the AI when user takes control
       if (stop) {
         stop();
@@ -231,10 +260,12 @@ export function KernelBrowserClient({
       if (sendMessage) {
         sendMessage({
           role: 'user' as const,
-          parts: [{
-            type: 'text' as const,
-            text: "I've finished making my changes to the page. Please take a snapshot to review what I updated and continue from where you left off.",
-          }],
+          parts: [
+            {
+              type: 'text' as const,
+              text: "I've finished making my changes to the page. Please take a snapshot to review what I updated and continue from where you left off.",
+            },
+          ],
         });
       }
     }
@@ -263,6 +294,33 @@ export function KernelBrowserClient({
     }
   };
 
+  // Single session-lifecycle controller: idle timer (last user/agent action →
+  // warning → countdown → standby) + hard cap. Standby drops the live view so
+  // Kernel scales to zero; reconnect restores it from the persistent profile.
+  const lifecycle = useSessionLifecycle({
+    sessionId,
+    isConnected,
+    isMobile,
+    onStandby: () => {
+      // Live view goes dark while the browser is in standby.
+      setLiveViewUrl(null);
+      onConnectionChangeRef.current?.(false);
+    },
+    onHardEnd: () => {
+      disconnectBrowser();
+    },
+    onReconnected: (url) => {
+      setLiveViewUrl(url);
+      setIsConnected(true);
+      onConnectionChangeRef.current?.(true);
+    },
+  });
+
+  // Ref so handlers defined above (switchControlMode) can report user activity
+  // without depending on the lifecycle object's identity.
+  const lifecycleRef = useRef(lifecycle);
+  lifecycleRef.current = lifecycle;
+
   // Build the iframe URL with readOnly based on control mode
   // In agent mode: readOnly=true (user cannot interact)
   // In user mode: no readOnly param (user can interact directly)
@@ -280,228 +338,295 @@ export function KernelBrowserClient({
     return url.toString();
   }, [liveViewUrl, controlMode]);
 
+  // The session-timeout warning modal. Radix Dialog portals to document.body,
+  // so rendering it alongside whichever layout branch is active is sufficient.
+  const sessionModal = (
+    <SessionTimeoutModal
+      open={lifecycle.warningOpen}
+      onOpenChange={(open) => {
+        if (!open) lifecycle.continueSession();
+      }}
+      countdownSeconds={lifecycle.countdownSeconds}
+      reason={lifecycle.warningReason ?? 'idle'}
+      onEndSession={disconnectBrowser}
+      onContinueSession={lifecycle.continueSession}
+    />
+  );
+
   if (loading) {
-    return <BrowserLoadingState />;
+    return (
+      <>
+        <BrowserLoadingState />
+        {sessionModal}
+      </>
+    );
   }
 
   if (error) {
-    return <BrowserErrorState onRetry={initBrowser} />;
+    return (
+      <>
+        <BrowserErrorState onRetry={initBrowser} />
+        {sessionModal}
+      </>
+    );
+  }
+
+  // Idle timeout moved the browser to standby: state preserved, no live view.
+  if (lifecycle.isStandby) {
+    return (
+      <>
+        <BrowserStandbyState onRetry={lifecycle.reconnect} />
+        {sessionModal}
+      </>
+    );
   }
 
   if (!liveViewUrl) {
     return (
-      <div className="flex items-center justify-center h-full bg-zinc-900 text-zinc-400">
-        No browser available
-      </div>
+      <>
+        <div className="flex items-center justify-center h-full bg-zinc-900 text-zinc-400">
+          No browser available
+        </div>
+        {sessionModal}
+      </>
     );
   }
 
   // Fullscreen mode when user has control
   if (controlMode === 'user' && isFullscreen) {
     return (
-      <div className="fixed inset-0 z-50 browser-fullscreen-bg flex flex-col overflow-hidden">
-        {/* Fullscreen header with controls */}
-        <div className="sticky top-0 left-0 right-0 z-10 browser-fullscreen-bg">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between px-2 sm:px-4 py-2 sm:py-3 gap-2">
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <div className="size-2 bg-red-500 rounded-full animate-pulse status-indicator" />
-                <span className="text-xs sm:text-sm font-medium font-ibm-plex-mono browser-fullscreen-text">You're editing manually</span>
+      <>
+        <div className="fixed inset-0 z-50 browser-fullscreen-bg flex flex-col overflow-hidden">
+          {/* Fullscreen header with controls */}
+          <div className="sticky top-0 left-0 right-0 z-10 browser-fullscreen-bg">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between px-2 sm:px-4 py-2 sm:py-3 gap-2">
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <div className="size-2 bg-red-500 rounded-full animate-pulse status-indicator" />
+                  <span className="text-xs sm:text-sm font-medium font-ibm-plex-mono browser-fullscreen-text">
+                    You're in control
+                  </span>
+                </div>
+                <span className="text-xs sm:text-sm browser-fullscreen-text font-inter hidden sm:block">
+                  Make any edits you need, then choose how the AI should
+                  continue.
+                </span>
               </div>
-              <span className="text-xs sm:text-sm browser-fullscreen-text font-inter hidden sm:block">
-                The AI will continue with your changes when you give back control.
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={cancelControl}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                variant="default"
-                size="sm"
-                onClick={() => switchControlMode('agent')}
-              >
-                Update and continue
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={cancelControl}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="default"
+                  size="sm"
+                  onClick={() => switchControlMode('agent')}
+                >
+                  Update and continue
+                </Button>
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Fullscreen browser iframe */}
-        <div className="flex-1 overflow-hidden browser-fullscreen-bg pt-20 pb-4 sm:pb-12 px-2 sm:px-4 md:px-12">
-          <div className="w-full h-full flex items-center justify-center">
-            <iframe
-              key={liveViewUrl}
-              src={iframeUrl || undefined}
-              className="border-0 bg-white rounded-lg shadow-2xl"
-              style={{
-                width: '1280px',
-                height: '800px',
-                maxWidth: '100%',
-                maxHeight: '100%',
-                touchAction: 'none',
-              }}
-              allow="clipboard-read; clipboard-write; pointer-lock"
-              title="Browser View"
-            />
+          {/* Fullscreen browser iframe */}
+          <div className="flex-1 overflow-hidden browser-fullscreen-bg pt-20 pb-4 sm:pb-12 px-2 sm:px-4 md:px-12">
+            <div className="w-full h-full flex items-center justify-center">
+              <iframe
+                key={liveViewUrl}
+                src={iframeUrl || undefined}
+                className="border-0 bg-white rounded-lg shadow-2xl"
+                style={{
+                  width: '1280px',
+                  height: '800px',
+                  maxWidth: '100%',
+                  maxHeight: '100%',
+                  touchAction: 'none',
+                }}
+                allow="clipboard-read; clipboard-write; pointer-lock"
+                title="Browser View"
+              />
+            </div>
           </div>
         </div>
-      </div>
+        {sessionModal}
+      </>
     );
   }
 
   // Mobile drawer mode
   if (isMobile) {
     return (
-      <div className="pointer-events-none">
-        {/* Mobile: Floating button to open browser drawer */}
-        <div className="fixed top-4 right-4 z-[100] pointer-events-auto">
-          <Button
-            type="button"
-            variant="default"
-            size="lg"
-            onClick={() => setIsSheetOpen(true)}
-            className="rounded-full shadow-lg"
-          >
-            <Monitor className="w-5 h-5 mr-2" />
-            View Browser
-          </Button>
-        </div>
-
-        {/* Mobile: Bottom sheet with browser content */}
-        <div className="pointer-events-auto">
-          <Sheet open={isSheetOpen} onOpenChange={setIsSheetOpen}>
-            <SheetContent
-              side="bottom"
-              className="h-[85vh] p-0 overflow-y-scroll flex flex-col z-[100]"
+      <>
+        <div className="pointer-events-none">
+          {/* Mobile: Floating button to open browser drawer */}
+          <div className="fixed top-4 right-4 z-[100] pointer-events-auto">
+            <Button
+              type="button"
+              variant="default"
+              size="lg"
+              onClick={() => setIsSheetOpen(true)}
+              className="rounded-full shadow-lg"
             >
-              <SheetHeader className="px-4 py-3 border-b">
-                <SheetTitle className="text-left">Browser View</SheetTitle>
-              </SheetHeader>
+              <Monitor className="w-5 h-5 mr-2" />
+              View Browser
+            </Button>
+          </div>
 
-              {/* Loading state */}
-              {loading && <BrowserLoadingState />}
+          {/* Mobile: Bottom sheet with browser content */}
+          <div className="pointer-events-auto">
+            <Sheet open={isSheetOpen} onOpenChange={setIsSheetOpen}>
+              <SheetContent
+                side="bottom"
+                className="h-[85vh] p-0 overflow-y-scroll flex flex-col z-[100]"
+              >
+                <SheetHeader className="px-4 py-3 border-b">
+                  <SheetTitle className="text-left">Browser View</SheetTitle>
+                </SheetHeader>
 
-              {/* Control mode indicator */}
-              {isConnected && (
-                <div className="flex-shrink-0 flex items-center justify-between py-2 px-4 bg-muted/20">
-                  <AgentStatusIndicator
-                    chatStatus={chatStatus}
-                    controlMode={controlMode}
-                  />
-                  <div className="flex items-center gap-2">
-                    {controlMode === 'user' && (
-                      <Button variant="outline" size="sm" onClick={cancelControl}>Cancel</Button>
-                    )}
-                    <Button
-                      type="button"
-                      variant="default"
-                      size="sm"
-                      onClick={() => switchControlMode(controlMode === 'user' ? 'agent' : 'user')}
-                    >
-                      {controlMode === 'user' ? (
-                        'Update and continue'
-                      ) : (
-                        <>
-                          <MousePointerClick className="w-4 h-4 mr-1" />
-                          Take control
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                  
-                </div>
-              )}
+                {/* Loading state */}
+                {loading && <BrowserLoadingState />}
 
-              {/* Browser content */}
-              <div className={`flex-1 min-h-0 p-4 ${controlMode === 'agent' ? 'overflow-hidden' : 'overflow-auto'}`}>
-                {error ? (
-                  <BrowserErrorState onRetry={initBrowser} />
-                ) : !isConnected ? (
-                  <BrowserLoadingState />
-                ) : (
-                  <div className={`h-full rounded-lg bg-black ${controlMode === 'agent' ? 'overflow-hidden cursor-not-allowed' : 'overflow-auto cursor-auto'}`}>
-                    <iframe
-                      key={liveViewUrl}
-                      src={iframeUrl || undefined}
-                      className="w-full h-full border-0 bg-white shadow-lg"
-                      style={{
-                        width: '1024px',
-                        height: '768px',
-                        maxWidth: '100%',
-                        maxHeight: '100%',
-                        touchAction: 'none',
-                      }}
-                      allow="clipboard-read; clipboard-write; pointer-lock"
-                      title="Browser View"
+                {/* Control mode indicator */}
+                {isConnected && (
+                  <div className="flex-shrink-0 flex items-center justify-between py-2 px-4 bg-muted/20">
+                    <AgentStatusIndicator
+                      chatStatus={chatStatus}
+                      controlMode={controlMode}
                     />
+                    <div className="flex items-center gap-2">
+                      {controlMode === 'user' && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={cancelControl}
+                        >
+                          Cancel
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        variant="default"
+                        size="sm"
+                        onClick={() =>
+                          switchControlMode(
+                            controlMode === 'user' ? 'agent' : 'user',
+                          )
+                        }
+                      >
+                        {controlMode === 'user' ? (
+                          'Update and continue'
+                        ) : (
+                          <>
+                            <MousePointerClick className="w-4 h-4 mr-1" />
+                            Take control
+                          </>
+                        )}
+                      </Button>
+                    </div>
                   </div>
                 )}
-              </div>
-            </SheetContent>
-          </Sheet>
+
+                {/* Browser content */}
+                <div
+                  className={`flex-1 min-h-0 p-4 ${controlMode === 'agent' ? 'overflow-hidden' : 'overflow-auto'}`}
+                >
+                  {error ? (
+                    <BrowserErrorState onRetry={initBrowser} />
+                  ) : !isConnected ? (
+                    <BrowserLoadingState />
+                  ) : (
+                    <div
+                      className={`h-full rounded-lg bg-black ${controlMode === 'agent' ? 'overflow-hidden cursor-not-allowed' : 'overflow-auto cursor-auto'}`}
+                    >
+                      <iframe
+                        key={liveViewUrl}
+                        src={iframeUrl || undefined}
+                        className="w-full h-full border-0 bg-white shadow-lg"
+                        style={{
+                          width: '1024px',
+                          height: '768px',
+                          maxWidth: '100%',
+                          maxHeight: '100%',
+                          touchAction: 'none',
+                        }}
+                        allow="clipboard-read; clipboard-write; pointer-lock"
+                        title="Browser View"
+                      />
+                    </div>
+                  )}
+                </div>
+              </SheetContent>
+            </Sheet>
+          </div>
         </div>
-      </div>
+        {sessionModal}
+      </>
     );
   }
 
   // Normal (non-fullscreen) desktop mode
   return (
-    <div className="h-full flex flex-col">
-      {/* Control mode indicator and buttons */}
-      {isConnected && (
-        <div className="flex-shrink-0 flex items-center justify-between py-2 bg-muted/20">
-          <AgentStatusIndicator
-            chatStatus={chatStatus}
-            controlMode={controlMode}
-            className="text-sm text-black"
-          />
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => initBrowser(true)}
-              title="Refresh browser connection"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </Button>
-            <Button
-              type="button"
-              variant="default"
-              size="sm"
-              onClick={() => switchControlMode(controlMode === 'user' ? 'agent' : 'user')}
-            >
-              <MousePointerClick className="w-4 h-4" />
-              {controlMode === 'user' ? 'Give back control' : 'Take control'}
-            </Button>
+    <>
+      <div className="h-full flex flex-col">
+        {/* Control mode indicator and buttons */}
+        {isConnected && (
+          <div className="flex-shrink-0 flex items-center justify-between py-2 bg-muted/20">
+            <AgentStatusIndicator
+              chatStatus={chatStatus}
+              controlMode={controlMode}
+              className="text-sm text-black"
+            />
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => initBrowser(true)}
+                title="Refresh browser connection"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </Button>
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                onClick={() =>
+                  switchControlMode(controlMode === 'user' ? 'agent' : 'user')
+                }
+              >
+                <MousePointerClick className="w-4 h-4" />
+                {controlMode === 'user' ? 'Give back control' : 'Take control'}
+              </Button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Browser iframe - fixed pixel dimensions to prevent layout recalculation flicker */}
-      <div className={`flex-1 overflow-hidden m-4 min-h-0 flex items-center justify-center ${controlMode === 'agent' ? 'cursor-not-allowed' : 'cursor-auto'}`}>
-        <iframe
-          key={liveViewUrl}
-          src={iframeUrl || undefined}
-          className="border-0 bg-white rounded-lg"
-          style={{
-            width: '1280px',
-            height: '800px',
-            maxWidth: '100%',
-            maxHeight: '100%',
-            pointerEvents: controlMode === 'agent' ? 'none' : 'auto',
-          }}
-          allow="clipboard-read; clipboard-write"
-          title="Browser View"
-        />
+        {/* Browser iframe - fixed pixel dimensions to prevent layout recalculation flicker */}
+        <div
+          className={`flex-1 overflow-hidden m-4 min-h-0 flex items-center justify-center ${controlMode === 'agent' ? 'cursor-not-allowed' : 'cursor-auto'}`}
+        >
+          <iframe
+            key={liveViewUrl}
+            src={iframeUrl || undefined}
+            className="border-0 bg-white rounded-lg"
+            style={{
+              width: '1280px',
+              height: '800px',
+              maxWidth: '100%',
+              maxHeight: '100%',
+              pointerEvents: controlMode === 'agent' ? 'none' : 'auto',
+            }}
+            allow="clipboard-read; clipboard-write"
+            title="Browser View"
+          />
+        </div>
       </div>
-    </div>
+      {sessionModal}
+    </>
   );
 }

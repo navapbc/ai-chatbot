@@ -31,9 +31,10 @@ import type { VisibilityType } from './visibility-selector';
 import type { Attachment, ChatMessage } from '@/lib/types';
 import type { Session } from 'next-auth';
 import { useRouter } from 'next/navigation';
-import { Alert, AlertDescription } from './ui/alert';
 import { isProductionEnvironment } from '@/lib/constants';
 import { ModelSelectorButton } from './model-selector-button';
+import { ContextUsage } from './context-usage';
+import { FeatureFlagsMenu } from './feature-flags-menu';
 
 function PureMultimodalInput({
   chatId,
@@ -49,7 +50,9 @@ function PureMultimodalInput({
   className,
   selectedVisibilityType,
   showStopButton = true,
-  placeholder = 'Write something...',
+  placeholder = 'Add information or give direction...',
+  fullWidthSubmit = false,
+  stackToolbar = false,
   session,
 }: {
   chatId: string;
@@ -66,13 +69,15 @@ function PureMultimodalInput({
   selectedVisibilityType: VisibilityType;
   showStopButton?: boolean;
   placeholder?: string;
+  fullWidthSubmit?: boolean;
+  stackToolbar?: boolean;
   session: Session | null;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { width } = useWindowSize();
   const router = useRouter();
   const isLoggedIn = !!session;
-  const [selectedModelId, setSelectedModelId] = useLocalStorage<string>('selected-chat-model-id', '');
+  const [, setSelectedModelId] = useLocalStorage<string>('selected-chat-model-id', '');
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -126,29 +131,21 @@ function PureMultimodalInput({
   const submitForm = useCallback(() => {
     window.history.replaceState({}, '', `/chat/${chatId}`);
 
-    console.log(`[multimodal-input] selectedModelId="${selectedModelId}" isProduction=${isProductionEnvironment}`);
-    const messageBody = !isProductionEnvironment && selectedModelId
-      ? { modelOverride: selectedModelId }
-      : undefined;
-
-    sendMessage(
-      {
-        role: 'user',
-        parts: [
-          ...attachments.map((attachment) => ({
-            type: 'file' as const,
-            url: attachment.url,
-            name: attachment.name,
-            mediaType: attachment.contentType,
-          })),
-          {
-            type: 'text',
-            text: input,
-          },
-        ],
-      },
-      messageBody ? { body: messageBody } : undefined,
-    );
+    sendMessage({
+      role: 'user',
+      parts: [
+        ...attachments.map((attachment) => ({
+          type: 'file' as const,
+          url: attachment.url,
+          name: attachment.name,
+          mediaType: attachment.contentType,
+        })),
+        {
+          type: 'text',
+          text: input,
+        },
+      ],
+    });
 
     setAttachments([]);
     setLocalStorageInput('');
@@ -167,7 +164,6 @@ function PureMultimodalInput({
     setLocalStorageInput,
     width,
     chatId,
-    selectedModelId,
   ]);
 
   const uploadFile = async (file: File) => {
@@ -237,7 +233,7 @@ function PureMultimodalInput({
   }, [status, scrollToBottom]);
 
   return (
-    <div className="relative w-full flex flex-col gap-4 min-w-0">
+    <div className={cx('relative w-full flex flex-col gap-4 min-w-0', fullWidthSubmit && 'flex-1')}>
       <AnimatePresence>
         {isHydrated && !isAtBottom && messages.length > 0 && (
           <motion.div
@@ -245,18 +241,17 @@ function PureMultimodalInput({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
             transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-            className="absolute left-1/2 bottom-48 -translate-x-1/2 z-50"
+            className="absolute inset-x-0 bottom-48 z-50 flex justify-center pointer-events-none"
           >
             <Button
               data-testid="scroll-to-bottom-button"
-              className="rounded-full"
-              size="icon"
-              variant="outline"
+              className="rounded-md px-4 shadow-md items-center pointer-events-auto"
               onClick={(event) => {
                 event.preventDefault();
                 scrollToBottom();
               }}
             >
+              Jump to latest updates
               <ArrowDown />
             </Button>
           </motion.div>
@@ -317,7 +312,10 @@ function PureMultimodalInput({
           value={input}
           onChange={handleInput}
           className={cx(
-            'min-h-[24px] max-h-[calc(75dvh)] overflow-hidden resize-none rounded-2xl !text-base border-2 border-input bg-card text-foreground placeholder-muted-foreground focus-visible:border-primary dark:focus-visible:border-primary transition-colors pb-10',
+            'max-h-[200px] overflow-y-auto break-words resize-none !text-base bg-card text-foreground placeholder-muted-foreground focus-visible:border-primary dark:focus-visible:border-primary transition-colors pb-10',
+            fullWidthSubmit
+              ? 'min-h-[180px] rounded-[10px] border border-[#b5b5b5]'
+              : 'min-h-[24px] rounded-2xl border-2 border-input',
             className,
           )}
           rows={2}
@@ -341,23 +339,65 @@ function PureMultimodalInput({
         />
       </div>
 
-      <div className="flex flex-row justify-between gap-2 mt-1">
-        <div className="flex flex-row gap-2">
-          <ModelSelectorButton onModelChange={(model) => setSelectedModelId(model.id)} />
-        </div>
-        <div className="flex flex-row gap-2">
-          {showStopButton && (
-            <StopButton status={status} stop={stop} setMessages={setMessages} />
-          )}
+      {fullWidthSubmit ? (
+        <div className="mt-auto flex flex-col gap-3 -mx-6 border-t border-border px-6 pt-5 sm:-mx-8 sm:px-8">
           <SendButton
             input={input}
             submitForm={submitForm}
             uploadQueue={uploadQueue}
             status={status}
             isLoggedIn={isLoggedIn}
+            fullWidth
           />
+          {!isProductionEnvironment && (
+            <div className="flex flex-row items-center gap-2">
+              <ModelSelectorButton onModelChange={(model) => setSelectedModelId(model.id)} />
+              <ContextUsage />
+              <FeatureFlagsMenu />
+            </div>
+          )}
         </div>
-      </div>
+      ) : stackToolbar ? (
+        <div className="flex flex-col gap-2 mt-1">
+          <div className="flex flex-row justify-end gap-2">
+            {showStopButton && (
+              <StopButton status={status} stop={stop} setMessages={setMessages} />
+            )}
+            <SendButton
+              input={input}
+              submitForm={submitForm}
+              uploadQueue={uploadQueue}
+              status={status}
+              isLoggedIn={isLoggedIn}
+            />
+          </div>
+          <div className="flex flex-row flex-wrap items-center gap-2">
+            <ModelSelectorButton onModelChange={(model) => setSelectedModelId(model.id)} />
+            <ContextUsage />
+            <FeatureFlagsMenu />
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-row justify-between gap-2 mt-1">
+          <div className="flex flex-row items-center gap-2">
+            <ModelSelectorButton onModelChange={(model) => setSelectedModelId(model.id)} />
+            <ContextUsage />
+            <FeatureFlagsMenu />
+          </div>
+          <div className="flex flex-row gap-2">
+            {showStopButton && (
+              <StopButton status={status} stop={stop} setMessages={setMessages} />
+            )}
+            <SendButton
+              input={input}
+              submitForm={submitForm}
+              uploadQueue={uploadQueue}
+              status={status}
+              isLoggedIn={isLoggedIn}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -435,26 +475,39 @@ function PureSendButton({
   uploadQueue,
   status,
   isLoggedIn,
+  fullWidth = false,
 }: {
   submitForm: () => void;
   input: string;
   uploadQueue: Array<string>;
   status: UseChatHelpers<ChatMessage>['status'];
   isLoggedIn: boolean;
+  fullWidth?: boolean;
 }) {
   const isWorking = status === 'submitted' || status === 'streaming';
   const isDisabled = !isLoggedIn || input.length === 0 || uploadQueue.length > 0 || isWorking;
 
-  const button = (
+  const handleClick = (event: React.MouseEvent) => {
+    event.preventDefault();
+    if (isLoggedIn && status === 'ready') {
+      submitForm();
+    }
+  };
+
+  const button = fullWidth ? (
+    <Button
+      data-testid="send-button"
+      className="w-full h-auto rounded-lg bg-primary px-4 py-2.5 font-inter text-sm font-medium tracking-[0.08px] text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+      onClick={handleClick}
+      disabled={isDisabled}
+    >
+      Start auto-filling
+    </Button>
+  ) : (
     <Button
       data-testid="send-button"
       className="bg-primary hover:bg-primary/90 disabled:bg-muted disabled:hover:bg-muted rounded-[100px] px-3 py-1.5 flex items-center gap-1 text-primary-foreground disabled:text-muted-foreground text-sm font-medium disabled:opacity-50 disabled:pointer-events-auto disabled:cursor-not-allowed transition-colors"
-      onClick={(event) => {
-        event.preventDefault();
-        if (isLoggedIn && status === 'ready') {
-          submitForm();
-        }
-      }}
+      onClick={handleClick}
       disabled={isDisabled}
     >
       <ArrowUpIcon size={20} />
@@ -466,7 +519,7 @@ function PureSendButton({
     return (
       <Tooltip>
         <TooltipTrigger asChild>
-          <span tabIndex={0}>{button}</span>
+          <span >{button}</span>
         </TooltipTrigger>
         <TooltipContent>Log in to submit</TooltipContent>
       </Tooltip>
@@ -477,7 +530,7 @@ function PureSendButton({
     return (
       <Tooltip>
         <TooltipTrigger asChild>
-          <span tabIndex={0}>{button}</span>
+          <span >{button}</span>
         </TooltipTrigger>
         <TooltipContent>AI is still working</TooltipContent>
       </Tooltip>
@@ -493,5 +546,6 @@ const SendButton = memo(PureSendButton, (prevProps, nextProps) => {
   if (prevProps.input !== nextProps.input) return false;
   if (prevProps.status !== nextProps.status) return false;
   if (prevProps.isLoggedIn !== nextProps.isLoggedIn) return false;
+  if (prevProps.fullWidth !== nextProps.fullWidth) return false;
   return true;
 });

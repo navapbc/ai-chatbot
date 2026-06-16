@@ -27,6 +27,7 @@ import {
   type DBMessage,
   type Chat,
   stream,
+  sessionMapping,
 } from './schema';
 import type { ArtifactKind } from '@/components/artifact';
 import { generateUUID } from '../utils';
@@ -53,7 +54,9 @@ export async function getUser(email: string): Promise<Array<User>> {
   }
 }
 
-export async function getUserById({ id }: { id: string }): Promise<User | null> {
+export async function getUserById({
+  id,
+}: { id: string }): Promise<User | null> {
   try {
     const result = await db.select().from(user).where(eq(user.id, id));
     return result[0] || null;
@@ -62,7 +65,10 @@ export async function getUserById({ id }: { id: string }): Promise<User | null> 
   }
 }
 
-export async function ensureUserExists({ id, email }: { id: string; email: string }): Promise<User> {
+export async function ensureUserExists({
+  id,
+  email,
+}: { id: string; email: string }): Promise<User> {
   const existingUser = await getUserById({ id });
   if (existingUser) {
     return existingUser;
@@ -71,17 +77,17 @@ export async function ensureUserExists({ id, email }: { id: string; email: strin
   const password = generateHashedPassword(generateUUID());
 
   try {
-    const result = await db.insert(user).values({
-      id,
-      email,
-      password
-    }).returning();
+    const result = await db
+      .insert(user)
+      .values({
+        id,
+        email,
+        password,
+      })
+      .returning();
     return result[0];
   } catch (error) {
-    throw new ChatSDKError(
-      'bad_request:database',
-      'Failed to create user',
-    );
+    throw new ChatSDKError('bad_request:database', 'Failed to create user');
   }
 }
 
@@ -114,7 +120,7 @@ export async function upsertOAuthUser({
         .set({
           name: name ?? existingUser.name,
           image: image ?? existingUser.image,
-          emailVerified: new Date()
+          emailVerified: new Date(),
         })
         .where(eq(user.email, email))
         .returning();
@@ -122,21 +128,28 @@ export async function upsertOAuthUser({
     }
 
     // Create new OAuth user (no password)
-    const [newUser] = await db.insert(user).values({
-      email,
-      name,
-      image,
-      password: null, // OAuth users don't have passwords
-      emailVerified: new Date(),
-    }).returning();
+    const [newUser] = await db
+      .insert(user)
+      .values({
+        email,
+        name,
+        image,
+        password: null, // OAuth users don't have passwords
+        emailVerified: new Date(),
+      })
+      .returning();
 
     return newUser;
   } catch (error) {
     console.error('OAUTH_UPSERT_ERROR:', error);
-    console.error('OAUTH_USER_DATA:', { email, name, imageLength: image?.length });
+    console.error('OAUTH_USER_DATA:', {
+      email,
+      name,
+      imageLength: image?.length,
+    });
     throw new ChatSDKError(
       'bad_request:database',
-      'Failed to upsert OAuth user'
+      'Failed to upsert OAuth user',
     );
   }
 }
@@ -367,7 +380,10 @@ export async function saveDocument({
   } catch (error) {
     console.error('Database error saving document:', error);
     console.error('Error details:', JSON.stringify(error, null, 2));
-    throw new ChatSDKError('bad_request:database', `Failed to save document: ${error instanceof Error ? error.message : String(error)}`);
+    throw new ChatSDKError(
+      'bad_request:database',
+      `Failed to save document: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -597,6 +613,71 @@ export async function getStreamIdsByChatId({ chatId }: { chatId: string }) {
     throw new ChatSDKError(
       'bad_request:database',
       'Failed to get stream ids by chat id',
+    );
+  }
+}
+
+/**
+ * Upsert the session mapping for a chat. Populated from two directions:
+ * the client sends posthogSessionId, the server sends kernelSessionId/
+ * kernelReplayId. One row per chat (unique on chatId) — only the provided,
+ * non-undefined id fields are written, so neither side clobbers the other's.
+ */
+export async function upsertSessionMapping({
+  chatId,
+  userId,
+  posthogSessionId,
+  posthogReplayUrl,
+  kernelSessionId,
+  kernelReplayId,
+  kernelReplayUrl,
+}: {
+  chatId: string;
+  userId: string;
+  posthogSessionId?: string;
+  posthogReplayUrl?: string;
+  kernelSessionId?: string;
+  kernelReplayId?: string;
+  kernelReplayUrl?: string;
+}) {
+  try {
+    const now = new Date();
+
+    // Only the fields actually provided are updated on conflict, so a later
+    // write from one source never nulls out a value set by the other.
+    const setOnConflict: Record<string, unknown> = { updatedAt: now };
+    if (posthogSessionId !== undefined)
+      setOnConflict.posthogSessionId = posthogSessionId;
+    if (posthogReplayUrl !== undefined)
+      setOnConflict.posthogReplayUrl = posthogReplayUrl;
+    if (kernelSessionId !== undefined)
+      setOnConflict.kernelSessionId = kernelSessionId;
+    if (kernelReplayId !== undefined)
+      setOnConflict.kernelReplayId = kernelReplayId;
+    if (kernelReplayUrl !== undefined)
+      setOnConflict.kernelReplayUrl = kernelReplayUrl;
+
+    return await db
+      .insert(sessionMapping)
+      .values({
+        chatId,
+        userId,
+        posthogSessionId,
+        posthogReplayUrl,
+        kernelSessionId,
+        kernelReplayId,
+        kernelReplayUrl,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: sessionMapping.chatId,
+        set: setOnConflict,
+      });
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to upsert session mapping',
     );
   }
 }

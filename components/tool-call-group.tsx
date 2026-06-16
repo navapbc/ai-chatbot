@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { CheckIcon, ChevronDown, Globe, Layers, Monitor, MousePointer, Pencil, Search } from 'lucide-react';
+import { CheckIcon, ChevronDown, Globe, Monitor, MousePointer, Pencil, Search } from 'lucide-react';
 
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
@@ -9,8 +9,9 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import { getToolDisplayInfo } from './tool-icon';
+import { getToolDisplayInfo, isSpecificToolAction } from './tool-icon';
 import { cn } from '@/lib/utils';
+import { useFeatureFlag } from '@/hooks/use-feature-flag';
 import { Shimmer } from '@/components/ai-elements/shimmer';
 
 // --- Types ---
@@ -253,7 +254,7 @@ const GROUP_TITLE_MAP: Record<string, {
   interact: { inProgress: 'Interacting with page', done: 'Interacted with page', icon: MousePointer },
   read:     { inProgress: 'Reading page',          done: 'Read page',            icon: Monitor },
   search:   { inProgress: 'Searching',             done: 'Search complete',      icon: Search },
-  misc:     { inProgress: 'Working on page',       done: 'Completed actions',    icon: Layers },
+  misc:     { inProgress: 'Working on page',       done: 'Completed actions',    icon: Pencil },
 };
 
 function getGroupTitle(
@@ -280,21 +281,37 @@ export function ToolCallGroup({
   isStreaming = false,
 }: ToolCallGroupProps) {
   const [open, setOpen] = useState(false);
+  // When enabled, hide generic actions and show only value-bearing tool calls.
+  const declutter = useFeatureFlag('declutterToolCalls');
 
   // Deduplicate: keep only the latest state per toolCallId
   const deduped = deduplicateParts(parts);
 
-  // Single part → render as-is (no card wrapper)
-  if (deduped.length === 1) {
-    return <SingleToolLine part={deduped[0]} />;
-  }
-
   // Group is "in progress" while the parent signals the agent is still streaming this group.
   const isInProgress = isStreaming;
   const completedParts = deduped.filter((p) => p.state === 'output-available' && !LABEL_TOOL_TYPES.has(p.type));
-  const displayParts = (isInProgress ? completedParts : deduped).filter((p) => !LABEL_TOOL_TYPES.has(p.type));
+  const candidateParts = (isInProgress ? completedParts : deduped).filter((p) => !LABEL_TOOL_TYPES.has(p.type));
+
+  const visibleParts = declutter
+    ? candidateParts.filter((p) => isSpecificToolAction(p.type, p.input))
+    : candidateParts;
 
   const { label, Icon: TitleIcon } = getGroupTitle(deduped, isInProgress);
+
+  // Single part → render the bare line when it's shown; when decluttering, a
+  // lone generic action collapses to the summary line instead.
+  if (deduped.length === 1) {
+    const part = deduped[0];
+    if (!declutter || isSpecificToolAction(part.type, part.input)) {
+      return <SingleToolLine part={part} />;
+    }
+    return <GroupSummaryCard label={label} Icon={TitleIcon} isInProgress={isInProgress} />;
+  }
+
+  // Nothing specific to show (decluttered) → summary line, no expander.
+  if (declutter && visibleParts.length === 0) {
+    return <GroupSummaryCard label={label} Icon={TitleIcon} isInProgress={isInProgress} />;
+  }
 
   return (
     <Alert className="rounded-xl border-accent bg-background p-3">
@@ -302,22 +319,7 @@ export function ToolCallGroup({
         <Collapsible open={open} onOpenChange={setOpen}>
           {/* Summary line — always visible, clickable to expand */}
           <CollapsibleTrigger className="flex items-center justify-between w-full cursor-pointer gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <TitleIcon size={12} className="text-gray-500 shrink-0" />
-              {isInProgress ? (
-                <Shimmer
-                  as="span"
-                  className="text-[10px] leading-[150%] font-ibm-plex-mono"
-                  duration={1.5}
-                >
-                  {label}
-                </Shimmer>
-              ) : (
-                <span className="text-[10px] leading-[150%] font-ibm-plex-mono text-muted-foreground">
-                  {label}
-                </span>
-              )}
-            </div>
+            <GroupSummaryLine label={label} Icon={TitleIcon} isInProgress={isInProgress} />
             <span className="inline-flex items-center justify-center p-1 h-auto text-muted-foreground">
               <ChevronDown
                 size={14}
@@ -330,10 +332,10 @@ export function ToolCallGroup({
             </span>
           </CollapsibleTrigger>
 
-          {/* Expanded: show completed tools (or all when done) */}
+          {/* Expanded: show the visible tools */}
           <CollapsibleContent>
             <div className="flex flex-col gap-0 mt-2 border-t border-border pt-1">
-              {displayParts.map((part) => (
+              {visibleParts.map((part) => (
                 <SingleToolLine
                   key={part.toolCallId}
                   part={part}
@@ -343,6 +345,57 @@ export function ToolCallGroup({
             </div>
           </CollapsibleContent>
         </Collapsible>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+// Summary line content (icon + label) shared by the collapsible trigger and
+// the expander-less summary card.
+function GroupSummaryLine({
+  label,
+  Icon,
+  isInProgress,
+}: {
+  label: string;
+  Icon: React.ComponentType<any>;
+  isInProgress: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <Icon size={12} className="text-gray-500 shrink-0" />
+      {isInProgress ? (
+        <Shimmer
+          as="span"
+          className="text-[10px] leading-[150%] font-ibm-plex-mono"
+          duration={1.5}
+        >
+          {label}
+        </Shimmer>
+      ) : (
+        <span className="text-[10px] leading-[150%] font-ibm-plex-mono text-muted-foreground">
+          {label}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// Summary line in a card with no expander — used when there are no specific
+// tool calls worth listing.
+function GroupSummaryCard({
+  label,
+  Icon,
+  isInProgress,
+}: {
+  label: string;
+  Icon: React.ComponentType<any>;
+  isInProgress: boolean;
+}) {
+  return (
+    <Alert className="rounded-xl border-accent bg-background p-3">
+      <AlertDescription>
+        <GroupSummaryLine label={label} Icon={Icon} isInProgress={isInProgress} />
       </AlertDescription>
     </Alert>
   );

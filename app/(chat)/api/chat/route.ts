@@ -1,5 +1,4 @@
 import {
-  consumeStream,
   convertToModelMessages,
   createUIMessageStream,
   JsonToSseTransformStream,
@@ -30,13 +29,14 @@ import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
 import { apricotTools } from '@/lib/ai/tools/apricot';
 import { createBrowserTool } from '@/lib/ai/tools/browser';
+import { createCheckSubmitGateTool } from '@/lib/ai/tools/check-submit-gate';
 import { gapAnalysis } from '@/lib/ai/tools/gap-analysis';
 import { formSummary } from '@/lib/ai/tools/form-summary';
 import { actionLabel } from '@/lib/ai/tools/action-label';
-import { getWebAutomationSystemPrompt } from '@/lib/ai/prompts/web-automation';
-import { loadSkill } from '@/lib/ai/tools/load-skill';
-import { readSkillFile } from '@/lib/ai/tools/read-skill-file';
-import { createMessageCompressor, preCompactMessages } from '@/lib/ai/context-compression';
+import { getWebAutomationSystemPrompt, getCurrentDateString } from '@/lib/ai/prompts/web-automation';
+import { readReference } from '@/lib/ai/tools/read-reference';
+import { createMessageCompressor } from '@/lib/ai/context-compression';
+import { registerChatAbort, clearChatAbort } from '@/lib/chat-abort-registry';
 
 export const maxDuration = 300; // 5 minutes for web automation tasks
 
@@ -49,11 +49,7 @@ export function getStreamContext() {
         waitUntil: after,
       });
     } catch (error: any) {
-      if (error.message.includes('REDIS_URL')) {
-        console.log(
-          ' > Resumable streams are disabled due to missing REDIS_URL',
-        );
-      } else {
+      if (!error.message.includes('REDIS_URL')) {
         console.error(error);
       }
     }
@@ -82,8 +78,6 @@ export async function POST(request: Request) {
 
     // Only honour modelOverride in non-production environments.
     const resolvedModelOverride = !isProductionEnvironment ? modelOverride : undefined;
-
-    console.log(`[chat] rawModelOverride=${modelOverride ?? 'none'} isProduction=${isProductionEnvironment} resolvedOverride=${resolvedModelOverride ?? 'none'}`);
 
     const session = await auth();
 
@@ -162,36 +156,20 @@ export async function POST(request: Request) {
     // sessionId includes both chatId and userId to ensure global uniqueness
     const sessionId = `${id}-${session.user.id}`;
 
+    // Register an AbortController the client can trigger via
+    // POST /api/chat/stop. Cloud Run HTTP/1.1 does not propagate client
+    // disconnects to request.signal, so this explicit channel is the
+    // only reliable way to abort an in-flight run from the browser.
+    const chatAbort = registerChatAbort(id);
+
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
-        // Pre-compact messages loaded from DB if they exceed the context
-        // window threshold. This handles the cross-request case where a
-        // previous request compacted mid-stream but saved raw messages.
         const initialModelMessages = await convertToModelMessages(uiMessages);
-        const { messages: preCompacted, compacted: wasPreCompacted, summary: preCompactSummary } =
-          await preCompactMessages(initialModelMessages, () => {
-            dataStream.write({
-              type: 'data-compacting',
-              data: { timestamp: Date.now() },
-              transient: true,
-            });
-          });
-
-        if (wasPreCompacted) {
-          dataStream.write({
-            type: 'data-checkpoint',
-            data: {
-              stepNumber: 0,
-              inputTokens: 0,
-              timestamp: Date.now(),
-              summary: preCompactSummary,
-            },
-            transient: true,
-          });
-        }
 
         // One compressor instance per request; its cache persists across all
         // prepareStep calls so generateText is not re-fired on every step.
+        // Compaction triggers on step 1+ using SDK-reported inputTokens
+        // (step 0 has no prior usage data, so it runs uncompacted).
         const compressStep = createMessageCompressor();
 
         const activeModel = resolvedModelOverride
@@ -200,19 +178,39 @@ export async function POST(request: Request) {
 
         const result = streamText({
           model: activeModel,
-          system: getWebAutomationSystemPrompt(),
-          messages: preCompacted,
+          messages: [
+            {
+              role: 'system',
+              content: getWebAutomationSystemPrompt(),
+              providerOptions: {
+                anthropic: { cacheControl: { type: 'ephemeral' } },
+              },
+            },
+            {
+              role: 'system',
+              content: getCurrentDateString(),
+            },
+            ...initialModelMessages,
+          ],
           tools: {
             ...apricotTools,
             gapAnalysis,
             formSummary,
             actionLabel,
             browser: createBrowserTool(sessionId, session.user.id),
-            loadSkill,
-            readSkillFile,
+            checkSubmitGate: createCheckSubmitGateTool(sessionId, session.user.id),
+            readReference,
           },
-          stopWhen: stepCountIs(500),
-          abortSignal: request.signal,
+          // request.signal.aborted is checked at each step boundary so the
+          // tool loop halts even before Node's write-failure-based abort
+          // detection fires. Without this, streamText keeps running until
+          // a write to the closed socket fails — which can be seconds of
+          // extra tool calls after the user hits stop.
+          // Abort is checked at step boundaries via stopWhen — not
+          // passed as abortSignal. Mid-tool abort would leave a
+          // tool-call with no matching tool-result, triggering
+          // AI_MissingToolResultsError on the next turn.
+          stopWhen: [stepCountIs(500), () => chatAbort.signal.aborted],
           // Compress message history when token usage approaches the context
           // window limit (75% of 200K). First step has no prior usage data so
           // compression is skipped (correct — first step is always small).
@@ -232,9 +230,6 @@ export async function POST(request: Request) {
               },
             );
             if (compacted) {
-              console.log(
-                `[compressor] emitting data-checkpoint — step=${steps.length}, inputTokens=${lastInputTokens}`
-              );
               dataStream.write({
                 type: 'data-checkpoint',
                 data: {
@@ -264,10 +259,10 @@ export async function POST(request: Request) {
         });
 
         dataStream.merge(result.toUIMessageStream());
-        consumeStream({ stream: result.textStream });
       },
       generateId: generateUUID,
       onFinish: async ({ messages }) => {
+        clearChatAbort(id, chatAbort);
         await saveNewMessages(messages);
       },
       onError: () => {
@@ -290,7 +285,10 @@ export async function POST(request: Request) {
       return error.toResponse();
     }
     
-    console.error('Unexpected error in chat API:', error);
+    console.error('Unexpected error in chat API:', {
+      chatId: requestBody?.id,
+      error,
+    });
     return new ChatSDKError('internal_server_error:api').toResponse();
   }
 }

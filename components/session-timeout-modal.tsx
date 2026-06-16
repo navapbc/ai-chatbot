@@ -1,6 +1,5 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -31,11 +30,17 @@ interface SessionTimeoutModalProps {
   /** Called when the dialog open state changes. */
   onOpenChange: (open: boolean) => void;
   /**
-   * Initial countdown duration **in seconds**.
-   * The timer starts counting down from this value when the dialog opens.
+   * Live countdown **in seconds**, owned by the caller (the session-lifecycle
+   * controller). The modal renders this value; it does not run its own timer,
+   * so the displayed time stays in sync with the authoritative idle/cap clock.
    */
   countdownSeconds: number;
-  /** Called when the user clicks "End session" or the countdown reaches 0. */
+  /**
+   * Why the session is ending — controls copy only. `idle` (default) follows
+   * inactivity; `cap` is the hard session-length limit.
+   */
+  reason?: 'idle' | 'cap';
+  /** Called when the user clicks "End session". */
   onEndSession: () => void;
   /** Called when the user clicks "Continue session". */
   onContinueSession: () => void;
@@ -45,47 +50,18 @@ export function SessionTimeoutModal({
   open,
   onOpenChange,
   countdownSeconds,
+  reason = 'idle',
   onEndSession,
   onContinueSession,
 }: SessionTimeoutModalProps) {
-  const [remaining, setRemaining] = useState(countdownSeconds);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Reset and start timer whenever the dialog opens.
-  useEffect(() => {
-    if (!open) {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      setRemaining(countdownSeconds);
-      return;
-    }
-
-    setRemaining(countdownSeconds);
-
-    intervalRef.current = setInterval(() => {
-      setRemaining((prev) => {
-        if (prev <= 1) {
-          clearInterval(intervalRef.current!);
-          onEndSession();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  const remaining = Math.max(0, countdownSeconds);
 
   const handleEndSession = () => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
     onOpenChange(false);
     onEndSession();
   };
 
   const handleContinueSession = () => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
     onOpenChange(false);
     onContinueSession();
   };
@@ -113,9 +89,24 @@ export function SessionTimeoutModal({
         <div className="h-px bg-border mx-6" />
 
         <DialogDescription className="px-6 pt-4 pb-2 font-inter text-[14px] font-normal leading-[22px] text-foreground text-left">
-          To keep the system running smoothly, sessions end after inactivity.
-          Select <strong className="font-bold text-foreground">Continue session</strong> to keep
-          working.
+          {reason === 'cap' ? (
+            <>
+              You&apos;ve reached the maximum session length. Select{' '}
+              <strong className="font-bold text-foreground">
+                Continue session
+              </strong>{' '}
+              to start a fresh session and keep working.
+            </>
+          ) : (
+            <>
+              To keep the system running smoothly, sessions end after
+              inactivity. Select{' '}
+              <strong className="font-bold text-foreground">
+                Continue session
+              </strong>{' '}
+              to keep working.
+            </>
+          )}
         </DialogDescription>
 
         <DialogFooter className="px-6 pb-6 pt-3 flex-row justify-end gap-3">
@@ -135,42 +126,5 @@ export function SessionTimeoutModal({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// SessionTimeoutModalDemo  –  test harness with a 5-minute countdown
-// TODO: remove this before production.
-// ---------------------------------------------------------------------------
-
-export function SessionTimeoutModalDemo() {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <div className="flex items-center justify-center p-8">
-      <Button
-        onClick={() => setOpen(true)}
-        variant="outline"
-        className="text-[14px] font-medium"
-      >
-        Test timeout modal (5 min)
-      </Button>
-
-      <SessionTimeoutModal
-        open={open}
-        onOpenChange={setOpen}
-        countdownSeconds={300}
-        onEndSession={() => {
-          setOpen(false);
-          // Replace with your real end-session logic.
-          console.log('Session ended');
-        }}
-        onContinueSession={() => {
-          setOpen(false);
-          // Replace with your real continue-session logic.
-          console.log('Session continued');
-        }}
-      />
-    </div>
   );
 }
