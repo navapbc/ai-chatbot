@@ -1,5 +1,7 @@
 import Kernel from '@onkernel/sdk';
 import { BrowserManager } from 'agent-browser/dist/browser.js';
+import { upsertSessionMapping } from '@/lib/db/queries';
+import { uploadReplayVideo } from '@/lib/storage/gcs';
 import { KERNEL_TIMEOUT_SECONDS } from './session-config';
 import {
   buildSessionStatus,
@@ -10,6 +12,52 @@ import {
 } from './session-store';
 
 const kernel = new Kernel();
+
+// =============================================================================
+// Replay archival
+// =============================================================================
+
+/**
+ * Recover the chatId from a sessionId. sessionId is `${chatId}-${userId}`, so
+ * the chatId is everything before the trailing `-${userId}`. Returns null if
+ * the suffix doesn't match (defensive — callers skip archival when null).
+ */
+function chatIdFromSessionId(sessionId: string, userId: string): string | null {
+  return sessionId.endsWith(`-${userId}`)
+    ? sessionId.slice(0, -(userId.length + 1))
+    : null;
+}
+
+/**
+ * Download the current replay video from Kernel and archive it to object
+ * storage, recording the URL on the session mapping. Kernel supports
+ * downloading in-progress replays, so this is safe to call at standby (the
+ * recording keeps running) as well as on teardown.
+ *
+ * Deterministic GCS path (keyed by chatId + kernelSessionId) means repeated
+ * calls overwrite with an increasingly complete video rather than duplicating.
+ * Best-effort: callers must not let archival failures break their flow.
+ */
+async function archiveReplayVideo(
+  sessionId: string,
+  userId: string,
+  kernelSessionId: string,
+  replayId: string,
+): Promise<void> {
+  const chatId = chatIdFromSessionId(sessionId, userId);
+  if (!chatId) return;
+
+  try {
+    const videoResponse = await kernel.browsers.replays.download(replayId, {
+      id: kernelSessionId,
+    });
+    const videoBuffer = await videoResponse.arrayBuffer();
+    const url = await uploadReplayVideo(chatId, kernelSessionId, videoBuffer);
+    await upsertSessionMapping({ chatId, userId, kernelReplayUrl: url });
+  } catch (err) {
+    console.error('[Kernel] Failed to archive replay video:', err);
+  }
+}
 
 // =============================================================================
 // Types
@@ -173,6 +221,26 @@ export async function getOrCreateBrowser(
 
       sessions.set(key, session);
 
+      // Record the kernel session/replay ids against the chat so they can be
+      // correlated with the PostHog session (reported from the client). The
+      // sessionId is `${chatId}-${userId}`, so the chatId is everything before
+      // the trailing `-${userId}`. Best-effort: never fail browser creation.
+      const chatId = sessionId.endsWith(`-${userId}`)
+        ? sessionId.slice(0, -(userId.length + 1))
+        : null;
+      if (chatId) {
+        try {
+          await upsertSessionMapping({
+            chatId,
+            userId,
+            kernelSessionId: browser.session_id,
+            kernelReplayId: replayId,
+          });
+        } catch (err) {
+          console.error('[Kernel] Failed to record session mapping:', err);
+        }
+      }
+
       return session;
     } finally {
       pendingCreations.delete(key);
@@ -272,6 +340,20 @@ export async function standbyBrowser(
     console.log(
       `[Kernel] Session ${session.kernelSessionId} confirmed idle (standby).`,
     );
+    // Snapshot the replay so far to object storage. Idle → standby is the
+    // common way a session ends (the user navigates away or stops interacting
+    // and never formally deletes the chat), so without this most sessions
+    // would never get a video. We do NOT stop the replay: the browser is
+    // parked but reconnectable, so recording must continue. The deterministic
+    // GCS path means a later standby/delete overwrites with a fuller video.
+    if (session.replayId) {
+      await archiveReplayVideo(
+        sessionId,
+        userId,
+        session.kernelSessionId,
+        session.replayId,
+      );
+    }
     return true;
   }
 
@@ -375,16 +457,23 @@ export async function deleteBrowser(
   // Remove from cache first
   sessions.delete(key);
 
-  // Stop replay recording and log the view URL
+  // Stop the replay recording, then archive the finished video. Stopping first
+  // ensures the recording is complete (and persisted) before download. All
+  // best-effort — teardown must not fail on archival.
   if (session.replayId) {
     try {
       await kernel.browsers.replays.stop(session.replayId, {
         id: session.kernelSessionId,
       });
-      await kernel.browsers.replays.list(session.kernelSessionId);
     } catch (err) {
-      console.error('[Kernel] Failed to stop/list replays:', err);
+      console.error('[Kernel] Failed to stop replay:', err);
     }
+    await archiveReplayVideo(
+      sessionId,
+      userId,
+      session.kernelSessionId,
+      session.replayId,
+    );
   }
 
   // Close BrowserManager (disconnects Playwright from CDP)

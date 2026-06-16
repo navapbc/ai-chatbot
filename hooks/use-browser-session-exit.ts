@@ -25,27 +25,51 @@ export function useBrowserSessionExit() {
    * @param action - The navigation action to perform after confirmation
    * @returns boolean - true if navigation should proceed immediately, false if intercepted
    */
-  const interceptNavigation = useCallback((action: () => void) => {
-    if (hasActiveBrowserSession()) {
-      setPendingAction(() => action);
-      setShowExitWarning(true);
-      return false;
-    }
-    // No active session, proceed immediately
-    action();
-    return true;
-  }, [hasActiveBrowserSession]);
+  const interceptNavigation = useCallback(
+    (action: () => void) => {
+      if (hasActiveBrowserSession()) {
+        setPendingAction(() => action);
+        setShowExitWarning(true);
+        return false;
+      }
+      // No active session, proceed immediately
+      action();
+      return true;
+    },
+    [hasActiveBrowserSession],
+  );
 
   /**
-   * Handle user confirming they want to leave the session
+   * Handle user confirming they want to leave the session.
+   *
+   * Leaving is an explicit teardown: tell the server to delete the browser,
+   * which stops the replay recording and archives the video to storage before
+   * the Kernel session is destroyed. Without this, navigating away would just
+   * abandon the session — it would idle into standby (delayed) or be reaped by
+   * Kernel's timeout with no video written. Fire-and-forget via sendBeacon so
+   * it survives the navigation that runs immediately after.
    */
   const handleConfirmLeave = useCallback(() => {
     setShowExitWarning(false);
+
+    const sessionId = metadata?.sessionId;
+    if (sessionId) {
+      try {
+        const payload = JSON.stringify({ action: 'delete', sessionId });
+        navigator.sendBeacon(
+          '/api/kernel-browser',
+          new Blob([payload], { type: 'application/json' }),
+        );
+      } catch {
+        // Best-effort — don't block leaving on cleanup.
+      }
+    }
+
     if (pendingAction) {
       pendingAction();
       setPendingAction(null);
     }
-  }, [pendingAction]);
+  }, [pendingAction, metadata?.sessionId]);
 
   /**
    * Handle user canceling the exit
@@ -64,4 +88,3 @@ export function useBrowserSessionExit() {
     handleCancelLeave,
   };
 }
-
