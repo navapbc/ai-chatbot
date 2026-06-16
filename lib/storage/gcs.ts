@@ -1,9 +1,14 @@
 import { Storage } from '@google-cloud/storage';
 
-// Initialize Google Cloud Storage
+// Initialize Google Cloud Storage.
+//
+// Authenticate via Application Default Credentials — on Cloud Run that is the
+// per-env runtime service account (cloud-run-<env>@…), which is granted
+// storage.objectAdmin on the bucket in terraform/storage.tf. No keyFilename:
+// the same runtime SA is used for GCS, Cloud SQL, secrets, and Vertex (it holds
+// aiplatform.user), so no per-service key files are needed.
 const storage = new Storage({
   projectId: process.env.GOOGLE_CLOUD_PROJECT,
-  keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS,
 });
 
 const bucketName = process.env.GCS_BUCKET_NAME || 'nava-storage-dev';
