@@ -104,6 +104,7 @@ function noFalseGaps(state: RunState): boolean {
 // ── Eval ────────────────────────────────────────────────────────────────
 
 const model = getEvalModel();
+// braintrust bundles evals to CJS, where import.meta.url is empty — use __dirname.
 const CALFRESH_FIXTURES = pathJoin(__dirname, "fixtures/calfresh");
 
 Eval("labs-asp", {

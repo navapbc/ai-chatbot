@@ -10,7 +10,7 @@ const BROWSER_TOOL_DESCRIPTION =
   "navigate, snapshot, click, fill, type, select, press, hover, check, uncheck, " +
   "screenshot, inputvalue, wait, evaluate, etc.";
 
-// Same input schema as the production tool (lib/ai/tools/browser.ts).
+// Mirrors the inputSchema in lib/ai/tools/browser.ts (the source of truth) — keep in sync.
 const browserInputSchema = z
   .object({
     action: z.string().describe('The command action (e.g. "navigate", "click", "snapshot", "fill")'),
