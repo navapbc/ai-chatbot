@@ -2,8 +2,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tool, type Tool } from "ai";
 import { z } from "zod";
-import { BrowserManager } from "agent-browser/dist/browser.js";
-import { executeCommand } from "agent-browser/dist/actions.js";
 import type { Command } from "agent-browser/dist/types.js";
 
 // Mirrors the eval-facing description the agent already sees (helpers.ts).
@@ -61,6 +59,8 @@ function pathToFixtureFile(pathname: string): string {
 export async function createBrowserSession(
   opts: CreateBrowserSessionOptions,
 ): Promise<BrowserSession> {
+  const { BrowserManager } = await import("agent-browser/dist/browser.js");
+  const { executeCommand } = await import("agent-browser/dist/actions.js");
   const manager = new BrowserManager();
   let n = 0;
   const exec = (params: Record<string, unknown>) =>
