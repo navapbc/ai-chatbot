@@ -24,11 +24,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - model: gpt-5-mini
+          - model: gpt-5.1
             provider: openai
           - model: claude-opus-4-7
             provider: anthropic
-          - model: gemini-2.5-pro
+          - model: claude-opus-4-8
+            provider: anthropic
+          - model: gemini-3-pro
             provider: google
     env:
       BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
