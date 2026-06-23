@@ -8,6 +8,7 @@ import {
   collectTextResponses,
   evalExperimentName,
   getEvalModel,
+  logResultUsage,
   type BaseRunState,
 } from "./helpers";
 
@@ -209,6 +210,7 @@ Eval("labs-asp", {
 
     state.textResponses = collectTextResponses(result.steps);
 
+    logResultUsage(hooks.span, result);
     return state;
   },
 

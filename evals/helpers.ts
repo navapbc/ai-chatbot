@@ -2,7 +2,9 @@ import { tool, type LanguageModel, type Tool } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { google } from "@ai-sdk/google";
 import { openai } from "@ai-sdk/openai";
+import type { Span } from "braintrust";
 import { z } from "zod";
+import { computeCostUsd, type UsageTotals } from "./pricing";
 
 /**
  * Shared stub tool builder for evals.
@@ -302,4 +304,86 @@ export function getEvalModel(): LanguageModel {
 export function evalExperimentName(name: string): string {
   const id = process.env.EVAL_MODEL ?? DEFAULT_EVAL_MODEL;
   return `${name} [${id}]`;
+}
+
+/** The active EVAL_MODEL id, falling back to the default per-file pin. */
+export function getEvalModelId(): string {
+  return process.env.EVAL_MODEL ?? DEFAULT_EVAL_MODEL;
+}
+
+// ── Token usage & cost (Braintrust metrics) ───────────────────────────────
+
+/** Minimal shape of a generateText result we read usage from (AI SDK v6). */
+interface HasTotalUsage {
+  totalUsage: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    cachedInputTokens?: number;
+  };
+}
+
+/** A zeroed usage accumulator. */
+export function emptyUsage(): UsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cachedInputTokens: 0,
+  };
+}
+
+/**
+ * Add a generateText result's `totalUsage` (aggregated across all agent steps)
+ * into an accumulator. Use this when a task makes multiple model calls (e.g.
+ * multi-turn evals); otherwise prefer logResultUsage.
+ */
+export function addUsage(acc: UsageTotals, result: HasTotalUsage): UsageTotals {
+  const u = result.totalUsage;
+  acc.inputTokens += u.inputTokens ?? 0;
+  acc.outputTokens += u.outputTokens ?? 0;
+  acc.totalTokens +=
+    u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
+  acc.cachedInputTokens += u.cachedInputTokens ?? 0;
+  return acc;
+}
+
+/**
+ * Log token usage and estimated cost for a run as Braintrust metrics + metadata
+ * on the task span. Metrics aggregate across the experiment in the dashboard;
+ * cost is computed from evals/pricing.ts for the active EVAL_MODEL.
+ *
+ * Captures only the task agent's usage — LLM-as-judge scorer calls are not
+ * included (the intent is the cost of the system under test).
+ */
+export function logUsageAndCost(span: Span, usage: UsageTotals): void {
+  const modelId = getEvalModelId();
+  const { costUsd, pricingKnown } = computeCostUsd(modelId, usage);
+  // Use Braintrust's canonical token metric names so they aggregate in the
+  // native token columns; Braintrust auto-derives total_tokens from these.
+  const metrics: Record<string, number> = {
+    prompt_tokens: usage.inputTokens,
+    completion_tokens: usage.outputTokens,
+    prompt_cached_tokens: usage.cachedInputTokens,
+  };
+  // estimated_cost_usd is a custom metric (Braintrust's native cost needs its
+  // own pricing table, which won't know these models). Omit the key entirely
+  // for unpriced models rather than logging null into the metrics field —
+  // pricing_known: false in metadata flags the gap.
+  if (costUsd != null) {
+    metrics.estimated_cost_usd = costUsd;
+  }
+  span.log({
+    metrics,
+    metadata: {
+      eval_model: modelId,
+      pricing_known: pricingKnown,
+      token_usage: usage,
+    },
+  });
+}
+
+/** Convenience: log usage/cost for a single generateText result. */
+export function logResultUsage(span: Span, result: HasTotalUsage): void {
+  logUsageAndCost(span, addUsage(emptyUsage(), result));
 }

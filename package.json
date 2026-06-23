@@ -18,9 +18,9 @@
     "db:up": "drizzle-kit up",
     "test:playwright": "export PLAYWRIGHT=True && pnpm exec playwright test",
     "test": "vitest",
-    "eval": "dotenv -e .env.local -- braintrust eval evals",
+    "eval": "rc=0; for f in evals/*.eval.ts; do dotenv -e .env.local -- braintrust eval $f || rc=1; done; exit $rc",
     "eval:tool-selection": "dotenv -e .env.local -- braintrust eval evals/tool-selection.eval.ts",
-    "eval:ci": "braintrust eval evals",
+    "eval:ci": "rc=0; for f in evals/*.eval.ts; do braintrust eval $f || rc=1; done; exit $rc",
     "trace:promote": "dotenv -e .env.local -- tsx scripts/promote-trace.ts",
     "scrub:check": "tsx scripts/scrub-pii.ts"
   },

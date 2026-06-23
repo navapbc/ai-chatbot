@@ -9,6 +9,9 @@ import {
   collectTextResponses,
   evalExperimentName,
   getEvalModel,
+  emptyUsage,
+  addUsage,
+  logUsageAndCost,
   type BaseRunState,
 } from "./helpers";
 
@@ -163,7 +166,7 @@ Eval("labs-asp", {
       },
     })),
 
-  task: async (_input, { metadata }) => {
+  task: async (_input, { metadata, span }) => {
     const meta = metadata as {
       scenario: string;
       participantId: number;
@@ -182,6 +185,7 @@ Eval("labs-asp", {
 
     const tools = createStubTools(state);
     const messages: ModelMessage[] = [];
+    const usage = emptyUsage();
 
     for (const userMsg of meta.turns) {
       const toolCallsBefore = state.toolCallLog.length;
@@ -194,6 +198,7 @@ Eval("labs-asp", {
         tools,
         stopWhen: stepCountIs(meta.maxStepsPerTurn),
       });
+      addUsage(usage, result);
 
       messages.push(...result.response.messages);
 
@@ -205,6 +210,7 @@ Eval("labs-asp", {
       });
     }
 
+    logUsageAndCost(span, usage);
     return state;
   },
 

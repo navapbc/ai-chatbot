@@ -7,7 +7,7 @@ The goal: catch regressions when prompts, tools, or models change — before the
 ## Quick start
 
 ```bash
-# Run all 10 suites against the default model (gpt-5-mini)
+# Run all suites against the default model (gpt-5-mini), one at a time
 pnpm eval
 
 # Run a single suite
@@ -21,6 +21,8 @@ pnpm eval:ci
 ```
 
 `pnpm eval` uses `dotenv-cli` to load `.env.local`. `pnpm eval:ci` expects env vars to already be in the shell — used by the GitHub Actions matrix.
+
+Both `eval` and `eval:ci` run the suite files **one at a time** (a shell loop), not concurrently. Running all suites in parallel makes ~40 multi-step agents fire at once; with large cached system prompts each call requests ~10k tokens, which saturates a single model's tokens-per-minute (TPM) limit (e.g. OpenAI's 500k TPM for gpt-5.1) and fails cases with `429 rate_limit_exceeded`. Sequential execution keeps each leg well under the ceiling. The loop still exits non-zero if any suite fails.
 
 ## The 10 suites
 
@@ -57,9 +59,15 @@ In the Braintrust dashboard, each experiment shows the mean across rows for ever
 | `claude-*` | `@ai-sdk/anthropic` (direct) | `ANTHROPIC_API_KEY` |
 | `gemini-*` | `@ai-sdk/google` | `GOOGLE_GENERATIVE_AI_API_KEY` |
 
-Default is `gpt-5-mini`. CI runs a 3-leg matrix in `.github/workflows/evals.yml` over `gpt-5-mini` / `claude-opus-4-7` / `gemini-2.5-pro`. Each leg uploads to a distinct Braintrust experiment (the model id is suffixed via `evalExperimentName()` in `helpers.ts`).
+Default is `gpt-5-mini`. CI runs a 4-leg matrix in `.github/workflows/evals.yml` over `gpt-5.1` / `claude-opus-4-7` / `claude-opus-4-8` / `gemini-3-pro`. Each leg uploads to a distinct Braintrust experiment (the model id is suffixed via `evalExperimentName()` in `helpers.ts`).
 
 Production uses `claude-opus-4-7` via Vertex AI (see `lib/ai/providers.ts:17`). The CI matrix uses **direct Anthropic API** instead of Vertex for simpler secret management. Model behavior is identical between routes — only auth and rate-limit ceilings differ.
+
+## Token usage & cost
+
+Each suite logs the task agent's token usage (aggregated across all agent steps via `result.totalUsage`) to its Braintrust task span using the canonical metric names `prompt_tokens` / `completion_tokens` / `prompt_cached_tokens` — so they land in Braintrust's native token columns and `total_tokens` is auto-derived. A custom `estimated_cost_usd` metric is logged in the same `span.log` call (so it rides alongside the token metrics), computed from `evals/pricing.ts` for the active `EVAL_MODEL`. As a custom metric it does not appear in the CLI summary table — find it per-row in the experiment in the Braintrust UI. Only the system-under-test's usage is captured — LLM-as-judge scorer calls are excluded.
+
+The per-model rates in `evals/pricing.ts` are **estimates marked `TODO(verify)`** — confirm them against the provider pricing pages before trusting the dollar figures. For unpriced models the cost key is omitted (with `pricing_known: false` in metadata) so a missing price reads as "unknown", not "free". The helpers live in `helpers.ts` (`logResultUsage`, `logUsageAndCost`, `addUsage`).
 
 ## Registered scorers
 

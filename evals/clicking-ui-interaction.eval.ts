@@ -4,7 +4,7 @@ import { getWebAutomationSystemPrompt } from "@/lib/ai/prompts/web-automation";
 import participants from "./datasets/participants.json";
 import snapshots from "./datasets/snapshots.json";
 import testCaseData from "./datasets/test-cases.json";
-import { createBaseStubTools, browserOk, collectTextResponses, evalExperimentName, getEvalModel, type BaseRunState } from "./helpers";
+import { createBaseStubTools, browserOk, collectTextResponses, evalExperimentName, getEvalModel, logResultUsage, type BaseRunState } from "./helpers";
 
 /**
  * Clicking / UI Interaction Eval
@@ -286,7 +286,7 @@ Eval("labs-asp", {
       metadata: { maxSteps: tc.maxSteps },
     })),
 
-  task: async (input: string, { metadata }) => {
+  task: async (input: string, { metadata, span }) => {
     const state: RunState = {
       currentPage: 0,
       collapsibleExpanded: false,
@@ -309,6 +309,7 @@ Eval("labs-asp", {
 
     state.textResponses = collectTextResponses(result.steps);
 
+    logResultUsage(span, result);
     return state;
   },
 

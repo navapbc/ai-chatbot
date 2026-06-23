@@ -10,6 +10,7 @@ import {
   collectIndexedTextResponses,
   evalExperimentName,
   getEvalModel,
+  logResultUsage,
   type BaseRunState,
 } from "./helpers";
 
@@ -208,7 +209,7 @@ Eval("labs-asp", {
       metadata: { maxSteps: tc.maxSteps },
     })),
 
-  task: async (input: string, { metadata }) => {
+  task: async (input: string, { metadata, span }) => {
     const state: RunState = {
       currentPage: 0,
       toolCallLog: [],
@@ -231,6 +232,7 @@ Eval("labs-asp", {
     state.totalSteps = result.steps.length;
     state.textResponses = collectIndexedTextResponses(result.steps);
 
+    logResultUsage(span, result);
     return state;
   },
 

@@ -3,7 +3,7 @@ import { generateText, stepCountIs, tool, type ModelMessage } from "ai";
 import { z } from "zod";
 import { getWebAutomationSystemPrompt } from "@/lib/ai/prompts/web-automation";
 import testCaseData from "./datasets/test-cases.json";
-import { evalExperimentName, getEvalModel } from "./helpers";
+import { evalExperimentName, getEvalModel, logResultUsage } from "./helpers";
 
 /**
  * Stub tool definitions — identical schemas to production but with no-op
@@ -143,7 +143,7 @@ Eval("labs-asp", {
       expected: tc.expected,
     })),
 
-  task: async (input: string) => {
+  task: async (input: string, { span }) => {
     const messages: ModelMessage[] = [{ role: "user", content: input }];
 
     const result = await generateText({
@@ -159,6 +159,7 @@ Eval("labs-asp", {
       step.toolCalls.map((tc) => tc.toolName)
     );
 
+    logResultUsage(span, result);
     return toolCalls;
   },
 
