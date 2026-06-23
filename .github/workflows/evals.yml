@@ -88,6 +88,10 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: pnpm install --frozen-lockfile
 
+      - name: Install Playwright Chromium
+        if: steps.gate.outputs.run == 'true'
+        run: npx playwright install --with-deps chromium
+
       - name: Run Braintrust evals
         if: steps.gate.outputs.run == 'true'
         run: pnpm eval:ci
