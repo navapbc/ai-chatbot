@@ -28,7 +28,6 @@ Both `eval` and `eval:ci` run the suite files **one at a time** (a shell loop), 
 
 | Suite | What it measures | Heuristic scorers | LLM-as-judge |
 |-------|------------------|-------------------|--------------|
-| **prod-regression** | Real production sessions promoted via `scripts/promote-trace.ts`. Self-growing — rows come from the `prod-regression-cases` Braintrust dataset, scored by the four registered LLM judges. | — | **hallucination-judge**, **summary-attribution-judge**, **ask-questions-judge**, **verbosity-judge** |
 | **tool-selection** | Agent picks the right tool for each user request (one-step) | first-tool-correct, all-expected-tools-called, no-hallucinated-tools | — |
 | **autonomous-progression** | Agent moves through a multi-page form without being nudged | used-database-data, filled-form-fields, progressed-autonomously, stopped-before-submit, did-not-modify-database, showed-review, not-overly-verbose | — |
 | **navigation** | Agent handles modals, county pickers, income popups; doesn't open new tabs or hit Back | navigated-past-landing, avoided-external-links, handled-county-modal, handled-income-modal, did-not-use-back, did-not-open-new-tab, stayed-on-site, reached-review, stopped-at-review | — |
@@ -120,55 +119,11 @@ The `regression-scenarios` and `session-carryover` suites cover the 57-step regr
 
 The original manual harness drives a live browser at the Preview / Dev / Production deployment and a human scores each step. The offline suites here run the agent against mocked tool surfaces, so they cost nothing per run, are deterministic, and can be wired into CI on every PR — at the cost of not exercising the real DOM (which is why step #23 stays manual).
 
-## Production tracing
+## Tracing
 
-`instrumentation.ts` at the repo root registers a `BraintrustExporter` from `@braintrust/otel` when `BRAINTRUST_API_KEY` is set. The chat route's `streamText` call has `experimental_telemetry` enabled, so production AI SDK spans flow to the same `labs-asp` Braintrust project as the eval experiments. This means:
+`instrumentation.ts` at the repo root registers a `BraintrustExporter` from `@braintrust/otel` when `BRAINTRUST_API_KEY` is set. The chat route's `streamText` call has `experimental_telemetry` enabled, so AI SDK spans flow to the same `labs-asp` Braintrust project as the eval experiments.
 
-- Eval experiments and production sessions sit side-by-side in the dashboard
-- You can compare a regressed eval score against the production traces that produced it
-- Problematic sessions can be **promoted into a self-growing regression suite** via `scripts/promote-trace.ts` (see below)
-
-## Promoting a production trace to a regression test
-
-When a real production session exposes a regression you want to lock in, push it into the `prod-regression-cases` Braintrust dataset. The `prod-regression.eval.ts` suite picks up new rows automatically on the next eval run.
-
-### One-time setup
-
-1. In the Braintrust dashboard, create a **Dataset** named `prod-regression-cases` under the `labs-asp` project.
-2. Decide which synthetic participants from `datasets/participants.json` you'll use as ground truth proxies for production scenarios. Common picks:
-   - `mariaGarcia` — complete record, household of 3
-   - `tanyaBrooks` — sparse record (single mother, missing SSN/email/marital)
-   - `luciaMorales` — full record with children + linked family
-   - `jamesNguyen` — sparse, used by ask-questions
-   - `priyaSharma` — used by verbosity
-   - `davidChen` — used by navigation
-
-### Per-promotion workflow
-
-1. Find the problematic trace in the Braintrust dashboard.
-2. Copy the user's first message (the agent's input).
-3. Choose a synthetic participant whose record shape resembles the production scenario.
-4. Run:
-   ```bash
-   echo "<copied user message>" | pnpm trace:promote \
-     --participant mariaGarcia \
-     --span-id <braintrust-span-id> \
-     --note "Why this case matters"
-   ```
-5. The script scrubs PII (SSN, email, phone, ZIP, Apricot record IDs), prints the scrubbed version + flags, and asks for confirmation before pushing.
-
-The dataset row carries `metadata.participant` pointing at your chosen synthetic participant. `prod-regression.eval.ts` reads that metadata, looks up the participant, and uses it as ground truth for the (now participant-agnostic) `hallucination-judge` and `summary-attribution-judge`.
-
-### Why is this a manual paste rather than auto-fetch?
-
-The script intentionally doesn't fetch from Braintrust's API. The operator-paste step is a **deliberate PII review checkpoint** — automating it would create a path for unreviewed real-user data to flow into a git-tracked dataset. The PII scrubber catches the obvious patterns (`scripts/scrub-pii.ts`) but free-form names and addresses are hard to regex out, so the human eyeball is the safety net.
-
-### Test the scrubber without pushing
-
-```bash
-echo "Look up record 4521 for Maria Garcia (maria.garcia@email.com, 951-555-0142)" \
-  | pnpm scrub:check
-```
+The key is only injected in non-production environments: `terraform/cloud_run.tf` sets `BRAINTRUST_API_KEY` for `dev` and `preview` but never for `prod` (those run against the dev database). Production sessions therefore never reach Braintrust — `register()` early-returns without the key. There is no pipeline that copies real user traces into a dataset.
 
 ## Adding a new eval
 
@@ -209,4 +164,3 @@ CI uses the same names as GitHub Actions secrets. The workflow soft-skips a matr
 - **Scorer rubric changed but score didn't move**: registered scorers need `npx braintrust push` to take effect. The eval file picks up the slug, but the dashboard prompt is what runs.
 - **Experiments colliding in the dashboard**: every suite's `experimentName` is wrapped by `evalExperimentName()` which suffixes the active `EVAL_MODEL`. If multiple PRs are running the same matrix entry, Braintrust auto-namespaces by timestamp + git context — but very fast back-to-back runs can group as one experiment.
 - **All 4 LLM judges are participant-agnostic**: each takes the participant record as part of the `{{output}}` payload at invocation time. Re-pushing them is required after any rubric change (`npx braintrust push evals/scorers/<name>.ts`).
-- **`prod-regression-cases` dataset must exist before running prod-regression.eval.ts**: the eval reads from `initDataset({ project: "labs-asp", dataset: "prod-regression-cases" })`. If the dataset doesn't exist or is empty, Braintrust logs a zero-row experiment — not an error, but nothing to evaluate either.
