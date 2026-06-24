@@ -114,3 +114,13 @@ export function getTextFromMessage(message: ChatMessage): string {
     .map((part) => part.text)
     .join('');
 }
+
+/**
+ * Truncate a string to at most `max` characters, appending an ellipsis when
+ * the input was shortened. A non-positive `max` yields an empty string.
+ */
+export function truncate(text: string, max: number): string {
+  if (max <= 0) return '';
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…`;
+}
