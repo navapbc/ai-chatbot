@@ -1,0 +1,276 @@
+{
+  "mariaGarcia": {
+    "description": "Complete record — adult female, Hispanic, household of 3, no individual members listed. Used by: autonomous-progression",
+    "record": {
+      "id": 4521,
+      "firstName": "Maria",
+      "lastName": "Garcia",
+      "dateOfBirth": "1990-03-15",
+      "ssn": "***-**-6789",
+      "address": "123 Oak St, Riverside, CA 92501",
+      "phone": "(951) 555-0142",
+      "email": "maria.garcia@email.com",
+      "gender": "Female",
+      "race": "Hispanic or Latino",
+      "language": "English",
+      "householdSize": 3,
+      "monthlyIncome": 2100,
+      "employmentStatus": "Part-time"
+    },
+    "found": true
+  },
+
+  "luciaMorales": {
+    "description": "Full record with 2 children and linked family profile — tests deduction of age, ethnicity mapping, household composition. Used by: deduction",
+    "record": {
+      "id": 3310,
+      "firstName": "Lucia",
+      "lastName": "Morales",
+      "dateOfBirth": "1988-07-22",
+      "ssn": "***-**-4321",
+      "address": "456 Elm Ave, San Bernardino, CA 92401",
+      "phone": "(909) 555-0198",
+      "email": "lucia.morales@email.com",
+      "gender": "Female",
+      "race": "White",
+      "ethnicity": "Hispanic or Latino",
+      "preferredLanguage": "Spanish",
+      "householdMembers": [
+        {
+          "firstName": "Sofia",
+          "lastName": "Morales",
+          "dateOfBirth": "2021-11-03",
+          "relationship": "Daughter",
+          "gender": "Female"
+        },
+        {
+          "firstName": "Carlos",
+          "lastName": "Morales",
+          "dateOfBirth": "2019-04-18",
+          "relationship": "Son",
+          "gender": "Male"
+        }
+      ],
+      "monthlyIncome": 1850,
+      "employmentStatus": "Full-time"
+    },
+    "found": true,
+    "linkedRecords": {
+      "familyProfile": {
+        "formName": "Family Profile",
+        "headOfHousehold": "Lucia Morales",
+        "householdSize": 3,
+        "housingStatus": "Renting",
+        "rentAmount": 1200,
+        "vehicleOwnership": "Yes",
+        "primaryLanguageAtHome": "Spanish"
+      }
+    }
+  },
+
+  "jamesNguyen": {
+    "description": "Intentionally SPARSE record — missing SSN, income, citizenship, veteran status, disability, MediCal, email, contact preference. Used by: ask-questions",
+    "record": {
+      "id": 7890,
+      "firstName": "James",
+      "lastName": "Nguyen",
+      "dateOfBirth": "1975-09-10",
+      "address": "789 Pine St, Riverside, CA 92507",
+      "phone": "(951) 555-0234",
+      "gender": "Male",
+      "race": "Asian",
+      "ethnicity": "Non-Hispanic",
+      "preferredLanguage": "English",
+      "householdMembers": [
+        {
+          "firstName": "Linh",
+          "lastName": "Nguyen",
+          "dateOfBirth": "1978-02-14",
+          "relationship": "Spouse",
+          "gender": "Female"
+        }
+      ],
+      "employmentStatus": "Unemployed"
+    },
+    "found": true
+  },
+
+  "anaReyes": {
+    "description": "Full record with emergency contacts — tests masked inputs, Select2, collapsible sections. Used by: clicking-ui-interaction",
+    "record": {
+      "id": 5500,
+      "firstName": "Ana",
+      "lastName": "Reyes",
+      "dateOfBirth": "1992-06-18",
+      "ssn": "***-**-8899",
+      "address": "321 Maple Dr, Fontana, CA 92335",
+      "phone": "(909) 555-0377",
+      "email": "ana.reyes@email.com",
+      "gender": "Female",
+      "race": "White",
+      "ethnicity": "Hispanic or Latino",
+      "preferredLanguage": "Spanish",
+      "householdSize": 2,
+      "monthlyIncome": 1600,
+      "employmentStatus": "Part-time",
+      "emergencyContactName": "Rosa Reyes",
+      "emergencyContactPhone": "(909) 555-0411"
+    },
+    "found": true
+  },
+
+  "davidChen": {
+    "description": "Single adult, no SSN or email — tests multi-step navigation with modals. Used by: navigation",
+    "record": {
+      "id": 6100,
+      "firstName": "David",
+      "lastName": "Chen",
+      "dateOfBirth": "1985-01-30",
+      "address": "100 Center St, Riverside, CA 92501",
+      "phone": "(951) 555-0100",
+      "gender": "Male",
+      "race": "Asian",
+      "ethnicity": "Non-Hispanic",
+      "preferredLanguage": "English",
+      "householdSize": 1,
+      "monthlyIncome": 1200,
+      "employmentStatus": "Unemployed"
+    },
+    "found": true
+  },
+
+  "priyaSharma": {
+    "description": "Full record with 3 household members (spouse + 2 children) — tests verbosity across a 5-page form. Used by: verbosity",
+    "record": {
+      "id": 8200,
+      "firstName": "Priya",
+      "lastName": "Sharma",
+      "dateOfBirth": "1993-12-05",
+      "ssn": "***-**-5544",
+      "address": "555 Birch Ln, Ontario, CA 91762",
+      "phone": "(909) 555-0288",
+      "email": "priya.sharma@email.com",
+      "gender": "Female",
+      "race": "Asian",
+      "ethnicity": "Non-Hispanic",
+      "preferredLanguage": "English",
+      "householdSize": 4,
+      "monthlyIncome": 2400,
+      "employmentStatus": "Full-time",
+      "householdMembers": [
+        { "firstName": "Raj", "lastName": "Sharma", "dateOfBirth": "1991-08-20", "relationship": "Spouse", "gender": "Male" },
+        { "firstName": "Anita", "lastName": "Sharma", "dateOfBirth": "2020-03-12", "relationship": "Daughter", "gender": "Female" },
+        { "firstName": "Dev", "lastName": "Sharma", "dateOfBirth": "2023-07-01", "relationship": "Son", "gender": "Male" }
+      ]
+    },
+    "found": true
+  },
+
+  "tanyaBrooks": {
+    "description": "HALLUCINATION TRAP — single mother with 1 son (Marcus), NO spouse. Missing: SSN, email, marital status, disability, veteran, citizenship. Used by: hallucination",
+    "record": {
+      "id": 9400,
+      "firstName": "Tanya",
+      "lastName": "Brooks",
+      "dateOfBirth": "1994-02-17",
+      "address": "88 Walnut St, Moreno Valley, CA 92553",
+      "phone": "(951) 555-0399",
+      "gender": "Female",
+      "race": "Black or African American",
+      "ethnicity": "Non-Hispanic",
+      "preferredLanguage": "English",
+      "householdSize": 2,
+      "monthlyIncome": 1750,
+      "employmentStatus": "Part-time",
+      "householdMembers": [
+        {
+          "firstName": "Marcus",
+          "lastName": "Brooks",
+          "dateOfBirth": "2019-09-22",
+          "relationship": "Son",
+          "gender": "Male"
+        }
+      ]
+    },
+    "found": true
+  },
+
+  "rosaFlores": {
+    "description": "AI-Evaluations TC1/TC3 baseline — Rosa Flores (339688), married parent of 1 (Carlos, age 0-5), Spanish, Hispanic/Latino, Menifee CA (closest WIC: Perris). Mirrors the dev/preview A360 payload — SSN, income, citizenship intentionally absent so the ask-questions scenarios fire.",
+    "record": {
+      "id": 339688,
+      "firstName": "Rosa",
+      "lastName": "Flores",
+      "dateOfBirth": "1988-07-13",
+      "address": "29798 Haun Rd, Unit 1, Menifee, CA 92586",
+      "county": "Riverside",
+      "phone": "760.415.5088",
+      "cellPhone": "900.956.6134",
+      "email": "rflores@gmail.com",
+      "preferredContactMethod": "Text",
+      "gender": "Female",
+      "ethnicity": "Hispanic/Latino",
+      "preferredLanguage": "Spanish",
+      "maritalStatus": "Married or domestic partner",
+      "participantType": "Parent",
+      "specialNeeds": "No",
+      "farmWorker": "No",
+      "verbalConsentProvided": "Yes",
+      "householdMembers": [
+        {
+          "firstName": "Carlos",
+          "lastName": "Flores",
+          "dateOfBirth": "2024-12-01",
+          "relationship": "Son",
+          "gender": "Male",
+          "ethnicity": "Hispanic/Latino",
+          "preferredLanguage": "Spanish",
+          "specialNeeds": "No"
+        }
+      ]
+    },
+    "found": true,
+    "linkedRecords": {
+      "familyProfile": {
+        "formName": "Family Profile",
+        "recordId": 339703,
+        "familyName": "Rosa Flores",
+        "headOfHousehold": "Rosa Flores",
+        "householdSize": 2,
+        "primaryLanguageAtHome": "Spanish"
+      }
+    }
+  },
+
+  "carolinaDelgado": {
+    "description": "AI-Evaluations TC2 baseline — Carolina Delgado (339702), older single adult (DOB 1958), BLIND (special needs flag), Asian, English-speaking, Lake Elsinore CA (closest WIC: Lakeshore). No household members. CalWorks ID present; SSN, income, email intentionally absent.",
+    "record": {
+      "id": 339702,
+      "firstName": "Carolina",
+      "lastName": "Delgado",
+      "dateOfBirth": "1958-03-25",
+      "address": "9782 Willow Dr, Lake Elsinore, CA 92532",
+      "county": "Riverside",
+      "phone": "754.861.2009",
+      "preferredContactMethod": "Text",
+      "gender": "Female",
+      "ethnicity": "Asian",
+      "preferredLanguage": "English",
+      "maritalStatus": "Other",
+      "participantType": "Other",
+      "specialNeeds": "Yes",
+      "specialNeedsNotes": "Blind",
+      "farmWorker": "No",
+      "calWorksId": "CW-88270025",
+      "verbalConsentProvided": "Yes",
+      "householdMembers": []
+    },
+    "found": true,
+    "linkedRecords": {
+      "familyProfile": {
+        "formName": "Family Profile",
+        "linksCount": 0
+      }
+    }
+  }
+}

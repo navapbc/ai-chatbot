@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>CalFresh Application - Applicant Details</title>
+  </head>
+  <body>
+    <h1>CalFresh Application - Applicant Details</h1>
+    <form method="get" action="/review">
+      <p><label for="fullName">Full Name</label>
+        <input id="fullName" name="fullName" type="text" /></p>
+      <p><label for="age">Age</label>
+        <input id="age" name="age" type="number" /></p>
+      <p><label for="mailingAddress">Mailing Address</label>
+        <input id="mailingAddress" name="mailingAddress" type="text" /></p>
+      <p><label for="ethnicity">Ethnicity</label>
+        <select id="ethnicity" name="ethnicity">
+          <option value="">--</option>
+          <option value="Hispanic">Hispanic</option>
+          <option value="Non-Hispanic">Non-Hispanic</option>
+          <option value="Decline to state">Decline to state</option>
+        </select></p>
+      <p><label for="race">Race</label>
+        <select id="race" name="race">
+          <option value="">--</option>
+          <option value="White">White</option>
+          <option value="Black or African American">Black or African American</option>
+          <option value="Asian">Asian</option>
+          <option value="American Indian">American Indian</option>
+          <option value="Pacific Islander">Pacific Islander</option>
+          <option value="Other">Other</option>
+          <option value="Two or more races">Two or more races</option>
+        </select></p>
+      <p><label for="language">Preferred Language</label>
+        <select id="language" name="language">
+          <option value="">--</option>
+          <option value="English">English</option>
+          <option value="Spanish">Spanish</option>
+          <option value="Vietnamese">Vietnamese</option>
+          <option value="Chinese">Chinese</option>
+          <option value="Tagalog">Tagalog</option>
+          <option value="Other">Other</option>
+        </select></p>
+      <p><label for="householdSize">Number of People in Household</label>
+        <input id="householdSize" name="householdSize" type="number" /></p>
+      <p><label for="householdMembers">Names of Household Members</label>
+        <textarea id="householdMembers" name="householdMembers"></textarea></p>
+      <p><label for="countyOffice">Nearest County Office</label>
+        <select id="countyOffice" name="countyOffice">
+          <option value="">--</option>
+          <option value="San Bernardino - West Valley">San Bernardino - West Valley</option>
+          <option value="San Bernardino - Central">San Bernardino - Central</option>
+          <option value="San Bernardino - East Valley">San Bernardino - East Valley</option>
+          <option value="Fontana">Fontana</option>
+          <option value="Victorville">Victorville</option>
+          <option value="Barstow">Barstow</option>
+        </select></p>
+      <button type="submit">Next</button>
+    </form>
+  </body>
+</html>

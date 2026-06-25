@@ -17,7 +17,11 @@
     "db:check": "drizzle-kit check",
     "db:up": "drizzle-kit up",
     "test:playwright": "export PLAYWRIGHT=True && pnpm exec playwright test",
-    "test": "vitest"
+    "test": "vitest",
+    "eval": "rc=0; for f in evals/*.eval.ts; do dotenv -e .env.local -- braintrust eval $f --external-packages agent-browser playwright playwright-core chromium-bidi || rc=1; done; exit $rc",
+    "eval:tool-selection": "dotenv -e .env.local -- braintrust eval evals/tool-selection.eval.ts",
+    "eval:check-harness": "tsx evals/browser-harness.check.ts",
+    "eval:ci": "rc=0; for f in evals/*.eval.ts; do braintrust eval $f --external-packages agent-browser playwright playwright-core chromium-bidi || rc=1; done; exit $rc"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.58",
@@ -28,6 +32,7 @@
     "@ai-sdk/provider": "3.0.8",
     "@ai-sdk/react": "3.0.118",
     "@ai-sdk/xai": "3.0.67",
+    "@braintrust/otel": "^0.2.0",
     "@codemirror/lang-javascript": "^6.2.2",
     "@codemirror/lang-python": "^6.1.6",
     "@codemirror/state": "^6.5.0",
@@ -58,12 +63,14 @@
     "@vercel/analytics": "^1.3.1",
     "@vercel/blob": "^0.24.1",
     "@vercel/functions": "^2.0.0",
+    "@vercel/otel": "^2.1.2",
     "@vercel/postgres": "^0.10.0",
     "@vitejs/plugin-react": "^5.0.4",
     "@vitest/browser": "^3.2.4",
     "agent-browser": "^0.8.4",
     "ai": "6.0.116",
     "bcrypt-ts": "^5.0.2",
+    "braintrust": "^3.7.1",
     "class-variance-authority": "^0.7.0",
     "classnames": "^2.5.1",
     "clsx": "^2.1.1",
@@ -71,7 +78,6 @@
     "codemirror": "^6.0.1",
     "date-fns": "^4.1.0",
     "diff-match-patch": "^1.0.5",
-    "dotenv": "^16.4.5",
     "drizzle-orm": "^0.34.0",
     "fast-deep-equal": "^3.1.3",
     "framer-motion": "^11.3.19",
@@ -127,6 +133,9 @@
     "@types/pdf-parse": "^1.1.4",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "autoevals": "^0.0.132",
+    "dotenv": "^16.4.7",
+    "dotenv-cli": "^11.0.0",
     "drizzle-kit": "^0.25.0",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
@@ -134,5 +143,10 @@
     "typescript": "^5.6.3",
     "vitest": "^3.2.4"
   },
-  "packageManager": "pnpm@9.12.3"
+  "packageManager": "pnpm@9.12.3",
+  "pnpm": {
+    "overrides": {
+      "boxen": "5.1.2"
+    }
+  }
 }

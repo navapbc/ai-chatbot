@@ -1,0 +1,97 @@
+name: Evals
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'lib/ai/**'
+      - 'evals/**'
+      - 'app/(chat)/api/chat/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/evals.yml'
+
+concurrency:
+  group: evals-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run-evals:
+    name: ${{ matrix.model }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - model: gpt-5.1
+            provider: openai
+          - model: claude-opus-4-7
+            provider: anthropic
+          - model: claude-opus-4-8
+            provider: anthropic
+          - model: gemini-3-pro
+            provider: google
+    env:
+      BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
+      BRAINTRUST_PARENT: project_name:labs-asp
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+      EVAL_MODEL: ${{ matrix.model }}
+      EVAL_PROVIDER: ${{ matrix.provider }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine whether this leg should run
+        id: gate
+        run: |
+          if [ -z "$BRAINTRUST_API_KEY" ]; then
+            echo "::warning::BRAINTRUST_API_KEY is not configured — skipping eval run."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$EVAL_PROVIDER" in
+            openai)
+              if [ -z "$OPENAI_API_KEY" ]; then
+                echo "::warning::OPENAI_API_KEY not set — skipping $EVAL_MODEL leg."
+                echo "run=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi ;;
+            anthropic)
+              if [ -z "$ANTHROPIC_API_KEY" ]; then
+                echo "::warning::ANTHROPIC_API_KEY not set — skipping $EVAL_MODEL leg."
+                echo "run=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi ;;
+            google)
+              if [ -z "$GOOGLE_GENERATIVE_AI_API_KEY" ]; then
+                echo "::warning::GOOGLE_GENERATIVE_AI_API_KEY not set — skipping $EVAL_MODEL leg."
+                echo "run=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi ;;
+          esac
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        if: steps.gate.outputs.run == 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Braintrust evals
+        if: steps.gate.outputs.run == 'true'
+        run: pnpm eval:ci

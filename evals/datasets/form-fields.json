@@ -1,0 +1,91 @@
+{
+  "autonomousProgression": {
+    "description": "WIC Application form fields — 9 standard fields. Used by: autonomous-progression",
+    "fields": [
+      { "id": 1, "label": "First Name", "type": "text", "required": true },
+      { "id": 2, "label": "Last Name", "type": "text", "required": true },
+      { "id": 3, "label": "Date of Birth", "type": "date", "required": true },
+      { "id": 4, "label": "SSN", "type": "text", "required": true },
+      { "id": 5, "label": "Address", "type": "text", "required": true },
+      { "id": 6, "label": "Phone", "type": "text", "required": false },
+      { "id": 7, "label": "Gender", "type": "select", "required": true },
+      { "id": 8, "label": "Household Size", "type": "number", "required": true },
+      { "id": 9, "label": "Monthly Income", "type": "number", "required": true }
+    ],
+    "count": 9,
+    "success": true
+  },
+
+  "deduction": {
+    "description": "Family Profile form fields — 5 fields for linked record. Used by: deduction",
+    "fields": [
+      { "id": 1, "label": "Head of Household", "type": "text" },
+      { "id": 2, "label": "Household Size", "type": "number" },
+      { "id": 3, "label": "Housing Status", "type": "select" },
+      { "id": 4, "label": "Rent Amount", "type": "number" },
+      { "id": 5, "label": "Primary Language at Home", "type": "select" }
+    ],
+    "count": 5,
+    "success": true
+  },
+
+  "askQuestions": {
+    "description": "CalWorks form fields — 10 fields, intentionally EXCLUDES SSN, citizenship, veteran, disability, MediCal, income, email, contact preference. Used by: ask-questions",
+    "fields": [
+      { "id": 1, "label": "First Name", "type": "text", "required": true },
+      { "id": 2, "label": "Last Name", "type": "text", "required": true },
+      { "id": 3, "label": "Date of Birth", "type": "date", "required": true },
+      { "id": 4, "label": "Address", "type": "text", "required": true },
+      { "id": 5, "label": "Phone", "type": "text", "required": false },
+      { "id": 6, "label": "Gender", "type": "select", "required": true },
+      { "id": 7, "label": "Race", "type": "select", "required": true },
+      { "id": 8, "label": "Ethnicity", "type": "select", "required": true },
+      { "id": 9, "label": "Preferred Language", "type": "select", "required": false },
+      { "id": 10, "label": "Employment Status", "type": "select", "required": true }
+    ],
+    "count": 10,
+    "success": true
+  },
+
+  "wic": {
+    "description": "WIC Application fields — mirrors ruhealth.org WIC form (closest-clinic select, authorization checkbox, eligibility checkboxes). Used by: regression-scenarios (Rosa TC1/TC3, Carolina TC2).",
+    "fields": [
+      { "id": 1, "label": "First Name", "type": "text", "required": true },
+      { "id": 2, "label": "Last Name", "type": "text", "required": true },
+      { "id": 3, "label": "Date of Birth", "type": "date", "required": true },
+      { "id": 4, "label": "Address", "type": "text", "required": true },
+      { "id": 5, "label": "Phone", "type": "text", "required": true },
+      { "id": 6, "label": "Email", "type": "email", "required": false },
+      { "id": 7, "label": "Closest WIC Office", "type": "select", "required": true },
+      { "id": 8, "label": "I authorize WIC to schedule appointments", "type": "checkbox", "required": false },
+      { "id": 9, "label": "Children 0-5", "type": "checkbox", "required": false },
+      { "id": 10, "label": "I am pregnant", "type": "checkbox", "required": false },
+      { "id": 11, "label": "I am postpartum", "type": "checkbox", "required": false },
+      { "id": 12, "label": "I am breastfeeding", "type": "checkbox", "required": false }
+    ],
+    "count": 12,
+    "success": true
+  },
+
+  "ihss": {
+    "description": "IHSS Application fields — mirrors riversideihss.org form (applying-for-self radio, sex checkbox, blind/deaf flags, language read/speak). Used by: regression-scenarios (Rosa TC1/TC3, Carolina TC2).",
+    "fields": [
+      { "id": 1, "label": "First Name", "type": "text", "required": true },
+      { "id": 2, "label": "Last Name", "type": "text", "required": true },
+      { "id": 3, "label": "Date of Birth", "type": "date", "required": true },
+      { "id": 4, "label": "Address", "type": "text", "required": true },
+      { "id": 5, "label": "Phone", "type": "tel", "required": true },
+      { "id": 6, "label": "Are you applying for yourself?", "type": "radio", "required": true },
+      { "id": 7, "label": "Sex", "type": "checkbox", "required": true },
+      { "id": 8, "label": "Preferred language to read", "type": "select", "required": false },
+      { "id": 9, "label": "Preferred language to speak", "type": "select", "required": false },
+      { "id": 10, "label": "Ethnic origin", "type": "select", "required": true },
+      { "id": 11, "label": "Do you live alone?", "type": "radio", "required": true },
+      { "id": 12, "label": "Household members", "type": "textarea", "required": false },
+      { "id": 13, "label": "Applicant is blind", "type": "checkbox", "required": false },
+      { "id": 14, "label": "Applicant is deaf", "type": "checkbox", "required": false }
+    ],
+    "count": 14,
+    "success": true
+  }
+}
