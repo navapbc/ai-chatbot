@@ -39,7 +39,6 @@ function PureContextUsage({
         inputTokens: tokenUsage.inputTokens,
         outputTokens: tokenUsage.outputTokens,
         totalTokens: tokenUsage.inputTokens + tokenUsage.outputTokens,
-        cachedInputTokens: tokenUsage.cachedInputTokens,
         inputTokenDetails: {
           noCacheTokens: undefined,
           cacheReadTokens: tokenUsage.cachedInputTokens || undefined,

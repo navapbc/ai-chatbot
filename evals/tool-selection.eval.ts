@@ -1,5 +1,5 @@
 import { Eval } from "braintrust";
-import { generateText, stepCountIs, tool, type ModelMessage } from "ai";
+import { generateText, isStepCount, tool, type ModelMessage } from "ai";
 import { z } from "zod";
 import { getWebAutomationSystemPrompt } from "@/lib/ai/prompts/web-automation";
 import testCaseData from "./datasets/test-cases.json";
@@ -148,10 +148,10 @@ Eval("labs-asp", {
 
     const result = await generateText({
       model,
-      system: getWebAutomationSystemPrompt(),
+      instructions: getWebAutomationSystemPrompt(),
       messages,
       tools: stubTools,
-      stopWhen: stepCountIs(1),
+      stopWhen: isStepCount(1),
     });
 
     // Extract the tool names the model chose to call

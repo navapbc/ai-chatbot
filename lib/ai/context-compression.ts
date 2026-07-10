@@ -133,7 +133,7 @@ async function summarizeMessages(
     generateText({
       model: prepareStepModel,
       maxOutputTokens: 4096,
-      system: COMPACTION_SYSTEM_PROMPT,
+      instructions: COMPACTION_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: `Summarize this session transcript:\n\n${transcript}` }],
     }).catch((err) => {
       log(`${logPrefix}compaction ERROR:`, err);
@@ -146,7 +146,7 @@ async function summarizeMessages(
       maxOutputTokens: 4096,
       tools: { updateWorkingMemory },
       toolChoice: { type: 'tool', toolName: 'updateWorkingMemory' },
-      system:
+      instructions:
         'Extract all participant data from this transcript. ' +
         'Include data from database records and caseworker answers. ' +
         'Only include data explicitly present — never fabricate.',

@@ -2,7 +2,7 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   JsonToSseTransformStream,
-  stepCountIs,
+  isStepCount,
   streamText,
 } from 'ai';
 import { auth, type UserType } from '@/app/(auth)/auth';
@@ -210,7 +210,7 @@ export async function POST(request: Request) {
           // passed as abortSignal. Mid-tool abort would leave a
           // tool-call with no matching tool-result, triggering
           // AI_MissingToolResultsError on the next turn.
-          stopWhen: [stepCountIs(500), () => chatAbort.signal.aborted],
+          stopWhen: [isStepCount(500), () => chatAbort.signal.aborted],
           // Compress message history when token usage approaches the context
           // window limit (75% of 200K). First step has no prior usage data so
           // compression is skipped (correct — first step is always small).
@@ -245,14 +245,20 @@ export async function POST(request: Request) {
           },
           // Emit cumulative token usage after each step so the client can
           // display it in real-time via the Context component.
-          onStepFinish: ({ usage }) => {
+          onStepEnd: ({ usage }) => {
             dataStream.write({
               type: 'data-token-usage',
-              data: usage,
+              // Map the AI SDK v7 usage shape to the flat form the client
+              // accumulates (cache-read tokens moved under inputTokenDetails).
+              data: {
+                inputTokens: usage.inputTokens ?? 0,
+                outputTokens: usage.outputTokens ?? 0,
+                cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens ?? 0,
+              },
               transient: true,
             });
           },
-          experimental_telemetry: {
+          telemetry: {
             isEnabled: !!process.env.BRAINTRUST_API_KEY,
             functionId: 'web-automation-agent',
           },
@@ -261,7 +267,7 @@ export async function POST(request: Request) {
         dataStream.merge(result.toUIMessageStream());
       },
       generateId: generateUUID,
-      onFinish: async ({ messages }) => {
+      onEnd: async ({ messages }) => {
         clearChatAbort(id, chatAbort);
         await saveNewMessages(messages);
       },
