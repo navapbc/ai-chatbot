@@ -178,6 +178,11 @@ export async function POST(request: Request) {
 
         const result = streamText({
           model: activeModel,
+          // AI SDK v7 rejects system-role messages inside `messages` by default.
+          // We keep the two system messages at the head of the array (the
+          // context-compression step in prepareStep treats messages[0] as the
+          // pinned working-memory message and preserves it), so opt back in.
+          allowSystemInMessages: true,
           messages: [
             {
               role: 'system',

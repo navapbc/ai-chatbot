@@ -34,6 +34,26 @@ Manual fixes applied beyond the codemod's renames:
   is now generic; annotated the options param structurally (`{ abortSignal?: AbortSignal }`)
   to avoid poisoning `tool()`'s input inference with a `never` type argument.
 
+### Runtime fix — system messages in `messages` (found in testing)
+
+The build was green but **every model call failed at runtime** with
+`AI_InvalidPromptError: System messages are not allowed in the prompt or messages
+fields`. v7 rejects `role: 'system'` entries inside the `messages` array by default
+(`allowSystemInMessages` defaults to `false`) — a change the codemod cannot catch
+because it only rewrites the top-level `system:` option, not inline message arrays.
+
+`app/(chat)/api/chat/route.ts` builds its prompt as two leading `role: 'system'`
+messages followed by the conversation. Confirmed with a mock-model reproduction: the
+pattern throws (surfacing as a stream error → "chat errors, no model activates"), and
+`allowSystemInMessages: true` restores streaming. Fixed by opting back in rather than
+moving to `instructions`, because `compressStep` (called from `prepareStep`) treats
+`messages[0]` as a pinned working-memory message — moving the system prompt out of the
+array would break that compression logic.
+
+The eval scorers under `evals/scorers/*.ts` also use `role: "system"` messages, but
+those go to **Braintrust's** LLM-judge classifier (not the AI SDK), so they are
+unaffected.
+
 Not addressed by this task (flagged, not blocking the build):
 - Two **pre-existing, unrelated** type errors surface under a full `tsc --noEmit` /
   `pnpm test`: `tests/client/consent-page.test.tsx` (stale `onBack` prop) and
