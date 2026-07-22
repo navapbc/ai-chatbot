@@ -1,5 +1,5 @@
 import { Eval } from "braintrust";
-import { generateText, stepCountIs, type ModelMessage } from "ai";
+import { generateText, isStepCount, type ModelMessage } from "ai";
 import { getWebAutomationSystemPrompt } from "@/lib/ai/prompts/web-automation";
 import participants from "./datasets/participants.json";
 import snapshots from "./datasets/snapshots.json";
@@ -279,10 +279,10 @@ Eval("labs-asp", {
 
     const result = await generateText({
       model,
-      system: getWebAutomationSystemPrompt(),
+      instructions: getWebAutomationSystemPrompt(),
       messages,
       tools,
-      stopWhen: stepCountIs(meta.maxSteps),
+      stopWhen: isStepCount(meta.maxSteps),
     });
 
     state.textResponses = collectTextResponses(result.steps);

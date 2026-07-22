@@ -1,4 +1,4 @@
-import { tool, type ToolExecutionOptions } from 'ai';
+import { tool } from 'ai';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { executeCommand } from 'agent-browser/dist/actions.js';
@@ -71,7 +71,7 @@ export const createCheckSubmitGateTool = (sessionId: string, userId: string) =>
     }),
     execute: async (
       { forceEnable }: { forceEnable: boolean },
-      { abortSignal }: ToolExecutionOptions,
+      { abortSignal }: { abortSignal?: AbortSignal },
     ) => {
       try {
         const session = await getOrCreateBrowser(sessionId, userId);

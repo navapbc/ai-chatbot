@@ -1,17 +1,18 @@
 import {
-  customProvider,
-  extractReasoningMiddleware,
-  wrapLanguageModel,
-} from 'ai';
-import { openai } from '@ai-sdk/openai';
-import { vertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
-import {
   artifactModel,
   chatModel,
   reasoningModel,
   titleModel,
 } from './models.test';
+import {
+  customProvider,
+  extractReasoningMiddleware,
+  wrapLanguageModel,
+} from 'ai';
+
 import { isTestEnvironment } from '../constants';
+import { openai } from '@ai-sdk/openai';
+import { vertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
 
 // Anthropic model for web automation via Vertex AI
 export const webAutomationModel = vertexAnthropic('claude-opus-4-7');
@@ -36,10 +37,10 @@ export const myProvider = isTestEnvironment
         'title-model': openai('gpt-4o-mini'),
         'artifact-model': openai('gpt-4o'),
         // Dev-only selectable models (shown in ModelSelectorButton, hidden in production)
-        'gpt-5.5': openai('gpt-5.5'),
-        'gpt-5.5-pro': openai('gpt-5.5-pro'),
-        'gpt-5.5-mini': openai('gpt-5.5-mini'),
-        'gpt-5.5-nano': openai('gpt-5.5-nano'),
+        'gpt-5.4': openai('gpt-5.4'),
+        'gpt-5.4-pro': openai('gpt-5.4-pro'),
+        'gpt-5.4-mini': openai('gpt-5.4-mini'),
+        'gpt-5.4-nano': openai('gpt-5.4-nano'),
         'claude-opus-4-7': vertexAnthropic('claude-opus-4-7'),
         'claude-opus-4-8': vertexAnthropic('claude-opus-4-8'),
         'claude-sonnet-4-6': vertexAnthropic('claude-sonnet-4-6'),

@@ -1,9 +1,5 @@
 'use client';
 
-import { useState } from 'react';
-import { useLocalStorage } from 'usehooks-ts';
-import { ChevronDown } from 'lucide-react';
-import { Button } from './ui/button';
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -16,7 +12,12 @@ import {
   ModelSelectorName,
   ModelSelectorTrigger,
 } from './ai-elements/model-selector';
+
+import { Button } from './ui/button';
+import { ChevronDown } from 'lucide-react';
 import { isProductionEnvironment } from '@/lib/constants';
+import { useLocalStorage } from 'usehooks-ts';
+import { useState } from 'react';
 
 type ModelOption = {
   id: string;
@@ -28,10 +29,10 @@ const MODEL_GROUPS: Array<{ name: string; models: ModelOption[] }> = [
   {
     name: 'OpenAI',
     models: [
-      { id: 'gpt-5.5', name: 'GPT-5.5', provider: 'openai' },
-      { id: 'gpt-5.5-pro', name: 'GPT-5.5 Pro', provider: 'openai' },
-      { id: 'gpt-5.5-mini', name: 'GPT-5.5 Mini', provider: 'openai' },
-      { id: 'gpt-5.5-nano', name: 'GPT-5.5 Nano', provider: 'openai' },
+      { id: 'gpt-5.4', name: 'gpt-5.4', provider: 'openai' },
+      { id: 'gpt-5.4-pro', name: 'gpt-5.4 Pro', provider: 'openai' },
+      { id: 'gpt-5.4-mini', name: 'gpt-5.4 Mini', provider: 'openai' },
+      { id: 'gpt-5.4-nano', name: 'gpt-5.4 Nano', provider: 'openai' },
     ],
   },
   {

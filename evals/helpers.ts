@@ -319,7 +319,10 @@ interface HasTotalUsage {
     inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
-    cachedInputTokens?: number;
+    // AI SDK v7 moved cache-read tokens under inputTokenDetails.
+    inputTokenDetails?: {
+      cacheReadTokens?: number;
+    };
   };
 }
 
@@ -344,7 +347,7 @@ export function addUsage(acc: UsageTotals, result: HasTotalUsage): UsageTotals {
   acc.outputTokens += u.outputTokens ?? 0;
   acc.totalTokens +=
     u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
-  acc.cachedInputTokens += u.cachedInputTokens ?? 0;
+  acc.cachedInputTokens += u.inputTokenDetails?.cacheReadTokens ?? 0;
   return acc;
 }
 
