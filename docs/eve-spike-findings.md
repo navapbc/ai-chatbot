@@ -164,7 +164,17 @@ turn finishes — it stays open at `session.waiting`, idle, waiting for the
 next user message on the same session. The capture script (and this
 analysis) simply stopped reading after that event.
 
-### Eve NDJSON event types observed (in order, one real turn)
+### Eve NDJSON event types observed (distinct types, first-occurrence order)
+
+> **Sequencing caveat for the adapter author (sub-project 5):** this is a
+> catalog of *distinct* event types in the order each first appeared — NOT a
+> literal turn timeline. A tool-then-answer turn is two model steps (step 1 =
+> the tool call, step 2 = the final text), so `step.started`,
+> `step.completed`, and `message.appended` **recur per step**. In particular a
+> `step.completed` arrives *mid-turn* after the tool step (carrying that
+> step's usage), before the answer text streams in the second step — do not
+> assume a single `step.completed` trailing the whole turn.
+
 1. `session.started` — session created; `data.runtime` has `agentId`,
    `agentName`, `eveVersion`, `modelId`.
 2. `turn.started` — a new turn begins (`sequence`, `turnId`).
@@ -207,7 +217,7 @@ From `components/chat.tsx`:
   (`onData`) sets `isCompacting = true` on
   `part.type === 'data-compacting'`. Written by
   `app/(chat)/api/chat/route.ts:230-235` inside `prepareStep`, only when the
-  compressor's `onCompactStart` callback fires:
+  compressor's `onCompacting` callback fires:
   `{ type: 'data-compacting', data: { timestamp: Date.now() }, transient: true }`.
 - **`data-checkpoint`** — a transient custom event. `chat.tsx:143-159`
   turns `isCompacting` back off and appends a `CheckpointData` entry
@@ -234,7 +244,7 @@ From `components/chat.tsx`:
 | tool call | AI SDK `UIMessage` tool part (`input-available`) | `actions.requested` → `data.actions[].{kind:"tool-call", toolName, input, callId}` | No — `callId` maps directly to the AI SDK `toolCallId`. |
 | tool result | AI SDK `UIMessage` tool part (`output-available`) | `action.result` → `data.result.{kind:"tool-result", callId, output}` | No — same `callId` correlates call and result. |
 | `data-token-usage` (`route.ts:253-265`) | `route.ts` `onStepEnd` | `step.completed.data.usage.{inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd}` | Minor — all fields present, just flatter than the AI SDK's `usage.inputTokenDetails.cacheReadTokens` nesting; a straight rename, not a data gap. |
-| `data-compacting` (`route.ts:230-235`) | `route.ts` `prepareStep` (compressor `onCompactStart` callback) | none observed | **Yes, and open.** This event exists only because `route.ts` owns the `streamText` loop and injects it from its own `prepareStep` hook. Whether Eve exposes an equivalent per-step hook for a caller-supplied compressor is unknown from this capture — it depends on whether Eve or the app owns context management (Q4), not just on translating an event shape. |
+| `data-compacting` (`route.ts:230-235`) | `route.ts` `prepareStep` (compressor `onCompacting` callback) | none observed | **Yes, and open.** This event exists only because `route.ts` owns the `streamText` loop and injects it from its own `prepareStep` hook. Whether Eve exposes an equivalent per-step hook for a caller-supplied compressor is unknown from this capture — it depends on whether Eve or the app owns context management (Q4), not just on translating an event shape. |
 | `data-checkpoint` (`route.ts:238-248`) | `route.ts` `prepareStep` (after a real compaction) | none observed | **Yes, and open** — same dependency as `data-compacting`: it needs a `prepareStep`-equivalent injection point in Eve, which this capture did not exercise. |
 | *(reverse: no current UI consumer)* | — | `session.started`, `turn.started`/`turn.completed`, `step.started`, `session.waiting` | Eve emits agent-loop lifecycle events the current UI has no use for; an adapter would drop them on the floor. |
 
