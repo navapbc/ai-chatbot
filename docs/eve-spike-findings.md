@@ -143,7 +143,24 @@
     authored tool executes end-to-end through the Eve runtime, not just
     that the base scaffold boots.
 ### Vercel preview
-- (filled in Task 5)
+- **Deferred.** This subsection was intentionally not exercised in this spike.
+  Task 5 (the Vercel preview deploy) was descoped: no Vercel project has been
+  provisioned for this repo yet, and there is no non-prod Postgres branch to
+  point a preview build's `DATABASE_URL` at (the build runs Drizzle migrations
+  — see `CLAUDE.md` — so a preview deploy needs a writable non-prod database,
+  not just a Vercel project). Provisioning both is out of scope for a
+  local-first, additive-only spike. Everything in the "Local" section above
+  (server topology, `eve init` friction, the `pnpm-workspace.yaml` fix, live
+  `POST`/`GET` session round-trips, and the `read_reference` tool proof) was
+  verified end-to-end locally; only the Vercel-hosted variant of that same
+  round-trip remains unverified. **Before sub-project 5 or 6 relies on a
+  Vercel-hosted Eve, this needs its own short follow-up:** provision a Vercel
+  project + non-prod Postgres branch, deploy, and repeat the local smoke test
+  (`POST /eve/v1/session` → `GET .../stream`) against the deployed URL to
+  confirm Eve's own server process boots correctly under Vercel's runtime
+  (function timeouts, cold starts, and whether Eve's own server model is even
+  compatible with Vercel's serverless functions are all unverified) and that
+  the same-origin/cross-origin question flagged above still holds.
 
 ## Q2 — Context management under Eve
 
@@ -157,6 +174,15 @@ of this task: it changes the shape of sub-project 4 from "port our
 configure Eve's, and rebuild only the two pieces Eve does not do — structured
 working-memory extraction and pinning it outside compaction — using Eve's own
 native primitives (`defineState` + dynamic instructions), not a custom hook."
+
+**One-line disambiguation, since this question has two tiers that are easy to
+conflate: there is no authorable Eve hook for context management** (compaction
+is internal, `compaction.requested`/`.completed` are observe-only, per the
+enumeration below) — **the only theoretical `prepareStep`-equivalent is a
+generic, non-Eve AI SDK seam** (`wrapLanguageModel`/`transformParams`,
+detailed below), and that seam was not built or tested live in this spike and
+is not recommended even if it works. Read "no Eve hook" and "an AI-SDK seam
+exists" as two different, non-conflicting answers, not a contradiction.
 
 Cited source, not the docs site (this is internal harness code, confirmed by
 reading the installed package, not eve.dev's public pages):
@@ -633,3 +659,102 @@ path optimization, adding an explicit `chatId`/`userId` bridge for Eve's
 different session-id namespace, and adding one new piece of infrastructure —
 a cross-process lock — that the current single-instance deployment has never
 needed.
+
+## Recommendation
+
+**Go, with eyes open — this is not a clean go.** Every question the spike set
+out to answer has a concrete, source-grounded answer: Eve boots and runs a
+real authored tool end-to-end locally (Q1-local), context management has a
+native replacement with a defined migration path (Q2), and the UI-integration
+shape is a low-risk, additive adapter route rather than a `chat.tsx` rewrite
+(Q3). None of that is theoretical — it's backed by live `curl` round-trips
+against a running `eve dev` server, a two-turn `defineState` persistence
+proof, and a real NDJSON capture, not documentation reading. The single
+biggest risk is the one Q2 surfaces: **Eve's compaction prompt is a hard-coded
+constant with no authorable override, so the bespoke domain-specific summary
+categories (SESSION STATE / COMPLETED FIELDS / PENDING FIELDS / CASEWORKER
+INPUTS / GAP ANALYSIS / GAP ANSWERS / KEY DECISIONS) cannot be reproduced in
+Eve's summarization pass.** Moving participant/form data into `defineState`
+(compaction-immune by construction, not by convention) mitigates the *data*
+half of that gap — anything written to working memory survives verbatim,
+recall does not depend on prompt quality — but it does not eliminate the
+*transcript-summary fidelity* half: whatever isn't explicitly promoted into
+working memory still gets compacted through Eve's generic, non-customizable
+handoff prompt, a real regression from today's hand-tuned summarizer. Two
+secondary risks compound this and should not be waved off: the browser
+session model needs new cross-process locking infrastructure that does not
+exist today (sub-project 3), and Q1's Vercel-preview half is entirely
+unverified — Eve running as its own server process is a materially different
+deployment shape than "routes inside the Next app," and nothing here confirms
+it behaves the same way under Vercel's serverless runtime. Recommendation:
+proceed to sub-project 2 (tool migration) and a scoped Vercel-preview
+follow-up in parallel, but treat sub-project 4 (context/working-memory) as
+carrying real, accepted risk rather than a mechanical port, and get sign-off
+from whoever owns the domain-specific summary quality bar before committing
+to Eve's compaction as a full replacement.
+
+## Open items for sub-projects 2–6
+
+- **Sub-project 2 (tool migration):** zod is in — the repo was migrated
+  v3→v4.4.3 specifically to unblock this, so `defineTool({ inputSchema: z.object(...) })`
+  now works as documented (no more plain-JSON-Schema workaround; `read_reference`
+  was reverted back to a zod schema after the migration). Tools run in the app
+  runtime with full `process.env`, so existing tool logic (Apricot calls, DB
+  queries) ports largely unchanged — the porting work is mechanically
+  rewriting each `lib/ai/tools/*.ts` factory into a `defineTool` module under
+  `agent/tools/`, not rewriting the tools' internals. Watch the still-open
+  `ai@^7.0.26` peer-dependency gap (repo pins `ai@7.0.19`) before this
+  sub-project leans harder on AI SDK internals.
+- **Sub-project 3 (browser re-architecture):** the existing in-memory session
+  cache and per-session mutex in `lib/kernel/browser.ts` /
+  `lib/ai/tools/browser.ts` are single-process assumptions that Eve's
+  durable/replayed execution model breaks — not rarely, but as the common
+  case. This sub-project now needs a **new cross-process lock** (Redis is
+  already in the stack via `resumable-stream`, and is the natural home for
+  it), and an explicit bridge between Eve's own session-id namespace
+  (`wrun_...`) and the app's `` `${chatId}-${userId}` `` cache key, since
+  Eve's session id is not derivable from the app's chat identity. The
+  Kernel-facing logic itself (profile creation, reconnect-from-`cdpWsUrl`)
+  does not need to change.
+- **Sub-project 4 (context / working memory):** delete
+  `lib/ai/context-compression.ts` and the `prepareStep`-based compression
+  wiring in `route.ts` outright rather than porting it — configure
+  `defineAgent({ compaction: { model, thresholdPercent: 0.75 } })` and rebuild
+  only structured working-memory extraction, as an always-on
+  `update_working_memory` tool plus a `defineDynamic`/`defineInstructions`
+  resolver re-injecting it every turn. Accept, and get explicit sign-off on,
+  the caveat that Eve's compaction prompt is hard-coded: the bespoke
+  domain-specific summary categories degrade to a generic handoff summary for
+  anything not explicitly promoted into `defineState`. Also budget one real
+  long-transcript test that drives a session past the actual compaction
+  threshold — this spike's persistence proof is two-turn and structural
+  (`state`/`history` are disjoint fields), not an empirical test of surviving
+  a real compaction event.
+- **Sub-project 5 (UI↔Eve wiring + Postgres bridge):** build a Next.js
+  adapter route that translates Eve's NDJSON stream into the AI SDK SSE shape
+  `chat.tsx`/`message.tsx` already consume — text and tool events map 1:1 by
+  `callId`, and `step.completed.usage` covers `data-token-usage` (flatter
+  nesting, same fields). `data-compacting`/`data-checkpoint` now have a
+  concrete source: map them directly from the `compaction.requested`/
+  `compaction.completed` protocol events already on the wire (no `defineHook`
+  needed). Before committing this to production, capture Eve's error/abort
+  event shapes — this spike's capture only exercised the happy path — and
+  design the adapter to terminate the AI-SDK-shaped stream at
+  `turn.completed`/`session.waiting` rather than passing Eve's still-open
+  connection straight through.
+- **Sub-project 6 (cutover):** cutover is standing up a separate Eve service
+  and wiring the adapter route to it, not an in-place swap inside the
+  existing Next process — `eve init` confirmed Eve runs as its own server
+  (default port ~2000) and does not mount into `next dev`/`next build`, so
+  deployment topology (where that second process runs, how it's reached from
+  the Vercel-hosted Next app) is a real open design question, not a detail.
+  Two papercuts from this spike need resolving before a real cutover, not
+  just flagging: the `eve init`-generated `pnpm-workspace.yaml` omits the
+  required `packages:` field and breaks every `pnpm` command in this
+  single-package repo until fixed by hand, and the `ai@^7.0.26` peer-dependency
+  gap against the repo's pinned `ai@7.0.19` is still an unresolved warning,
+  not a confirmed-safe mismatch. `"engines": { "node": "24.x" }` (added by
+  `eve init`) is a hard constraint on wherever that second process is hosted.
+  The Vercel-preview half of Q1 (deferred, above) should be closed out before
+  cutover planning starts in earnest, since it's the first real test of
+  whether this topology works on the target platform at all.
