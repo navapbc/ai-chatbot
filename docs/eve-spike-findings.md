@@ -87,6 +87,61 @@
     today?" and real token/cost usage in `step.completed`
     (`inputTokens: 3558, outputTokens: 12, costUsd: 0.000189`), confirming
     `AI_GATEWAY_API_KEY` auth worked end-to-end.
+  - **Task 2 update — a real authored tool executes end-to-end.** Ported
+    `readReferenceFile` (pure core, unit-tested under a new
+    `vitest.config.node.mjs`) into an Eve tool at
+    `agent/tools/read_reference.ts`. `pnpm exec vitest run -c
+    vitest.config.node.mjs tests/agent/read-reference.test.ts` went RED
+    (module not found) then GREEN (4/4) per TDD.
+  - **New friction found while wiring the tool: `defineTool`'s `zod`
+    inputSchema path is incompatible with this repo's pinned zod.** Using
+    a `z.object({...})` inputSchema (as eve.dev's docs and the task brief
+    both show) crashed `npx eve dev` at startup — *before* any turn ran —
+    with `Cannot read properties of undefined (reading 'input')`,
+    reproduced by moving `agent/tools/` out and back in (clean boot
+    without the file, crash with it). Root cause: eve's runtime tool
+    registration (`serializeInputSchema` /
+    `eve/dist/src/shared/tool-schema.js`) treats *any* schema object
+    carrying a `~standard` key as its own extended
+    "StandardJSONSchemaV1" — requiring `~standard.jsonSchema.input()` and
+    `.output()` functions in addition to the plain Standard Schema v1
+    `validate()`. That extension is only present in the zod v4 line eve
+    bundles internally (`zod@4.4.3` under eve's own `#compiled/zod`);
+    it is absent from both `zod` and `zod/v4` as resolved from this
+    repo's pinned `"zod": "^3.25.76"` (confirmed directly: the repo's
+    zod package has no `v4/core/json-schema-processors.js`, eve's bundled
+    one does). The `^3.25.76` range cannot reach a version with this
+    support — reaching it needs a major zod bump, which is out of scope
+    here for the same reason the brief flags not bumping `ai`: it's a
+    shared dependency used across the whole app.
+    **Fix applied (wrapper-only, per the brief's own escape hatch):**
+    dropped the `zod` import and passed `inputSchema` as a plain JSON
+    Schema object instead (one of `defineTool`'s documented overloads).
+    Eve rehydrates a JSON-Schema `inputSchema` into its own compatible
+    zod instance for runtime validation, so `path` is still validated as
+    a required string — `readReferenceFile` itself is unchanged. **This
+    means: any future Eve tool authored in this repo that wants a zod
+    `inputSchema` will hit the same crash until either eve bundles a zod
+    version compatible with `^3.25.76`, or the repo's `zod` dependency is
+    bumped to a v4 line with the `~standard.jsonSchema` extension — plan
+    on raw JSON-Schema `inputSchema`s for Eve tools until that's
+    resolved.**
+  - Proved the tool runs inside a live turn: started `npx eve dev
+    --no-ui --port 2001` from the repo root (Node 24, `AI_GATEWAY_API_KEY`
+    exported from `.env.local`), `POST /eve/v1/session` with `{"message":
+    "Read the reference field-patterns.md and tell me what it covers."}`
+    returned `202` + `x-eve-session-id`, and the NDJSON stream from
+    `GET /eve/v1/session/:id/stream` showed, in order: `actions.requested`
+    with `{"toolName":"read_reference","input":{"path":"field-patterns.md"}}`,
+    `action.result` with `output.content` containing the real contents of
+    `lib/ai/prompts/references/field-patterns.md` (the `# Field Type
+    Patterns` doc, verbatim), and a final `message.completed` whose text
+    summarizes that content ("**field-patterns.md** covers the correct
+    JSON action shapes for interacting with common form field types —
+    including text fields, date fields, SSN, phone, state, native
+    dropdowns, checkboxes, and radio buttons..."). Confirms a real
+    authored tool executes end-to-end through the Eve runtime, not just
+    that the base scaffold boots.
 ### Vercel preview
 - (filled in Task 5)
 
