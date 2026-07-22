@@ -146,7 +146,253 @@
 - (filled in Task 5)
 
 ## Q2 — Context management under Eve
-- (filled in Task 4)
+
+### Headline answer
+
+**Eve manages context internally, and it is not a thin wrapper — it has its
+own compaction engine that is structurally similar to the bespoke
+`lib/ai/context-compression.ts`.** This is the single most important finding
+of this task: it changes the shape of sub-project 4 from "port our
+`prepareStep` compressor onto some Eve hook" to "delete our compressor,
+configure Eve's, and rebuild only the two pieces Eve does not do — structured
+working-memory extraction and pinning it outside compaction — using Eve's own
+native primitives (`defineState` + dynamic instructions), not a custom hook."
+
+Cited source, not the docs site (this is internal harness code, confirmed by
+reading the installed package, not eve.dev's public pages):
+- `node_modules/eve/dist/src/harness/compaction.js` — `shouldCompact`,
+  `compactMessages`, `resolveCompactionModel`. `compactMessages` calls the AI
+  SDK's `generateText` directly with a fixed system prompt
+  (`COMPACTION_SYSTEM_PROMPT` in `node_modules/eve/dist/src/harness/
+  compaction-prompt.js`) to produce a handoff-style summary, escalating
+  through heuristics (cap oversized tool results → summarize older region →
+  degrade recent tail to text-only → shrink the window) until the result
+  fits the token budget.
+- `node_modules/eve/dist/src/harness/compaction.d.ts` and `node_modules/eve/
+  dist/src/harness/types.d.ts` — the typed `CompactionConfig` shape
+  (`threshold`, `recentWindowSize`, `lastKnownInputTokens`,
+  `lastKnownPromptMessageCount`).
+- `node_modules/eve/dist/src/shared/agent-definition.d.ts` (lines ~88–120,
+  `PublicAgentCompactionDefinition`) — the **author-facing** config surface:
+  `defineAgent({ compaction: { model, thresholdPercent,
+  modelContextWindowTokens } })`. `thresholdPercent` "defaults to `0.9`."
+- `node_modules/eve/dist/src/execution/session.js` — `createCompactionConfig`
+  shows the hard-coded default: `recentWindowSize: 10`, `threshold:
+  contextWindowTokens === undefined ? 100_000 : Math.floor(contextWindowTokens
+  * thresholdPercent)`.
+- `node_modules/eve/dist/src/public/definitions/hook.d.ts` — the
+  `HookEventMap` includes `"compaction.requested"` and `"compaction.completed"`
+  as accepted authored-hook events (`agent/hooks/*.ts`, `defineHook` from
+  `eve/hooks`), and `node_modules/eve/dist/src/protocol/message.d.ts` (lines
+  ~415–439) shows their payload shapes (`sessionId`, `turnId`, `modelId`,
+  `usageInputTokens` on `.requested`; the same minus usage on `.completed`).
+- `node_modules/eve/dist/src/public/definitions/state.d.ts` and
+  `node_modules/eve/docs/guides/state.md` — `defineState(name, initial)` from
+  `eve/context`, a durable per-session key/value slot ("State is durable by
+  default and does not reset between turns").
+- `node_modules/eve/dist/src/execution/durable-session-store.d.ts` —
+  `DurableSession { history: ModelMessage[]; state?: SessionStateMap; ... }`:
+  `state` (the `defineState` backing store) is a **separate top-level field**
+  from `history`, and `compactMessages` (see above) only ever operates on
+  `history`. So `defineState` values are structurally exempt from compaction,
+  not just empirically observed to survive it.
+
+### (a)–(e) enumeration
+
+| # | Bespoke (`lib/ai/context-compression.ts`) | Eve native? | Verdict |
+|---|---|---|---|
+| (a) | Trigger at 75% of a 200K window (`COMPACT_THRESHOLD_PCT = 0.75`, `MODEL_CONTEXT_WINDOW = 200_000`, both hard-coded constants) | `defineAgent({ compaction: { thresholdPercent: 0.75 } })`; `contextWindowTokens` is read automatically from AI Gateway model metadata, not hand-maintained | **Native — becomes unnecessary to hand-roll.** Set `thresholdPercent: 0.75` on `agent/agent.ts` to match; no other code needed. |
+| (b) | Haiku-summarize old messages into a session-handoff doc via `generateText` with a hand-written `COMPACTION_SYSTEM_PROMPT` | `defineAgent({ compaction: { model: 'anthropic/claude-haiku-4.5' } })` triggers Eve's own `compactMessages`, which calls `generateText` with **Eve's own fixed** `COMPACTION_SYSTEM_PROMPT` (framed almost identically: "Create a handoff summary for another LLM that will resume the task") | **Mechanically native, content NOT customizable.** The trigger/model/escalation logic is native. But Eve's compaction prompt is a hard-coded constant in `compaction-prompt.js` — there is no `defineAgent({ compaction: { prompt: ... } })` or equivalent. You cannot inject the bespoke prompt's domain-specific extraction categories (SESSION STATE / COMPLETED FIELDS / PENDING FIELDS / CASEWORKER INPUTS / GAP ANALYSIS / GAP ANSWERS / KEY DECISIONS) into Eve's summarization pass itself. See the (c)/(d) mitigation below — this is why structured data is moved out of the summary entirely rather than depending on prompt fidelity. |
+| (c) | Structured working-memory extraction via a dedicated tool call (`updateWorkingMemory`, forced with `toolChoice`, run in parallel with the summary call, only at the compaction trigger) | No native equivalent — Eve's compaction produces free text only, no structured extraction step, and there is no hook that can force a tool call at `compaction.requested` (hooks are **observe-only**, see below) | **Must be rebuilt, and rebuilt differently.** Rebuilt as an always-available authored tool (`agent/tools/update_working_memory.ts`, this task) that the agent is instructed to call continuously as it learns participant data — decoupled from the compaction moment entirely, rather than a point-in-time extraction pass tied to a token threshold. This is arguably more robust than the bespoke design: it can no longer silently miss data if compaction fires at an awkward moment, because nothing depends on catching that moment. |
+| (d) | A pinned working-memory message, prepended to every model call, deliberately excluded from compaction (`extractWorkingMemory`/`prepend` in `createMessageCompressor`) | No "pinned message" concept, but a **structurally stronger** equivalent: `defineDynamic` + `defineInstructions` in `agent/instructions/` (session/turn-scoped dynamic system prompt, `node_modules/eve/dist/src/public/definitions/hook.d.ts` region confirms hooks can't inject context, but `node_modules/eve/docs/concepts/context-control.md` "Dynamic context with `defineDynamic`" section confirms instructions resolvers can) reading `workingMemoryState.get()` and rendering it into the system prompt every turn | **Must be rebuilt, using a better native primitive — and empirically confirmed working, not just inferred from docs.** system-prompt content is structurally never part of `history`, so it is compaction-immune by construction, not by convention (the bespoke version relies on `compress()` remembering to re-prepend `wm` every call — a hand-maintained invariant; the Eve version can't be compacted at all because it isn't a message). Not committed as a file (out of this task's "additive only" scope — (d) is documented, not shipped), but proven live: a temporary `agent/instructions/_wm_probe.ts` (`defineDynamic({ events: { 'turn.started': () => defineInstructions({ markdown: ... }) } })`) imported the same `workingMemoryState` handle from `agent/tools/update_working_memory.ts` and called `.get()` inside the resolver. Turn 1 stored `{"probe":"hello-from-turn-1"}` via the tool; turn 2 (fresh turn, same session, no mention of "probe" in the turn-2 prompt) was asked to quote its own system instructions verbatim and replied `"[PROBE] working memory at turn.started: {\"probe\":\"hello-from-turn-1\"}"` — proof the resolver read the tool-written state back correctly. The probe file was deleted after the test (not part of the committed prototype). |
+| (e) | Keep the last 8 messages verbatim after compaction (`KEEP_RECENT = 8`, with tool-call/tool-result pairing guards) | `recentWindowSize: 10`, hard-coded in `execution/session.js`'s `createCompactionConfig` — **not exposed as an author-configurable field** anywhere in `PublicAgentCompactionDefinition` | **Native but not tunable.** Eve keeps a recent window (10 vs. the bespoke 8) with its own tool-call/tool-result pairing logic (`splitMessagesForCompaction` walks back past `role === 'tool'` messages, `withResumptionGuard` avoids ending on a stray assistant turn) — functionally equivalent, slightly larger, no way to set it to exactly 8. |
+
+### A generic AI-SDK seam that is *not* the recommendation: model middleware
+
+The brief's Step 1 grep also asked about `middleware`, dropped from the
+executive summary above because it doesn't change the recommendation — but
+it deserves an honest look since it's the closest thing to a real
+`prepareStep`-equivalent that exists under Eve, and it isn't Eve's own
+feature. `defineAgent({ model })` accepts a bare gateway-id string **or** a
+live AI SDK `LanguageModel` instance
+(`PublicAgentStaticModelDefinition = string | LanguageModel`,
+`node_modules/eve/dist/src/shared/agent-definition.d.ts`), and
+`node_modules/eve/dist/src/runtime/agent/resolve-model.d.ts`'s
+`ResolvedRuntimeModelSelection.model` is explicitly documented as a "Live
+provider instance; absent for string selections, which resolve through the
+reference" — i.e., an authored non-string model is carried through to
+runtime as a real object, not flattened to just an id. Reading
+`node_modules/eve/dist/src/harness/tool-loop.js`'s `executeStepBody`: the
+resolved model (`z`) is passed directly into `new ToolLoopAgent({ model: z,
+... })`, which is what actually calls the AI SDK underneath for the main
+turn's model call. Since the AI SDK's own `wrapLanguageModel({ model,
+middleware })` returns an object satisfying the same `LanguageModel`
+interface, and its `transformParams` hook receives and can rewrite
+`params.prompt` (the message array) before every `doGenerate`/`doStream`
+call, wrapping the agent's model this way is, in principle, a real,
+caller-owned per-call message-rewrite seam — reachable without any
+Eve-specific API, simply because Eve is built on the AI SDK and doesn't
+strip that capability away.
+
+This was **not** built or tested live in this task (verifying it would mean
+swapping `agent/agent.ts`'s `model` field for a wrapped instance and
+confirming `transformParams` actually fires inside a live turn — a
+meaningfully separate experiment from this task's Step 2/3 scope), so treat
+it as a plausible reading of the type signatures and harness code above, not
+an empirical result like the `defineState` proof. It is also not recommended
+even if it works: (1) it would run in *addition to*, not instead of, Eve's
+own native `maybeCompact` pass in `tool-loop.js` — that call happens on the
+raw session history before `ToolLoopAgent` is even constructed, so a
+middleware-based compressor would need explicit coordination (e.g. setting
+`compaction.thresholdPercent` high enough that Eve's own pass rarely fires)
+to avoid two independent compaction systems fighting over the same
+transcript; (2) it reintroduces exactly the statelessness problem
+`context-compression.ts`'s own comment documents working around (AI SDK
+issue #9631) — a middleware closure has no more persistence guarantee across
+calls than `prepareStep` did, so it would need the same kind of
+module-level/`defineState`-backed workaround the bespoke code already
+carries, for no benefit over just configuring Eve's built-in compaction. So:
+the honest answer to "does Eve expose a `prepareStep`-equivalent hook" is
+**no named Eve hook, but yes, a generic AI-SDK model-middleware seam exists
+and would technically work** — and the recommendation is still to use Eve's
+native compaction instead of rebuilding on top of that seam.
+
+### Working-memory persistence prototype (Step 2)
+
+**Persistence API used: `defineState` from `eve/context` — a real native
+per-session store, not the app-runtime Postgres fallback (b) the brief
+offered.** `execute(input, ctx)`'s `ctx` (`ToolContext extends SessionContext`,
+`node_modules/eve/dist/src/public/definitions/tool.d.ts` and `callback-
+context.d.ts`) does **not** expose a state accessor directly — `defineState`
+is a **separate** public export (`eve/context`, confirmed via
+`node_modules/eve/package.json`'s `exports` map: `"./context"` →
+`dist/src/public/context/index.d.ts`), called at module scope, independent of
+`ctx`. Built `agent/tools/update_working_memory.ts`:
+
+```ts
+export const workingMemoryState = defineState<Record<string, unknown>>(
+  'labs-asp.working-memory',
+  () => ({}),
+);
+
+export default defineTool({
+  inputSchema: z.object({ data: z.record(z.string(), z.unknown()).optional() }).strict(),
+  async execute({ data }) {
+    if (data && Object.keys(data).length > 0) {
+      workingMemoryState.update((current) => ({ ...current, ...data }));
+    }
+    return { ok: true, keys: Object.keys(workingMemoryState.get()), data: workingMemoryState.get() };
+  },
+});
+```
+
+(Omitting `data` reads back the current stored state; the same schema
+doubles as store and recall, matching the framework `todo` tool's own
+read/write convention in `runtime/framework-tools/todo.d.ts`.)
+
+**Two-turn proof** (`npx eve dev --no-ui --port 2002`, `AI_GATEWAY_API_KEY`
+exported from `.env.local`, Node 24):
+
+Turn 1 — `POST /eve/v1/session`:
+```
+{"message":"Call update_working_memory with data {\"participantName\": \"Jordan Ellis\", \"formName\": \"SNAP Recertification\"}. Just call the tool, do not ask me anything."}
+```
+→ `202`, `x-eve-session-id: wrun_01KY5SNRXZ76S6TG0JRHD4PAWP`. Stream showed
+`actions.requested` → `update_working_memory` with
+`{"data":{"participantName":"Jordan Ellis","formName":"SNAP
+Recertification"}}` → `action.result` with `{"ok":true,"keys":
+["participantName","formName"],"data":{...}}` → `session.waiting` with
+`continuationToken":"eve:723a3711-...`.
+
+Turn 2 — `POST /eve/v1/session/wrun_01KY5SNRXZ76S6TG0JRHD4PAWP` (same
+`sessionId`, in the URL path, per the pattern confirmed in Task 3) with the
+**same** `continuationToken` from turn 1's `session.waiting` event:
+```
+{"continuationToken":"eve:723a3711-...","message":"Call update_working_memory with no data argument to read back whatever is currently stored, then tell me exactly what it returned."}
+```
+→ `200`. The stream for `turn_1` showed `actions.requested` →
+`update_working_memory` with `input: {}` (no `data`) → `action.result` →
+`{"ok":true,"keys":["participantName","formName"],"data":
+{"participantName":"Jordan Ellis","formName":"SNAP Recertification"}}` — **the
+exact value stored in turn 1, recalled with zero information passed in the
+turn-2 prompt**, confirming the value persisted in `defineState`'s durable
+store across the turn boundary, not in the model's conversation history (the
+tool never received it as an argument in turn 2; it read it back from state).
+Final assistant message echoed the same JSON back verbatim.
+
+**Caveat, stated plainly:** this two-turn proof demonstrates cross-turn
+persistence. It does **not** demonstrate persistence *through an actual
+compaction event*, because triggering real compaction requires driving a
+session to 75%+ of a 200K-token window, which is impractical to do live in
+this spike. The claim that `defineState` survives compaction specifically
+rests on the structural evidence above (`state` and `history` are disjoint
+fields in `DurableSession`, and `compactMessages` only reads/writes `history`)
+— strong circumstantial evidence from reading the actual compaction code
+path, not an end-to-end empirical proof. Flagging this so sub-project 4 does
+one real long-transcript test before relying on it in production.
+
+### Summarization shape decision (Step 3): no subagent
+
+**Conclusion: do not build `agent/subagents/summarizer/`.** Eve's own harness
+already performs the trigger + summarize + recent-window-retention pass
+end-to-end and automatically, on every turn, with no author-side call needed
+— that is what (a), (b), and (e) above show. A subagent would only make sense
+if we needed to *replace* Eve's summarization pass with our own (e.g., to get
+the domain-specific extraction categories into the summary text), and Eve
+gives no hook to substitute for or intercept its internal `compactMessages`
+call before it runs (`compaction.requested`/`compaction.completed` hooks are
+**observe-only** — `node_modules/eve/dist/src/public/definitions/hook.d.ts`:
+"Handlers are observe-only: they cannot inject model context. To contribute
+runtime model messages, use `defineDynamic` + `defineInstructions`."). So a
+subagent could not intercept or replace Eve's compaction pass even if we
+built one — there's no dispatch point for it to run at.
+
+Instead, the (c)/(d) gap (structured, domain-specific data that needs to
+survive with full fidelity) is closed **without any delegation at all**: the
+`update_working_memory` tool (this task) plus a `defineDynamic` +
+`defineInstructions` resolver (documented and empirically confirmed, not
+committed as a file — see (d) above) keep the participant/form data entirely
+outside the summarized region, so its fidelity never depends on how good
+Eve's fixed compaction prompt is. `compaction.requested`/`compaction.completed`
+are also the direct, native replacement for the app's own
+`data-compacting`/`data-checkpoint` UI signal from `route.ts`'s `prepareStep`
+— **this closes the open dependency Task 3 flagged** ("whether Eve exposes a
+`prepareStep`-equivalent hook for a caller-owned compressor, or whether Eve's
+own context management replaces `lib/ai/context-compression.ts` outright").
+The answer is the latter. Concretely, this doesn't need a `defineHook` at
+all for sub-project 5's purposes: `compaction.requested`/`compaction.completed`
+are protocol-level stream events (`node_modules/eve/dist/src/protocol/
+message.d.ts`, same event family as `message.appended`/`actions.requested`),
+so they already arrive in the same NDJSON `GET /eve/v1/session/:id/stream`
+Task 3's adapter reads — the adapter maps them straight onto
+`data-compacting`/`data-checkpoint` the same mechanical way it maps
+`message.appended`/`actions.requested` onto AI SDK `UIMessage` parts, no
+extra in-app hook required. `defineHook` in `agent/hooks/` would only matter
+for a need internal to the agent process itself (e.g. logging, a side
+effect, or feeding a completely separate telemetry sink) — not for the
+adapter, which already sees these events on the wire. Neither event was
+observed in Task 3's capture only because that capture's single-tool-call
+turn never came close to the compaction threshold, not because the events
+don't exist.
+
+### Net effect on sub-project 4
+
+If Eve is adopted: **delete `lib/ai/context-compression.ts` and the
+`prepareStep`-based compression wiring in `route.ts` entirely** — do not port
+it. Replace with: `defineAgent({ compaction: { model: 'anthropic/claude-
+haiku-4.5' or 'anthropic/claude-sonnet-4.6', thresholdPercent: 0.75 } })` on
+`agent/agent.ts`; `agent/tools/update_working_memory.ts` (built this task)
+called continuously per the agent's instructions; a `defineDynamic` +
+`defineInstructions` resolver re-injecting `workingMemoryState.get()` into
+the system prompt every turn (documented and empirically confirmed with a
+temporary probe, not committed as a file); and sub-project 5's adapter
+mapping the `compaction.requested`/`compaction.completed` stream events it
+already receives onto `data-compacting`/`data-checkpoint` (no `defineHook`
+needed for that). The one accepted regression: the bespoke domain-specific summary
+categories (SESSION STATE / COMPLETED FIELDS / etc.) become a generic
+handoff summary instead, because Eve's compaction prompt isn't
+authorable — mitigated, not eliminated, by moving the fidelity-critical data
+into `defineState` where prompt quality no longer matters.
 
 ## Q3 — Eve → UI streaming shape
 
@@ -286,4 +532,104 @@ closed — if the adapter breaks, only the Eve-backed path degrades rather
 than the shared chat UI.
 
 ## Browser session sketch
-- (filled in Task 4)
+
+This is a sketch to inform sub-project 3 — not an implementation. No changes
+were made to `lib/kernel/browser.ts` (read-only per the brief).
+
+### What breaks under Eve's durable, replayed execution
+
+Per Task 1's confirmed finding (eve.dev docs), Eve tools run in the app
+runtime with full `process.env` — so a Kernel.sh-backed tool can still make
+the same `kernel.browsers.*` SDK calls `lib/kernel/browser.ts` makes today.
+The problem is not "can a tool reach Kernel" — it's that `lib/kernel/
+browser.ts`'s two process-local mechanisms assume single-instance, same-
+process continuity across a session's tool calls, and Eve's durable/
+replayable session model does not guarantee that:
+
+1. **The in-memory session cache** (`const sessions = new Map<string,
+   BrowserSession>()`, keyed `cacheKey(userId, sessionId)` =
+   `` `${userId}:${sessionId}` ``, `lib/kernel/browser.ts:97`). Eve sessions
+   are backed by durable Workflow steps designed to "outlast crashes,
+   redeploys, and days-long sessions" (`node_modules/eve/docs/guides/
+   state.md`) — the whole point is that a session's tool calls are not
+   pinned to one long-lived process. A tool call for the same logical
+   browser session landing on a different process instance (a redeploy
+   between turns, a scaled-out worker, a retried step) is a **cache miss**,
+   not a hard failure — `getBrowser`/`reconnectBrowser` already have a
+   fallback path that recreates from the Kernel profile
+   (`ensureProfile`/`profile: { name, save_changes: true }`,
+   `lib/kernel/browser.ts:169-185`). But that fallback path is written today
+   as the *rare* case (`if (!session) { ... recreate ... }`); under Eve it
+   would become the **common** case, and worse, a **race**: two tool calls
+   for the same session landing on two different processes at nearly the
+   same time would each miss the cache and each call
+   `kernel.browsers.create(...)`, producing two live Kernel browsers backed
+   by the same profile — profile-lock contention or silently divergent page
+   state, not just a wasted-cost duplicate.
+
+2. **The per-session mutex** (`sessionQueues` promise-chaining queue in
+   `lib/ai/tools/browser.ts`, serializing calls "per session" so
+   Playwright's `page` object — not concurrency-safe — never receives two
+   commands at once). That queue is a `Map` in one process's memory. It only
+   serializes tool calls that happen to land on the *same* process. Two
+   browser-tool calls in the same Eve turn (Eve's `actions.requested` event
+   carries `data.actions: [...]`, an array — Task 3's capture only ever saw
+   one, but the shape supports multiple tool calls dispatched together) or
+   across a step retry that resumes on a different worker would bypass the
+   mutex entirely, exactly the concurrent-CDP-access scenario the mutex
+   exists to prevent.
+
+### How it would work under Eve instead
+
+- **Re-resolve the Kernel session by its stable id at the top of every tool
+  call, never trust a cached handle across calls.** Treat the in-memory
+  `sessions` Map purely as a same-process, same-turn optimization (skip a
+  network round-trip when you happen to still be warm), never as the
+  guarantee that a live `BrowserManager`/CDP connection already exists. Every
+  call should be prepared to run `reconnectBrowser`'s existing "recreate/
+  reconnect from profile" path as the primary path, not the fallback —
+  Kernel.sh's own profile persistence (`save_changes: true`) is already the
+  right durable source of truth here; the fix is trusting it every time
+  instead of trusting local memory first.
+  - **One integration detail this surfaces:** the stable id today is
+    `` `${chatId}-${userId}` `` (see `chatIdFromSessionId`,
+    `lib/kernel/browser.ts:25-29`), derived from the *app's* chat identity.
+    Eve's own session id has a different shape (`wrun_...`, confirmed live
+    in this task's proof above) and is not derivable from `chatId`/`userId`.
+    So the authored Eve tool's `inputSchema` (or something threaded through
+    `ctx.session`) needs to carry `chatId` and `userId` explicitly on every
+    call so the tool can reconstruct the exact same Kernel lookup key
+    `lib/kernel/browser.ts` uses today — Eve's session identity and the
+    app's chat identity are two different namespaces that need an explicit
+    bridge, not an implicit one.
+- **Per-turn serialization has to move to something that survives across
+  processes**, because a process-local `Map<string, Promise>` mutex can no
+  longer be assumed sufficient. The app already depends on Redis for
+  resumable streaming (`resumable-stream` + Redis, per `route.ts` and this
+  repo's `CLAUDE.md`), which is the natural place to put a cross-process
+  lock: acquire a short-lived Redis lock keyed by the same stable
+  `` `${chatId}-${userId}` `` id at the start of a browser tool call, release
+  it (or let it lease-expire) at the end, so two calls for the same session
+  — regardless of which process or Eve worker runs them — still serialize
+  against the one Playwright `page`. This is new infrastructure, not a port
+  of existing code: today's mutex works precisely because the app assumes
+  one process per deployment (`lib/kernel/browser.ts:94`, "No Redis needed —
+  this is a single Cloud Run instance talking to Kernel"); Eve's durable
+  execution model removes that assumption, so the lock has to move out of
+  process memory into something all instances share.
+- **Never treat the `BrowserManager`/Playwright `page` object itself as
+  something that can be durable or serialized.** Only the plain strings
+  Kernel gives back (`cdp_ws_url`, `session_id`, `profileName`) are safe to
+  treat as durable/reconstructable; `reconnectBrowser` already builds a
+  fresh `BrowserManager` from `cdpWsUrl` every time it takes that path
+  (`lib/kernel/browser.ts:421-427`) — that pattern is exactly right and
+  should become the *only* pattern, not one of two.
+
+Net effect for sub-project 3: this is not a rewrite of `lib/kernel/
+browser.ts`'s Kernel-facing logic (creating profiles, starting replays,
+standby/reconnect semantics all carry over unchanged), it's removing the
+assumption that the in-memory cache and mutex are anything more than a warm-
+path optimization, adding an explicit `chatId`/`userId` bridge for Eve's
+different session-id namespace, and adding one new piece of infrastructure —
+a cross-process lock — that the current single-instance deployment has never
+needed.
