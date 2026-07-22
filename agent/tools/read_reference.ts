@@ -42,13 +42,15 @@ export async function readReferenceFile(
 export default defineTool({
   description:
     'Load a reference document. Use the path the instructions tell you to load (e.g. "field-patterns.md", "custom-dropdowns.md", "browser-commands.md").',
-  inputSchema: z.object({
-    path: z
-      .string()
-      .describe(
-        'Filename within lib/ai/prompts/references (e.g. "field-patterns.md")',
-      ),
-  }),
+  inputSchema: z
+    .object({
+      path: z
+        .string()
+        .describe(
+          'Filename within lib/ai/prompts/references (e.g. "field-patterns.md")',
+        ),
+    })
+    .strict(),
   async execute(input: { path: string }) {
     return readReferenceFile(input.path);
   },
