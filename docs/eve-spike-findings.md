@@ -516,8 +516,8 @@ From `components/chat.tsx`:
 | tool call | AI SDK `UIMessage` tool part (`input-available`) | `actions.requested` → `data.actions[].{kind:"tool-call", toolName, input, callId}` | No — `callId` maps directly to the AI SDK `toolCallId`. |
 | tool result | AI SDK `UIMessage` tool part (`output-available`) | `action.result` → `data.result.{kind:"tool-result", callId, output}` | No — same `callId` correlates call and result. |
 | `data-token-usage` (`route.ts:253-265`) | `route.ts` `onStepEnd` | `step.completed.data.usage.{inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd}` | Minor — all fields present, just flatter than the AI SDK's `usage.inputTokenDetails.cacheReadTokens` nesting; a straight rename, not a data gap. |
-| `data-compacting` (`route.ts:230-235`) | `route.ts` `prepareStep` (compressor `onCompacting` callback) | none observed | **Yes, and open.** This event exists only because `route.ts` owns the `streamText` loop and injects it from its own `prepareStep` hook. Whether Eve exposes an equivalent per-step hook for a caller-supplied compressor is unknown from this capture — it depends on whether Eve or the app owns context management (Q4), not just on translating an event shape. |
-| `data-checkpoint` (`route.ts:238-248`) | `route.ts` `prepareStep` (after a real compaction) | none observed | **Yes, and open** — same dependency as `data-compacting`: it needs a `prepareStep`-equivalent injection point in Eve, which this capture did not exercise. |
+| `data-compacting` (`route.ts:230-235`) | `route.ts` `prepareStep` (compressor `onCompacting` callback) | Eve's `compaction.requested` hook event (see Q2) | **Resolved in Q2 (mapping is possible, semantics differ).** This event isn't in the turn stream because `route.ts` injects it from its own `prepareStep` hook, but Q2 confirmed Eve owns compaction internally and emits an observe-only `compaction.requested` hook event — an adapter can map that onto `data-compacting`. The caveat is ownership, not translation: Eve decides *when* to compact (`thresholdPercent`, default 0.9), not the app. |
+| `data-checkpoint` (`route.ts:238-248`) | `route.ts` `prepareStep` (after a real compaction) | Eve's `compaction.completed` hook event (see Q2) | **Resolved in Q2** — same as `data-compacting`: map Eve's observe-only `compaction.completed` event onto `data-checkpoint`. Note Eve's compaction summary text is hard-coded (not the app's domain-specific categories), so the `summary` field would differ (see Q2 limitations). |
 | *(reverse: no current UI consumer)* | — | `session.started`, `turn.started`/`turn.completed`, `step.started`, `session.waiting` | Eve emits agent-loop lifecycle events the current UI has no use for; an adapter would drop them on the floor. |
 
 ### Recommendation: adapter route
@@ -539,14 +539,16 @@ transport contract: automatic tool-continuation
 that machinery would have to be reimplemented against Eve's stream under a
 UI-rework path, for no benefit, since Eve's own events already translate
 cleanly. The one place this isn't a clean win is `data-compacting` /
-`data-checkpoint`: those aren't a stream-translation problem so much as an
-open dependency on Q4 — whether Eve exposes a `prepareStep`-equivalent hook
-for a caller-owned compressor, or whether Eve's own context management
-replaces `lib/ai/context-compression.ts` outright. That question doesn't
-change the adapter-vs-rework verdict (a rework path would face the exact
-same unresolved dependency, plus the cost of rewiring everything else), but
-it does mean the adapter can't fully close that row of the table until Q4
-lands. Two more adapter-design details fall out of the capture: it must
+`data-checkpoint`: those aren't a stream-translation problem so much as a
+dependency on context ownership, which **Q2 resolved** — Eve owns context
+management internally (there is no authorable `prepareStep`-equivalent hook),
+so `lib/ai/context-compression.ts` is effectively replaced by Eve's built-in
+compaction, and the adapter maps Eve's observe-only `compaction.requested` /
+`compaction.completed` hook events onto these two UI events (with the
+hard-coded-summary caveat noted in Q2). That resolution doesn't change the
+adapter-vs-rework verdict (a rework path would face the same context-ownership
+reality, plus the cost of rewiring everything else). Two more adapter-design
+details fall out of the capture: it must
 terminate the AI-SDK-shaped stream at `turn.completed`/`session.waiting`
 rather than passing Eve's still-open connection straight through, and
 error/abort event shapes remain unverified since this capture only
