@@ -149,7 +149,131 @@
 - (filled in Task 4)
 
 ## Q3 — Eve → UI streaming shape
-- (filled in Task 3)
+
+### Capture method
+Added `scripts/eve-stream-capture.sh` (`POST /eve/v1/session` with a message
+that triggers `read_reference`, then `GET /eve/v1/session/:id/stream`, piped
+through `tee`). Ran it against a local `npx eve dev --no-ui --port 2000`
+(Node 24, `AI_GATEWAY_API_KEY` exported from `.env.local`) with the message
+`"Read the reference field-patterns.md and tell me what it covers."` — the
+same tool-triggering prompt used in Task 2. The raw capture
+(`eve-stream-capture.ndjson`, ~17 lines / one JSON object per line) is a
+scratch artifact and was **not** committed; the distinct event types below
+were extracted from it. Note: the SSE connection does not close after the
+turn finishes — it stays open at `session.waiting`, idle, waiting for the
+next user message on the same session. The capture script (and this
+analysis) simply stopped reading after that event.
+
+### Eve NDJSON event types observed (in order, one real turn)
+1. `session.started` — session created; `data.runtime` has `agentId`,
+   `agentName`, `eveVersion`, `modelId`.
+2. `turn.started` — a new turn begins (`sequence`, `turnId`).
+3. `message.received` — echoes the inbound user message (`message` text +
+   `parts`) that kicked off the turn.
+4. `step.started` — a new step within the turn begins (`stepIndex`,
+   `turnId`) — Eve's equivalent of an agent-loop step boundary.
+5. `actions.requested` — the model requested one or more tool calls:
+   `data.actions: [{ kind: "tool-call", toolName, input, callId }]`.
+6. `action.result` — a tool finished executing:
+   `data.result: { kind: "tool-result", callId, toolName, output }`,
+   `data.status: "completed"`.
+7. `step.completed` — step finished; carries `finishReason` and real
+   `usage` (`inputTokens`, `outputTokens`, `cacheReadTokens`,
+   `cacheWriteTokens`, `costUsd`) plus `providerMetadata.gateway.generationId`.
+8. `message.appended` — one streaming text delta per chunk:
+   `data.messageDelta` (this chunk) and `data.messageSoFar` (cumulative).
+9. `message.completed` — final assistant message text for the turn plus
+   `finishReason`.
+10. `turn.completed` — the turn is done (`sequence`, `turnId`).
+11. `session.waiting` — session now idle; `data.continuationToken` and
+    `data.wait: "next-user-message"`.
+
+No distinct "error" or "abort" event was observed — this capture only
+exercised the happy path (one user turn, one tool call, one final answer).
+Eve's error/cancellation event shapes are **not verified** by this task.
+
+### What the current UI consumes
+From `components/chat.tsx`:
+- **Assistant text / tool calls / tool results** — not read directly in
+  `chat.tsx`; the `useChat` hook (`chat.tsx:104-135`) manages the
+  `ChatMessage[]` array from the AI SDK's UIMessage stream, and
+  `components/message.tsx` renders it: `type === 'text'` for prose
+  (`message.tsx:251`), named tool parts (`tool-getWeather` at
+  `message.tsx:352`, `tool-gapAnalysis` at `message.tsx:495`, etc.), and a
+  generic fallback for any other `tool-*` part (`message.tsx:532`) — each
+  tool part carries AI SDK v7's `input-streaming` /
+  `input-available` / `output-available` states.
+- **`data-compacting`** — a transient custom event. `chat.tsx:140-142`
+  (`onData`) sets `isCompacting = true` on
+  `part.type === 'data-compacting'`. Written by
+  `app/(chat)/api/chat/route.ts:230-235` inside `prepareStep`, only when the
+  compressor's `onCompactStart` callback fires:
+  `{ type: 'data-compacting', data: { timestamp: Date.now() }, transient: true }`.
+- **`data-checkpoint`** — a transient custom event. `chat.tsx:143-159`
+  turns `isCompacting` back off and appends a `CheckpointData` entry
+  (`messageId`, `stepNumber`, `summary`) for the compaction-boundary card.
+  Written by `route.ts:238-248` after a real compaction happened:
+  `{ type: 'data-checkpoint', data: { stepNumber, inputTokens, timestamp, summary }, transient: true }`.
+- **`data-token-usage`** — a transient custom event. `chat.tsx:161-176`
+  accumulates `inputTokens`/`outputTokens`/`cachedInputTokens` into the
+  `tokenUsage` state exposed via `TokenUsageProvider`. Written by
+  `route.ts:253-265` in `onStepEnd`:
+  `{ type: 'data-token-usage', data: { inputTokens, outputTokens, cachedInputTokens }, transient: true }`
+  (`cachedInputTokens` is remapped from the AI SDK's
+  `usage.inputTokenDetails?.cacheReadTokens`).
+- All of the above ride on `dataStream.merge(result.toUIMessageStream())`
+  at `route.ts:272` — the UI only ever sees AI SDK v7 SSE frames
+  (`JsonToSseTransformStream`, `route.ts:4,289,293`), never a raw model or
+  tool-runtime event.
+
+### Mapping table
+
+| UI needs (current) | Source today | Eve NDJSON equivalent | Gap? |
+|---|---|---|---|
+| assistant text parts | AI SDK `UIMessage` (`result.toUIMessageStream()`, `route.ts:272`) | `message.appended` (`messageDelta`/`messageSoFar`) → `message.completed` | No — deltas map 1:1 to AI SDK text-delta parts; `messageSoFar` is redundant with client-side accumulation but harmless. |
+| tool call | AI SDK `UIMessage` tool part (`input-available`) | `actions.requested` → `data.actions[].{kind:"tool-call", toolName, input, callId}` | No — `callId` maps directly to the AI SDK `toolCallId`. |
+| tool result | AI SDK `UIMessage` tool part (`output-available`) | `action.result` → `data.result.{kind:"tool-result", callId, output}` | No — same `callId` correlates call and result. |
+| `data-token-usage` (`route.ts:253-265`) | `route.ts` `onStepEnd` | `step.completed.data.usage.{inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd}` | Minor — all fields present, just flatter than the AI SDK's `usage.inputTokenDetails.cacheReadTokens` nesting; a straight rename, not a data gap. |
+| `data-compacting` (`route.ts:230-235`) | `route.ts` `prepareStep` (compressor `onCompactStart` callback) | none observed | **Yes, and open.** This event exists only because `route.ts` owns the `streamText` loop and injects it from its own `prepareStep` hook. Whether Eve exposes an equivalent per-step hook for a caller-supplied compressor is unknown from this capture — it depends on whether Eve or the app owns context management (Q4), not just on translating an event shape. |
+| `data-checkpoint` (`route.ts:238-248`) | `route.ts` `prepareStep` (after a real compaction) | none observed | **Yes, and open** — same dependency as `data-compacting`: it needs a `prepareStep`-equivalent injection point in Eve, which this capture did not exercise. |
+| *(reverse: no current UI consumer)* | — | `session.started`, `turn.started`/`turn.completed`, `step.started`, `session.waiting` | Eve emits agent-loop lifecycle events the current UI has no use for; an adapter would drop them on the floor. |
+
+### Recommendation: adapter route
+
+**Build a Next.js adapter route that reads Eve's NDJSON and re-emits the AI
+SDK SSE shape `components/chat.tsx` already understands, rather than
+teaching `chat.tsx` to consume Eve's stream directly.** The evidence above
+supports this: Eve's text (`message.appended`/`message.completed`) and tool
+(`actions.requested`/`action.result`) events map mechanically, one-to-one by
+`callId`, onto the AI SDK `UIMessage` parts `message.tsx` already renders,
+and `step.completed.usage` carries everything `data-token-usage` needs
+(just nested differently) — none of that requires touching `chat.tsx` or
+`message.tsx`. The current UI is thickly coupled to the AI SDK's `useChat`
+transport contract: automatic tool-continuation
+(`sendAutomaticallyWhen`/`lastAssistantMessageIsCompleteWithToolCalls`,
+`chat.tsx:117-119`), resumable streaming (`resumable-stream` +
+`streamContext.resumableStream`, `route.ts:284-292`), and the
+`onData`/`transient` event contract for the three custom cards — all of
+that machinery would have to be reimplemented against Eve's stream under a
+UI-rework path, for no benefit, since Eve's own events already translate
+cleanly. The one place this isn't a clean win is `data-compacting` /
+`data-checkpoint`: those aren't a stream-translation problem so much as an
+open dependency on Q4 — whether Eve exposes a `prepareStep`-equivalent hook
+for a caller-owned compressor, or whether Eve's own context management
+replaces `lib/ai/context-compression.ts` outright. That question doesn't
+change the adapter-vs-rework verdict (a rework path would face the exact
+same unresolved dependency, plus the cost of rewiring everything else), but
+it does mean the adapter can't fully close that row of the table until Q4
+lands. Two more adapter-design details fall out of the capture: it must
+terminate the AI-SDK-shaped stream at `turn.completed`/`session.waiting`
+rather than passing Eve's still-open connection straight through, and
+error/abort event shapes remain unverified since this capture only
+exercised the happy path — that should be captured before committing an
+adapter to production in sub-project 5. This is the lower-risk path for
+sub-project 5 because it isolates Eve behind the exact contract the UI
+already speaks, is additive (no `chat.tsx`/`route.ts` changes), and fails
+closed — if the adapter breaks, only the Eve-backed path degrades rather
+than the shared chat UI.
 
 ## Browser session sketch
 - (filled in Task 4)
