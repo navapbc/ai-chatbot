@@ -32,10 +32,15 @@ agent/
     read_reference.ts                       spike proof tool, superseded by skills
     update_working_memory.ts                defineState compaction prototype
   subagents/
-    database_verification/                 agent.ts + instructions.md + 2 tools
     requirements_research/                  agent.ts + instructions.md + 1 tool
     form_review/                            agent.ts + instructions.md + 1 tool
 ```
+
+The external-record-verification subagent and its two lookup tools have been
+archived out of this agent (Task 4 of the SP-A plan), and the data model is
+retargeted to caseworker messages + inference only. See
+`docs/plans/2026-07-23-web-automation-prompt-to-eve.md` and the SDD task
+brief/report under `.superpowers/sdd/` for the before/after.
 
 ## Instructions and Dynamic Date
 
@@ -66,12 +71,14 @@ rather than a tool call.
 
 `agent/skills/benefits-application/` carries most of `lib/ai/prompts/application-protocol.ts`
 (Autofilled Field Detection, Filling Fields, No vs Unknown Distinction, Autonomous
-Progression, Review Screen, Gap Analysis Protocol, Form Completion Summary), minus
-Database Retrieval & Verification, Data Provenance, and Field Mapping & Inference Rules
-(all moved to the `database_verification` subagent). Review Screen and Form Completion
-Summary are intentionally duplicated in the `form_review` subagent — a declared
-subagent inherits no skills, so anything it needs must be copied into its own
-`instructions.md`.
+Progression, Review Screen, Gap Analysis Protocol, Form Completion Summary). Database
+Retrieval & Verification and Field Mapping & Inference Rules (originally on the now-deleted
+external-record-verification subagent) are dropped entirely as part of Task 4's archiving of
+that integration; Data Provenance is retargeted off it and now lives directly in this skill
+as **Data Provenance (No Fabrication)**, sourced to caseworker messages + inference only.
+Review Screen and Form Completion Summary are intentionally duplicated in the `form_review`
+subagent — a declared subagent inherits no skills, so anything it needs must be copied into
+its own `instructions.md`.
 
 ## Tools
 
@@ -91,16 +98,16 @@ see `docs/eve-spike-findings.md` Q2.
 
 ## Subagents
 
-Three declared subagents each get their own `agent.ts` (description + model) and
+Two declared subagents each get their own `agent.ts` (description + model) and
 `instructions.md`, since a subagent inherits none of the top-level instructions or
-skills and must carry everything it needs. `database_verification` carries Database
-Retrieval & Verification, Data Provenance, and Field Mapping & Inference Rules from
-`application-protocol.ts`, plus its own copies of the `getApricotRecord` and
-`getApricotFormFields` tools. `requirements_research` carries Web Search Protocol from
-`web-automation.ts` plus its own `web_search` tool. `form_review` carries Review Screen
-and Form Completion Summary from `application-protocol.ts` (duplicated with the
-`benefits-application` skill, for the reason given above) plus its own `form_summary`
-tool.
+skills and must carry everything it needs. `requirements_research` carries Web Search
+Protocol from `web-automation.ts` plus its own `web_search` tool. `form_review` carries
+Review Screen and Form Completion Summary from `application-protocol.ts` (duplicated with
+the `benefits-application` skill, for the reason given above) plus its own `form_summary`
+tool. A third subagent that previously carried Database Retrieval & Verification, Data
+Provenance, and Field Mapping & Inference Rules plus a pair of external-record-lookup
+tools was deleted in Task 4 when that integration was archived; see the Tree section
+above and the SDD task report for details.
 
 `requirements_research/instructions.md` also carries, verbatim, step 1 of the Gap
 Analysis Protocol ("Research the application requirements upfront…") from
@@ -131,25 +138,27 @@ code it mirrors.
 ## Cross-Reference Note
 
 Because prompt sections were split verbatim across `instructions.md`, the two skills,
-and the three subagents, a few in-text references now point across files instead of
+and the subagents, a few in-text references now point across files instead of
 to a section in the same file. The source files were not reworded to fix this — the
 point of the conversion was verbatim fidelity to the original prompt text — so use
-this table to find the referenced section:
+this table to find the referenced section. (Task 4 removed the third subagent that
+used to be the target of the Data Provenance cross-references below; Data Provenance
+now lives directly in `skills/benefits-application/SKILL.md`, so those two rows below
+resolve locally rather than across files.)
 
 | Reference text | Found in | Actually lives in |
 |---|---|---|
-| "see Data Provenance" | `instructions.md` (Applicant Identity) | `subagents/database_verification/instructions.md` — Data Provenance (No Fabrication) |
-| "see the Data Provenance section above" | `skills/benefits-application/SKILL.md` (Gap Analysis Protocol, Form Completion Summary) | `subagents/database_verification/instructions.md` — Data Provenance (No Fabrication) |
-| "see the Data Provenance section above" | `subagents/form_review/instructions.md` (Form Completion Summary) | `subagents/database_verification/instructions.md` — Data Provenance (No Fabrication) |
+| "See **Data Provenance** above" | `skills/benefits-application/SKILL.md` (Gap Analysis Protocol) | same file — **Data Provenance (No Fabrication)**, near the top |
+| "see the **Data Provenance (No Fabrication)** section in the `benefits-application` skill" | `subagents/form_review/instructions.md` (Form Completion Summary) | `skills/benefits-application/SKILL.md` — Data Provenance (No Fabrication) |
 | "follow Web Search Protocol normally" | `skills/browser-automation/SKILL.md` (Resuming After Interruption) | `subagents/requirements_research/instructions.md` — Web Search Protocol |
 | "follow the Modal Handling section above" | `instructions.md` (Forbidden Actions, `evaluate` restrictions) | `skills/browser-automation/SKILL.md` — Modal Handling |
 
 ### Tool names
 
-The ported prose (`instructions.md`, both skills, all three subagents'
+The ported prose (`instructions.md`, both skills, both subagents'
 `instructions.md`) keeps the original camelCase tool names from
-`lib/ai/tools/` verbatim — `gapAnalysis`, `formSummary`, `getApricotRecord`,
-`getApricotFormFields`, `checkSubmitGate`, `actionLabel` — and `readReference`
+`lib/ai/tools/` verbatim — `gapAnalysis`, `formSummary`,
+`checkSubmitGate`, `actionLabel` — and `readReference`
 is also mentioned by name in one retained comment. Verbatim fidelity was the
 point of the conversion (see the note above the reference table), so these
 were not reworded. But Eve does not read a `name` field out of `defineTool` —
@@ -162,8 +171,6 @@ resolve. Map:
 |---|---|---|
 | `gapAnalysis` | `gap_analysis` | `agent/tools/gap_analysis.ts` |
 | `formSummary` | `form_summary` | `agent/tools/form_summary.ts` (root) / `agent/subagents/form_review/tools/form_summary.ts` (subagent) |
-| `getApricotRecord` | `get_apricot_record` | `agent/subagents/database_verification/tools/get_apricot_record.ts` |
-| `getApricotFormFields` | `get_apricot_form_fields` | `agent/subagents/database_verification/tools/get_apricot_form_fields.ts` |
 | `checkSubmitGate` | `check_submit_gate` | `agent/tools/check_submit_gate.ts` |
 | `actionLabel` | `action_label` | `agent/tools/action_label.ts` |
 | `readReference` | `read_reference` | `agent/tools/read_reference.ts` |

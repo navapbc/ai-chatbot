@@ -6,6 +6,15 @@ description: Use when filling a benefits application — gap-analysis-first work
 
 Before filling, run gap analysis with the `gapAnalysis` tool. When done filling, call `formSummary` (not a text summary — the tool renders an interactive card).
 
+## Data Provenance (No Fabrication)
+
+Every value you fill into a form, exclude from a gap analysis, or mark as filled in `formSummary` MUST trace to ONE of these sources:
+
+1. **Caseworker message this session** — an explicit value the caseworker typed in this conversation. (Mark `source: "caseworker"`.)
+2. **Inference from a caseworker message** — a value you reasoned from what the caseworker provided (e.g., "lives alone — no household members mentioned"). (Mark `source: "inferred"`.)
+
+If a value does not trace to one of these, it does not exist. Do not type it into the form and mark the field missing (`source: "missing"`, no value). This applies to every field. **Shape is not identity**: a 9-digit number is not an SSN, a date in the right range is not a DOB, "this is probably what it would be" is fabrication. Before every gap-analysis, form-fill, and `formSummary` call, name each value's source — which caseworker message, or which inference from one. If you cannot name one, the field is missing.
+
 ## Autofilled Field Detection
 
 On your first snapshot of each form page, check whether any fields are already populated (e.g., autofilled by the site from a prior session, account profile, or URL parameters). Compare the pre-filled values against the participant data from the database. If a field already contains the correct value, do NOT re-fill it — skip it and move on. Only fill fields that are empty or contain an incorrect value. Note any pre-filled fields in your gap analysis so the caseworker knows which values were kept as-is.
@@ -63,7 +72,7 @@ Before filling any fields, do this:
 1. **Research the application requirements upfront**: Before starting the form, use web search and your knowledge base to identify ALL fields that will be needed for the entire application (e.g., for CalFresh: personal info, household composition, income, expenses, assets, immigration status, etc.). This prevents piecemeal discovery of missing data as you go through each page.
 2. Snapshot the form to see ALL required fields on the current page
 3. Compare against the participant data you have — include fields you know will be needed on future pages based on your research in step 1
-4. Identify the gap: which required fields have NO matching data traceable to a confirmed Apricot field or a caseworker message (do not say anything to the caseworker about this). A `field_NNNN` value whose label you have NOT verified via `getApricotFormFields` does NOT count as having data — it must go in the gap list until the label is confirmed. See **Data Provenance** above.
+4. Identify the gap: which required fields have NO matching data traceable to a caseworker message or a valid inference (do not say anything to the caseworker about this). See **Data Provenance** above.
 5. Call the `gapAnalysis` tool with:
    - `formName`: the name of the form (e.g. "WIC Application")
    - `clientName` (optional): the participant's full name, so the card can address them by name
@@ -83,9 +92,8 @@ When you have finished filling a form, call the `formSummary` tool **instead of*
 
 Pass `fields`: a single array of every form field **in the order they appear on the original form**. Optionally pass `clientName` so the card can name the participant. The card paginates the list automatically — you do not group or chunk it. For each field, set `source` to one of:
 
-- **`database`**: value pulled directly from Apricot records — only valid if you've confirmed the field label via `getApricotFormFields`. A raw `field_NNNN` value with no confirmed label is NOT a database source.
 - **`caseworker`**: value provided by the caseworker this session (e.g., answers to a gap analysis). Must be an explicit message — not "they would have said X" or "they implied Y."
-- **`inferred`**: value you reasoned from available data (e.g., "Lives alone — no household members listed"). The inference must be grounded in a confirmed database value or a caseworker message — not in what the value "probably" is.
+- **`inferred`**: value you reasoned from available data (e.g., "Lives alone — no household members listed"). The inference must be grounded in a caseworker message — not in what the value "probably" is.
 - **`missing`**: field could not be filled — omit `value` or leave it empty. Use this whenever the value does not trace to a real source. **Do NOT invent a plausible-looking value to avoid marking a field missing.** A 9-digit number is not an SSN, a date in the right range is not a DOB, and "this is probably what it would be" is fabrication — see the **Data Provenance** section above.
 
 **Field order**: List fields in the order they appear on the original form. Do NOT reorder by source or by any other grouping.
