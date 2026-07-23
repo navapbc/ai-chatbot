@@ -206,9 +206,105 @@ see Sandbox below) rather than the superseded `read_reference` tool. This is
 the documented readReference → skills supersession (see "Tools" above), not
 a verbatim-fidelity violation.
 
+## Using Eve from the app UI (SP-B)
+
+SP-B wires this Eve agent into the Next.js chat UI as an alternative transport,
+behind a flag, alongside the existing production loop
+(`app/(chat)/api/chat/route.ts`) — it does not replace it. The new pieces are
+`app/(chat)/api/eve-chat/route.ts` (an authenticated adapter route),
+`lib/ai/eve/eve-client.ts` (HTTP client for Eve's session API),
+`lib/ai/eve/stream-adapter.ts` (Eve NDJSON → AI SDK `UIMessageStream` chunks,
+plus the tool-name map documented above), and
+`lib/ai/eve/session-continuity.ts` (an in-memory map from `userId:chatId` to
+the Eve session id + continuation token).
+
+### Running it
+
+Two servers, side by side:
+
+```bash
+# Terminal 1 — the Eve agent server (Node 24, secrets loaded)
+export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"
+set -a; . ./.env.local; set +a
+npx eve dev --no-ui --port 2000
+
+# Terminal 2 — the Next app, pointed at that Eve server
+EVE_SERVER_URL=http://127.0.0.1:2000 pnpm dev
+```
+
+`EVE_SERVER_URL` defaults to `http://127.0.0.1:2000` if unset (see
+`lib/ai/eve/eve-client.ts`), so it only needs to be set explicitly when Eve is
+running on a different port. The Next side needs no Eve import and no Node 24
+— it only does HTTP + AI SDK stream translation.
+
+### Enabling the flag
+
+The chat transport is chosen by the `useEveAgent` feature flag
+(`lib/feature-flags.ts`), default OFF. Either:
+
+- Dev flag menu — the "Flags" button (flask icon) in the chat header, dev/preview
+  only — toggle "Use Eve agent", or
+- `localStorage['ff:useEveAgent'] = 'true'` in the browser console.
+
+**Reload the page after toggling.** `components/chat.tsx` reads the flag once,
+at first render (`isFeatureEnabled('useEveAgent')`, not the reactive
+`useFeatureFlag` hook), to pick the transport's `api` URL. Toggling the flag
+without reloading leaves the current chat instance on its original transport —
+this is the single most likely point of tester confusion.
+
+### Manual end-to-end checklist
+
+The full browser round-trip (real Kernel session, interactive cards, a login
+session, follow-up continuity) requires a human driving a browser and is not
+covered by the automated test suite. Run this checklist manually after the
+two servers above are up:
+
+1. Sign in (or continue as guest, if enabled) and open a chat.
+2. Confirm the flag is ON and the page has been reloaded since toggling it.
+3. Send a simple task, e.g. "Go to example.com and read me the main heading."
+   Confirm: text streams token-by-token, and the network tab shows the POST
+   going to `/api/eve-chat` (not `/api/chat`).
+4. Confirm the `browser` tool actually runs — a real Kernel session, not a
+   stub — and the reply quotes real page content back.
+5. Send a task that reaches gap analysis (e.g. ask it to start a benefits
+   application with some fields missing). Confirm the `gap_analysis` tool
+   call renders as an interactive card (`tool-gapAnalysis` in
+   `components/message.tsx`), not a raw tool-call block.
+6. Fill the card and submit. Confirm the follow-up turn continues the *same*
+   Eve session rather than starting a new one. There is no visible session id
+   in the UI to check directly — continuity is tracked server-side, in memory,
+   keyed by `userId:chatId` (`lib/ai/eve/session-continuity.ts`); the
+   observable proof is behavioral: the agent's next reply reflects the
+   values you just filled in (e.g. references them or proceeds past that gap)
+   without you having to repeat them.
+7. Continue to form completion. Confirm `form_summary` renders as a card
+   (`tool-formSummary`), not raw tool-call output.
+8. Toggle the flag OFF, reload, send another message. Confirm the network tab
+   now shows `/api/chat` (the legacy route) and behavior is unchanged from
+   before SP-B.
+9. Stop the Eve server (`npx eve dev` process) and, with the flag ON, send a
+   message. Confirm the UI surfaces a clean error rather than hanging or
+   crashing the page — a request is routed to the adapter, which cannot reach
+   `EVE_SERVER_URL` and returns `offline:chat`
+   (machine-verified separately via `curl`; see the SP-B task 6 report).
+
+### What is and isn't covered here
+
+- Continuity is **in-memory only** — it is lost on a server restart and does
+  not survive across multiple server instances. Postgres-backed continuity is
+  SP-C.
+- Chat history/persistence through this path (writing Eve turns to the
+  `message` table, resumable streams) is **not implemented** — SP-C.
+- The legacy `/api/chat` route is untouched and remains the default; removing
+  it is **not** part of this or a future sub-project's stated scope here — it
+  stays as the flag-OFF path until a decision is made to retire it.
+
 ## Further Reading
 
 - `docs/eve-spike-findings.md` — the underlying spike's findings on Eve's session
   API, context/compaction model, and durable state, with live `curl` proof of each.
 - `docs/plans/2026-07-23-web-automation-prompt-to-eve.md` — the task-by-task plan
   this directory was built from.
+- `docs/specs/2026-07-23-eve-ui-wiring-sp-b-design.md` — the SP-B design spec.
+- `.superpowers/sdd/task-6-report.md` — the SP-B task 6 verification report
+  (automated check output, what was machine-verified vs. left manual).
