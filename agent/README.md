@@ -299,6 +299,112 @@ two servers above are up:
   it is **not** part of this or a future sub-project's stated scope here — it
   stays as the flag-OFF path until a decision is made to retire it.
 
+## Model selection (dev/eval)
+
+The dev model picker in the chat header (the same one that drives the legacy
+`/api/chat` route's `customProvider`, see `lib/ai/providers.ts`) also drives
+which model the Eve agent runs on, when the `useEveAgent` flag is on. The path:
+
+1. **Picker → `modelOverride`.** `components/chat.tsx` sends the currently
+   selected model id as `modelOverride` on the request body, but only in
+   non-production environments (`!isProductionEnvironment`) — this is the
+   same conditional send the legacy route already relies on; nothing new was
+   added here.
+2. **`modelOverride` → gateway slug.** `app/(chat)/api/eve-chat/route.ts` (the
+   adapter) passes `body.modelOverride` through
+   `toGatewaySlug` (`lib/ai/eve/model-map.ts`), which maps the picker's dev
+   ids (`claude-opus-4-8`, `claude-opus-4-7`, `claude-sonnet-4-6`,
+   `claude-haiku-4-5`, `gpt-5.4`, `gpt-5.4-pro`, `gpt-5.4-mini`,
+   `gpt-5.4-nano`) to dot-versioned AI Gateway slugs (e.g.
+   `anthropic/claude-opus-4.8`). Ids with no entry (`chat-model`,
+   `chat-model-reasoning`, unknown/empty) map to `undefined`.
+3. **Slug → `x-eve-model` header.** Only on session *create*
+   (`createEveSession` in `lib/ai/eve/eve-client.ts`) — never on continue —
+   the adapter sends the resolved slug as the `x-eve-model` request header.
+   If `toGatewaySlug` returned `undefined`, no header is sent at all.
+4. **Header → auth attribute.** `agent/channels/eve.ts`'s `modelAttributeAuth`
+   `AuthFn` reads `x-eve-model` off the request, but only accepts it on a
+   loopback request (`isLoopbackRequest`, the same trust boundary as Eve's own
+   `localDev()`). It returns the value as auth attribute `eveModel`; every
+   other channel/auth path is unchanged. The header value is treated as
+   untrusted input — it only ever gets looked up as a known gateway slug
+   downstream, never used as a credential.
+5. **Attribute → resolved model.** `agent/agent.ts`'s `defineDynamic({
+   fallback: 'anthropic/claude-sonnet-4.6', events: { 'session.started': ... } })`
+   reads `ctx.session.auth.initiator?.attributes?.eveModel` (falling back to
+   `ctx.session.auth.current?.attributes?.eveModel`) on `session.started` and
+   uses it as the session's model if present.
+
+**Session-scoped, not per-turn.** The header is only read on session create,
+so a model change from the picker takes effect on the **next new chat**, not
+mid-conversation — an existing Eve session keeps whatever model it started
+with.
+
+**Fallback.** Any of these break the chain back to the `anthropic/claude-sonnet-4.6`
+fallback: production (adapter never receives `modelOverride`), an unmapped
+picker id (`toGatewaySlug` returns `undefined`, no header sent), or a
+non-loopback request (channel auth attribute never set).
+
+**Note on gateway access tiers.** Selecting a model here only changes *which
+model Eve asks the AI Gateway to run* — it does not change what the
+underlying Vercel account is provisioned for. Some models (observed:
+`anthropic/claude-haiku-4.5`, `anthropic/claude-opus-4.7`) return a 403
+(`Free tier users do not have access to this model`) on a free-tier gateway
+account. That is a billing/tier restriction downstream of selection, not a
+failure of the selection mechanism — the gateway's own routing debug info
+echoes back the exact requested slug (`originalModelId`) before rejecting it,
+confirming the header's model was the one actually attempted.
+
+### Automated verification
+
+- `pnpm exec vitest run -c vitest.config.node.mjs tests/agent/eve-model-map.test.ts`
+  covers `toGatewaySlug`'s id→slug mapping and its `undefined` fallthrough for
+  unmapped/empty/missing ids.
+- The header→attribute→resolver wiring (steps 4–5 above) was proven directly
+  against a running `eve dev` server with `curl`: a request with no
+  `x-eve-model` header resolves and completes on
+  `dynamic:anthropic/claude-sonnet-4.6`; a request with
+  `x-eve-model: anthropic/claude-sonnet-4.6` also completes; a request with
+  `x-eve-model: openai/gpt-5.4-mini` completes without error, with a
+  token/cost usage signature (far fewer input tokens, different cache
+  behavior) that differs from the sonnet-4.6 runs — consistent with, though
+  not conclusive proof of, a different model actually running. The
+  unambiguous proof is two other mapped-model requests
+  (`anthropic/claude-haiku-4.5`, `anthropic/claude-opus-4.7`): both are
+  rejected by the gateway itself (403, free-tier restriction), but the
+  rejection's own routing metadata echoes back `originalModelId` equal to
+  the *requested* model, not the sonnet-4.6 fallback — proving the header's
+  value reached the gateway as the selected model even though the
+  completion itself was billing-blocked. See
+  `.superpowers/sdd/task-4-report.md` for the full transcripts.
+
+### Manual end-to-end checklist (picker → Eve, in the browser)
+
+Driving the *authenticated* Next.js route through a real login and the dev
+picker UI needs a human at a browser — it isn't reliably automatable end to
+end. With both servers up (see "Running it" above):
+
+1. In the browser, non-production build: open the dev flag menu and confirm
+   `useEveAgent` is ON (reload after toggling — see "Enabling the flag"
+   above).
+2. Open the model picker and select a mapped model your AI Gateway account
+   can actually complete (`claude-sonnet-4.6` is the safe default; some
+   others may 403 on a free-tier account — see the note above).
+3. Start a **new** chat (not a continuation of an existing one — the header
+   is only read on session create) and send a message.
+4. Confirm the turn completes and, in the Eve dev-server log/output, the
+   session's model metadata matches the picked model (not the
+   `anthropic/claude-sonnet-4.6` fallback), unless you picked sonnet-4.6
+   itself.
+5. Change the picker to a different mapped model, start another **new**
+   chat, and confirm that chat resolves to the newly picked model.
+6. Reset the picker to the unmapped/base option (or leave it at first load),
+   start a new chat, and confirm it falls back to
+   `anthropic/claude-sonnet-4.6`.
+7. Confirm an **existing** chat's model does not change mid-conversation
+   after changing the picker — the change should only be visible on the
+   next *new* chat.
+
 ## Further Reading
 
 - `docs/eve-spike-findings.md` — the underlying spike's findings on Eve's session
