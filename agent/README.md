@@ -102,6 +102,13 @@ and Form Completion Summary from `application-protocol.ts` (duplicated with the
 `benefits-application` skill, for the reason given above) plus its own `form_summary`
 tool.
 
+`requirements_research/instructions.md` also carries, verbatim, step 1 of the Gap
+Analysis Protocol ("Research the application requirements upfront…") from
+`application-protocol.ts` — the same sentence that opens the `benefits-application`
+skill's Gap Analysis Protocol. This is a second intended duplication alongside the
+`form_summary`/Review-Screen one above: that step is squarely this subagent's job, so
+it is copied in rather than referenced across agents.
+
 ## Sandbox, Compaction, and Channel
 
 `agent/agent.ts` is the top-level `defineAgent`, configuring the model and Eve's
@@ -136,6 +143,50 @@ this table to find the referenced section:
 | "see the Data Provenance section above" | `subagents/form_review/instructions.md` (Form Completion Summary) | `subagents/database_verification/instructions.md` — Data Provenance (No Fabrication) |
 | "follow Web Search Protocol normally" | `skills/browser-automation/SKILL.md` (Resuming After Interruption) | `subagents/requirements_research/instructions.md` — Web Search Protocol |
 | "follow the Modal Handling section above" | `instructions.md` (Forbidden Actions, `evaluate` restrictions) | `skills/browser-automation/SKILL.md` — Modal Handling |
+
+### Tool names
+
+The ported prose (`instructions.md`, both skills, all three subagents'
+`instructions.md`) keeps the original camelCase tool names from
+`lib/ai/tools/` verbatim — `gapAnalysis`, `formSummary`, `getApricotRecord`,
+`getApricotFormFields`, `checkSubmitGate`, `actionLabel` — and `readReference`
+is also mentioned by name in one retained comment. Verbatim fidelity was the
+point of the conversion (see the note above the reference table), so these
+were not reworded. But Eve does not read a `name` field out of `defineTool` —
+none of the tool files in `agent/tools/`, `agent/subagents/*/tools/` declare
+one — it registers each tool under its snake_case **file slug**. A reader
+following the prose literally would be pointed at a name that does not
+resolve. Map:
+
+| Prose name (camelCase) | Registered as (file slug) | File |
+|---|---|---|
+| `gapAnalysis` | `gap_analysis` | `agent/tools/gap_analysis.ts` |
+| `formSummary` | `form_summary` | `agent/tools/form_summary.ts` (root) / `agent/subagents/form_review/tools/form_summary.ts` (subagent) |
+| `getApricotRecord` | `get_apricot_record` | `agent/subagents/database_verification/tools/get_apricot_record.ts` |
+| `getApricotFormFields` | `get_apricot_form_fields` | `agent/subagents/database_verification/tools/get_apricot_form_fields.ts` |
+| `checkSubmitGate` | `check_submit_gate` | `agent/tools/check_submit_gate.ts` |
+| `actionLabel` | `action_label` | `agent/tools/action_label.ts` |
+| `readReference` | `read_reference` | `agent/tools/read_reference.ts` |
+
+Separately: `benefits-application/SKILL.md`'s Gap Analysis Protocol step 1
+and `requirements_research/instructions.md`'s Web Search Protocol both say
+"web search," but there is no root-level `web_search` tool — it lives only
+on the `requirements_research` subagent (`agent/subagents/requirements_research/tools/web_search.ts`).
+Prose written before the subagent split points at a tool that has since
+moved out of the top-level tool surface.
+
+### Sanctioned rewording: readReference → skills
+
+One part of the ported prose was deliberately reworded, not kept verbatim,
+and that is the exception to the "prose ported verbatim" rule stated above.
+The `browser-automation` skill's **Field Type Patterns**, **Custom
+Dropdowns**, and **Reference Files** sections replace the original
+`readReference({ path: … })` tool-call mentions with "load the sibling
+reference file `<name>.md`" — reflecting that these three reference files
+are now reached through Eve's skill mechanism (`ctx.getSkill(...).file(...)`,
+see Sandbox below) rather than the superseded `read_reference` tool. This is
+the documented readReference → skills supersession (see "Tools" above), not
+a verbatim-fidelity violation.
 
 ## Further Reading
 
