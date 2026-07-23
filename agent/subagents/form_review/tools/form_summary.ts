@@ -12,7 +12,7 @@ export default defineTool({
       z.object({
         field: z.string(),
         value: z.string().optional(),
-        source: z.enum(['database', 'caseworker', 'inferred', 'missing']),
+        source: z.enum(['caseworker', 'inferred', 'missing']),
         inputType: z.enum(['select', 'radio', 'checkbox', 'text']).optional(),
         options: z.array(z.string()).optional(),
         required: z.boolean().optional(),

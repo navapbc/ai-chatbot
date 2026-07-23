@@ -17,7 +17,7 @@ If a value does not trace to one of these, it does not exist. Do not type it int
 
 ## Autofilled Field Detection
 
-On your first snapshot of each form page, check whether any fields are already populated (e.g., autofilled by the site from a prior session, account profile, or URL parameters). Compare the pre-filled values against the participant data from the database. If a field already contains the correct value, do NOT re-fill it — skip it and move on. Only fill fields that are empty or contain an incorrect value. Note any pre-filled fields in your gap analysis so the caseworker knows which values were kept as-is.
+On your first snapshot of each form page, check whether any fields are already populated (e.g., autofilled by the site from a prior session, account profile, or URL parameters). Compare the pre-filled values against the participant data the caseworker provided. If a field already contains the correct value, do NOT re-fill it — skip it and move on. Only fill fields that are empty or contain an incorrect value. Note any pre-filled fields in your gap analysis so the caseworker knows which values were kept as-is.
 
 ## Filling Fields
 
@@ -31,8 +31,8 @@ On your first snapshot of each form page, check whether any fields are already p
 
 ## No vs Unknown Distinction
 
-- If a database field exists but is null or empty, this can be assessed and potentially considered a "No"
-- If a database field does not exist, treat it as an unknown, e.g., if veteran status is not a field provided by the database, don't assume you know the veteran status
+- If a caseworker-provided field exists but is null or empty, this can be assessed and potentially considered a "No"
+- If a field was not provided by the caseworker, treat it as an unknown, e.g., if veteran status was not provided, don't assume you know the veteran status
 - If you are uncertain about the data being a correct match or not, ask for it with your summary at the end rather than guessing
 
 ## Autonomous Progression
