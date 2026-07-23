@@ -10,6 +10,7 @@ import { useSWRConfig } from 'swr';
 import { useLocalStorage } from 'usehooks-ts';
 import { fetchWithErrorHandlers, generateUUID } from '@/lib/utils';
 import { isProductionEnvironment } from '@/lib/constants';
+import { isFeatureEnabled } from '@/lib/feature-flags';
 import { Artifact } from './artifact';
 import { MultimodalInput } from './multimodal-input';
 import { Messages } from './messages';
@@ -101,6 +102,8 @@ export function Chat({
   const selectedModelIdRef = useRef(selectedModelId);
   selectedModelIdRef.current = selectedModelId;
 
+  const eveApi = isFeatureEnabled('useEveAgent') ? '/api/eve-chat' : '/api/chat';
+
   const {
     messages,
     setMessages,
@@ -118,7 +121,7 @@ export function Chat({
       !stoppedRef.current &&
       lastAssistantMessageIsCompleteWithToolCalls({ messages }),
     transport: new DefaultChatTransport({
-      api: '/api/chat',
+      api: eveApi,
       fetch: fetchWithErrorHandlers,
       prepareSendMessagesRequest: ({ messages, id, body }) => ({
         body: {
