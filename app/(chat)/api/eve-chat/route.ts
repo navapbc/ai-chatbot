@@ -85,8 +85,9 @@ export async function POST(request: Request) {
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
       const res = await openEveStream(sessionId);
+      if (!res.body) throw new Error('Eve stream returned no body');
       let ctx = { textId: null as string | null, generateId: generateUUID };
-      for await (const event of parseNdjson(res.body!)) {
+      for await (const event of parseNdjson(res.body)) {
         const r = translateEveEvent(event, writer, ctx);
         ctx = { ...ctx, textId: r.textId };
         if (r.continuationToken) {

@@ -67,8 +67,8 @@ export async function* parseNdjson(
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
-      let nl: number;
-      while ((nl = buf.indexOf('\n')) !== -1) {
+      let nl = buf.indexOf('\n');
+      while (nl !== -1) {
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
         if (line) {
@@ -78,6 +78,7 @@ export async function* parseNdjson(
             /* skip malformed line */
           }
         }
+        nl = buf.indexOf('\n');
       }
     }
     const tail = buf.trim();
