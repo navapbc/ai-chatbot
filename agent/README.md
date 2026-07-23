@@ -4,8 +4,9 @@ This directory is a demonstrative Eve conversion of the caseworker-facing web-au
 system prompt that otherwise lives in `lib/ai/prompts/`. It exists to prove out Eve's
 concepts (always-on instructions + dynamic instructions, skills, tools, subagents,
 sandbox, compaction) against real prompt content from this repo — not to replace the
-production Next.js agent loop in `app/(chat)/api/chat/route.ts`. Nothing under `lib/` or
-`app/` was touched to build it; see "Additive-only" below.
+production Next.js agent loop in `app/(chat)/api/chat/route.ts`. The only file added
+outside `agent/` across this whole conversion is `lib/kernel/eve-browser.ts`; no
+*existing* file under `lib/` or `app/` was modified — see "Additive-only" below.
 
 ## Tree
 
@@ -24,11 +25,11 @@ agent/
       custom-dropdowns.md                   sibling reference (loaded on demand)
       browser-commands.md                   sibling reference (loaded on demand)
   tools/
-    action_label.ts                         example tool
-    browser.ts                              example tool
-    check_submit_gate.ts                    example tool
-    form_summary.ts                         example tool
-    gap_analysis.ts                         example tool
+    action_label.ts                         real: returns the label as data
+    browser.ts                              real: drives a Kernel.sh browser session
+    check_submit_gate.ts                    real: Turnstile probe + force-enable via Kernel
+    form_summary.ts                         real: validates + returns card data
+    gap_analysis.ts                         real: validates + returns card data
     read_reference.ts                       spike proof tool, superseded by skills
     update_working_memory.ts                defineState compaction prototype
   subagents/
@@ -71,23 +72,29 @@ rather than a tool call.
 
 `agent/skills/benefits-application/` carries most of `lib/ai/prompts/application-protocol.ts`
 (Autofilled Field Detection, Filling Fields, No vs Unknown Distinction, Autonomous
-Progression, Review Screen, Gap Analysis Protocol, Form Completion Summary). Database
-Retrieval & Verification and Field Mapping & Inference Rules (originally on the now-deleted
-external-record-verification subagent) are dropped entirely as part of Task 4's archiving of
-that integration; Data Provenance is retargeted off it and now lives directly in this skill
-as **Data Provenance (No Fabrication)**, sourced to caseworker messages + inference only.
+Progression, Review Screen, Gap Analysis Protocol, Form Completion Summary). Data
+Provenance now lives directly in this skill as **Data Provenance (No Fabrication)**,
+sourced to caseworker messages + inference only.
 Review Screen and Form Completion Summary are intentionally duplicated in the `form_review`
 subagent — a declared subagent inherits no skills, so anything it needs must be copied into
 its own `instructions.md`.
 
 ## Tools
 
-The five tools under `agent/tools/` (`action_label`, `browser`, `check_submit_gate`,
-`form_summary`, `gap_analysis`) are demonstrative stubs — each file names the real
-implementation it mirrors in `lib/ai/tools/`. They exist to prove that Eve's
-`defineTool` shape can carry this repo's tool descriptions and schemas, not to replace
-the production tools, which stay wired into `app/(chat)/api/chat/route.ts` as before.
-`agent/tools/read_reference.ts` is the original spike proof tool (reads
+The five tools under `agent/tools/` are no longer stubs — SP-A made them functionally
+real. `browser` and `check_submit_gate` drive an actual remote browser on Kernel.sh
+through `lib/kernel/eve-browser.ts`, a new module that reimplements the minimal slice of
+the production `getOrCreateBrowser` needed for a
+working browser tool (create-or-reuse a Kernel session + `BrowserManager`, cached by
+session, re-resolved on every call from `ctx.session.id` — see the file-level comment in
+`lib/kernel/eve-browser.ts` for why it doesn't import `getOrCreateBrowser` directly and
+what it drops relative to it: Kernel replay/GCS archival and the `SessionMapping` DB
+upsert, both deferred to a later sub-project). `action_label`, `form_summary`, and
+`gap_analysis` validate their input and return real structured data (`{ labeled: ... }`,
+`{ rendered: true, fieldCount }`, `{ rendered: true, formName, missingCount }`) — the
+interactive card *render* stays deferred to SP-B, but the data path is no longer a stub.
+None of these five replace the production tools, which stay wired into
+`app/(chat)/api/chat/route.ts` as before; `agent/tools/read_reference.ts` is the original spike proof tool (reads
 `lib/ai/prompts/references/*.md` off disk) and is superseded by the
 `browser-automation` skill's sibling reference files — it is retained only as a record
 of the pre-skills approach, not as the recommended pattern for new reference material.
@@ -104,10 +111,10 @@ skills and must carry everything it needs. `requirements_research` carries Web S
 Protocol from `web-automation.ts` plus its own `web_search` tool. `form_review` carries
 Review Screen and Form Completion Summary from `application-protocol.ts` (duplicated with
 the `benefits-application` skill, for the reason given above) plus its own `form_summary`
-tool. A third subagent that previously carried Database Retrieval & Verification, Data
-Provenance, and Field Mapping & Inference Rules plus a pair of external-record-lookup
-tools was deleted in Task 4 when that integration was archived; see the Tree section
-above and the SDD task report for details.
+tool. A third subagent that previously carried Data Provenance and Field Mapping &
+Inference Rules plus a pair of external-record-lookup tools was deleted in Task 4 when
+that integration was archived; see the Tree section above and the SDD task report for
+details.
 
 `requirements_research/instructions.md` also carries, verbatim, step 1 of the Gap
 Analysis Protocol ("Research the application requirements upfront…") from
@@ -130,10 +137,14 @@ not something converted from the prompt.
 
 ## Additive-only
 
-Nothing under `lib/`, `app/`, or `package.json` was modified across this whole
-conversion. `git diff --stat d2bbaf0..HEAD -- lib app package.json` is empty; the
-converted agent lives entirely under `agent/`, alongside the unmodified production
-code it mirrors.
+No *existing* file under `lib/`, `app/`, or `package.json` was modified across this
+whole conversion — the only change any of these three paths saw is one new file, added
+by SP-A: `lib/kernel/eve-browser.ts`. `git diff --stat d2bbaf0..HEAD -- app package.json`
+is empty; `git diff --stat d2bbaf0..HEAD -- lib` shows only that one addition. The
+converted agent otherwise lives entirely under `agent/`, alongside the unmodified
+production code it mirrors — see `lib/kernel/eve-browser.ts`'s own file-level comment
+for why it's a new file instead of a direct import of `lib/kernel/browser.ts`'s
+`getOrCreateBrowser`.
 
 ## Cross-Reference Note
 
