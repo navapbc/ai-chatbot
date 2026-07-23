@@ -94,7 +94,10 @@ export function translateEveEvent(
     case 'session.waiting':
       return { textId, done: true, continuationToken: event.data?.continuationToken };
     case 'turn.completed':
-      return { textId, done: true };
+      // turn.completed fires BEFORE session.waiting and carries no continuationToken.
+      // Only session.waiting may signal done, or a route loop that breaks on
+      // r.done would stop here and never read the continuationToken.
+      return { textId, done: false };
     // session.started / turn.started / message.received / step.started: ignored.
     default:
       break;

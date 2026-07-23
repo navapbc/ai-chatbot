@@ -76,6 +76,11 @@ describe('translateEveEvent', () => {
     expect(r.done).toBe(true);
     expect(r.continuationToken).toBe('tok-9');
   });
+  it('does NOT signal done on turn.completed (it precedes session.waiting and carries no continuationToken)', () => {
+    const { writer } = collect();
+    const r = translateEveEvent({ type: 'turn.completed', data: {} }, writer, { textId: null, generateId: gen });
+    expect(r.done).toBe(false);
+  });
   it('ignores lifecycle/echo events without writing', () => {
     const { writer, chunks } = collect();
     for (const t of ['session.started', 'turn.started', 'message.received', 'step.started']) {
