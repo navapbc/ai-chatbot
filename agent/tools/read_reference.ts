@@ -1,3 +1,7 @@
+// NOTE: Superseded by Eve skills. The three reference docs now ship as sibling
+// files of the `browser-automation` skill and load on demand via `load_skill`
+// (Eve's native progressive-disclosure mechanism), so this tool is retained only
+// as the spike's proof tool. New reference material should be a skill, not this.
 import { defineTool } from 'eve/tools';
 import { readFile } from 'node:fs/promises';
 import { resolve, normalize, join } from 'node:path';
