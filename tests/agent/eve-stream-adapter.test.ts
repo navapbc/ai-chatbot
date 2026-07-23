@@ -83,9 +83,15 @@ describe('translateEveEvent', () => {
   });
   it('ignores lifecycle/echo events without writing', () => {
     const { writer, chunks } = collect();
-    for (const t of ['session.started', 'turn.started', 'message.received', 'step.started']) {
+    for (const t of ['session.started', 'turn.started', 'message.received']) {
       translateEveEvent({ type: t, data: {} }, writer, { textId: null, generateId: gen });
     }
     expect(chunks).toEqual([]);
+  });
+  it('emits start-step on step.started (restores per-step tool grouping; not done)', () => {
+    const { writer, chunks } = collect();
+    const r = translateEveEvent({ type: 'step.started', data: {} }, writer, { textId: null, generateId: gen });
+    expect(chunks).toEqual([{ type: 'start-step' }]);
+    expect(r.done).toBe(false);
   });
 });

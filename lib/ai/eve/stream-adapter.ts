@@ -98,7 +98,14 @@ export function translateEveEvent(
       // Only session.waiting may signal done, or a route loop that breaks on
       // r.done would stop here and never read the continuationToken.
       return { textId, done: false };
-    // session.started / turn.started / message.received / step.started: ignored.
+    case 'step.started':
+      // Restores per-step tool grouping in the UI, and is defense-in-depth:
+      // a start-step chunk between steps helps keep the client from ever
+      // mistaking a mid-turn tool step for a fully "complete" assistant
+      // message (see sendAutomaticallyWhen gating in components/chat.tsx).
+      writer.write({ type: 'start-step' });
+      break;
+    // session.started / turn.started / message.received: ignored.
     default:
       break;
   }

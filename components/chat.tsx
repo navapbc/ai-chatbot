@@ -102,7 +102,8 @@ export function Chat({
   const selectedModelIdRef = useRef(selectedModelId);
   selectedModelIdRef.current = selectedModelId;
 
-  const eveApi = isFeatureEnabled('useEveAgent') ? '/api/eve-chat' : '/api/chat';
+  const useEve = isFeatureEnabled('useEveAgent');
+  const eveApi = useEve ? '/api/eve-chat' : '/api/chat';
 
   const {
     messages,
@@ -117,9 +118,17 @@ export function Chat({
     messages: initialMessages,
     experimental_throttle: 100,
     generateId: generateUUID,
-    sendAutomaticallyWhen: ({ messages }) =>
-      !stoppedRef.current &&
-      lastAssistantMessageIsCompleteWithToolCalls({ messages }),
+    // Eve owns its agent loop server-side: a turn's stream already contains
+    // the entire turn and ends at session.waiting. The client must NEVER
+    // auto-continue for the Eve transport — auto-sending would scrape the
+    // assistant's own reply and feed it back to Eve as a bogus user turn.
+    // This predicate exists only for the legacy AI-SDK-managed client<->server
+    // tool continuation flow, so it stays exactly as-is when Eve is off.
+    sendAutomaticallyWhen: useEve
+      ? () => false
+      : ({ messages }) =>
+          !stoppedRef.current &&
+          lastAssistantMessageIsCompleteWithToolCalls({ messages }),
     transport: new DefaultChatTransport({
       api: eveApi,
       fetch: fetchWithErrorHandlers,

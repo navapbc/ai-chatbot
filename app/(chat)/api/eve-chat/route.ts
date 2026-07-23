@@ -23,13 +23,19 @@ export async function POST(request: Request) {
   }
   const userId = session.user.id;
 
-  let body: { id?: string; message?: unknown };
+  let body: { id?: string; message?: { role?: string } };
   try {
     body = await request.json();
   } catch {
     return new ChatSDKError('bad_request:api').toResponse();
   }
   const chatId = body.id;
+  // Defense-in-depth: Eve owns its own agent loop, so only a genuine
+  // user-initiated turn may ever be forwarded to it. Never scrape/forward
+  // an assistant (or other non-user) message as if it were a new user turn.
+  if (body.message?.role !== 'user') {
+    return new ChatSDKError('bad_request:api').toResponse();
+  }
   const text = extractLatestUserText(body.message);
   if (!chatId || !text) {
     return new ChatSDKError('bad_request:api').toResponse();
