@@ -65,7 +65,8 @@ export default defineTool({
       const probe = await runBrowserCommand(ctx, { action: 'evaluate', script: PROBE_SCRIPT });
       if (!probe.success) return { success: false, error: probe.error ?? 'probe failed', state: null, action: null };
       if (!probe.data) return { success: false, error: 'probe returned no data', state: null, action: null };
-      const state = typeof probe.data === 'string' ? JSON.parse(probe.data) : probe.data;
+      const parsed = typeof probe.data === 'string' ? JSON.parse(probe.data) : probe.data;
+      const state = (parsed && typeof parsed === 'object' && 'result' in parsed) ? parsed.result : parsed;
 
       if (!forceEnable || !state.submit?.found || state.submit?.disabled !== true) {
         return { success: true, state, action: null };
