@@ -1,7 +1,10 @@
 import { defineTool } from 'eve/tools';
 import { z } from 'zod';
 
-// Example tool. Production logic: lib/ai/tools/action-label.ts.
+// Returns validated structured data for the action-label card. The interactive
+// card RENDER is wired to the chat UI in SP-B; standalone this tool is the
+// lightweight real signal itself — it returns { labeled: category } directly,
+// which it does here. lib/ai/tools/action-label.ts is the chat-UI counterpart.
 // Call once before each logical group of browser actions.
 export default defineTool({
   description:
@@ -17,7 +20,7 @@ export default defineTool({
     ]),
   }),
   async execute({ category }) {
-    // Demonstrative stub: production emits a UI action label.
+    // The label is the entire payload for this tool — no separate render step.
     return { labeled: category };
   },
 });

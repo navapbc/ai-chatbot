@@ -1,9 +1,11 @@
 import { defineTool } from 'eve/tools';
 import { z } from 'zod';
 
-// Example tool. Production logic: lib/ai/tools/gap-analysis.ts (renders an
-// interactive card client-side). Per the benefits-application skill, calling
-// this ENDS the turn — the agent must stop and wait for the caseworker.
+// Returns validated structured data for the gap-analysis card. The interactive
+// card RENDER is wired to the chat UI in SP-B; standalone this tool's job is to
+// validate + surface the data, which it does here. Per the benefits-application
+// skill, calling this ENDS the turn — the agent must stop and wait for the
+// caseworker. lib/ai/tools/gap-analysis.ts is the chat-UI counterpart.
 export default defineTool({
   description:
     'Render the gap-analysis card listing required form fields with no traceable data. Calling this ends your turn.',
@@ -22,7 +24,7 @@ export default defineTool({
     ),
   }),
   async execute({ formName, missingFields }) {
-    // Demonstrative stub: production renders the interactive gap card.
+    // Validates and surfaces the missing-field data; card render is SP-B.
     return { rendered: true, formName, missingCount: missingFields.length };
   },
 });

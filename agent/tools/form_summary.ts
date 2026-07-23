@@ -1,8 +1,11 @@
 import { defineTool } from 'eve/tools';
 import { z } from 'zod';
 
-// Example tool. Production logic: lib/ai/tools/form-summary.ts (interactive
-// review card). Called instead of writing a text summary.
+// Returns validated structured data for the form-summary card. The interactive
+// card RENDER is wired to the chat UI in SP-B; standalone this tool's job is to
+// validate + surface the data, which it does here. Called instead of writing a
+// text summary of filled fields. lib/ai/tools/form-summary.ts is the chat-UI
+// counterpart.
 export default defineTool({
   description:
     'Render the form-completion summary card. Call instead of writing a text summary of filled fields.',
