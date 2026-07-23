@@ -13,6 +13,7 @@ import {
   translateEveEvent,
   extractLatestUserText,
 } from '@/lib/ai/eve/stream-adapter';
+import { toGatewaySlug } from '@/lib/ai/eve/model-map';
 
 export const maxDuration = 300; // 5 min for long web-automation turns
 
@@ -23,7 +24,11 @@ export async function POST(request: Request) {
   }
   const userId = session.user.id;
 
-  let body: { id?: string; message?: { role?: string } };
+  let body: {
+    id?: string;
+    message?: { role?: string };
+    modelOverride?: string;
+  };
   try {
     body = await request.json();
   } catch {
@@ -57,7 +62,8 @@ export async function POST(request: Request) {
         continuationToken,
       });
     } else {
-      const created = await createEveSession(text);
+      const model = toGatewaySlug(body.modelOverride);
+      const created = await createEveSession(text, model);
       sessionId = created.sessionId;
       setContinuity(userId, chatId, {
         eveSessionId: sessionId,

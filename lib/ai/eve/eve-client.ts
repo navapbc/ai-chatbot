@@ -1,9 +1,13 @@
 const EVE_URL = process.env.EVE_SERVER_URL ?? 'http://127.0.0.1:2000';
 
-async function postJson(path: string, body: unknown) {
+async function postJson(
+  path: string,
+  body: unknown,
+  extraHeaders?: Record<string, string>,
+) {
   const res = await fetch(`${EVE_URL}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(extraHeaders ?? {}) },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -18,10 +22,11 @@ async function postJson(path: string, body: unknown) {
   return { sessionId, continuationToken: json.continuationToken ?? '' };
 }
 
-export async function createEveSession(message: string) {
+export async function createEveSession(message: string, model?: string) {
   const { sessionId, continuationToken } = await postJson(
     '/eve/v1/session',
     { message },
+    model ? { 'x-eve-model': model } : undefined,
   );
   return { sessionId, continuationToken };
 }
