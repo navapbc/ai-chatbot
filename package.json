@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbo",
+    "eve:dev": "dotenv -e .env.local -- eve dev",
     "build": "tsx lib/db/migrate && next build",
     "start": "next start",
     "lint": "biome lint --write --unsafe",
