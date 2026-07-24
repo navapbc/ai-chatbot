@@ -51,6 +51,10 @@ export async function POST(request: Request) {
   let sessionId: string;
   try {
     const existing = getContinuity(userId, chatId);
+    // [eve-chat-debug] TEMP diagnostic — remove after debugging the gap round-trip.
+    console.log(
+      `[eve-chat-debug] userId=${userId} chatId=${chatId} decision=${existing ? 'CONTINUE' : 'CREATE'} existingSession=${existing?.eveSessionId ?? 'none'} msg=${JSON.stringify(text.slice(0, 60))}`,
+    );
     if (existing) {
       const { continuationToken } = await continueEveSession(
         existing.eveSessionId,
@@ -91,6 +95,10 @@ export async function POST(request: Request) {
         const r = translateEveEvent(event, writer, ctx);
         ctx = { ...ctx, textId: r.textId };
         if (r.continuationToken) {
+          // [eve-chat-debug] TEMP — confirm the token is captured at session.waiting.
+          console.log(
+            `[eve-chat-debug] stored continuationToken for userId=${userId} chatId=${chatId} session=${sessionId}`,
+          );
           setContinuity(userId, chatId, {
             eveSessionId: sessionId,
             continuationToken: r.continuationToken,
