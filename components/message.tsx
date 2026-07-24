@@ -584,8 +584,15 @@ const PurePreviewMessage = ({
                   }
 
                   // For all other tools, show simple icon with text
-                  // Check for actual error value, not just presence of 'error' key (some tools return { error: null } on success)
-                  const hasError = output && 'error' in output && output.error;
+                  // Check for actual error value, not just presence of 'error' key (some tools return { error: null } on success).
+                  // Guard that output is a non-null object first: the `in` operator throws
+                  // a TypeError on primitives, and some tools (e.g. Eve's load_skill) return
+                  // a plain string output.
+                  const hasError =
+                    typeof output === 'object' &&
+                    output !== null &&
+                    'error' in output &&
+                    output.error;
                   return (
                     <div key={toolCallId} className="flex items-center gap-2 p-3 border-0 rounded-md">
                       <div className={`text-[10px] leading-[150%] font-ibm-plex-mono flex items-center gap-2 ${hasError ? 'text-red-600' : 'text-muted-foreground'}`}>

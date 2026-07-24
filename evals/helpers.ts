@@ -130,7 +130,7 @@ export function createBaseStubTools<S extends BaseRunState>(
         pageSize: z.number().optional(),
         pageNumber: z.number().optional(),
         sort: z.string().optional(),
-        filters: z.record(z.string()).optional(),
+        filters: z.record(z.string(), z.string()).optional(),
       }),
       execute: wrap("getApricotForms", overrides.getApricotForms ?? (async () => ({ forms: [], count: 0, success: true }))),
     }),
@@ -227,7 +227,7 @@ export function createBaseStubTools<S extends BaseRunState>(
       description: TOOL_DESCRIPTIONS.updateApricotRecord,
       inputSchema: z.object({
         recordId: z.number(),
-        fields: z.record(z.string()),
+        fields: z.record(z.string(), z.string()),
       }),
       execute: wrap(
         "updateApricotRecord",
