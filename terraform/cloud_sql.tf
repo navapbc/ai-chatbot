@@ -1,0 +1,339 @@
+# Cloud SQL Database Configuration
+# 
+# Strategy:
+# - Dev: Creates and manages nava-db-dev Cloud SQL instance
+# - Preview: Does NOT create database, uses VPC peering to connect to dev database
+# - Prod: Creates and manages nava-db-prod Cloud SQL instance (completely isolated from dev/preview)
+
+# Cloud SQL Instance for DEV environment
+resource "google_sql_database_instance" "dev" {
+  count            = var.environment == "dev" ? 1 : 0
+  name             = "nava-db-dev"
+  database_version = "POSTGRES_15"
+  region           = local.region
+
+  settings {
+    tier                        = "db-custom-2-3840"  # Dev: 2 vCPUs, 3.75GB RAM
+    availability_type           = "ZONAL"
+    deletion_protection_enabled = false  # Allow deletion for dev environment
+
+    # Storage configuration
+    disk_type       = "PD_SSD"
+    disk_size       = 100  # 50GB storage for dev
+    disk_autoresize = true  # Enable autoresize
+
+    # Backup configuration
+    backup_configuration {
+      enabled                        = true
+      start_time                     = "03:00"
+      point_in_time_recovery_enabled = true
+      transaction_log_retention_days = 7
+      backup_retention_settings {
+        retained_backups = 7
+        retention_unit   = "COUNT"
+      }
+    }
+
+    # IP configuration - Private IP via VPC peering + PSC for preview environments
+    ip_configuration {
+      ipv4_enabled                                  = false
+      private_network                               = local.vpc_network.id
+      enable_private_path_for_google_cloud_services = true
+      
+      # Enable Private Service Connect for preview environments
+      # PSC allows the preview VPC (labs-asp-vpc-preview-shared) to create endpoints
+      psc_config {
+        psc_enabled               = true
+        allowed_consumer_projects = [local.project_id]
+        
+        # Auto-create PSC endpoint for preview shared VPC
+        psc_auto_connections {
+          consumer_network            = "projects/${local.project_id}/global/networks/labs-asp-vpc-preview-shared"
+          consumer_service_project_id = local.project_id
+        }
+      }
+    }
+
+    # Database flags
+    database_flags {
+      name  = "max_connections"
+      value = "100"  # Appropriate for dev tier
+    }
+  }
+
+  depends_on = [
+    google_service_networking_connection.private_vpc_connection,
+    google_compute_network.main
+  ]
+
+  deletion_protection = false
+}
+
+# Cloud SQL Database for DEV
+resource "google_sql_database" "dev" {
+  count    = var.environment == "dev" ? 1 : 0
+  name     = "app_db"
+  instance = google_sql_database_instance.dev[0].name
+}
+
+# Generate random password for DEV database
+resource "random_password" "dev_password" {
+  count   = var.environment == "dev" ? 1 : 0
+  length  = 32
+  special = true
+  upper   = true
+  lower   = true
+  numeric = true
+}
+
+# Create secret in Secret Manager for DEV database password
+resource "google_secret_manager_secret" "database_password_dev" {
+  count     = var.environment == "dev" ? 1 : 0
+  secret_id = "nava-db-password-dev"
+  project   = local.project_id
+
+  replication {
+    user_managed {
+      replicas {
+        location = local.region
+      }
+    }
+  }
+
+  labels = merge(local.common_labels, {
+    environment = "dev"
+    purpose     = "database-password"
+  })
+}
+
+# Store password in Secret Manager
+resource "google_secret_manager_secret_version" "database_password_dev" {
+  count       = var.environment == "dev" ? 1 : 0
+  secret      = google_secret_manager_secret.database_password_dev[0].id
+  secret_data = random_password.dev_password[0].result
+}
+
+# Cloud SQL User for DEV
+resource "google_sql_user" "dev" {
+  count    = var.environment == "dev" ? 1 : 0
+  name     = "app_user"
+  instance = google_sql_database_instance.dev[0].name
+  password = random_password.dev_password[0].result
+  type     = "BUILT_IN"
+}
+
+# =============================================================================
+# DATABASE_URL Secrets for DEV environment
+# =============================================================================
+
+# DATABASE_URL for dev environment (uses private IP within dev VPC)
+resource "google_secret_manager_secret" "database_url_dev" {
+  count     = var.environment == "dev" ? 1 : 0
+  secret_id = "database-url-dev"
+  project   = local.project_id
+
+  replication {
+    user_managed {
+      replicas {
+        location = local.region
+      }
+    }
+  }
+
+  labels = merge(local.common_labels, {
+    environment = "dev"
+    purpose     = "database-url"
+  })
+}
+
+resource "google_secret_manager_secret_version" "database_url_dev" {
+  count       = var.environment == "dev" ? 1 : 0
+  secret      = google_secret_manager_secret.database_url_dev[0].id
+  secret_data = "postgresql://app_user:${urlencode(random_password.dev_password[0].result)}@${google_sql_database_instance.dev[0].private_ip_address}:5432/app_db"
+
+  depends_on = [google_sql_user.dev]
+}
+
+# =============================================================================
+# DATABASE_URL for preview environments
+# =============================================================================
+# Preview environments use PSC (Private Service Connect) to access dev DB
+# 
+# With provider 7.0+ (PR #24201), psc_auto_connections now exposes ip_address attribute
+# Structure: settings[0].ip_configuration[0].psc_config[0].psc_auto_connections[0].ip_address
+# 
+# Example from gcloud CLI:
+#   pscAutoConnections:
+#     - ipAddress: 10.1.16.11
+#       status: ACTIVE
+#       consumerNetworkStatus: VALID
+
+resource "google_secret_manager_secret" "database_url_preview" {
+  count     = var.environment == "dev" ? 1 : 0
+  secret_id = "database-url-preview"
+  project   = local.project_id
+
+  replication {
+    user_managed {
+      replicas {
+        location = local.region
+      }
+    }
+  }
+
+  labels = merge(local.common_labels, {
+    environment = "preview"
+    purpose     = "database-url"
+  })
+}
+
+# Use PSC endpoint IP from psc_auto_connections
+# This IP (e.g., 10.1.16.11) is in the preview VPC and routes to dev Cloud SQL
+resource "google_secret_manager_secret_version" "database_url_preview" {
+  count       = var.environment == "dev" ? 1 : 0
+  secret      = google_secret_manager_secret.database_url_preview[0].id
+  # Access the PSC connection IP using ip_address attribute (available in provider 7.0+)
+  # Note: psc_config and psc_auto_connections are sets, not lists - use one() to extract the single element
+  secret_data = "postgresql://app_user:${urlencode(random_password.dev_password[0].result)}@${one(one(google_sql_database_instance.dev[0].settings[0].ip_configuration[0].psc_config).psc_auto_connections).ip_address}:5432/app_db"
+
+  depends_on = [google_sql_user.dev]
+}
+
+# Cloud SQL Instance for PROD environment (completely isolated)
+resource "google_sql_database_instance" "prod" {
+  count            = var.environment == "prod" ? 1 : 0
+  name             = "nava-db-prod"
+  database_version = "POSTGRES_15"
+  region           = local.region
+
+  settings {
+    tier                        = "db-custom-4-7680"  # Prod: 4 vCPUs, 7.5GB RAM
+    availability_type           = "REGIONAL" # Prod: Regional availability
+    deletion_protection_enabled = true  # Protect production database
+
+    # Storage configuration
+    disk_type       = "PD_SSD"
+    disk_size       = 100  # 100GB storage for prod
+    disk_autoresize = true  # Enable autoresize
+
+    # Backup configuration
+    backup_configuration {
+      enabled                        = true
+      start_time                     = "03:00"
+      point_in_time_recovery_enabled = true
+      transaction_log_retention_days = 7
+      backup_retention_settings {
+        retained_backups = 7
+        retention_unit   = "COUNT"
+      }
+    }
+
+    # IP configuration - Private IP only via VPC peering
+    ip_configuration {
+      ipv4_enabled                                  = false
+      private_network                               = local.vpc_network.id
+      enable_private_path_for_google_cloud_services = true
+    }
+
+    # Database flags
+    database_flags {
+      name  = "max_connections"
+      value = "200"  # Higher for production tier
+    }
+  }
+
+  depends_on = [
+    google_service_networking_connection.private_vpc_connection,
+    google_compute_network.main
+  ]
+
+  deletion_protection = true  # Critical: Protect production database
+}
+
+# Cloud SQL Database for PROD
+resource "google_sql_database" "prod" {
+  count    = var.environment == "prod" ? 1 : 0
+  name     = "app_db"
+  instance = google_sql_database_instance.prod[0].name
+}
+
+# Generate random password for PROD database
+resource "random_password" "prod_password" {
+  count   = var.environment == "prod" ? 1 : 0
+  length  = 32
+  special = true
+  upper   = true
+  lower   = true
+  numeric = true
+}
+
+# Create secret in Secret Manager for PROD database password
+resource "google_secret_manager_secret" "database_password_prod" {
+  count     = var.environment == "prod" ? 1 : 0
+  secret_id = "nava-db-password-prod"
+  project   = local.project_id
+
+  replication {
+    user_managed {
+      replicas {
+        location = local.region
+      }
+    }
+  }
+
+  labels = merge(local.common_labels, {
+    environment = "prod"
+    purpose     = "database-password"
+  })
+}
+
+# Store password in Secret Manager
+resource "google_secret_manager_secret_version" "database_password_prod" {
+  count       = var.environment == "prod" ? 1 : 0
+  secret      = google_secret_manager_secret.database_password_prod[0].id
+  secret_data = random_password.prod_password[0].result
+}
+
+# Cloud SQL User for PROD
+resource "google_sql_user" "prod" {
+  count    = var.environment == "prod" ? 1 : 0
+  name     = "app_user"
+  instance = google_sql_database_instance.prod[0].name
+  password = random_password.prod_password[0].result
+  type     = "BUILT_IN"
+}
+
+# =============================================================================
+# DATABASE_URL Secret for PROD environment
+# =============================================================================
+
+resource "google_secret_manager_secret" "database_url_prod" {
+  count     = var.environment == "prod" ? 1 : 0
+  secret_id = "database-url-production"
+  project   = local.project_id
+
+  replication {
+    user_managed {
+      replicas {
+        location = local.region
+      }
+    }
+  }
+
+  labels = merge(local.common_labels, {
+    environment = "prod"
+    purpose     = "database-url"
+  })
+}
+
+resource "google_secret_manager_secret_version" "database_url_prod" {
+  count       = var.environment == "prod" ? 1 : 0
+  secret      = google_secret_manager_secret.database_url_prod[0].id
+  secret_data = "postgresql://app_user:${urlencode(random_password.prod_password[0].result)}@${google_sql_database_instance.prod[0].private_ip_address}:5432/app_db"
+
+  depends_on = [google_sql_user.prod]
+}
+
+# Note: VPC Peering configuration has been moved to vpc.tf for better organization
+# See vpc.tf for preview-to-dev and dev-to-preview peering resources
+
