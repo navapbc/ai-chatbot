@@ -4,7 +4,6 @@
 .next
 node_modules
 terraform
-docs
 test-results
 playwright-report
 blob-report
