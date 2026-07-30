@@ -55,3 +55,12 @@ vertex-ai-credentials.json
 
 .claude/
 docs/superpowers/
+
+# Terraform
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/tfplan
+terraform/*.tfvars
+terraform/*apply.log
