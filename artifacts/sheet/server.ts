@@ -11,7 +11,7 @@ export const sheetDocumentHandler = createDocumentHandler<'sheet'>({
 
     const { fullStream } = streamObject({
       model: myProvider.languageModel('artifact-model'),
-      system: sheetPrompt,
+      instructions: sheetPrompt,
       prompt: title,
       schema: z.object({
         csv: z.string().describe('CSV data'),
@@ -50,7 +50,7 @@ export const sheetDocumentHandler = createDocumentHandler<'sheet'>({
 
     const { fullStream } = streamObject({
       model: myProvider.languageModel('artifact-model'),
-      system: updateDocumentPrompt(document.content, 'sheet'),
+      instructions: updateDocumentPrompt(document.content, 'sheet'),
       prompt: description,
       schema: z.object({
         csv: z.string(),

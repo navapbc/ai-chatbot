@@ -1,4 +1,4 @@
-import { tool, type ToolExecutionOptions } from 'ai';
+import { tool } from 'ai';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { executeCommand } from 'agent-browser/dist/actions.js';
@@ -97,7 +97,7 @@ NEVER navigate away from the target application domain. Do NOT click social medi
       .describe('Structured command object with action and action-specific parameters'),
     execute: async (
       params: Record<string, unknown>,
-      { abortSignal }: ToolExecutionOptions,
+      { abortSignal }: { abortSignal?: AbortSignal },
     ) => {
       return withSessionQueue(sessionId, async () => {
         try {

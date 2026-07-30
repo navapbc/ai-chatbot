@@ -1,0 +1,502 @@
+# Cloud Run Services
+# Note: mastra-app now runs on VM, only ai-chatbot frontend runs on Cloud Run
+
+# AI Chatbot Service - Next.js Frontend
+resource "google_cloud_run_v2_service" "ai_chatbot" {
+  name     = local.env_config.chatbot_service_name
+  location = local.region
+
+  # Disable deletion protection for preview environments to allow easy cleanup
+  deletion_protection = startswith(var.environment, "preview-") ? false : true
+
+  template {
+    service_account = google_service_account.cloud_run.email
+
+    # VPC Access - Connect to VPC network
+    vpc_access {
+      connector = local.vpc_connector.id
+      egress    = "ALL_TRAFFIC"  # Route all traffic through VPC/Cloud NAT for static IP
+    }
+
+    containers {
+      image = var.chatbot_image_url
+
+      # Resource configuration for Next.js app
+      resources {
+        limits = {
+          cpu    = var.chatbot_cpu
+          memory = var.chatbot_memory
+        }
+      }
+
+      # Database (Cloud SQL PostgreSQL)
+      # - dev: uses private IP within dev VPC
+      # - preview: uses PSC endpoint to reach dev DB from preview VPC
+      # - prod: uses private IP within prod VPC
+      env {
+        name = "DATABASE_URL"
+        value_source {
+          secret_key_ref {
+            secret  = var.environment == "prod" ? "database-url-production" : (startswith(var.environment, "preview") ? "database-url-preview" : "database-url-dev")
+            version = "latest"
+          }
+        }
+      }
+
+      # AI API Keys
+      env {
+        name = "OPENAI_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = "openai-api-key"
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "ANTHROPIC_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = "anthropic-api-key"
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "EXA_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = "exa-api-key"
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "GOOGLE_GENERATIVE_AI_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = "google-generative-ai-key"
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "XAI_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = "xai-api-key"
+            version = "latest"
+          }
+        }
+      }
+
+      # Apricot API Configuration
+      # Prod uses /api/ endpoint with prod credentials, all others use /sandbox/ with sandbox credentials
+      env {
+        name = "APRICOT_API_BASE_URL"
+        value = "https://f5r-api.iws.sidekick.solutions/apricot"
+      }
+
+      env {
+        name = "APRICOT_CLIENT_ID"
+        value_source {
+          secret_key_ref {
+            secret  = var.environment == "prod" ? "apricot-client-id-prod" : "apricot-client-id-sandbox"
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "APRICOT_CLIENT_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = var.environment == "prod" ? "apricot-client-secret-prod" : "apricot-client-secret-sandbox"
+            version = "latest"
+          }
+        }
+      }
+
+      # PostHog Analytics
+      env {
+        name = "NEXT_PUBLIC_POSTHOG_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = "posthog-api-key"
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name  = "NEXT_PUBLIC_POSTHOG_HOST"
+        value = "https://us.i.posthog.com"
+      }
+
+      # Next.js Auth configuration
+      # Preview envs: NEXTAUTH_URL not set, code falls back to x-forwarded-host header
+      dynamic "env" {
+        for_each = startswith(var.environment, "preview-") ? [] : [1]
+        content {
+          name  = "NEXTAUTH_URL"
+          value = var.environment == "prod" ? "https://${var.domain_name}" : "https://${local.env_config.domain_prefix}.${var.domain_name}"
+        }
+      }
+
+      env {
+        name = "AUTH_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = "auth-secret"
+            version = "latest"
+          }
+        }
+      }
+
+      # Google OAuth configuration
+      env {
+        name = "GOOGLE_CLIENT_ID"
+        value_source {
+          secret_key_ref {
+            secret  = "google-oauth-client-id"
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "GOOGLE_CLIENT_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = "google-oauth-client-secret"
+            version = "latest"
+          }
+        }
+      }
+
+      # Microsoft Entra ID OAuth configuration
+      env {
+        name = "AUTH_MICROSOFT_ENTRA_ID_ID"
+        value_source {
+          secret_key_ref {
+            secret  = "microsoft-entra-id-client-id"
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "AUTH_MICROSOFT_ENTRA_ID_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = "microsoft-entra-id-client-secret"
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "AUTH_MICROSOFT_ENTRA_ID_ISSUER"
+        value_source {
+          secret_key_ref {
+            secret  = "microsoft-entra-id-issuer"
+            version = "latest"
+          }
+        }
+      }
+
+      # Google Cloud configuration
+      env {
+        name  = "GOOGLE_APPLICATION_CREDENTIALS"
+        value = "/secrets/vertex/vertex-ai-credentials.json"
+      }
+
+      env {
+        name  = "GOOGLE_VERTEX_LOCATION"
+        value = "global"
+      }
+
+      env {
+        name  = "GOOGLE_VERTEX_PROJECT"
+        value = local.project_id
+      }
+
+      env {
+        name  = "GOOGLE_CLOUD_PROJECT"
+        value = local.project_id
+      }
+
+      # Google Cloud Storage
+      env {
+        name  = "GCS_BUCKET_NAME"
+        value = local.storage_bucket_name
+      }
+
+      # Upstash Redis for shared links
+      env {
+        name = "UPSTASH_REDIS_REST_URL"
+        value_source {
+          secret_key_ref {
+            secret  = var.environment == "prod" ? "upstash-redis-rest-url-prod" : "upstash-redis-rest-url-dev"
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "UPSTASH_REDIS_REST_TOKEN"
+        value_source {
+          secret_key_ref {
+            secret  = var.environment == "prod" ? "upstash-redis-rest-token-prod" : "upstash-redis-rest-token-dev"
+            version = "latest"
+          }
+        }
+      }
+
+      # Allowed email domains for OAuth sign-in (comma-separated)
+      env {
+        name = "ALLOWED_EMAIL_DOMAINS"
+        value_source {
+          secret_key_ref {
+            secret  = "allowed-email-domains"
+            version = "latest"
+          }
+        }
+      }
+
+      # Cloudflare Verified Bots - Ed25519 private key for signing key directory
+      env {
+        name = "CLOUDFLARE_BOT_PRIVATE_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = "cloudflare-bot-private-key"
+            version = "latest"
+          }
+        }
+      }
+
+      # Feature flag for guest login (bypasses OAuth in preview environments)
+      env {
+        name  = "USE_GUEST_LOGIN"
+        value = var.use_guest_login
+      }
+
+      env {
+        name  = "NEXT_PUBLIC_USE_GUEST_LOGIN"
+        value = var.use_guest_login
+      }
+
+      # Kernel.sh API key for remote browser management
+      env {
+        name = "KERNEL_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = "kernel-api-key"
+            version = "latest"
+          }
+        }
+      }
+
+      # Runtime configuration
+      env {
+        name  = "NODE_ENV"
+        value = var.environment == "prod" ? "production" : "development"
+      }
+
+      env {
+        name  = "ENVIRONMENT"
+        value = var.environment
+      }
+
+      env {
+        name  = "GCP_PROJECT_ID"
+        value = local.project_id
+      }
+
+      env {
+        name  = "CLOUD_SQL_INSTANCE"
+        value = var.environment == "prod" ? "nava-labs:us-central1:nava-db-prod" : "nava-labs:us-central1:nava-db-dev"
+      }
+
+      # Port configuration - Next.js port
+      ports {
+        container_port = 3000
+      }
+
+      # Volume mount for Cloud SQL proxy
+      volume_mounts {
+        name       = "cloudsql"
+        mount_path = "/cloudsql"
+      }
+
+      # Volume mount for Vertex AI credentials file
+      volume_mounts {
+        name       = "vertex-credentials"
+        mount_path = "/secrets/vertex"
+      }
+
+    }
+
+    # Scaling configuration
+    scaling {
+      min_instance_count = var.chatbot_min_instances
+      max_instance_count = var.chatbot_max_instances
+    }
+
+    # Pin each user to the same instance so in-memory BrowserManager
+    # CDP connections persist across tool calls
+    session_affinity = true
+
+    # Standard timeout for web requests
+    timeout = "${var.chatbot_timeout}s"
+
+    # Cloud SQL connection for database access
+    volumes {
+      name = "cloudsql"
+      cloud_sql_instance {
+        instances = [var.environment == "prod" ? "nava-labs:us-central1:nava-db-prod" : "nava-labs:us-central1:nava-db-dev"]
+      }
+    }
+
+    # Vertex AI credentials file (mounted from Secret Manager)
+    volumes {
+      name = "vertex-credentials"
+      secret {
+        secret = "vertex-ai-credentials"
+        items {
+          version = "latest"
+          path    = "vertex-ai-credentials.json"
+        }
+      }
+    }
+  }
+
+  # Traffic configuration
+  traffic {
+    type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
+    percent = 100
+  }
+
+  labels = merge(local.common_labels, {
+    environment = var.environment
+    component   = "chatbot-frontend"
+  })
+
+  depends_on = [
+    google_project_service.required_apis,
+    google_service_account.cloud_run,
+    google_vpc_access_connector.cloud_run,
+    # Wait for database URL secrets to be created before starting Cloud Run
+    # This ensures the DATABASE_URL env var can be resolved on startup
+    google_secret_manager_secret_version.database_url_dev,
+    google_secret_manager_secret_version.database_url_preview,
+    google_secret_manager_secret_version.database_url_prod
+  ]
+}
+
+# Drop legacy proxy service from state without destroying
+# (deletion_protection=true blocks terraform destroy; service is no longer used)
+removed {
+  from = google_cloud_run_v2_service.browser_ws_proxy
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_cloud_run_v2_service_iam_member.browser_ws_proxy_public_access
+  lifecycle {
+    destroy = false
+  }
+}
+
+# IAM policies for public access
+resource "google_cloud_run_v2_service_iam_member" "chatbot_public_access" {
+  name     = google_cloud_run_v2_service.ai_chatbot.name
+  location = google_cloud_run_v2_service.ai_chatbot.location
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
+# Service account for Cloud Run services
+resource "google_service_account" "cloud_run" {
+  account_id   = "cloud-run-${var.environment}"
+  display_name = "Cloud Run Service Account (${var.environment})"
+  description  = "Service account for Cloud Run services in ${var.environment} environment"
+
+  # Force recreation to fix deleted service account issues
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# IAM bindings for Cloud Run service account
+resource "google_project_iam_member" "cloud_run_sql" {
+  project = local.project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
+  # Recreate when service account changes
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
+resource "google_project_iam_member" "cloud_run_storage" {
+  project = local.project_id
+  role    = "roles/storage.objectAdmin"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
+  # Recreate when service account changes
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
+resource "google_project_iam_member" "cloud_run_secrets" {
+  project = local.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
+  # Recreate when service account changes
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
+resource "google_project_iam_member" "cloud_run_logging" {
+  project = local.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
+  # Recreate when service account changes
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
+resource "google_project_iam_member" "cloud_run_monitoring" {
+  project = local.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
+  # Recreate when service account changes
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
+resource "google_project_iam_member" "cloud_run_vertex_ai" {
+  project = local.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
+  # Recreate when service account changes
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}

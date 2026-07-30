@@ -1,0 +1,16 @@
+.git
+.github
+.claude
+.next
+node_modules
+terraform
+test-results
+playwright-report
+blob-report
+coverage
+artifacts/session_*
+*.log
+.env
+.env.*
+Dockerfile
+.dockerignore

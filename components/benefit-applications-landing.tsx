@@ -1,16 +1,17 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import type { Attachment, ChatMessage } from '@/lib/types';
+import type { Dispatch, SetStateAction } from 'react';
+import { useEffect, useRef, useState } from 'react';
+
+import { Button } from '@/components/ui/button';
 import { ChevronsUpDown } from 'lucide-react';
-import type { ChatMessage, Attachment } from '@/lib/types';
+import { MultimodalInput } from '@/components/multimodal-input';
+import type { Session } from 'next-auth';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import type { VisibilityType } from './visibility-selector';
-import type { Dispatch, SetStateAction } from 'react';
-import type { Session } from 'next-auth';
-import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { MultimodalInput } from '@/components/multimodal-input';
+import { useRouter } from 'next/navigation';
 
 const PROGRAMS = [
   { id: 'wic', name: 'Apply 4 WIC Form', website: 'https://www.ruhealth.org/appointments/apply-4-wic-form' },
@@ -276,7 +277,7 @@ export function BenefitApplicationsLanding({
                 Describe what you need
               </p>
               <p className="mt-1 font-source-serif text-sm text-muted-foreground sm:text-base">
-                Use this for clients without an Apricot 360 ID, multiple programs, or programs not in the list.
+                Use this for programs not in the list. Include the client&apos;s Apricot 360 ID and the program URL.
               </p>
               <div className="mt-3 flex flex-1 flex-col">
                 <MultimodalInput

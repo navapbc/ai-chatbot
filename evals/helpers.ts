@@ -1,0 +1,392 @@
+import { tool, type LanguageModel, type Tool } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { google } from "@ai-sdk/google";
+import { openai } from "@ai-sdk/openai";
+import type { Span } from "braintrust";
+import { z } from "zod";
+import { computeCostUsd, type UsageTotals } from "./pricing";
+
+/**
+ * Shared stub tool builder for evals.
+ *
+ * Mirrors the live tool surface in app/(chat)/api/chat/route.ts — Apricot
+ * tools, gapAnalysis, formSummary, actionLabel, browser, readReference.
+ * Only the execute callbacks differ — they return mock data and track state.
+ *
+ * Pass an `overrides` object to customise individual tool execute fns.
+ * Any tool not overridden gets a no-op default.
+ */
+
+// ── Shared types ────────────────────────────────────────────────────────
+
+export interface ToolCallEntry {
+  tool: string;
+  args: Record<string, unknown>;
+}
+
+/** Minimal state every eval tracks */
+export interface BaseRunState {
+  toolCallLog: ToolCallEntry[];
+}
+
+// ── Tool schema constants ───────────────────────────────────────────────
+
+const TOOL_DESCRIPTIONS = {
+  getApricotRecord:
+    "Get a participant/client record from Apricot360 by record ID. Use this to fetch participant data for form filling. Returns field values with human-readable labels resolved from the form definition.",
+  getApricotForms:
+    "Fetch forms from Apricot360 with optional pagination and filtering.",
+  getApricotForm: "Get a specific form from Apricot360 by form ID.",
+  getApricotFormFields:
+    "Get all fields for a specific form from Apricot360. Returns field definitions including labels, types, options, and validation requirements.",
+  testApricotAuth:
+    "Test authentication with Apricot360 API. Use this to verify API credentials are working.",
+  updateApricotRecord:
+    "Update a participant record in Apricot360. This modifies the database record.",
+  gapAnalysis:
+    "Display a gap analysis card showing ONLY the missing fields the caseworker needs to provide.",
+  formSummary:
+    "Display a form summary card showing what was filled in and where each value came from.",
+  actionLabel:
+    "Label the upcoming group of browser actions with a human-readable title.",
+  browser:
+    "Execute browser automation commands on a remote Kernel browser. Commands include navigate, snapshot, click, fill, type, select, press, hover, check, uncheck, screenshot, inputvalue, wait, evaluate, etc.",
+  readReference:
+    'Load a reference document. Use the path the system prompt instructs you to load (e.g. "field-patterns.md", "custom-dropdowns.md", "form-submission.md", "browser-commands.md").',
+} as const;
+
+// ── Tool execute callback types ─────────────────────────────────────────
+
+type ExecuteFn<T = Record<string, unknown>> = (input: T) => Promise<unknown>;
+
+export interface ToolOverrides {
+  getApricotRecord?: ExecuteFn<{ recordId: number }>;
+  getApricotForms?: ExecuteFn<{
+    pageSize?: number;
+    pageNumber?: number;
+    sort?: string;
+    filters?: Record<string, string>;
+  }>;
+  getApricotForm?: ExecuteFn<{ formId: number }>;
+  getApricotFormFields?: ExecuteFn<{ formId: number }>;
+  testApricotAuth?: ExecuteFn<Record<string, never>>;
+  updateApricotRecord?: ExecuteFn<{
+    recordId: number;
+    fields: Record<string, string>;
+  }>;
+  gapAnalysis?: ExecuteFn;
+  formSummary?: ExecuteFn;
+  actionLabel?: ExecuteFn;
+  browser?: ExecuteFn;
+  readReference?: ExecuteFn<{ path: string }>;
+}
+
+// ── Default no-ops ──────────────────────────────────────────────────────
+
+function logAndReturn<S extends BaseRunState>(
+  state: S,
+  toolName: string,
+  input: unknown,
+  result: unknown
+) {
+  state.toolCallLog.push({ tool: toolName, args: input as Record<string, unknown> });
+  return result;
+}
+
+// ── Builder ─────────────────────────────────────────────────────────────
+
+/**
+ * Create a full set of stub tools for an eval.
+ *
+ * @param state  - The eval's RunState object (must extend BaseRunState).
+ *                 Every tool call is automatically pushed to `state.toolCallLog`.
+ * @param overrides - Per-tool execute callbacks. Unset tools use sensible defaults.
+ * @param options.includeUpdateTool - Include the updateApricotRecord trap tool (default false).
+ */
+export function createBaseStubTools<S extends BaseRunState>(
+  state: S,
+  overrides: ToolOverrides = {},
+  options: { includeUpdateTool?: boolean } = {}
+) {
+  const wrap = <T>(name: string, fn: ExecuteFn<T>): ExecuteFn<T> => {
+    return async (input: T) => {
+      const result = await fn(input);
+      return logAndReturn(state, name, input, result);
+    };
+  };
+
+  const tools: Record<string, Tool> = {
+    getApricotRecord: tool({
+      description: TOOL_DESCRIPTIONS.getApricotRecord,
+      inputSchema: z.object({
+        recordId: z.number().describe("The unique record ID of the participant"),
+      }),
+      execute: wrap("getApricotRecord", overrides.getApricotRecord ?? (async () => ({ record: null, found: false }))),
+    }),
+
+    getApricotForms: tool({
+      description: TOOL_DESCRIPTIONS.getApricotForms,
+      inputSchema: z.object({
+        pageSize: z.number().optional(),
+        pageNumber: z.number().optional(),
+        sort: z.string().optional(),
+        filters: z.record(z.string()).optional(),
+      }),
+      execute: wrap("getApricotForms", overrides.getApricotForms ?? (async () => ({ forms: [], count: 0, success: true }))),
+    }),
+
+    getApricotForm: tool({
+      description: TOOL_DESCRIPTIONS.getApricotForm,
+      inputSchema: z.object({
+        formId: z.number().describe("The unique ID of the form in Apricot360"),
+      }),
+      execute: wrap("getApricotForm", overrides.getApricotForm ?? (async () => ({ form: null, found: false }))),
+    }),
+
+    getApricotFormFields: tool({
+      description: TOOL_DESCRIPTIONS.getApricotFormFields,
+      inputSchema: z.object({
+        formId: z.number().describe("The unique ID of the form in Apricot360"),
+      }),
+      execute: wrap("getApricotFormFields", overrides.getApricotFormFields ?? (async () => ({ fields: [], count: 0, success: true }))),
+    }),
+
+    testApricotAuth: tool({
+      description: TOOL_DESCRIPTIONS.testApricotAuth,
+      inputSchema: z.object({}),
+      execute: wrap("testApricotAuth", overrides.testApricotAuth ?? (async () => ({ success: true, message: "Auth OK" }))),
+    }),
+
+    gapAnalysis: tool({
+      description: TOOL_DESCRIPTIONS.gapAnalysis,
+      inputSchema: z.object({
+        formName: z.string().optional(),
+        missingFields: z.array(
+          z.object({
+            field: z.string(),
+            options: z.array(z.string()).optional(),
+            inputType: z.enum(["text", "select", "date", "boolean", "textarea"]).optional(),
+          })
+        ),
+      }),
+      execute: wrap("gapAnalysis", overrides.gapAnalysis ?? (async (input) => input)),
+    }),
+
+    formSummary: tool({
+      description: TOOL_DESCRIPTIONS.formSummary,
+      inputSchema: z.object({
+        formName: z.string().optional(),
+        fields: z.array(
+          z.object({
+            field: z.string(),
+            value: z.string().optional(),
+            source: z.enum(["database", "caseworker", "inferred", "missing"]),
+          })
+        ),
+      }),
+      execute: wrap("formSummary", overrides.formSummary ?? (async (input) => input)),
+    }),
+
+    actionLabel: tool({
+      description: TOOL_DESCRIPTIONS.actionLabel,
+      inputSchema: z.object({
+        category: z.enum(["fill", "navigate", "interact", "read", "search", "misc"]),
+      }),
+      execute: wrap("actionLabel", overrides.actionLabel ?? (async (input) => input)),
+    }),
+
+    browser: tool({
+      description: TOOL_DESCRIPTIONS.browser,
+      inputSchema: z.object({
+        action: z.string(),
+        selector: z.string().optional(),
+        value: z.string().optional(),
+        values: z.array(z.string()).optional(),
+        text: z.string().optional(),
+        clear: z.boolean().optional(),
+        url: z.string().optional(),
+        interactive: z.boolean().optional(),
+        timeout: z.number().optional(),
+        key: z.string().optional(),
+        script: z.string().optional(),
+        label: z.string().optional(),
+        subaction: z.string().optional(),
+      }),
+      execute: wrap("browser", overrides.browser ?? (async () => ({ success: true, output: "", error: null }))),
+    }),
+
+    readReference: tool({
+      description: TOOL_DESCRIPTIONS.readReference,
+      inputSchema: z.object({ path: z.string() }),
+      execute: wrap("readReference", overrides.readReference ?? (async () => ({ content: "" }))),
+    }),
+  };
+
+  if (options.includeUpdateTool) {
+    tools.updateApricotRecord = tool({
+      description: TOOL_DESCRIPTIONS.updateApricotRecord,
+      inputSchema: z.object({
+        recordId: z.number(),
+        fields: z.record(z.string()),
+      }),
+      execute: wrap(
+        "updateApricotRecord",
+        overrides.updateApricotRecord ?? (async () => ({ success: false, error: "Read-only access" }))
+      ),
+    });
+  }
+
+  return tools;
+}
+
+// ── Shared scoring utilities ────────────────────────────────────────────
+
+/** Browser success response shorthand */
+export const browserOk = (output = "") => ({ success: true, output, error: null });
+
+/** Collect text responses from generateText result steps */
+export function collectTextResponses(steps: Array<{ text?: string }>): string[] {
+  return steps
+    .filter((s): s is { text: string } => Boolean(s.text && s.text.trim().length > 0))
+    .map((s) => s.text);
+}
+
+/** Collect text responses with step index */
+export function collectIndexedTextResponses(
+  steps: Array<{ text?: string }>
+): Array<{ stepIndex: number; text: string }> {
+  const result: Array<{ stepIndex: number; text: string }> = [];
+  for (let i = 0; i < steps.length; i++) {
+    const text = steps[i].text;
+    if (text && text.trim().length > 0) {
+      result.push({ stepIndex: i, text });
+    }
+  }
+  return result;
+}
+
+// ── Model selection (matrix-friendly) ──────────────────────────────────
+
+const DEFAULT_EVAL_MODEL = "gpt-5-mini";
+
+/**
+ * Resolve a language model for evals from the EVAL_MODEL env var.
+ *
+ * Recognised prefixes:
+ *   - gpt-* / o1* / o3*  → @ai-sdk/openai
+ *   - claude-*           → @ai-sdk/anthropic (direct Anthropic API)
+ *   - gemini-*           → @ai-sdk/google
+ *
+ * Defaults to "gpt-5-mini" when EVAL_MODEL is unset, preserving the
+ * historical per-file pin. Used by every *.eval.ts file so the CI matrix
+ * can swap models without touching eval source.
+ */
+export function getEvalModel(): LanguageModel {
+  const id = process.env.EVAL_MODEL ?? DEFAULT_EVAL_MODEL;
+  if (id.startsWith("gpt-") || id.startsWith("o1") || id.startsWith("o3")) {
+    return openai(id);
+  }
+  if (id.startsWith("claude-")) {
+    return anthropic(id);
+  }
+  if (id.startsWith("gemini-")) {
+    return google(id);
+  }
+  throw new Error(
+    `Unknown EVAL_MODEL id: "${id}". Expected gpt-*/o1*/o3*/claude-*/gemini-*.`,
+  );
+}
+
+/**
+ * Suffix a Braintrust experimentName with the active eval model so matrix
+ * runs land in separate experiments in the dashboard instead of colliding.
+ */
+export function evalExperimentName(name: string): string {
+  const id = process.env.EVAL_MODEL ?? DEFAULT_EVAL_MODEL;
+  return `${name} [${id}]`;
+}
+
+/** The active EVAL_MODEL id, falling back to the default per-file pin. */
+export function getEvalModelId(): string {
+  return process.env.EVAL_MODEL ?? DEFAULT_EVAL_MODEL;
+}
+
+// ── Token usage & cost (Braintrust metrics) ───────────────────────────────
+
+/** Minimal shape of a generateText result we read usage from (AI SDK v6). */
+interface HasTotalUsage {
+  totalUsage: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    // AI SDK v7 moved cache-read tokens under inputTokenDetails.
+    inputTokenDetails?: {
+      cacheReadTokens?: number;
+    };
+  };
+}
+
+/** A zeroed usage accumulator. */
+export function emptyUsage(): UsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cachedInputTokens: 0,
+  };
+}
+
+/**
+ * Add a generateText result's `totalUsage` (aggregated across all agent steps)
+ * into an accumulator. Use this when a task makes multiple model calls (e.g.
+ * multi-turn evals); otherwise prefer logResultUsage.
+ */
+export function addUsage(acc: UsageTotals, result: HasTotalUsage): UsageTotals {
+  const u = result.totalUsage;
+  acc.inputTokens += u.inputTokens ?? 0;
+  acc.outputTokens += u.outputTokens ?? 0;
+  acc.totalTokens +=
+    u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
+  acc.cachedInputTokens += u.inputTokenDetails?.cacheReadTokens ?? 0;
+  return acc;
+}
+
+/**
+ * Log token usage and estimated cost for a run as Braintrust metrics + metadata
+ * on the task span. Metrics aggregate across the experiment in the dashboard;
+ * cost is computed from evals/pricing.ts for the active EVAL_MODEL.
+ *
+ * Captures only the task agent's usage — LLM-as-judge scorer calls are not
+ * included (the intent is the cost of the system under test).
+ */
+export function logUsageAndCost(span: Span, usage: UsageTotals): void {
+  const modelId = getEvalModelId();
+  const { costUsd, pricingKnown } = computeCostUsd(modelId, usage);
+  // Use Braintrust's canonical token metric names so they aggregate in the
+  // native token columns; Braintrust auto-derives total_tokens from these.
+  const metrics: Record<string, number> = {
+    prompt_tokens: usage.inputTokens,
+    completion_tokens: usage.outputTokens,
+    prompt_cached_tokens: usage.cachedInputTokens,
+  };
+  // estimated_cost_usd is a custom metric (Braintrust's native cost needs its
+  // own pricing table, which won't know these models). Omit the key entirely
+  // for unpriced models rather than logging null into the metrics field —
+  // pricing_known: false in metadata flags the gap.
+  if (costUsd != null) {
+    metrics.estimated_cost_usd = costUsd;
+  }
+  span.log({
+    metrics,
+    metadata: {
+      eval_model: modelId,
+      pricing_known: pricingKnown,
+      token_usage: usage,
+    },
+  });
+}
+
+/** Convenience: log usage/cost for a single generateText result. */
+export function logResultUsage(span: Span, result: HasTotalUsage): void {
+  logUsageAndCost(span, addUsage(emptyUsage(), result));
+}
