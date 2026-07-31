@@ -24,14 +24,14 @@
     "eval:ci": "rc=0; for f in evals/*.eval.ts; do braintrust eval $f --external-packages agent-browser playwright playwright-core chromium-bidi || rc=1; done; exit $rc"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.11",
-    "@ai-sdk/gateway": "^4.0.15",
-    "@ai-sdk/google": "^4.0.11",
-    "@ai-sdk/google-vertex": "^5.0.14",
-    "@ai-sdk/openai": "^4.0.10",
-    "@ai-sdk/provider": "4.0.3",
-    "@ai-sdk/react": "4.0.20",
-    "@ai-sdk/xai": "4.0.10",
+    "@ai-sdk/anthropic": "^4.0.24",
+    "@ai-sdk/gateway": "^4.0.32",
+    "@ai-sdk/google": "^4.0.28",
+    "@ai-sdk/google-vertex": "^5.0.35",
+    "@ai-sdk/openai": "^4.0.24",
+    "@ai-sdk/provider": "4.0.4",
+    "@ai-sdk/react": "4.0.45",
+    "@ai-sdk/xai": "4.0.22",
     "@braintrust/otel": "^0.2.0",
     "@codemirror/lang-javascript": "^6.2.2",
     "@codemirror/lang-python": "^6.1.6",
@@ -39,7 +39,7 @@
     "@codemirror/theme-one-dark": "^6.1.2",
     "@codemirror/view": "^6.35.3",
     "@google-cloud/storage": "^7.17.0",
-    "@onkernel/sdk": "^0.76.0",
+    "@onkernel/sdk": "^0.85.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/api-logs": "^0.200.0",
     "@radix-ui/react-alert-dialog": "^1.1.2",
@@ -68,7 +68,7 @@
     "@vitejs/plugin-react": "^5.0.4",
     "@vitest/browser": "^3.2.4",
     "agent-browser": "^0.8.4",
-    "ai": "^7.0.19",
+    "ai": "^7.0.42",
     "bcrypt-ts": "^5.0.2",
     "braintrust": "^3.7.1",
     "class-variance-authority": "^0.7.0",
@@ -143,10 +143,5 @@
     "typescript": "^5.6.3",
     "vitest": "^3.2.4"
   },
-  "packageManager": "pnpm@9.12.3",
-  "pnpm": {
-    "overrides": {
-      "boxen": "5.1.2"
-    }
-  }
+  "packageManager": "pnpm@11.18.0"
 }

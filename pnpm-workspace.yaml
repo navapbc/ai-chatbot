@@ -1,0 +1,15 @@
+# pnpm settings (pnpm 10+ no longer reads the "pnpm" field in package.json)
+
+# Preserve pnpm 9 behavior: these packages ran their build scripts before the
+# pnpm 11 upgrade. The Docker build still uses --ignore-scripts regardless.
+allowBuilds:
+  '@biomejs/biome': true
+  agent-browser: true
+  bufferutil: true
+  core-js: true
+  esbuild: true
+  protobufjs: true
+  sharp: true
+
+overrides:
+  boxen: 5.1.2

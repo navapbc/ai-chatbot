@@ -1,5 +1,5 @@
 # Dockerfile for AI Chatbot (Next.js client)
-FROM node:20-slim AS base
+FROM node:24-slim AS base
 
 # Install basic system dependencies
 RUN apt-get update && apt-get install -y \
@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Install pnpm globally
-RUN npm install -g pnpm
+# Install pnpm globally (pinned to match packageManager in package.json)
+RUN npm install -g pnpm@11.18.0
 
 # Stage 1: Build stage
 FROM base AS builder
