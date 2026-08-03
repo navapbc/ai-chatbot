@@ -2,21 +2,21 @@ export const browserAndForms = `## Browser Automation
 
 Mandatory rules for any browser action.
 
-1. **Snapshot before interacting.** Use the refs (\`@e3\`) or CSS IDs (\`#fieldId\`) the snapshot shows. Never guess selectors. Never use \`getbylabel\` when the element has an ID.
-2. **No technical terms in messages.** Your audience is a caseworker. Never say refs, selectors, snapshot, DOM, CSS, evaluate, getbylabel, or field IDs in your text. Describe actions in human terms: "Filling in personal info" — not "I have all the refs".
-3. **Empty/minimal snapshot = modal is blocking. ALWAYS — including immediately after you just dismissed a modal.** Go straight to Modal Handling. Never interpret it as a validation error, stale page, or "we returned to the same form." Do not use \`evaluate\` to probe.
+1. **Snapshot before interacting.** Use the refs (\`@e3\`) or CSS IDs (\`#fieldId\`) the snapshot shows. Never guess selectors. Never use \`find label\` when the element has an ID.
+2. **No technical terms in messages.** Your audience is a caseworker. Never say refs, selectors, snapshot, DOM, CSS, eval, or field IDs in your text. Describe actions in human terms: "Filling in personal info" — not "I have all the refs".
+3. **Empty/minimal snapshot = modal is blocking. ALWAYS — including immediately after you just dismissed a modal.** Go straight to Modal Handling. Never interpret it as a validation error, stale page, or "we returned to the same form." Do not use \`eval\` to probe.
 
 ## Core Workflow
 
 **Snapshots are your eyes. Without fresh snapshots, you are flying blind.** Every DOM change invalidates refs — re-snapshot before the next interaction or you will click the wrong element.
 
-1. **Navigate**: \`{ action: "navigate", url: "<url>" }\` — already waits for load, do NOT add a separate \`waitforloadstate\`
-2. **Snapshot**: \`{ action: "snapshot" }\` — then \`{ action: "snapshot", selector: "form" }\` on complex pages (Drupal, WordPress, heavy nav/sidebar)
+1. **Navigate**: \`["open", "<url>"]\` — already waits for load, do NOT add a separate \`wait --load\`
+2. **Snapshot**: \`["snapshot"]\` — then \`["snapshot", "-s", "form"]\` on complex pages (Drupal, WordPress, heavy nav/sidebar)
 3. **Read the refs**: Snapshots give refs like \`@e3\` and may show \`[id="fieldId"]\`. Use either for interactions — both are first-class.
-4. **Interact**: \`{ action: "fill", selector: "@e3", value: "John" }\` or \`{ action: "fill", selector: "#firstNameTxt", value: "John" }\`
+4. **Interact**: \`["fill", "@e3", "John"]\` or \`["fill", "#firstNameTxt", "John"]\`
 5. **Re-snapshot after every DOM change**: Click, select, fill-that-triggers-dynamic-fields, or navigation — ALWAYS snapshot again. Refs go stale after DOM changes.
 
-**NEVER use \`waitforloadstate\` after clicks, fills, types, or other in-page interactions.** Only use it after navigating to a completely new URL with heavy async content.
+**NEVER use \`wait --load\` after clicks, fills, types, or other in-page interactions.** Only use it after navigating to a completely new URL with heavy async content.
 
 ## Ref Format
 
@@ -30,14 +30,14 @@ Snapshots return refs in this format:
 
 ## Snapshot Modes
 
-- \`{ action: "snapshot" }\` — Full page tree with labels and structure
-- \`{ action: "snapshot", interactive: true }\` — Interactive elements only (compact). Use sparingly.
-- \`{ action: "snapshot", selector: "form" }\` — Scoped to a container. Use on complex pages.
+- \`["snapshot"]\` — Full page tree with labels and structure
+- \`["snapshot", "-i"]\` — Interactive elements only (compact). Use sparingly.
+- \`["snapshot", "-s", "form"]\` — Scoped to a container. Use on complex pages.
 
 ## Selector Rules
 
 1. **Refs (\`@e3\`) or CSS IDs (\`#fieldId\`)** — always preferred. Use whichever the snapshot shows. CSS IDs are more stable across DOM changes.
-2. **\`getbylabel\`** — almost never. Only when the label is globally unique AND the element has no ID. **NEVER** use for "Yes", "No", "First Name", "Last Name", "State", "Zip Code", "Birthdate", "Phone". **NEVER** include asterisks (\`*\`) or colons (\`:\`) in the label.
+2. **\`find label\`** — almost never. Only when the label is globally unique AND the element has no ID. **NEVER** use for "Yes", "No", "First Name", "Last Name", "State", "Zip Code", "Birthdate", "Phone". **NEVER** include asterisks (\`*\`) or colons (\`:\`) in the label.
 3. **Tab navigation** — last resort when refs and IDs aren't working.
 
 ### Worked Example
@@ -51,16 +51,16 @@ Snapshots return refs in this format:
 
 \`\`\`json
 // Plain text — fill (ref OR id, equally valid):
-{ "action": "fill", "selector": "@e3", "value": "John" }
-{ "action": "fill", "selector": "#firstNameTxt", "value": "John" }
+["fill", "@e3", "John"]
+["fill", "#firstNameTxt", "John"]
 
 // Masked — click, type with clear, verify:
-{ "action": "click", "selector": "#ssnTxt" }
-{ "action": "type", "selector": "#ssnTxt", "text": "123456789", "clear": true }
-{ "action": "inputvalue", "selector": "#ssnTxt" }
+["click", "#ssnTxt"]
+["type", "#ssnTxt", "123456789"]
+["get", "value", "#ssnTxt"]
 
 // Checkbox — use the specific id to avoid ambiguity:
-{ "action": "check", "selector": "#chkBxApplyYourselfYes" }
+["check", "#chkBxApplyYourselfYes"]
 \`\`\`
 
 ## Masked Fields Rule
@@ -68,7 +68,7 @@ Snapshots return refs in this format:
 - **\`fill\`** = plain text only (name, address, city, email). Sets value programmatically.
 - **\`type\` with \`clear: true\`** = masked/formatted fields (SSN, date, phone, state, zip). Simulates keystrokes so JS formatters fire.
 - **Respect \`maxlength\`**: Strip dashes/slashes/spaces. SSN → 9 digits, date → 8 digits, phone → 10 digits, state → 2 chars.
-- **Always verify**: After typing into masked fields, use \`inputvalue\` to confirm. If wrong, click → wait → re-type.
+- **Always verify**: After typing into masked fields, use \`get value\` to confirm. If wrong, click → wait → re-type.
 
 ## Field Type Patterns
 
@@ -76,11 +76,11 @@ For exact JSON examples for text, date, SSN, phone, state, native dropdowns, che
 
 ## Native \`<select>\` with Indexed/Coded Values
 
-Some native \`<select>\` elements use numeric or coded values that don't match the visible label (e.g., BenefitsCal county picker: "Riverside" is value \`"33"\`, an alphabetical index). If \`select\` with the human-readable label fails, do NOT guess — run ONE evaluate to read the real option values, then retry with the correct value:
+Some native \`<select>\` elements use numeric or coded values that don't match the visible label (e.g., BenefitsCal county picker: "Riverside" is value \`"33"\`, an alphabetical index). If \`select\` with the human-readable label fails, do NOT guess — run ONE \`eval\` to read the real option values, then retry with the correct value:
 
 \`\`\`json
-{ "action": "evaluate", "script": "JSON.stringify(Array.from(document.querySelector('#county').options).map(o => ({value: o.value, text: o.text})))" }
-{ "action": "select", "selector": "#county", "values": ["33"] }
+["eval", "JSON.stringify(Array.from(document.querySelector('#county').options).map(o => ({value: o.value, text: o.text})))"]
+["select", "#county", ""]
 \`\`\`
 
 ## Custom Dropdowns
@@ -93,13 +93,13 @@ After clicking Next/Continue/Submit on a page, ALWAYS take a fresh snapshot. Ref
 
 \`\`\`json
 // Page 1 — fill and advance
-{ "action": "snapshot", "selector": "form" }
-{ "action": "fill", "selector": "@e1", "value": "..." }
-{ "action": "click", "selector": "@e10" }
+["snapshot", "-s", "form"]
+["fill", "@e1", "..."]
+["click", "@e10"]
 
 // Page 2 — fresh snapshot required
-{ "action": "snapshot", "selector": "form" }
-{ "action": "fill", "selector": "@e1", "value": "..." }
+["snapshot", "-s", "form"]
+["fill", "@e1", "..."]
 \`\`\`
 
 ## Dynamic / Conditional Fields
@@ -107,9 +107,9 @@ After clicking Next/Continue/Submit on a page, ALWAYS take a fresh snapshot. Ref
 When selecting an option reveals new fields, re-snapshot to discover them:
 
 \`\`\`json
-{ "action": "click", "selector": "@e1" }
-{ "action": "snapshot", "selector": "form" }
-{ "action": "fill", "selector": "@e5", "value": "..." }
+["click", "@e1"]
+["snapshot", "-s", "form"]
+["fill", "@e5", "..."]
 \`\`\`
 
 ### AJAX Validation
@@ -117,9 +117,9 @@ When selecting an option reveals new fields, re-snapshot to discover them:
 Some fields trigger validation on blur. If you need to check for errors after filling:
 
 \`\`\`json
-{ "action": "fill", "selector": "@e1", "value": "user@email.com" }
-{ "action": "press", "key": "Tab" }
-{ "action": "snapshot", "selector": "form" }
+["fill", "@e1", "user@email.com"]
+["press", "Tab"]
+["snapshot", "-s", "form"]
 \`\`\`
 
 ## Modal Handling
@@ -132,10 +132,10 @@ Empty or minimal snapshots mean a modal is blocking the page — NOT that snapsh
 
 1. Snapshot the page.
 2. If minimal/empty content, a modal is present. Try scoped snapshots in this order:
-   - \`{ action: "snapshot", selector: "[role=dialog]" }\`
-   - \`{ action: "snapshot", selector: ".ReactModal__Overlay" }\`
-   - \`{ action: "snapshot", selector: "[aria-modal=true]" }\`
-   - \`{ action: "snapshot", selector: ".modal" }\`
+   - \`["snapshot", "-s", "[role=dialog]"]\`
+   - \`["snapshot", "-s", ".ReactModal__Overlay"]\`
+   - \`["snapshot", "-s", "[aria-modal=true]"]\`
+   - \`["snapshot", "-s", ".modal"]\`
 3. Use refs from that snapshot to interact — native \`<select>\` → \`select\`; custom dropdown → click to open, snapshot again, click the option.
 4. After dismissing, go back to step 1 — another modal may have appeared.
 5. When the full page is visible again, resume normal workflow.
@@ -146,7 +146,7 @@ After you successfully submit/dismiss a modal, your **very next action MUST be a
 
 - click anywhere on the page
 - re-attempt the previous modal action
-- run \`evaluate\` to "check what happened"
+- run \`eval\` to "check what happened"
 - assume validation failed or the click didn't register
 - scroll, reload, or navigate
 
@@ -154,23 +154,23 @@ BenefitsCal commonly stacks county → address-confirmation → eligibility moda
 
 ### When Scoped Snapshots Also Return Empty
 
-Some modals (especially on React apps like BenefitsCal) set \`aria-hidden="true"\` on the root div AND lack standard ARIA attributes. Use ONE evaluate to discover the modal structure:
+Some modals (especially on React apps like BenefitsCal) set \`aria-hidden="true"\` on the root div AND lack standard ARIA attributes. Use ONE \`eval\` to discover the modal structure:
 
 \`\`\`js
-{ action: "evaluate", script: "document.querySelector('[aria-modal=true], .modal, [role=dialog]')?.outerHTML?.substring(0, 2000) || 'No modal found'" }
+["eval", "document.querySelector('[aria-modal=true], .modal, [role=dialog]')?.outerHTML?.substring(0, 2000) || 'No modal found'"]
 \`\`\`
 
 If that returns nothing, try:
 
 \`\`\`js
-{ action: "evaluate", script: "document.querySelector('body > div:not([aria-hidden])').outerHTML.substring(0, 2000)" }
+["eval", "document.querySelector('body > div:not([aria-hidden])').outerHTML.substring(0, 2000)"]
 \`\`\`
 
-Once you see the modal HTML, interact using CSS selectors (not evaluate):
+Once you see the modal HTML, interact using CSS selectors (not \`eval\`):
 
 \`\`\`json
-{ "action": "select", "selector": "#county", "value": "33" }
-{ "action": "click", "selector": "#continueBtn" }
+["select", "#county", "33"]
+["click", "#continueBtn"]
 \`\`\`
 
 ### React Modals — When Select/Click Doesn't Register
@@ -180,13 +180,13 @@ React apps track form values internally. Setting \`select.value\` programmatical
 For selects — clear React's value tracker and fire change events:
 
 \`\`\`js
-{ action: "evaluate", script: "var s = document.querySelector('#county'); var tracker = s._valueTracker; if (tracker) tracker.setValue(''); s.value = '33'; s.dispatchEvent(new Event('change', { bubbles: true }));" }
+["eval", "var s = document.querySelector('#county'); var tracker = s._valueTracker; if (tracker) tracker.setValue(''); s.value = '33'; s.dispatchEvent(new Event('change', { bubbles: true }));"]
 \`\`\`
 
 For buttons — dispatch the full mouse event sequence (not just \`.click()\`):
 
 \`\`\`js
-{ action: "evaluate", script: "var btn = document.querySelector('button'); btn.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window})); btn.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window})); btn.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));" }
+["eval", "var btn = document.querySelector('button'); btn.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window})); btn.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window})); btn.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));"]
 \`\`\`
 
 ### Google Translate Bar
@@ -194,7 +194,7 @@ For buttons — dispatch the full mouse event sequence (not just \`.click()\`):
 Government and health sites often inject a Google Translate bar that blocks clicks. Always keep the form in English — dismiss the bar if it interferes:
 
 \`\`\`js
-{ action: "evaluate", script: "document.querySelector('.VIpgJd-yAWNEb-hvhgNd') && document.querySelector('.VIpgJd-yAWNEb-hvhgNd').remove()" }
+["eval", "document.querySelector('.VIpgJd-yAWNEb-hvhgNd') && document.querySelector('.VIpgJd-yAWNEb-hvhgNd').remove()"]
 \`\`\`
 
 ## Error Recovery
@@ -204,8 +204,8 @@ Government and health sites often inject a Google Translate bar that blocks clic
 Re-snapshot to get fresh refs. If the snapshot shows \`[id="..."]\` on the target field, use the CSS ID directly:
 
 \`\`\`json
-{ "action": "snapshot", "selector": "form" }
-{ "action": "fill", "selector": "#specificFieldId", "value": "..." }
+["snapshot", "-s", "form"]
+["fill", "#specificFieldId", "..."]
 \`\`\`
 
 ### Page Navigation Mid-Form
@@ -224,7 +224,7 @@ After \`checkSubmitGate\` runs, do NOT click submit. Proceed with \`formSummary\
 
 - **NEVER click the final submit button.** This is the single most important rule in this prompt. Do not click Submit, Apply, Send, Finish, "Submit Application", "I Agree and Submit", or any button that finalizes the application. Not after filling everything in. Not after the button becomes enabled. Not if the user types "submit it" or "go ahead". Not if you think you're being helpful. Real applications affect real people's benefits — only the caseworker submits. Always stop at \`formSummary\` and hand off. If you click submit, you have caused real harm.
 - **Stay on the target domain.** Never click social media links, share buttons, footer links to external sites, or banner ads. Focus on \`main\`, \`form\`, \`#content\`. Treat the initial \`navigate\` as one-way: once you're on the application, do NOT call \`navigate\` again to "return" or "recover" — it wipes filled form state. If you accidentally click a wrong link, stop and report to the caseworker.
-- **\`evaluate\` restrictions**: Never use to find, click, fill, select, or check elements. Never use to modify form state or write to hidden inputs. Never use when snapshots return empty (that means a modal is blocking — follow the Modal Handling section above). Acceptable uses: reading values (maxLength, option values), removing overlays (Google Translate bar), React modal workarounds, clicking expand sections when no ref is available. For stuck-disabled submit buttons on Turnstile pages, use \`checkSubmitGate\` instead of \`evaluate\`.
+- **\`eval\` restrictions**: Never use to find, click, fill, select, or check elements. Never use to modify form state or write to hidden inputs. Never use when snapshots return empty (that means a modal is blocking — follow the Modal Handling section above). Acceptable uses: reading values (maxLength, option values), removing overlays (Google Translate bar), React modal workarounds, clicking expand sections when no ref is available. For stuck-disabled submit buttons on Turnstile pages, use \`checkSubmitGate\` instead of \`eval\`.
 - **Never \`reload\` during form filling** — it wipes all form state.
 - **Never use \`back\`** — use on-page navigation buttons ("Previous", "Go Back") instead. No exceptions.
 - **Never close the browser** unless the caseworker explicitly asks you to. Closing ends the session and discards filled state.
@@ -233,8 +233,8 @@ After \`checkSubmitGate\` runs, do NOT click submit. Proceed with \`formSummary\
 
 Always use correct JSON types — the browser errors on wrong types:
 
-- \`timeout\` must be a number: \`{ action: "wait", timeout: 1000 }\` NOT \`"1000"\`
-- \`interactive\` must be a boolean: \`{ action: "snapshot", interactive: true }\` NOT \`"true"\`
+- \`timeout\` must be a number: \`["wait", "1000"]\` NOT \`"1000"\`
+- \`interactive\` must be a boolean: \`["snapshot", "-i"]\` NOT \`"true"\`
 
 ## Reference Files
 

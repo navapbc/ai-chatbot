@@ -141,8 +141,8 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(bufferutil@4.0.9)(playwright@1.58.1)(vite@7.1.8(@types/node@22.13.10)(jiti@1.21.7)(tsx@4.19.3)(yaml@2.7.0))(vitest@3.2.4)
       agent-browser:
-        specifier: ^0.8.4
-        version: 0.8.4(bufferutil@4.0.9)
+        specifier: ^0.33.2
+        version: 0.33.2
       ai:
         specifier: ^7.0.42
         version: 7.0.42(zod@3.25.76)
@@ -3020,8 +3020,9 @@ packages:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
 
-  agent-browser@0.8.4:
-    resolution: {integrity: sha512-zs2Lt8dmawlEtiBSaAzxxij0lTo1R9rSViKnGtA14CebAC3rr0dOu7Em+j2tSmLrvUsxXs42xpPJ1395b4WJ6w==}
+  agent-browser@0.33.2:
+    resolution: {integrity: sha512-e+TZ0G04uw2rs+lVB8gn0IWTT7ErfiAl3jQ4zNNwyqDhgXWJKhqxYKkyibjuBGXLzx/APlzU3IWAsOVdRwh0DA==}
+    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
     hasBin: true
 
   ai@7.0.42:
@@ -4606,11 +4607,6 @@ packages:
 
   playwright-core@1.51.0:
     resolution: {integrity: sha512-x47yPE3Zwhlil7wlNU/iktF7t2r/URR3VLbH6EknJd/04Qc/PSJ0EY3CMXipmglLG+zyRxW6HNo2EGbKLHPWMg==}
-    engines: {node: '>=18'}
-    hasBin: true
-
-  playwright-core@1.58.0:
-    resolution: {integrity: sha512-aaoB1RWrdNi3//rOeKuMiS65UCcgOVljU46At6eFcOFPFHWtd2weHRRow6z/n+Lec0Lvu0k9ZPKJSjPugikirw==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -7845,14 +7841,7 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  agent-browser@0.8.4(bufferutil@4.0.9):
-    dependencies:
-      playwright-core: 1.58.0
-      ws: 8.19.0(bufferutil@4.0.9)
-      zod: 3.25.76
-    transitivePeerDependencies:
-      - bufferutil
-      - utf-8-validate
+  agent-browser@0.33.2: {}
 
   ai@7.0.42(zod@3.25.76):
     dependencies:
@@ -9728,8 +9717,6 @@ snapshots:
 
   playwright-core@1.51.0: {}
 
-  playwright-core@1.58.0: {}
-
   playwright-core@1.58.1: {}
 
   playwright@1.51.0:
@@ -10865,6 +10852,7 @@ snapshots:
   ws@8.19.0(bufferutil@4.0.9):
     optionalDependencies:
       bufferutil: 4.0.9
+    optional: true
 
   xtend@4.0.2: {}
 

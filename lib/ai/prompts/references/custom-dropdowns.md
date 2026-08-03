@@ -40,6 +40,6 @@ The `select` action ONLY works on native `<select>` elements. Custom dropdown wi
 
 ## Drupal Tips
 
-- Always use `{ action: "snapshot", selector: "form" }` after the initial full snapshot — Drupal pages have heavy nav/sidebar/footer.
+- Always use `["snapshot", "-s", "form"]` after the initial full snapshot — Drupal pages have heavy nav/sidebar/footer.
 - Drupal webforms frequently use Select2 for dropdowns with many options (clinics, locations, languages).
 - If clicking the trigger opens a search input inside the dropdown, type into `:focus` rather than finding the search input's ref.

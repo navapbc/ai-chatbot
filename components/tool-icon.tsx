@@ -122,83 +122,98 @@ const browserCommandMap: Record<string, { verb: string; icon: React.ComponentTyp
   'drag': { verb: 'Dragging', icon: Move },
   'upload': { verb: 'Uploading', icon: Upload },
   'eval': { verb: 'Running script', icon: Code },
-  'evaluate': { verb: 'Running script', icon: Code },
-  'gettext': { verb: 'Getting text', icon: Search },
-  'getbylabel': { verb: 'Using label', icon: Type },
-  'inputvalue': { verb: 'Getting value', icon: Search },
-  'waitforloadstate': { verb: 'Waiting for page', icon: Clock },
+  'find': { verb: 'Finding', icon: Search },
   'back': { verb: 'Going back', icon: ArrowLeft },
   'forward': { verb: 'Going forward', icon: Globe },
   'reload': { verb: 'Reloading', icon: Globe },
   'close': { verb: 'Closing', icon: X },
 };
 
-// Parse structured browser command input to get display text and icon
+/** Truncate a user-visible value for the one-line tool label. */
+const truncate = (value: string, max: number): string =>
+  value.length > max ? `${value.substring(0, max)}...` : value;
+
+/** Positional arguments of an agent-browser command, minus its flags. */
+const positionalArgs = (argv: string[]): string[] => {
+  const out: string[] = [];
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg.startsWith('-')) {
+      // Flags that take a value consume the next token (e.g. `-s form`).
+      if (['-s', '--selector', '-d', '--depth', '--name', '--load', '--url', '--text', '--fn'].includes(arg)) i++;
+      continue;
+    }
+    out.push(arg);
+  }
+  return out;
+};
+
+// Parse an agent-browser argv command into display text and icon.
 const parseBrowserAction = (input?: Record<string, any>): { text: string; icon: React.ComponentType<any> } => {
-  if (!input?.action) return { text: 'Browser', icon: Monitor };
+  const argv: string[] = Array.isArray(input?.command) ? input.command.map(String) : [];
+  if (argv.length === 0) return { text: 'Browser', icon: Monitor };
 
-  const action = input.action.toLowerCase();
-  const mapping = browserCommandMap[action];
+  const command = argv[0].toLowerCase();
+  const mapping = browserCommandMap[command];
+  if (!mapping) return { text: `Browser: ${command}`, icon: Monitor };
 
-  if (!mapping) {
-    return { text: `Browser: ${action}`, icon: Monitor };
+  const args = positionalArgs(argv);
+
+  switch (command) {
+    // Commands whose arguments add nothing a caseworker would read.
+    case 'snapshot':
+    case 'screenshot':
+    case 'back':
+    case 'forward':
+    case 'reload':
+    case 'close':
+      return { text: mapping.verb, icon: mapping.icon };
+
+    case 'open':
+    case 'goto':
+    case 'navigate':
+      return args[0]
+        ? { text: `${mapping.verb} ${truncate(args[0], 40)}`, icon: mapping.icon }
+        : { text: mapping.verb, icon: mapping.icon };
+
+    // `fill <sel> <text>`, `type <sel> <text>`, `select <sel> <value...>` —
+    // the value the caseworker cares about is everything after the selector.
+    case 'fill':
+    case 'type':
+    case 'select': {
+      const value = args.slice(1).join(', ');
+      return value
+        ? { text: `${mapping.verb} "${truncate(value, 35)}"`, icon: mapping.icon }
+        : { text: mapping.verb, icon: mapping.icon };
+    }
+
+    case 'press':
+      return args[0]
+        ? { text: `${mapping.verb} ${args[0]}`, icon: mapping.icon }
+        : { text: mapping.verb, icon: mapping.icon };
+
+    case 'wait': {
+      const [target] = args;
+      if (!target) return { text: mapping.verb, icon: mapping.icon };
+      return Number.isFinite(Number(target))
+        ? { text: `${mapping.verb} ${target}ms`, icon: mapping.icon }
+        : { text: `${mapping.verb} for ${target}`, icon: mapping.icon };
+    }
+
+    // `find <locator> <value> [action]` — e.g. find label "Email" fill
+    case 'find': {
+      const [, value, action] = args;
+      if (!value) return { text: mapping.verb, icon: mapping.icon };
+      const verb = action === 'fill' ? 'Filling' : action === 'click' ? 'Clicking' : 'Using';
+      return {
+        text: `${verb} "${truncate(value, 30)}"`,
+        icon: action === 'fill' ? Type : MousePointer,
+      };
+    }
+
+    default:
+      return { text: mapping.verb, icon: mapping.icon };
   }
-
-  // Simple commands with no meaningful extra info
-  if (['snapshot', 'screenshot', 'back', 'forward', 'reload', 'close'].includes(action)) {
-    return { text: mapping.verb, icon: mapping.icon };
-  }
-
-  // Navigate — show URL
-  if (action === 'navigate' && input.url) {
-    const url = String(input.url);
-    const displayUrl = url.length > 40 ? `${url.substring(0, 40)}...` : url;
-    return { text: `${mapping.verb} ${displayUrl}`, icon: mapping.icon };
-  }
-
-  // Fill — show value
-  if (action === 'fill' && input.value) {
-    const value = String(input.value);
-    const display = value.length > 35 ? `${value.substring(0, 35)}...` : value;
-    return { text: `${mapping.verb} "${display}"`, icon: mapping.icon };
-  }
-
-  // Type — show text
-  if (action === 'type' && input.text) {
-    const text = String(input.text);
-    const display = text.length > 35 ? `${text.substring(0, 35)}...` : text;
-    return { text: `${mapping.verb} "${display}"`, icon: mapping.icon };
-  }
-
-  // Press — show key
-  if (action === 'press' && input.key) {
-    return { text: `${mapping.verb} ${input.key}`, icon: mapping.icon };
-  }
-
-  // Select — show values
-  if (action === 'select' && input.values) {
-    const vals = Array.isArray(input.values) ? input.values.join(', ') : String(input.values);
-    const display = vals.length > 35 ? `${vals.substring(0, 35)}...` : vals;
-    return { text: `${mapping.verb} "${display}"`, icon: mapping.icon };
-  }
-
-  // Wait — show timeout or selector
-  if (action === 'wait') {
-    if (input.timeout) return { text: `${mapping.verb} ${input.timeout}ms`, icon: mapping.icon };
-    if (input.selector) return { text: `${mapping.verb} for ${input.selector}`, icon: mapping.icon };
-    return { text: mapping.verb, icon: mapping.icon };
-  }
-
-  // getbylabel — show label and subaction
-  if (action === 'getbylabel' && input.label) {
-    const label = String(input.label);
-    const display = label.length > 30 ? `${label.substring(0, 30)}...` : label;
-    const subVerb = input.subaction === 'fill' ? 'Filling' : input.subaction === 'click' ? 'Clicking' : 'Using';
-    return { text: `${subVerb} "${display}"`, icon: input.subaction === 'fill' ? Type : MousePointer };
-  }
-
-  // Fallback — just show the verb
-  return { text: mapping.verb, icon: mapping.icon };
 };
 
 const hasValue = (v: any): boolean =>
@@ -211,14 +226,24 @@ export const isSpecificToolAction = (toolName: string, input?: any): boolean => 
   const cleanToolName = toolName.replace('tool-', '');
 
   if (cleanToolName === 'browser') {
-    const action = input?.action ? String(input.action).toLowerCase() : '';
-    switch (action) {
-      case 'fill': return hasValue(input?.value);
-      case 'type': return hasValue(input?.text);
-      case 'select': return hasValue(input?.values);
-      case 'navigate': return hasValue(input?.url);
-      case 'getbylabel': return input?.subaction === 'fill';
-      default: return false;
+    const argv: string[] = Array.isArray(input?.command) ? input.command.map(String) : [];
+    if (argv.length === 0) return false;
+    const args = positionalArgs(argv);
+    switch (argv[0].toLowerCase()) {
+      // The concrete value follows the selector.
+      case 'fill':
+      case 'type':
+      case 'select':
+        return hasValue(args.slice(1).join(''));
+      case 'open':
+      case 'goto':
+      case 'navigate':
+        return hasValue(args[0]);
+      // find <locator> <value> fill — only the fill variant carries a value.
+      case 'find':
+        return args[2] === 'fill' && hasValue(args[3]);
+      default:
+        return false;
     }
   }
 

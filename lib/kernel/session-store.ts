@@ -1,9 +1,9 @@
 /**
  * Pure, dependency-free helpers for the browser session store.
  *
- * Kept separate from `lib/kernel/browser.ts` (which imports `@onkernel/sdk` and
- * `agent-browser`'s native BrowserManager) so this logic can be unit-tested in
- * the browser-mode vitest environment without bundling those server-only deps.
+ * Kept separate from `lib/kernel/browser.ts` (which imports `@onkernel/sdk`) so
+ * this logic can be unit-tested in the browser-mode vitest environment without
+ * bundling that server-only dependency.
  */
 
 export interface SessionStatus {
@@ -27,6 +27,18 @@ export interface SessionLike {
 /** Cache key for the in-memory session→browser map. */
 export function cacheKey(userId: string, sessionId: string): string {
   return `${userId}:${sessionId}`;
+}
+
+/**
+ * Name of the agent-browser daemon session backing a browser session.
+ *
+ * The CLI keys its daemon (and therefore the live CDP connection and the
+ * `@eN` ref map) by `--session`, so every caller driving the same browser must
+ * derive the same name. Reuses `cacheKey` so the daemon and the in-memory cache
+ * cannot drift apart.
+ */
+export function cliSessionName(userId: string, sessionId: string): string {
+  return cacheKey(userId, sessionId);
 }
 
 /**

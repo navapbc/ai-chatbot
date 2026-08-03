@@ -67,7 +67,7 @@
     "@vercel/postgres": "^0.10.0",
     "@vitejs/plugin-react": "^5.0.4",
     "@vitest/browser": "^3.2.4",
-    "agent-browser": "^0.8.4",
+    "agent-browser": "^0.33.2",
     "ai": "^7.0.42",
     "bcrypt-ts": "^5.0.2",
     "braintrust": "^3.7.1",

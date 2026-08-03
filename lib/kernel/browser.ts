@@ -1,11 +1,12 @@
 import Kernel from '@onkernel/sdk';
-import { BrowserManager } from 'agent-browser/dist/browser.js';
 import { upsertSessionMapping } from '@/lib/db/queries';
 import { uploadReplayVideo } from '@/lib/storage/gcs';
 import { KERNEL_TIMEOUT_SECONDS } from './session-config';
+import { runCommand } from './cli';
 import {
   buildSessionStatus,
   cacheKey,
+  cliSessionName,
   isProfileUsable,
   profileNameFor,
   type SessionStatus,
@@ -66,9 +67,9 @@ async function archiveReplayVideo(
 export interface BrowserSession {
   kernelSessionId: string;
   liveViewUrl: string;
+  /** CDP endpoint the agent-browser CLI attaches to (`--cdp`). */
   cdpWsUrl: string;
   userId: string;
-  browserManager: BrowserManager;
   replayId?: string;
   /** Kernel profile name backing this session, so state survives standby. */
   profileName: string;
@@ -97,6 +98,12 @@ export type { SessionStatus };
 const sessions = new Map<string, BrowserSession>();
 const pendingCreations = new Map<string, Promise<BrowserSession>>();
 
+/** Teardown is on the critical path of a user action, so keep it short. */
+const CLOSE_TIMEOUT_MS = 15_000;
+
+/** Reconnect races the user waiting on the live view; fail fast to recreate. */
+const RECONNECT_TIMEOUT_MS = 30_000;
+
 /**
  * Ensure a Kernel profile exists so it can be loaded into a browser session.
  *
@@ -120,6 +127,28 @@ async function ensureProfile(profileName: string): Promise<boolean> {
     if (isProfileUsable(status)) return true;
     console.error('[Kernel] Failed to ensure profile:', err);
     return false;
+  }
+}
+
+/**
+ * Shut down the agent-browser daemon for a session, dropping its CDP
+ * connection to the Kernel browser.
+ *
+ * Best-effort by design: both callers (standby and delete) are tearing down
+ * regardless, and a daemon that is already gone is the desired end state.
+ */
+async function closeCliSession(
+  sessionId: string,
+  userId: string,
+  reason: 'standby' | 'delete',
+): Promise<void> {
+  try {
+    await runCommand(['close'], {
+      session: cliSessionName(userId, sessionId),
+      timeoutMs: CLOSE_TIMEOUT_MS,
+    });
+  } catch (err) {
+    console.error(`[Kernel] Failed to close CLI session for ${reason}:`, err);
   }
 }
 
@@ -189,12 +218,8 @@ export async function getOrCreateBrowser(
         browser_live_view_url: string;
       };
 
-      const manager = new BrowserManager();
-      await manager.launch({
-        id: 'launch',
-        action: 'launch',
-        cdpUrl: browser.cdp_ws_url,
-      });
+      // No explicit launch step: the agent-browser daemon attaches to
+      // `cdp_ws_url` on the first command it runs for this session.
 
       // Start session replay recording
       let replayId: string | undefined;
@@ -211,7 +236,6 @@ export async function getOrCreateBrowser(
         liveViewUrl: browser.browser_live_view_url,
         cdpWsUrl: browser.cdp_ws_url,
         userId,
-        browserManager: manager,
         replayId,
         profileName,
         startedAt: now,
@@ -324,13 +348,10 @@ export async function standbyBrowser(
 
   session.standby = true;
 
-  // 1. Close CDP (Playwright). This is one of the two connections Kernel
-  //    watches; the client drops the live-view iframe in parallel.
-  try {
-    await session.browserManager.close();
-  } catch (err) {
-    console.error('[Kernel] Failed to close BrowserManager for standby:', err);
-  }
+  // 1. Close CDP by shutting down the agent-browser daemon holding it. This is
+  //    one of the two connections Kernel watches; the client drops the
+  //    live-view iframe in parallel.
+  await closeCliSession(sessionId, userId, 'standby');
 
   // 2. Verify the session actually went idle. uptime_ms only grows while the
   //    browser is actively running; a standby browser's uptime plateaus.
@@ -417,28 +438,33 @@ export async function reconnectBrowser(
     return getOrCreateBrowser(sessionId, userId, options);
   }
 
-  // Try to wake the existing browser by reconnecting CDP.
-  try {
-    const manager = new BrowserManager();
-    await manager.launch({
-      id: 'launch',
-      action: 'launch',
-      cdpUrl: session.cdpWsUrl,
-    });
+  // Wake the existing browser by reattaching CDP. `get url` is the cheapest
+  // command that forces the daemon to actually connect, so its result tells us
+  // whether the Kernel browser is still there.
+  const probe = await runCommand(['get', 'url'], {
+    session: cliSessionName(userId, sessionId),
+    cdpUrl: session.cdpWsUrl,
+    timeoutMs: RECONNECT_TIMEOUT_MS,
+  }).catch((err: unknown) => {
+    console.error('[Kernel] CDP reconnect probe failed to run:', err);
+    return { success: false, error: String(err) };
+  });
 
-    session.browserManager = manager;
+  if (probe.success) {
     session.standby = false;
     session.lastActivityAt = Date.now();
     return session;
-  } catch (err) {
-    // Kernel browser likely reaped — recreate from the persistent profile.
-    console.error(
-      '[Kernel] CDP reconnect failed, recreating from profile:',
-      err,
-    );
-    sessions.delete(key);
-    return getOrCreateBrowser(sessionId, userId, options);
   }
+
+  // Kernel browser likely reaped — recreate from the persistent profile.
+  console.error(
+    '[Kernel] CDP reconnect failed, recreating from profile:',
+    probe.error,
+  );
+  // Drop the stale daemon too, or it keeps trying the dead CDP endpoint.
+  await closeCliSession(sessionId, userId, 'delete');
+  sessions.delete(key);
+  return getOrCreateBrowser(sessionId, userId, options);
 }
 
 /**
@@ -476,12 +502,8 @@ export async function deleteBrowser(
     );
   }
 
-  // Close BrowserManager (disconnects Playwright from CDP)
-  try {
-    await session.browserManager.close();
-  } catch (err) {
-    console.error('[Kernel] Failed to close BrowserManager:', err);
-  }
+  // Shut down the agent-browser daemon (disconnects it from CDP)
+  await closeCliSession(sessionId, userId, 'delete');
 
   // Delete from Kernel
   try {

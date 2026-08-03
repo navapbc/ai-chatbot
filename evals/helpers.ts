@@ -4,6 +4,7 @@ import { google } from "@ai-sdk/google";
 import { openai } from "@ai-sdk/openai";
 import type { Span } from "braintrust";
 import { z } from "zod";
+import { browserInputSchema } from "@/lib/ai/tools/browser";
 import { computeCostUsd, type UsageTotals } from "./pricing";
 
 /**
@@ -50,7 +51,9 @@ const TOOL_DESCRIPTIONS = {
   actionLabel:
     "Label the upcoming group of browser actions with a human-readable title.",
   browser:
-    "Execute browser automation commands on a remote Kernel browser. Commands include navigate, snapshot, click, fill, type, select, press, hover, check, uncheck, screenshot, inputvalue, wait, evaluate, etc.",
+    "Execute an agent-browser command on a remote Kernel browser. Pass the command as an argv array, " +
+    'e.g. ["open", "<url>"], ["snapshot", "-i"], ["click", "@e1"], ["fill", "@e1", "text"], ' +
+    '["select", "@e1", "value"], ["press", "Enter"], ["get", "value", "@e1"], ["eval", "<js>"].',
   readReference:
     'Load a reference document. Use the path the system prompt instructs you to load (e.g. "field-patterns.md", "custom-dropdowns.md", "form-submission.md", "browser-commands.md").',
 } as const;
@@ -197,21 +200,7 @@ export function createBaseStubTools<S extends BaseRunState>(
 
     browser: tool({
       description: TOOL_DESCRIPTIONS.browser,
-      inputSchema: z.object({
-        action: z.string(),
-        selector: z.string().optional(),
-        value: z.string().optional(),
-        values: z.array(z.string()).optional(),
-        text: z.string().optional(),
-        clear: z.boolean().optional(),
-        url: z.string().optional(),
-        interactive: z.boolean().optional(),
-        timeout: z.number().optional(),
-        key: z.string().optional(),
-        script: z.string().optional(),
-        label: z.string().optional(),
-        subaction: z.string().optional(),
-      }),
+      inputSchema: browserInputSchema,
       execute: wrap("browser", overrides.browser ?? (async () => ({ success: true, output: "", error: null }))),
     }),
 

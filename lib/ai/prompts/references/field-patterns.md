@@ -5,8 +5,8 @@ JSON examples for the most common form controls. Load when you need an exact act
 ## Text Fields (use `fill`)
 
 ```json
-{ "action": "fill", "selector": "@e3", "value": "John Doe" }
-{ "action": "fill", "selector": "#firstNameTxt", "value": "John Doe" }
+["fill", "@e3", "John Doe"]
+["fill", "#firstNameTxt", "John Doe"]
 ```
 
 ## Date Fields (use `type`)
@@ -14,17 +14,17 @@ JSON examples for the most common form controls. Load when you need an exact act
 Check `maxlength`. If `maxlength="8"`, use digits only (MMDDYYYY). Click first, then type:
 
 ```json
-{ "action": "click", "selector": "@e1" }
-{ "action": "type", "selector": "@e1", "text": "01152000", "clear": true }
-{ "action": "inputvalue", "selector": "@e1" }
+["click", "@e1"]
+["type", "@e1", "01152000"]
+["get", "value", "@e1"]
 ```
 
 Or if using a date picker:
 
 ```json
-{ "action": "click", "selector": "@e1" }
-{ "action": "snapshot", "interactive": true }
-{ "action": "click", "selector": "@e5" }
+["click", "@e1"]
+["snapshot", "-i"]
+["click", "@e5"]
 ```
 
 ## SSN Fields (use `type`)
@@ -32,9 +32,9 @@ Or if using a date picker:
 Check `maxlength`. If `maxlength="9"`, digits only:
 
 ```json
-{ "action": "click", "selector": "@e1" }
-{ "action": "type", "selector": "@e1", "text": "123456789", "clear": true }
-{ "action": "inputvalue", "selector": "@e1" }
+["click", "@e1"]
+["type", "@e1", "123456789"]
+["get", "value", "@e1"]
 ```
 
 ## Phone Number Fields (use `type`)
@@ -42,9 +42,9 @@ Check `maxlength`. If `maxlength="9"`, digits only:
 Check `maxlength`. If `maxlength="10"`, digits only:
 
 ```json
-{ "action": "click", "selector": "@e1" }
-{ "action": "type", "selector": "@e1", "text": "5551234567", "clear": true }
-{ "action": "inputvalue", "selector": "@e1" }
+["click", "@e1"]
+["type", "@e1", "5551234567"]
+["get", "value", "@e1"]
 ```
 
 ## State Fields (use `type`)
@@ -52,34 +52,34 @@ Check `maxlength`. If `maxlength="10"`, digits only:
 Check `maxlength`. If `maxlength="2"`, use abbreviation:
 
 ```json
-{ "action": "click", "selector": "@e1" }
-{ "action": "type", "selector": "@e1", "text": "CA", "clear": true }
-{ "action": "inputvalue", "selector": "@e1" }
+["click", "@e1"]
+["type", "@e1", "CA"]
+["get", "value", "@e1"]
 ```
 
 ## Native Dropdowns (select)
 
 ```json
-{ "action": "select", "selector": "@e1", "values": ["Option Value"] }
-{ "action": "select", "selector": "#genderIdentityDrpDwn", "values": ["57"] }
+["select", "@e1", ""]
+["select", "#genderIdentityDrpDwn", ""]
 ```
 
 ## Checkboxes
 
 ```json
-{ "action": "check", "selector": "@e1" }
-{ "action": "uncheck", "selector": "@e1" }
-{ "action": "check", "selector": "#chkBxApplyYourselfYes" }
+["check", "@e1"]
+["uncheck", "@e1"]
+["check", "#chkBxApplyYourselfYes"]
 ```
 
 ## Radio Buttons
 
 ```json
-{ "action": "click", "selector": "@e1" }
+["click", "@e1"]
 ```
 
 ALWAYS re-snapshot after a radio click — radio selections often reveal conditional fields:
 
 ```json
-{ "action": "snapshot", "selector": "form" }
+["snapshot", "-s", "form"]
 ```

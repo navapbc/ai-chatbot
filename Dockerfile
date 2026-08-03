@@ -51,8 +51,23 @@ FROM base AS runtime
 WORKDIR /app
 COPY --from=builder /app/client ./client
 
-# Ensure agent-browser binary has execute permissions
-RUN chmod +x /app/client/node_modules/.pnpm/agent-browser@*/node_modules/agent-browser/bin/* 2>/dev/null || true
+# agent-browser ships prebuilt binaries for all 7 platforms (~87MB) in the npm
+# tarball. The package's postinstall only downloads a binary that is already
+# present, so `--ignore-scripts` costs us nothing — we just need the execute bit
+# and a stable path. Drop the six binaries this image can't run (~74MB) and
+# symlink the glibc linux-x64 one onto PATH as `agent-browser`.
+#
+# The emptiness check below tests the binary path, not its dirname: `dirname ""`
+# returns `.`, which would aim the prune at the working directory.
+RUN set -eu; \
+    AB_BIN="$(find /app/client/node_modules/.pnpm \
+        -path '*/node_modules/agent-browser/bin/agent-browser-linux-x64' \
+        -print -quit)"; \
+    test -n "$AB_BIN" || { echo 'agent-browser linux-x64 binary not found'; exit 1; }; \
+    find "$(dirname "$AB_BIN")" -type f ! -name 'agent-browser-linux-x64' -delete; \
+    chmod +x "$AB_BIN"; \
+    ln -sf "$AB_BIN" /usr/local/bin/agent-browser; \
+    agent-browser --version
 
 # Create a non-root user for better security
 RUN groupadd -r nextjs && useradd -r -g nextjs -d /app -s /bin/bash nextjs
@@ -62,6 +77,13 @@ RUN chown -R nextjs:nextjs /app
 
 # Switch to non-root user
 USER nextjs
+
+# agent-browser's daemon creates its control socket under $HOME/.agent-browser.
+# HOME defaults to /app, which is not writable when the container runs with a
+# read-only root filesystem, and the daemon exits with "Failed to create socket
+# directory". /tmp is writable in every environment we deploy to.
+ENV HOME=/tmp
+ENV AGENT_BROWSER_PROVIDER=kernel
 
 # Set working directory to client
 WORKDIR /app/client

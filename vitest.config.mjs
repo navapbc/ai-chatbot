@@ -29,15 +29,7 @@ export default defineConfig({
     ],
   },
   test: {
-    browser: {
-      enabled: true,
-      provider: 'playwright',
-      instances: [
-        { browser: 'chromium' },
-      ],
-    },
     globals: true,
-    setupFiles: ['./tests/setup.ts'],
     exclude: [
       '**/node_modules/**',
       '**/dist/**',
@@ -47,6 +39,33 @@ export default defineConfig({
       '**/tests/e2e/**',
       '**/tests/routes/**',
       '**/lib/ai/models.test.ts', // This is not a test file, it exports mocks
+    ],
+    projects: [
+      {
+        // Default: component tests run in a real browser.
+        extends: true,
+        test: {
+          name: 'browser',
+          setupFiles: ['./tests/setup.ts'],
+          include: ['tests/client/**/*.test.{ts,tsx}'],
+          // Server-only modules (node:child_process etc.) cannot resolve in
+          // the browser bundle; those files opt into the `node` project below.
+          exclude: ['tests/client/**/*.node.test.ts'],
+          browser: {
+            enabled: true,
+            provider: 'playwright',
+            instances: [{ browser: 'chromium' }],
+          },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'node',
+          environment: 'node',
+          include: ['tests/client/**/*.node.test.ts'],
+        },
+      },
     ],
   }
 });
