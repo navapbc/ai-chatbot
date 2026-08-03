@@ -14,6 +14,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { startCommandTelemetry } from '@/lib/observability/browser-telemetry';
 
 /** The JSON envelope every `--json` invocation prints on stdout. */
 export interface CliResponse {
@@ -112,38 +113,51 @@ export async function runCommand(
   options: CliOptions,
 ): Promise<CliResponse> {
   const args = buildArgs(command, options);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  const telemetry = startCommandTelemetry(command, {
+    session: options.session,
+    remote: Boolean(options.cdpUrl),
+    timeoutMs,
+  });
 
   return new Promise<CliResponse>((resolve, reject) => {
     execFile(
       CLI_BIN,
       args,
       {
-        timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        timeout: timeoutMs,
         signal: options.signal,
         maxBuffer: 32 * 1024 * 1024, // snapshots of large pages
         encoding: 'utf8',
       },
       (error, stdout, stderr) => {
         if (error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-          reject(
-            new Error(
-              `[agent-browser] binary not found (${CLI_BIN}). It ships with the npm package; the Docker image symlinks it onto PATH.`,
-            ),
-          );
+          const message = `[agent-browser] binary not found (${CLI_BIN}). It ships with the npm package; the Docker image symlinks it onto PATH.`;
+          telemetry.end({ outcome: 'spawn_error', error: message });
+          reject(new Error(message));
           return;
         }
         // Timeout/abort kill the process, leaving no usable stdout.
         if (error && 'killed' in error && error.killed) {
-          resolve({
-            success: false,
-            data: null,
-            error: options.signal?.aborted
-              ? 'Browser command stopped by user'
-              : `Command timed out after ${options.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`,
+          const aborted = Boolean(options.signal?.aborted);
+          const message = aborted
+            ? 'Browser command stopped by user'
+            : `Command timed out after ${timeoutMs}ms`;
+          telemetry.end({
+            outcome: aborted ? 'aborted' : 'timeout',
+            error: message,
           });
+          resolve({ success: false, data: null, error: message });
           return;
         }
-        resolve(parseResponse(stdout, stderr));
+
+        const response = parseResponse(stdout, stderr);
+        telemetry.end({
+          outcome: response.success ? 'success' : 'command_error',
+          error: response.error,
+        });
+        resolve(response);
       },
     );
   });

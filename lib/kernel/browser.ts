@@ -2,6 +2,7 @@ import Kernel from '@onkernel/sdk';
 import { upsertSessionMapping } from '@/lib/db/queries';
 import { uploadReplayVideo } from '@/lib/storage/gcs';
 import { KERNEL_TIMEOUT_SECONDS } from './session-config';
+import { withKernelSpan } from '@/lib/observability/browser-telemetry';
 import { runCommand } from './cli';
 import {
   buildSessionStatus,
@@ -204,15 +205,20 @@ export async function getOrCreateBrowser(
       // starts fresh instead of restoring state.
       const hasProfile = await ensureProfile(profileName);
 
-      const browser = (await kernel.browsers.create({
-        viewport,
-        timeout_seconds: KERNEL_TIMEOUT_SECONDS,
-        kiosk_mode: false,
-        stealth: true,
-        ...(hasProfile
-          ? { profile: { name: profileName, save_changes: true } }
-          : {}),
-      })) as {
+      const browser = (await withKernelSpan(
+        'browsers.create',
+        { 'kernel.has_profile': hasProfile, 'kernel.session_id': sessionId },
+        () =>
+          kernel.browsers.create({
+            viewport,
+            timeout_seconds: KERNEL_TIMEOUT_SECONDS,
+            kiosk_mode: false,
+            stealth: true,
+            ...(hasProfile
+              ? { profile: { name: profileName, save_changes: true } }
+              : {}),
+          }),
+      )) as {
         session_id: string;
         cdp_ws_url: string;
         browser_live_view_url: string;
