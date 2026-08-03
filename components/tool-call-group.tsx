@@ -1,7 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import { CheckIcon, ChevronDown, Globe, Monitor, MousePointer, Pencil, Search } from 'lucide-react';
+import {
+  CheckIcon,
+  ChevronDown,
+  Globe,
+  Monitor,
+  MousePointer,
+  Pencil,
+  Search,
+} from 'lucide-react';
 
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
@@ -43,9 +51,7 @@ const EXCLUDED_TOOL_TYPES = new Set([
 ]);
 
 // Tools included in groups but not shown in the expanded list (they're metadata, not actions)
-const LABEL_TOOL_TYPES = new Set([
-  'tool-actionLabel',
-]);
+const LABEL_TOOL_TYPES = new Set(['tool-actionLabel']);
 
 // Tools that are hidden or have special rendering via CollapsibleWrapper
 const HIDDEN_DISPLAY_NAMES = new Set([
@@ -60,50 +66,50 @@ const NARRATION_MAX_LENGTH = 80;
 
 // Map present-participle verbs from getToolDisplayInfo → noun forms for summary
 const VERB_TO_NOUN: Record<string, string> = {
-  'clicking': 'click',
-  'clicked': 'click',
-  'filling': 'fill',
-  'filled': 'fill',
-  'selecting': 'select',
-  'selected': 'select',
-  'scrolling': 'scroll',
+  clicking: 'click',
+  clicked: 'click',
+  filling: 'fill',
+  filled: 'fill',
+  selecting: 'select',
+  selected: 'select',
+  scrolling: 'scroll',
   'scrolling to': 'scroll',
-  'navigating': 'navigate',
-  'navigated': 'navigate',
-  'typing': 'type',
-  'typed': 'type',
-  'pressing': 'press',
-  'pressed': 'press',
-  'hovering': 'hover',
-  'hovered': 'hover',
-  'waiting': 'wait',
-  'waited': 'wait',
-  'opening': 'navigate',
+  navigating: 'navigate',
+  navigated: 'navigate',
+  typing: 'type',
+  typed: 'type',
+  pressing: 'press',
+  pressed: 'press',
+  hovering: 'hover',
+  hovered: 'hover',
+  waiting: 'wait',
+  waited: 'wait',
+  opening: 'navigate',
   'reading page': 'snapshot',
-  'captured': 'snapshot',
-  'took': 'screenshot',
+  captured: 'snapshot',
+  took: 'screenshot',
   'taking screenshot': 'screenshot',
   'double-clicking': 'click',
-  'focusing': 'focus',
-  'dragging': 'drag',
-  'performed': 'drag',
-  'uploading': 'upload',
-  'uploaded': 'upload',
+  focusing: 'focus',
+  dragging: 'drag',
+  performed: 'drag',
+  uploading: 'upload',
+  uploaded: 'upload',
   'running script': 'evaluate',
-  'executed': 'evaluate',
+  executed: 'evaluate',
   'going back': 'navigate',
   'going forward': 'navigate',
-  'reloading': 'navigate',
-  'closing': 'close',
-  'closed': 'close',
-  'resized': 'resize',
-  'managed': 'tabs',
-  'retrieved': 'retrieve',
-  'handled': 'dialog',
-  'installed': 'install',
-  'getting': 'get',
-  'searched': 'search',
-  'browser': 'action',
+  reloading: 'navigate',
+  closing: 'close',
+  closed: 'close',
+  resized: 'resize',
+  managed: 'tabs',
+  retrieved: 'retrieve',
+  handled: 'dialog',
+  installed: 'install',
+  getting: 'get',
+  searched: 'search',
+  browser: 'action',
 };
 
 // --- Grouping function ---
@@ -119,11 +125,7 @@ function isGroupableTool(part: MessagePart): boolean {
 }
 
 // Part types that are invisible/structural and should never break a group
-const TRANSPARENT_PART_TYPES = new Set([
-  'step-start',
-  'step-finish',
-  'source',
-]);
+const TRANSPARENT_PART_TYPES = new Set(['step-start', 'step-finish', 'source']);
 
 /** Parts that should be absorbed into a group without breaking it. */
 function isAbsorbable(part: MessagePart): boolean {
@@ -148,12 +150,17 @@ export function groupMessageParts(parts: MessagePart[]): ProcessedPart[] {
   function flushGroup() {
     if (currentGroupTools.length === 0) return;
     // If the only part is a label tool (no real actions), discard it
-    const actionParts = currentGroupTools.filter((p) => !LABEL_TOOL_TYPES.has(p.type));
+    const actionParts = currentGroupTools.filter(
+      (p) => !LABEL_TOOL_TYPES.has(p.type),
+    );
     if (actionParts.length === 0) {
       currentGroupTools = [];
       return;
     }
-    if (currentGroupTools.length === 1 && !LABEL_TOOL_TYPES.has(currentGroupTools[0].type)) {
+    if (
+      currentGroupTools.length === 1 &&
+      !LABEL_TOOL_TYPES.has(currentGroupTools[0].type)
+    ) {
       result.push({
         kind: 'passthrough',
         part: currentGroupTools[0],
@@ -171,7 +178,11 @@ export function groupMessageParts(parts: MessagePart[]): ProcessedPart[] {
 
   function flushPendingText() {
     if (pendingText) {
-      result.push({ kind: 'passthrough', part: pendingText.part, index: pendingText.index });
+      result.push({
+        kind: 'passthrough',
+        part: pendingText.part,
+        index: pendingText.index,
+      });
       pendingText = null;
     }
   }
@@ -230,7 +241,9 @@ function extractVerb(displayText: string): string {
   return VERB_TO_NOUN[firstWord] || firstWord;
 }
 
-export function generateGroupSummary(parts: MessagePart[]): { noun: string; count: number }[] {
+export function generateGroupSummary(
+  parts: MessagePart[],
+): { noun: string; count: number }[] {
   const counts: Record<string, number> = {};
 
   for (const part of parts) {
@@ -244,17 +257,36 @@ export function generateGroupSummary(parts: MessagePart[]): { noun: string; coun
 
 // --- Group title generation ---
 
-const GROUP_TITLE_MAP: Record<string, {
-  inProgress: string;
-  done: string;
-  icon: React.ComponentType<any>;
-}> = {
-  fill:     { inProgress: 'Filling in form',       done: 'Filled the form',      icon: Pencil },
-  navigate: { inProgress: 'Navigating to page',    done: 'Navigated to page',    icon: Globe },
-  interact: { inProgress: 'Interacting with page', done: 'Interacted with page', icon: MousePointer },
-  read:     { inProgress: 'Reading page',          done: 'Read page',            icon: Monitor },
-  search:   { inProgress: 'Searching',             done: 'Search complete',      icon: Search },
-  misc:     { inProgress: 'Working on page',       done: 'Completed actions',    icon: Pencil },
+const GROUP_TITLE_MAP: Record<
+  string,
+  {
+    inProgress: string;
+    done: string;
+    icon: React.ComponentType<any>;
+  }
+> = {
+  fill: {
+    inProgress: 'Filling in form',
+    done: 'Filled the form',
+    icon: Pencil,
+  },
+  navigate: {
+    inProgress: 'Navigating to page',
+    done: 'Navigated to page',
+    icon: Globe,
+  },
+  interact: {
+    inProgress: 'Interacting with page',
+    done: 'Interacted with page',
+    icon: MousePointer,
+  },
+  read: { inProgress: 'Reading page', done: 'Read page', icon: Monitor },
+  search: { inProgress: 'Searching', done: 'Search complete', icon: Search },
+  misc: {
+    inProgress: 'Working on page',
+    done: 'Completed actions',
+    icon: Pencil,
+  },
 };
 
 function getGroupTitle(
@@ -262,7 +294,8 @@ function getGroupTitle(
   isProcessing: boolean,
 ): { label: string; Icon: React.ComponentType<any> } {
   const labelPart = parts.find((p) => p.type === 'tool-actionLabel');
-  const entry = GROUP_TITLE_MAP[labelPart?.input?.category] ?? GROUP_TITLE_MAP.misc;
+  const entry =
+    GROUP_TITLE_MAP[labelPart?.input?.category] ?? GROUP_TITLE_MAP.misc;
   return {
     label: isProcessing ? entry.inProgress : entry.done,
     Icon: isProcessing ? entry.icon : CheckIcon,
@@ -289,8 +322,21 @@ export function ToolCallGroup({
 
   // Group is "in progress" while the parent signals the agent is still streaming this group.
   const isInProgress = isStreaming;
-  const completedParts = deduped.filter((p) => p.state === 'output-available' && !LABEL_TOOL_TYPES.has(p.type));
-  const candidateParts = (isInProgress ? completedParts : deduped).filter((p) => !LABEL_TOOL_TYPES.has(p.type));
+  // While streaming, show calls as soon as their input arrives rather than
+  // waiting for a result. Filtering to `output-available` meant a long-running
+  // tool (a browser command can take a minute) rendered nothing until it
+  // finished, so the group sat on a bare spinner and only revealed its work
+  // once the stream ended — including when the user gave up and hit stop.
+  // `input-streaming` is still excluded: its input is partial, so the label
+  // would flicker as arguments stream in.
+  const startedParts = deduped.filter(
+    (p) =>
+      (p.state === 'input-available' || p.state === 'output-available') &&
+      !LABEL_TOOL_TYPES.has(p.type),
+  );
+  const candidateParts = isInProgress
+    ? startedParts
+    : deduped.filter((p) => !LABEL_TOOL_TYPES.has(p.type));
 
   const visibleParts = declutter
     ? candidateParts.filter((p) => isSpecificToolAction(p.type, p.input))
@@ -305,12 +351,24 @@ export function ToolCallGroup({
     if (!declutter || isSpecificToolAction(part.type, part.input)) {
       return <SingleToolLine part={part} />;
     }
-    return <GroupSummaryCard label={label} Icon={TitleIcon} isInProgress={isInProgress} />;
+    return (
+      <GroupSummaryCard
+        label={label}
+        Icon={TitleIcon}
+        isInProgress={isInProgress}
+      />
+    );
   }
 
   // Nothing specific to show (decluttered) → summary line, no expander.
   if (declutter && visibleParts.length === 0) {
-    return <GroupSummaryCard label={label} Icon={TitleIcon} isInProgress={isInProgress} />;
+    return (
+      <GroupSummaryCard
+        label={label}
+        Icon={TitleIcon}
+        isInProgress={isInProgress}
+      />
+    );
   }
 
   return (
@@ -319,7 +377,11 @@ export function ToolCallGroup({
         <Collapsible open={open} onOpenChange={setOpen}>
           {/* Summary line — always visible, clickable to expand */}
           <CollapsibleTrigger className="flex items-center justify-between w-full cursor-pointer gap-2">
-            <GroupSummaryLine label={label} Icon={TitleIcon} isInProgress={isInProgress} />
+            <GroupSummaryLine
+              label={label}
+              Icon={TitleIcon}
+              isInProgress={isInProgress}
+            />
             <span className="inline-flex items-center justify-center p-1 h-auto text-muted-foreground">
               <ChevronDown
                 size={14}
@@ -336,11 +398,7 @@ export function ToolCallGroup({
           <CollapsibleContent>
             <div className="flex flex-col gap-0 mt-2 border-t border-border pt-1">
               {visibleParts.map((part) => (
-                <SingleToolLine
-                  key={part.toolCallId}
-                  part={part}
-                  compact
-                />
+                <SingleToolLine key={part.toolCallId} part={part} compact />
               ))}
             </div>
           </CollapsibleContent>
@@ -395,7 +453,11 @@ function GroupSummaryCard({
   return (
     <Alert className="rounded-xl border-accent bg-background p-3">
       <AlertDescription>
-        <GroupSummaryLine label={label} Icon={Icon} isInProgress={isInProgress} />
+        <GroupSummaryLine
+          label={label}
+          Icon={Icon}
+          isInProgress={isInProgress}
+        />
       </AlertDescription>
     </Alert>
   );

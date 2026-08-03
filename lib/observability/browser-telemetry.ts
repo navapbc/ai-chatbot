@@ -66,6 +66,34 @@ export interface CommandTelemetry {
 }
 
 /**
+ * Record one completed step of the agent loop.
+ *
+ * The loop runs up to 500 steps inside a single HTTP request, so without a
+ * per-step event a slow run is one long silence: you cannot tell which tool is
+ * slow, or whether the model is still making progress at all.
+ *
+ * Tool *names* are recorded, never their arguments — argv and form values carry
+ * applicant PII.
+ */
+export function logAgentStep(step: {
+  index: number;
+  toolNames: string[];
+  finishReason?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  durationMs?: number;
+}): void {
+  log('INFO', 'agent.step.finish', {
+    step: step.index,
+    tools: step.toolNames,
+    finishReason: step.finishReason,
+    inputTokens: step.inputTokens,
+    outputTokens: step.outputTokens,
+    durationMs: step.durationMs,
+  });
+}
+
+/**
  * Wrap a Kernel SDK call in a span with start/end logs.
  *
  * Creating a browser is a multi-second remote call that previously logged only

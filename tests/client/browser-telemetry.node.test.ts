@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import {
+  logAgentStep,
   startCommandTelemetry,
   withKernelSpan,
 } from '@/lib/observability/browser-telemetry';
@@ -114,5 +115,26 @@ test('withKernelSpan logs and rethrows a failure', async () => {
     event: 'kernel.operation.end',
     operation: 'browsers.create',
     error: 'kernel exploded',
+  });
+});
+
+test('agent step events record tool names but never arguments', () => {
+  logAgentStep({
+    index: 3,
+    toolNames: ['browser', 'getApricotRecord'],
+    finishReason: 'tool-calls',
+    inputTokens: 1200,
+    outputTokens: 80,
+    durationMs: 4500,
+  });
+
+  const [event] = parsed(out);
+  expect(event).toMatchObject({
+    severity: 'INFO',
+    event: 'agent.step.finish',
+    step: 3,
+    tools: ['browser', 'getApricotRecord'],
+    finishReason: 'tool-calls',
+    durationMs: 4500,
   });
 });

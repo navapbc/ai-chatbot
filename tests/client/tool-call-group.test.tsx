@@ -79,3 +79,51 @@ test('flag off: all tool calls remain visible (dev default)', async () => {
   await expect.element(getByText(/Clicking/)).toBeVisible();
   await expect.element(getByText(/Filling "05\/05\/2026"/)).toBeVisible();
 });
+
+test('streaming: an in-flight tool call is visible before its result arrives', async () => {
+  // Regression: filtering to `output-available` while streaming meant a
+  // long-running browser command rendered nothing until it finished, so the
+  // group showed only a spinner and revealed its work when the stream ended.
+  setFlagOverride('declutterToolCalls', false);
+  const { getByRole, getByText } = render(
+    <ToolCallGroup
+      isStreaming
+      parts={[
+        {
+          ...part('1', { command: ['click', '@e1'] }),
+          state: 'output-available',
+        },
+        {
+          ...part('2', { command: ['open', 'https://example.com'] }),
+          state: 'input-available',
+        },
+      ]}
+    />,
+  );
+
+  await getByRole('button').click();
+  await expect
+    .element(getByText(/Opening https:\/\/example\.com/))
+    .toBeVisible();
+});
+
+test('streaming: a partial input-streaming call stays hidden until its input lands', async () => {
+  // Its input is incomplete, so the label would flicker as arguments arrive.
+  setFlagOverride('declutterToolCalls', false);
+  const { getByRole, getByText } = render(
+    <ToolCallGroup
+      isStreaming
+      parts={[
+        {
+          ...part('1', { command: ['click', '@e1'] }),
+          state: 'output-available',
+        },
+        { ...part('2', { command: ['open'] }), state: 'input-streaming' },
+      ]}
+    />,
+  );
+
+  await getByRole('button').click();
+  await expect.element(getByText(/Clicking/)).toBeVisible();
+  await expect.element(getByText(/Opening/)).not.toBeInTheDocument();
+});
