@@ -6,6 +6,21 @@ const nextConfig: NextConfig = {
   cacheComponents: false,
   // agent-browser is a native binary invoked as a subprocess, not an imported
   // module, so there is nothing for Next.js to bundle or externalize.
+  //
+  // The OpenTelemetry packages DO need to be external. `@opentelemetry/api`
+  // keeps its global tracer provider in module scope, so if the bundler emits
+  // one copy into instrumentation.js and another into the route chunks,
+  // `register()` configures a provider that `trace.getTracer()` in
+  // lib/observability never sees — spans are created against a no-op tracer
+  // and silently vanish. Cloud Trace received Cloud Run's own request spans
+  // but none of ours until these were externalized.
+  serverExternalPackages: [
+    '@opentelemetry/api',
+    '@opentelemetry/sdk-trace-base',
+    '@google-cloud/opentelemetry-cloud-trace-exporter',
+    '@braintrust/otel',
+    '@vercel/otel',
+  ],
   images: {
     remotePatterns: [
       {
