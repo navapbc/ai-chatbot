@@ -26,22 +26,37 @@ import {
  */
 export function register() {
   const spanProcessors: SpanProcessor[] = [];
+  const enabled: string[] = [];
 
   if (process.env.BRAINTRUST_API_KEY) {
     spanProcessors.push(
       new BatchSpanProcessor(new BraintrustExporter({ filterAISpans: true })),
     );
+    enabled.push('braintrust');
   }
 
-  // K_SERVICE is set by Cloud Run. Off GCP there is no metadata server to
-  // authenticate against, so skip rather than fail.
-  if (process.env.K_SERVICE) {
+  // Gate on GOOGLE_CLOUD_PROJECT, which terraform/cloud_run.tf sets explicitly.
+  // An earlier version gated on K_SERVICE — injected by the Cloud Run runtime
+  // rather than the service spec, and evidently not visible to the
+  // instrumentation hook, so the exporter was never registered and spans went
+  // nowhere while Braintrust's initialized normally.
+  const projectId = process.env.GOOGLE_CLOUD_PROJECT;
+  if (projectId) {
     spanProcessors.push(
-      new BatchSpanProcessor(
-        new TraceExporter({ projectId: process.env.GOOGLE_CLOUD_PROJECT }),
-      ),
+      new BatchSpanProcessor(new TraceExporter({ projectId })),
     );
+    enabled.push('cloud-trace');
   }
+
+  // Say which exporters came up. Silence here previously looked identical to a
+  // working setup, which is what made the missing spans hard to attribute.
+  console.log(
+    JSON.stringify({
+      severity: 'INFO',
+      event: 'otel.register',
+      exporters: enabled,
+    }),
+  );
 
   if (spanProcessors.length === 0) return;
 
