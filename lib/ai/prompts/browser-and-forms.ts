@@ -11,7 +11,7 @@ Mandatory rules for any browser action.
 **Snapshots are your eyes. Without fresh snapshots, you are flying blind.** Every DOM change invalidates refs — re-snapshot before the next interaction or you will click the wrong element.
 
 1. **Navigate**: \`["open", "<url>"]\` — already waits for load, do NOT add a separate \`wait --load\`
-2. **Snapshot**: \`["snapshot"]\` — then \`["snapshot", "-s", "form"]\` on complex pages (Drupal, WordPress, heavy nav/sidebar)
+2. **Snapshot**: \`["snapshot"]\` — then \`["snapshot", "-s", "main"]\` on complex pages (Drupal, WordPress, heavy nav/sidebar)
 3. **Read the refs**: Snapshots give refs like \`@e3\` and may show \`[id="fieldId"]\`. Use either for interactions — both are first-class.
 4. **Interact**: \`["fill", "@e3", "John"]\` or \`["fill", "#firstNameTxt", "John"]\`
 5. **Re-snapshot after every DOM change**: Click, select, fill-that-triggers-dynamic-fields, or navigation — ALWAYS snapshot again. Refs go stale after DOM changes.
@@ -32,7 +32,9 @@ Snapshots return refs in this format:
 
 - \`["snapshot"]\` — Full page tree with labels and structure
 - \`["snapshot", "-i"]\` — Interactive elements only (compact). Use sparingly.
-- \`["snapshot", "-s", "form"]\` — Scoped to a container. Use on complex pages.
+- \`["snapshot", "-s", "main"]\` — Scoped to a container. Use on complex pages.
+
+**\`-s\` matches the accessibility tree, not the DOM.** Scope to a landmark (\`main\`) or an element ID (\`#webform-...\`). Do NOT scope to \`form\`: a \`<form>\` without an accessible name exposes no accessibility node, so \`["snapshot", "-s", "form"]\` fails with "No accessibility node found" even when the form is on the page.
 
 ## Selector Rules
 
@@ -93,12 +95,12 @@ After clicking Next/Continue/Submit on a page, ALWAYS take a fresh snapshot. Ref
 
 \`\`\`json
 // Page 1 — fill and advance
-["snapshot", "-s", "form"]
+["snapshot", "-s", "main"]
 ["fill", "@e1", "..."]
 ["click", "@e10"]
 
 // Page 2 — fresh snapshot required
-["snapshot", "-s", "form"]
+["snapshot", "-s", "main"]
 ["fill", "@e1", "..."]
 \`\`\`
 
@@ -108,7 +110,7 @@ When selecting an option reveals new fields, re-snapshot to discover them:
 
 \`\`\`json
 ["click", "@e1"]
-["snapshot", "-s", "form"]
+["snapshot", "-s", "main"]
 ["fill", "@e5", "..."]
 \`\`\`
 
@@ -119,7 +121,7 @@ Some fields trigger validation on blur. If you need to check for errors after fi
 \`\`\`json
 ["fill", "@e1", "user@email.com"]
 ["press", "Tab"]
-["snapshot", "-s", "form"]
+["snapshot", "-s", "main"]
 \`\`\`
 
 ## Modal Handling
@@ -204,7 +206,7 @@ Government and health sites often inject a Google Translate bar that blocks clic
 Re-snapshot to get fresh refs. If the snapshot shows \`[id="..."]\` on the target field, use the CSS ID directly:
 
 \`\`\`json
-["snapshot", "-s", "form"]
+["snapshot", "-s", "main"]
 ["fill", "#specificFieldId", "..."]
 \`\`\`
 

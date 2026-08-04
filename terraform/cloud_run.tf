@@ -480,6 +480,19 @@ resource "google_project_iam_member" "cloud_run_secrets" {
   }
 }
 
+# Lets instrumentation.ts export OpenTelemetry spans to Cloud Trace. The SA
+# already has logWriter and metricWriter; without this it can emit logs and
+# metrics but not traces.
+resource "google_project_iam_member" "cloud_run_trace" {
+  project = local.project_id
+  role    = "roles/cloudtrace.agent"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
 resource "google_project_iam_member" "cloud_run_logging" {
   project = local.project_id
   role    = "roles/logging.logWriter"

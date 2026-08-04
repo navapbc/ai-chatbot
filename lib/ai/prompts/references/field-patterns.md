@@ -81,5 +81,5 @@ Check `maxlength`. If `maxlength="2"`, use abbreviation:
 ALWAYS re-snapshot after a radio click — radio selections often reveal conditional fields:
 
 ```json
-["snapshot", "-s", "form"]
+["snapshot", "-s", "main"]
 ```
