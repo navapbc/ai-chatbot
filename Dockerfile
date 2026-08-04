@@ -92,7 +92,12 @@ USER nextjs
 # read-only root filesystem, and the daemon exits with "Failed to create socket
 # directory". /tmp is writable in every environment we deploy to.
 ENV HOME=/tmp
-ENV AGENT_BROWSER_PROVIDER=kernel
+
+# Deliberately NOT setting AGENT_BROWSER_PROVIDER=kernel. This app creates its
+# own Kernel browsers through @onkernel/sdk (profiles, replay, standby) and
+# attaches the CLI to them with --cdp; the CLI rejects that combination with
+# "Cannot use --cdp and -p/--provider together". Setting the provider here
+# would have the CLI create a second, unmanaged browser.
 
 # Invoke the native binary directly. `pnpm start` puts node_modules/.bin ahead
 # of /usr/local/bin on PATH, so a bare `agent-browser` would go through pnpm's

@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { buildArgs, parseResponse } from '@/lib/kernel/cli';
+import { buildArgs, cliEnv, parseResponse } from '@/lib/kernel/cli';
 
 test('buildArgs attaches to the Kernel browser by CDP url', () => {
   expect(
@@ -93,13 +93,51 @@ test('parseResponse reports empty output rather than throwing', () => {
   });
 });
 
-test('cliSessionName matches the in-memory cache key', async () => {
+test('cliSessionName is deterministic for the same browser', async () => {
   // The tools and the lifecycle code must derive the same --session name, or
   // commands would drive a different daemon than standby/delete tear down.
-  const { cacheKey, cliSessionName } = await import(
-    '@/lib/kernel/session-store'
-  );
+  const { cliSessionName } = await import('@/lib/kernel/session-store');
   expect(cliSessionName('user-1', 'chat-1-user-1')).toBe(
-    cacheKey('user-1', 'chat-1-user-1'),
+    cliSessionName('user-1', 'chat-1-user-1'),
   );
+});
+
+test('cliSessionName stays short enough for a unix socket path', async () => {
+  // Regression: `${userId}:${sessionId}` repeated the UUID and produced a
+  // 135-byte socket path, over the ~103-byte cap, so every command failed.
+  const { cliSessionName } = await import('@/lib/kernel/session-store');
+  const userId = 'f272a42e-3cf1-428f-8c3a-834d83ad913b';
+  const sessionId = `3cad2ba2-9857-44e2-ad02-40f3a5bfe895-${userId}`;
+  expect(cliSessionName(userId, sessionId).length).toBeLessThanOrEqual(32);
+});
+
+test('cliSessionName distinguishes different chats', async () => {
+  const { cliSessionName } = await import('@/lib/kernel/session-store');
+  expect(cliSessionName('u1', 'chat-a-u1')).not.toBe(
+    cliSessionName('u1', 'chat-b-u1'),
+  );
+});
+
+test('cliEnv strips AGENT_BROWSER_PROVIDER when attaching by CDP', () => {
+  // The CLI rejects `--cdp` combined with a provider ("Cannot use --cdp and
+  // -p/--provider together"). An inherited env var broke every browser command
+  // in production while working locally, so strip it at the source.
+  const base: NodeJS.ProcessEnv = {
+    AGENT_BROWSER_PROVIDER: 'kernel',
+    PATH: '/usr/bin',
+    NODE_ENV: 'test',
+  };
+  const env = cliEnv({ cdpUrl: 'wss://kernel.example/cdp' }, base);
+  expect(env.AGENT_BROWSER_PROVIDER).toBeUndefined();
+  expect(env.PATH).toBe('/usr/bin');
+});
+
+test('cliEnv leaves the provider in place when there is no CDP url', () => {
+  const base: NodeJS.ProcessEnv = {
+    AGENT_BROWSER_PROVIDER: 'kernel',
+    PATH: '/usr/bin',
+    NODE_ENV: 'test',
+  };
+  const env = cliEnv({}, base);
+  expect(env.AGENT_BROWSER_PROVIDER).toBe('kernel');
 });

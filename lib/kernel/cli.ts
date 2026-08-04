@@ -66,6 +66,26 @@ export function buildArgs(
 }
 
 /**
+ * Environment for one invocation.
+ *
+ * `AGENT_BROWSER_PROVIDER` is stripped whenever we attach by CDP: the CLI
+ * rejects `--cdp` combined with a provider ("Cannot use --cdp and -p/--provider
+ * together"), and an inherited value would break every browser command at
+ * runtime with no local reproduction. Kernel is reached through the CDP URL of
+ * a browser this app already created, so a provider is never wanted here.
+ *
+ * Exported for tests.
+ */
+export function cliEnv(
+  options: Pick<CliOptions, 'cdpUrl'>,
+  base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  if (!options.cdpUrl) return base;
+  const { AGENT_BROWSER_PROVIDER: _dropped, ...rest } = base;
+  return rest;
+}
+
+/**
  * Parse the CLI's stdout into an envelope.
  *
  * A non-zero exit is still a structured failure when stdout carries JSON (the
@@ -114,6 +134,7 @@ export async function runCommand(
 ): Promise<CliResponse> {
   const args = buildArgs(command, options);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const env = cliEnv(options);
 
   const telemetry = startCommandTelemetry(command, {
     session: options.session,
@@ -130,6 +151,7 @@ export async function runCommand(
         signal: options.signal,
         maxBuffer: 32 * 1024 * 1024, // snapshots of large pages
         encoding: 'utf8',
+        env,
       },
       (error, stdout, stderr) => {
         if (error && (error as NodeJS.ErrnoException).code === 'ENOENT') {

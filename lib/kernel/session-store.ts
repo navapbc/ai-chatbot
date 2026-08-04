@@ -32,13 +32,33 @@ export function cacheKey(userId: string, sessionId: string): string {
 /**
  * Name of the agent-browser daemon session backing a browser session.
  *
- * The CLI keys its daemon (and therefore the live CDP connection and the
- * `@eN` ref map) by `--session`, so every caller driving the same browser must
- * derive the same name. Reuses `cacheKey` so the daemon and the in-memory cache
- * cannot drift apart.
+ * The CLI keys its daemon (and therefore the live CDP connection and the `@eN`
+ * ref map) by `--session`, so every caller driving the same browser must derive
+ * the same name.
+ *
+ * The name becomes a filename in the daemon's socket directory, and a unix
+ * socket path is capped at ~103 bytes. `cacheKey` cannot be reused here: it is
+ * `${userId}:${sessionId}` and sessionId already ends in `-${userId}`, so the
+ * UUID appears twice and the path overflows ("Socket path would be 135 bytes").
+ *
+ * A short FNV-1a digest of the full key keeps names fixed-length while staying
+ * deterministic — the same browser always resolves to the same daemon.
  */
 export function cliSessionName(userId: string, sessionId: string): string {
-  return cacheKey(userId, sessionId);
+  return `asp-${fnv1a32(cacheKey(userId, sessionId))}`;
+}
+
+/**
+ * FNV-1a, 32-bit, hex-encoded. Not cryptographic — this only needs to be
+ * stable and collision-resistant enough to key a per-chat daemon.
+ */
+function fnv1a32(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
 }
 
 /**
