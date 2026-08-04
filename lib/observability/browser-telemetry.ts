@@ -176,6 +176,10 @@ export function startCommandTelemetry(
     session: meta.session,
     remote: meta.remote,
     timeoutMs: meta.timeoutMs,
+    // A no-op tracer (no SDK visible to THIS module instance) yields an
+    // all-zero trace id. Emitting it distinguishes "span exported nowhere"
+    // from "span never really created", which are otherwise identical in logs.
+    traceId: span.spanContext().traceId,
   });
 
   return {

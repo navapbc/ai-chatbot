@@ -1,4 +1,5 @@
 import { registerOTel } from '@vercel/otel';
+import { trace } from '@opentelemetry/api';
 import { BraintrustExporter } from '@braintrust/otel';
 import { TraceExporter } from '@google-cloud/opentelemetry-cloud-trace-exporter';
 import {
@@ -61,4 +62,20 @@ export function register() {
   if (spanProcessors.length === 0) return;
 
   registerOTel({ serviceName: 'labs-asp-chat', spanProcessors });
+
+  // Prove the provider registered here is the one this module can see. If the
+  // bundler gives lib/observability a separate @opentelemetry/api instance,
+  // that module's spans get an all-zero trace id while this one reports a real
+  // one — the two logs together localize the split immediately.
+  const probe = trace.getTracer('otel-self-check').startSpan('register-probe');
+  const probeTraceId = probe.spanContext().traceId;
+  probe.end();
+  console.log(
+    JSON.stringify({
+      severity: 'INFO',
+      event: 'otel.self_check',
+      recording: probeTraceId !== '0'.repeat(32),
+      traceId: probeTraceId,
+    }),
+  );
 }
