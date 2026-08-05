@@ -80,9 +80,9 @@ Give each fill agent its own session name. Use the domain as the name
 
 - Watchable one-window mode — use this when the user wants ONE window with one tab
   for each application. Two sessions can share one debug Chrome when each session
-  owns its own tab (confirmed by test on 2026-08-05: interleaved keystrokes and
-  fills landed in the correct tabs with no cross-contamination). The procedure has
-  strict order rules:
+  owns its own tab. This is confirmed by test on 2026-08-05: the two sessions sent
+  keystrokes and fills in alternation, and each value landed in the correct tab. No
+  value landed in the wrong tab. Do the steps in this sequence:
 
 ```bash
 # SETUP PHASE — the orchestrator does ALL tab creation, before any fill starts.
@@ -93,22 +93,22 @@ agent-browser --session <app1> tab new --label <app1> <url1>
 agent-browser --session <app2> connect 9222
 agent-browser --session <app2> tab new --label <app2> <url2>
 
-# FILL PHASE — the FIRST command of each fill agent pins its own tab:
+# FILL PHASE — the FIRST command of each fill agent selects its own tab:
 agent-browser --session <app1> tab <app1>
-agent-browser --session <app1> get url        # make sure the pin is correct
+agent-browser --session <app1> get url        # make sure that the selection is correct
 ```
 
-  Rules for this mode: no agent runs `tab new` after the fills start. Each fill
-  agent pins its tab by label as its first command and checks the URL. One writer
-  for each TAB — the one-writer rule applies to the tab, not to the window. The
-  applications share the browser cookies: this is acceptable for applications on
-  different domains, and not acceptable for two applications on one portal that
-  permits one session for each login. Clean up with `tab close <label>`, not with
-  `close`.
+  Obey these rules in this mode. No agent runs `tab new` after the fills start.
+  Each fill agent selects its tab by label as its first command, and reads the URL
+  to confirm the selection. The one-writer rule applies to the TAB, not to the
+  window. The applications share the browser cookies. This is acceptable for
+  applications on different domains. It is not acceptable for two applications on
+  one portal that permits one session for each login. Close each tab with
+  `tab close <label>`. Do not use `close`.
 
 Do not connect two writer sessions to one port without the tab procedure above.
 Two sessions that connect to one port attach to the same active tab (confirmed by
-test), and two writers on one tab corrupt each other's fills.
+test), and two writers on one tab put text in each other's fields.
 
 ### 3. Dispatch (Orchestrator)
 
