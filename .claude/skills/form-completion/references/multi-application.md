@@ -272,6 +272,14 @@ tool calls, and no silent failure on the first readback pass. The warm applicati
   fill agent — the running agent holds the browser session and the context.
 - One failed application does not stop the others. Show the partial results in the
   report.
+- **A scribe report that arrives while a fill agent still runs is an early stop.**
+  Do not accept it. Resume THE SAME scribe with SendMessage: tell it that the run
+  continues, and to wait for FINALIZE. In one run, a scribe stopped fourteen
+  minutes early and the last three SITE FACTS reports never reached the playbook.
+  If the scribe cannot resume, send the missed reports to it in the FINALIZE
+  message, or write the playbook update yourself at the end of the run — SITE
+  FACTS in the transcript must reach the playbook before the run ends, with the
+  scribe or without it.
 
 ### 5. Consolidated Report and Submit Gates (Orchestrator)
 

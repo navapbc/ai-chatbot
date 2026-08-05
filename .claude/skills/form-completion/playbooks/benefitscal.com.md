@@ -1,11 +1,10 @@
 # Playbook: benefitscal.com (California CalFresh/SNAP Application)
 
-Scout survey and five fill-agent passes, 2026-08-05, with agent-browser 0.33.2.
-Cold start. The fill agent reached a Citizenship question (page 24 of the
-chain below) and confirmed the program-selection step narrows the flow to
-CalFresh only. It stopped there, and four times before, on forbidden data
-categories. The rest of "Your Information" and Sections 2 through 8 are
-UNCONFIRMED.
+Scout survey and eight fill-agent passes, 2026-08-05, with agent-browser 0.33.2.
+Cold start. The fill agent completed the "Your Information" and "People"
+sections, entered "Household Details", and stopped on the work-program detail
+page `ABDWP` (page 41 of the chain below). Each stop before that was on a
+forbidden data category. Everything after `ABDWP` is UNCONFIRMED.
 
 **WARNING: This is a live government benefits form. Do not submit test data. Do not
 submit without explicit approval from the user.**
@@ -19,7 +18,7 @@ agent-browser get count "#addressLine1"
 agent-browser get count "#zip5"
 ```
 
-## URL Chain — Twenty-Four Pages Confirmed So Far
+## URL Chain — Forty-One Pages Confirmed So Far
 
 ```
  1. https://benefitscal.com/                                        home page
@@ -45,7 +44,24 @@ agent-browser get count "#zip5"
 21. .../ApplyForBenefits/ABSNA                                       "SSN A" — the actual SSN digit-entry page, a MASKED field
 22. .../ApplyForBenefits/ABMRS                                       "Marital Status" — a radio group of 8 options
 23. .../ApplyForBenefits/ABCID                                       "Citizenship Immigration Divider" — an informational nudge page, no fields
-24. .../ApplyForBenefits/ABDOC                                       page title "Citizenship" — CONFIRMED STOP POINT. Note: the URL slug (ABDOC) does not match the page title or topic.
+24. .../ApplyForBenefits/ABDOC                                       page title "Citizenship" — the URL slug (ABDOC) does not match the page title or topic
+25. .../ApplyForBenefits/ABBID                                       "Background Info Divider" — no fields
+26. .../ApplyForBenefits/ABASX                                       "Assigned Sex" — "What's your gender?"
+27. .../ApplyForBenefits/ABGNR                                       "Gender" — "What's your gender identity?" (a second, separate gender page)
+28. .../ApplyForBenefits/ABSXO                                       "Sexual Orientation" — optional, Next works with no answer
+29. .../ApplyForBenefits/ABHSP                                       "Hispanic" — Hispanic/Latino/Spanish origin, a Yes/No/prefer-not question
+30. .../ApplyForBenefits/ABRAE                                       "Race and Ethnicity" — a race select, separate from ABHSP
+31. .../ApplyForBenefits/ABYSD                                       "Your Information Section Completed" — milestone, click "START THE NEXT SECTION"
+32. .../ApplyForBenefits/ABNAV                                       "Application Summary" again — click "Start People"
+33. .../ApplyForBenefits/ABHSD                                       "Household Member Definition" — other people in the household?
+34. .../ApplyForBenefits/ABPLS                                       "People Summary" — a read-only list of the household members
+35. .../ApplyForBenefits/ABTCD                                       "People Section Completed" — milestone
+36. .../ApplyForBenefits/ABNAV                                       "Application Summary" again — click "Start Household"
+37. .../ApplyForBenefits/ABHGW                                       "Household Gateway" — a situational checklist
+38. .../SupportRequest/ABDEG                                         "ABAWD Exemption Screener" — a checklist. The URL path changes to /SupportRequest/ from this page on.
+39. .../SupportRequest/ABDWR                                         "Work Requirement Screener" — work/volunteer/training checklist, a BRANCH GATE
+40. .../SupportRequest/ABDWT                                         "Work Or Training Info" — hours for each week (opens when ABDWR has a work/training check)
+41. .../SupportRequest/ABDWP                                         "Work Or Training Info" — organization name — LAST CONFIRMED PAGE
 ```
 
 **Do not trust the URL slug as the page topic.** `ABDOC` asks about citizenship,
@@ -76,11 +92,31 @@ accessible label.
 The page advance button on these pages has no id. Match it by its visible text,
 "Next" (or "CONTINUE APPLICATION" on `ABCSD`).
 
-**The site keeps entered data when you navigate back.** A fill agent went back
-five pages (from `ABDIS` through `ABNMI`) with the site's own "Back to Previous
-Page" button to fix a field, then re-advanced through every page again. Every
-value it had entered on the pages in between was still there. Back navigation is
-safe to use for a correction on this site.
+**Back navigation: the "Back to Previous Page" button is safe, the step-tracker
+links are NOT.** A fill agent went back five pages (from `ABDIS` through `ABNMI`)
+with the site's own "Back to Previous Page" button to fix a field, then
+re-advanced through every page again. Every value it had entered on the pages in
+between was still there. But a jump through a step-tracker link (example: "Your
+Information Reviewed") RESET corrected fields to their earlier values — a
+corrected last-name/suffix split reverted to the combined value, and the suffix
+select reverted to "-Select One-". Use "Back to Previous Page" for corrections.
+After any use of a review link, re-verify every field that was corrected earlier.
+
+**Some ids regenerate on every page load.** Fields on several pages (`ABRAE`,
+`ABDEG`, `ABDWR`, `ABDWT`) carry a generated id with the pattern
+`lift-ux-id-<32 hex chars>` or `..._N`. The id changes on each load — do not
+save one, do not reuse one across visits, and do not put one in a freshness
+probe. The `model` attribute on the same element is constant (example:
+`model="ABRAE.APP_INDV_Collection.race_cd"`) — find these fields through the
+`model` attribute in the page HTML, then use the id from THAT load. The pattern
+is not universal: other fields on the same pages keep static ids (example:
+`#ABDWP_PrgmName1`).
+
+**A partially completed section restarts from its first page.** Clicking "Start
+Household" on `ABNAV` when the section shows as not complete opened the section's
+FIRST page (`ABHGW`), not the page where the previous pass stopped. There is no
+mid-section resume. Expect to walk and re-verify every page of a section that a
+previous pass left incomplete.
 
 **The step counter changes when the program selection narrows.** Before
 `ABPRI`, pages show "Step 1 of 9". After a fill agent chose CalFresh only on
@@ -102,10 +138,10 @@ in it.
 
 | # | Section | Status |
 |---|---|---|
-| 1 | Your Information | REACHED |
-| 2 | People | UNCONFIRMED — button disabled until Section 1 has data |
-| 3 | Household Details | UNCONFIRMED |
-| 4 | Income | UNCONFIRMED |
+| 1 | Your Information | CONFIRMED — completed in one run, pages 7 to 31 of the chain |
+| 2 | People | CONFIRMED — pages 33 to 35. Only the "no other people" path is confirmed. |
+| 3 | Household Details | PARTIAL — pages 37 to 41. The section restarts from `ABHGW` when it is not complete. |
+| 4 | Income | UNCONFIRMED — locked ("Not Available") until Household Details is complete |
 | 5 | Expenses | UNCONFIRMED |
 | 6 | Assets | UNCONFIRMED |
 | 7 | Other Situations | UNCONFIRMED |
@@ -191,8 +227,13 @@ lets the site rewrite the value the user gave.
 **A county picker can appear after the address modal.** If the site cannot
 derive the county from the address, a dialog opens: heading "What county are
 you currently in?", a required `select#county`, and a "CONTINUE" button. Select
-the county by exact option text (confirmed: "Riverside"), then verify with
+the county by exact option text, then verify with
 `get text "#county option:checked"`.
+
+**Both dialogs return on every visit.** A second pass through this page, with
+the address unchanged and already accepted, opened the address modal and the
+county dialog again. Expect both dialogs on EVERY Next click on this page, not
+only the first.
 
 **Confirmed stop point (first pass):** a fill agent stopped on this page with
 the homelessness gate unanswered, and did not click Next. A second pass, after
@@ -329,14 +370,80 @@ page like this before other sensitive sections too (income, assets) — a page
 with no fields and a topic-announcement sentence is not a fill failure, it is
 this site's own section-transition pattern.
 
-## Field Table — Page `ABDOC` ("Citizenship") — CONFIRMED STOP POINT
+## Field Table — Page `ABDOC` ("Citizenship")
 
 | id | type | Label | Notes |
 |---|---|---|---|
 | `citizen_radio_0` (Y) | radio | Are you a U.S. citizen or national? — option Yes | FORBIDDEN DATA CATEGORY (citizenship/immigration status) — ask the user. |
 | `citizen_radio_1` (N) | radio | same question — option No | |
 
-Confirmed stop: neither radio touched, Next not clicked.
+The value mapping is confirmed through both label patterns on this page
+(`<label for=...>` and the `_inner_label` span) — the two agreed. A Yes answer
+opened no immigration follow-up page.
+
+## Field Tables — the Demographic Pages (`ABASX`, `ABGNR`, `ABSXO`, `ABHSP`, `ABRAE`)
+
+| Page | id | type | Label | Options |
+|---|---|---|---|---|
+| `ABASX` | `assignedSex_0` / `_1` / `_2` | radio | What's your gender? | Female / Male / I prefer not to answer |
+| `ABGNR` | `gender_0` … `gender_6` | radio | What's your gender identity? | Another Gender Identity / Female / Transgender: Female to Male / Male / Transgender: Male to Female / Non Binary / I prefer not to answer |
+| `ABSXO` | (radio group) | radio | Sexual orientation | Straight or Heterosexual / Gay or Lesbian / Bisexual / Queer / Another Sexual Orientation / Unknown / I prefer not to answer |
+| `ABHSP` | `person_0` (Y) / `_1` (N) / `_2` | radio | Are you of Hispanic, Latino, or Spanish origin? | Yes / No / I prefer not to answer |
+| `ABRAE` | dynamic id, `model="ABRAE.APP_INDV_Collection.race_cd"` | select | What is your race and ethnic origin? | -Select One-, American Indian or Alaskan Native, Asian, Black or African American, Native Hawaiian or Other Pacific Islander, Other or Mixed, White, I prefer not to answer |
+
+- `ABASX` and `ABGNR` are two separate questions (assigned sex, then gender
+  identity). A payload gender value answers `ABASX`. Ask the user before you
+  answer `ABGNR` with the same value — the two facts can differ.
+- `ABSXO` is optional: no `required` attribute, and Next works with no answer.
+  Leave it with no answer when no source states one.
+- **The site splits Hispanic origin from race** (the standard US census split).
+  An ethnicity value such as "Hispanic/Latino" answers `ABHSP` (Yes), and does
+  NOT map to any option in the `ABRAE` race list. `ABRAE` is optional — when no
+  source states a race, leave it at "-Select One-" and put race in the gap
+  analysis.
+
+## Field Tables — the People Section (`ABHSD`, `ABPLS`)
+
+| Page | id | type | Label | Notes |
+|---|---|---|---|---|
+| `ABHSD` | `hshld_radiogrp_0` (Y) / `_1` (N) | radio | Do you have other people living in your household? | The gate for the whole People section. A Yes answer is expected to open member-entry pages (UNCONFIRMED — only the No path is confirmed). |
+| `ABPLS` | none | — | People Summary | Read-only. Lists each household member with age. An "ADD ANOTHER" button is present. |
+
+## Field Tables — the Situational Checklists (`ABHGW`, `ABDEG`, `ABDWR`)
+
+Three checklist pages follow the People section. Each shows a list of
+situations plus a "None of these apply" checkbox.
+
+| Page | ids | Items |
+|---|---|---|
+| `ABHGW` | `govtaid`, `disability`, `college`, `food`, `living`, `breastfeeding`, `military`, `none` | Received public assistance in any state / person with a disability / enrolled in college or trade school / get food from somewhere other than at home / live in a facility, shelter or other living arrangement / breastfeeding a child / serving or served in the U.S. Military (or a dependent) / None of these apply |
+| `ABDEG` | dynamic ids `lift-ux-id-..._0` … `_11` | Health issue that makes work hard / personal issue that makes work hard / caring for a child under 14 / caring for a child under 6 / caring for a person who needs help / currently pregnant / in school at least half-time / getting or applied for unemployment benefits / getting or applied for disability benefits / Indian, Urban Indian, or Californian Indian / ORR Training Program at least half-time / None of these apply |
+| `ABDWR` | dynamic ids `..._0` … `_3` | Working / community service or volunteer work / work, education, or training program / None of these apply |
+
+Rules for these checklists:
+
+- Check "None of these apply" ONLY when a confirmed answer rules out every
+  listed item. When one item is not ruled out, stop and ask the user. On one
+  run, "no income" ruled out "Working" but not volunteering or a training
+  program — the agent stopped, and that was correct.
+- **`ABDWR` is a branch gate.** A check on the work/education/training item
+  opened a detail chain: `ABDWT` (hours for each week), then `ABDWP`
+  (organization name). Expect more detail pages after those (program pay and
+  start date are plausible, UNCONFIRMED). Warn the user about this chain in the
+  gap analysis before a work-program item is checked.
+- **The `ABDEG` checkbox inputs report `is visible` = false, and the checks
+  still work.** The visible element is a styled sibling, not the input. Use
+  `check` and `is checked` on the input id. Do not use `is visible` to validate
+  this page. Two of the twelve inputs (`_2` "child under 14", `_6` "school
+  half-time") are in the HTML but never appeared in the snapshot tree — read
+  this page's items from `get html`, not from the snapshot alone.
+
+## Field Tables — the Work-Program Detail Pages (`ABDWT`, `ABDWP`)
+
+| Page | id | type | Label | maxlength | Fill method |
+|---|---|---|---|---|---|
+| `ABDWT` | dynamic id, `model="ABDWT.CpAbawdDetails_Collection.workHours"` | text | Total hours for each week | 3 | plain `fill` — no mask |
+| `ABDWP` | `ABDWP_PrgmName1` (static) | text | Organization or Person's Name ("Where do you do your work program or education or training program?") | 60 | not filled — LAST CONFIRMED PAGE. A disabled "ADD ANOTHER" button is present (UNCONFIRMED — likely for a second program). |
 
 ## A Site-Wide Pattern: Individual-Status Gates Never Carry a `required` Attribute
 
@@ -348,38 +455,39 @@ question is unanswered. Do not read the absence of `required` or an enabled
 Next button as "this question is optional." Every one of these questions is a
 single-question page with two or three named radios (`..._0`/`..._1`, or a
 word pair) — that page shape, by itself, is the site's own signal that the
-question needs a real answer, HTML attribute or not. Expect more pages shaped
-like this later in the flow (examples: pregnancy status, citizenship, veteran
-status, striker status — none reached yet). Ask the user before you answer any
-of them; never leave one at a guessed default because the button did not
-block you.
+question needs a real answer, HTML attribute or not. Later pages confirmed the
+pattern: citizenship (`ABDOC`), the household gate (`ABHSD`), and the three
+situational checklists all follow it. Expect more pages shaped like this in the
+unconfirmed sections (veteran status and striker status are plausible). Ask the
+user before you answer any of them; never leave one at a guessed default
+because the button did not block you.
 
 ## Bot Checks
 
-None seen across the twenty-four pages reached so far (home page through
-`ABDOC`). Confirm this again if a fill agent reaches later sections — a
+None seen across the forty-one pages reached so far (home page through
+`ABDWP`). Confirm this again if a fill agent reaches later sections — a
 captcha can appear later in a multi-page flow even when the entry pages have
 none.
 
 ## Unreached Pages — Ask the User Before You Guess
 
-Everything after `ABDOC` is UNCONFIRMED. Expected but not yet seen in "Your
-Information": more citizenship/immigration sub-questions, gender/sex,
-ethnicity (the usual payload has values for both, but no page has asked for
-them yet), and more individual-status gate pages (see the pattern below —
-pregnancy, veteran, striker, work registration, and similar questions are
-plausible and untested). Expenses (rent/mortgage and utilities figures) and
-Assets (a savings amount) are now ALLOWED values once a fill agent reaches
-those pages — see the field tables above for the categories still forbidden
-inside those sections (bank name/account number, cash on hand, vehicles,
-property). Also UNCONFIRMED: the household/People section (the CalFresh
-application needs a name and birth date for every household member — this is
-a common stop point when a payload describes only the primary applicant),
-Household Details, Other Situations, Document Upload, and Review & Submit.
-This is a large state benefits application — expect 20 or more gaps once
-these sections open. Do not derive a household size or an income answer from
-an adjacent fact (see `references/gap-analysis-and-provenance.md`, "Values You
-Must Not Derive"). Ask the user.
+Everything after `ABDWP` is UNCONFIRMED: the pages after the organization-name
+question (program pay and program start date are plausible follow-ups), the
+rest of Household Details, and the Income, Expenses, Assets, Other Situations,
+Document Upload, and Review & Submit sections. Known question areas from the
+gap answers of one run, with no confirmed pages yet: income sources, rent or
+mortgage, utilities (the form can split them into categories — collect the
+categories when it does), and savings. Financial account identifiers (bank
+name, account number) stay forbidden — a form does not need them, and the gap
+analysis must not ask for them. The People section's multi-member path is also
+UNCONFIRMED (a household with more than one person needs a name and birth date
+for each member — a common stop point when a payload describes only the primary
+applicant). Expect 20 or more gaps for the full application. Do not derive a
+household size or an income answer from an adjacent fact (see
+`references/gap-analysis-and-provenance.md`, "Values You Must Not Derive").
+Ask the user. At Review & Submit, re-verify the name fields — a step-tracker
+review link can revert a corrected name split (see the back-navigation warning
+above).
 
 ## Forbidden and Sensitive Categories Seen So Far
 

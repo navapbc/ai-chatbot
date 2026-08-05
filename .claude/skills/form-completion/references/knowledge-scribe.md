@@ -71,11 +71,18 @@ is approximately 40 turns. Obey these rules:
 4. The Monitor's byte count and your own read can differ. A partial line write
    causes this. Do NOT investigate the difference. Parse complete JSON lines only
    and continue.
-5. Finalize when a message with the word FINALIZE arrives from the main agent, or
-   when the Monitor prints STALL (the backstop). Then do ONE final pass: the leak
-   check (Hard Rules), then your report.
+5. Finalize ONLY on a message with the word FINALIZE from the main agent. On
+   FINALIZE: read ALL the transcript bytes after your offset, extract, write,
+   then the leak check (Hard Rules), then your report.
+6. STALL is NOT a stop signal. A run pauses for many minutes while the user
+   answers questions, and one scribe that stopped on a stall missed the last
+   three reports of the run. On a STALL wake: do one pass over any new bytes,
+   start the Monitor again, and end the turn. Stop without FINALIZE only after
+   THREE STALL wakes in sequence with zero new bytes (that is more than one hour
+   of silence).
 
-Monitor script (replace <transcript> and <offset>):
+Monitor script (replace <transcript> and <offset>; the counter resets when the
+file grows, so STALL means 20 minutes with no growth at all):
 
    F="<transcript>"; OFF=<offset>; CYCLES=0
    while true; do
@@ -85,9 +92,10 @@ Monitor script (replace <transcript> and <offset>):
        if tail -c +$((OFF+1)) "$F" | grep -qE "SITE FACTS|task-notification|FINALIZE"; then
          echo "MARKER"; exit 0
        fi
-       OFF=$CUR
+       OFF=$CUR; CYCLES=0
+     else
+       CYCLES=$((CYCLES+1))
      fi
-     CYCLES=$((CYCLES+1))
      [ "$CYCLES" -ge 40 ] && { echo "STALL"; exit 0; }
    done
 
