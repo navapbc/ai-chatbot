@@ -2,21 +2,34 @@
 
 Command examples for the most common form controls. Load when you need an exact action shape.
 
-> **`fill` first, always — including masked fields.** `fill` clears the field and sets the value in one step. `type` does NOT clear (it appends), and on masks that reposition the caret per keystroke it reverses the input: typing `92595` into a zip mask produces `59529`.
+> **`fill` first, then ALWAYS verify with `get value`.** Masks can silently reject `fill` — the command reports success while the field reverts to `__/__/____`. The readback is the only way to know.
 >
-> Use `type` only when `fill` leaves a field empty or unformatted, and clear it first:
+> **Escalation ladder for masked fields** (a value showing `_` placeholders after fill means the mask listens for real keystrokes):
+>
+> 1. `["fill", "@e1", "01152000"]` then `["get", "value", "@e1"]` — if the value stuck, done.
+> 2. If empty/placeholder: clear and `type` — `["fill", "@e1", ""]`, `["type", "@e1", "92595"]`, verify again. Caution: on masks that reposition the caret per keystroke, `type` reverses input (`92595` → `59529`).
+> 3. If still rejected or reversed: **focus, then one `key` per character** — this is the only method keydown-listening masks accept:
 >
 > ```json
-> ["fill", "@e1", ""]
-> ["type", "@e1", "92595"]
+> ["click", "@e1"]
+> ["key", "0"]
+> ["key", "1"]
+> ["key", "1"]
+> ["key", "5"]
+> ["key", "2"]
+> ["key", "0"]
+> ["key", "0"]
+> ["key", "0"]
 > ["get", "value", "@e1"]
 > ```
+>
+> Send raw digits only — the mask inserts separators itself. Never proceed past a masked field without a verified readback.
 
 ## Text Fields (use `fill`)
 
 ```json
 ["fill", "@e3", "John Doe"]
-["fill", "#firstNameTxt", "John Doe"]
+["fill", "#firstName", "John Doe"]
 ```
 
 ## Date Fields
@@ -67,7 +80,7 @@ Check `maxlength`. If `maxlength="2"`, use abbreviation:
 
 ```json
 ["select", "@e1", ""]
-["select", "#genderIdentityDrpDwn", ""]
+["select", "#languageSelect", ""]
 ```
 
 ## Checkboxes
@@ -75,7 +88,7 @@ Check `maxlength`. If `maxlength="2"`, use abbreviation:
 ```json
 ["check", "@e1"]
 ["uncheck", "@e1"]
-["check", "#chkBxApplyYourselfYes"]
+["check", "#agreeYes"]
 ```
 
 ## Radio Buttons
