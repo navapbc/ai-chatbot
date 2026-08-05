@@ -17,8 +17,10 @@ is no global installation. To attach to a local Chrome, read the
 
 **When one run has two or more applications**, read `references/multi-application.md`
 first. The main session becomes the orchestrator: it does the intake for all the
-applications, then starts one fill agent for each application in parallel. Each fill
-agent gets its own browser. Do not give one page to two writers.
+applications, then starts one fill agent for each application in parallel. For an
+application with no playbook, a background scout agent surveys the site — the
+orchestrator stays with the user and does not survey a site itself. Each fill agent
+gets its own browser. Do not give one page to two writers.
 
 ## Phase 0 — Find the Playbook
 
@@ -224,8 +226,8 @@ form. The user is not a developer.
 - `references/knowledge-scribe.md` — the parallel background agent that writes the
   playbook during a cold start; start it in Phase 0
 - `references/multi-application.md` — two or more applications in one run: the
-  orchestrator role, one fill agent for each application, browser isolation, and
-  submit gates for each application
+  orchestrator role, scouts for cold-start discovery, one fill agent for each
+  application, browser isolation, and submit gates for each application
 - `references/silent-failures.md` — the four-step diagnosis with commands
 - `playbooks/<domain>.md` — one file for each site; the scribe writes it on a cold
   start (you write it at the end of the run only when there is no scribe)

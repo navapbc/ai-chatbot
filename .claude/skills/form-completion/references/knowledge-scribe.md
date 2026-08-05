@@ -100,13 +100,17 @@ Skill directory: <skill-dir>   (contains playbooks/, references/, scripts/)
 ## Multi-Application Runs
 
 In a multi-application run (`multi-application.md`), the scribe is the only writer
-of ALL knowledge files, and this includes the playbooks. Fill agents write no files.
-Each fill-agent report arrives in the orchestrator transcript with a SITE FACTS
-section: the URL chain, the field table, masks, gates, option texts, and the submit
-condition. The scribe writes the playbook for each domain from that section, and
-merges the findings about tool behavior into the references. The scribe stop
-condition changes in this mode: stop after the LAST fill-agent report is in the
-transcript, not after the first.
+of ALL knowledge files, and this includes the playbooks. Fill agents and scouts
+write no files. Each scout report and each fill-agent report arrives in the
+orchestrator transcript with a SITE FACTS section: the URL chain, the field table,
+masks, gates, option texts, and the submit condition. The scribe writes the first
+playbook for a cold-start domain from the SCOUT report — the URL chain, the account
+requirement, the field tables, and the unreached sections (keep the UNCONFIRMED
+marks). When the fill-agent report for that domain arrives, merge it into the same
+playbook: confirmed methods replace UNCONFIRMED entries. The scribe also merges the
+findings about tool behavior into the references. The scribe stop condition changes
+in this mode: stop after the LAST fill-agent report is in the transcript, not after
+the first.
 
 ## Failure Behavior
 

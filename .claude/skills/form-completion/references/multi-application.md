@@ -10,6 +10,7 @@ parallel. Sections of one form share one page, so they cannot.
 | Role | Count | Job |
 |---|---|---|
 | Orchestrator | 1 (the main session) | All user conversation. Consolidated intake. Dispatch. The consolidated final report. Submit approvals. |
+| Scout | 1 for each cold-start application | Find the real form. Return the field inventory. No fills. No account creation. No user conversation. No file writes. |
 | Fill agent | 1 for each application | Fill and verify ONE application in its own browser. No user conversation. No file writes. |
 | Scribe | 1 (background) | Reads the orchestrator transcript. Writes ALL knowledge files: `playbooks/`, `scripts/`, `references/`. See `knowledge-scribe.md`. |
 
@@ -22,11 +23,17 @@ parallel. Sections of one form share one page, so they cannot.
   session name and its own browser instance.
 - **Only the orchestrator talks to the user.** A fill agent that needs an answer
   stops and returns a BLOCKED report. It never waits for a user.
-- **The scribe is the only writer of knowledge files.** Fill agents write no files.
-  A fill agent returns its findings in the SITE FACTS section of its report. The
-  report arrives in the orchestrator transcript, and the scribe writes the playbook
-  from it. One writer keeps the language rules, the no-bias rule, and the
+- **The scribe is the only writer of knowledge files.** Fill agents and scouts write
+  no files. They return their findings in the SITE FACTS section of their reports. The
+  reports arrive in the orchestrator transcript, and the scribe writes the playbook
+  from them. One writer keeps the language rules, the no-bias rule, and the
   no-participant-data rule in one place.
+- **The orchestrator does not survey a site.** After the tab setup and the freshness
+  probes, the orchestrator sends no agent-browser commands. A survey by the
+  orchestrator stops the intake: the user waits, and the gap analysis for the ready
+  applications does not start. This occurred on 2026-08-05: the orchestrator followed
+  a large portal's apply links itself, and the gap analysis for two applications with
+  fresh playbooks did not start. A scout does the survey.
 
 ## Procedure
 
@@ -34,32 +41,82 @@ parallel. Sections of one form share one page, so they cannot.
 
 1. For each application: find the playbook, do the freshness probe (Phase 0 of
    SKILL.md).
-2. For an application with NO playbook, do the field inventory yourself, now, before
-   the gap analysis. You cannot make a correct gap analysis for a form that you did
-   not read. Open the page in the session that the fill agent will use, then:
-   - `get count` for `input`, `select`, `textarea`, `iframe`, `form` — this gives the
-     size of the form and shows if an iframe can hold it.
-   - `FIELDS "body"` (see `scripts/fill-helpers.sh`) — the full field map in one call.
-   - Read the `src` of each iframe. Many iframes are reCAPTCHA and ad trackers. Do
-     not assume that the form is inside an iframe. On the WIC form, all 6 iframes
-     were noise and the form was inline.
-   - Probe `required` and `maxlength` on the fields that you plan to fill.
-   Put this map in the fill-agent prompt. The fill agent then starts with a plan, not
-   with discovery. The scribe writes the playbook from the reports at the end.
-3. Build ONE gap analysis that covers all the applications. Group the gaps by
-   application.
-4. Ask the user all the gap questions now, grouped by application, in plain language
-   (the rules in `gap-analysis-and-provenance.md` apply). Tell the user which
-   application each question group belongs to. Put the application name in the header
-   of each question (example: "IHSS: SSN", "WIC: clinic"). The user answers questions
-   for two forms in one list, so the header is the only signal of which form a
-   question belongs to.
-5. Report a submit blocker in the gap analysis, with the gaps. Example: a reCAPTCHA on
-   the form. The fill can finish, but the submit needs the user. The user must know
-   this before the fill starts, not after.
-6. Do not start a fill agent before its application has all its required answers.
-   Start the applications that are ready. Ask the user about the other applications
-   while the started agents run.
+2. For an application with NO playbook, start a scout agent in the background, now
+   (see "The Scout" below). Do not survey the site yourself — the hard rule above.
+   You cannot make a correct gap analysis for a form that no agent read, so the
+   scout reads it while you talk to the user.
+3. Build the gap analysis for the applications WITH playbooks, from their playbook
+   field tables. Show it and ask the questions NOW. Do not wait for the scouts.
+4. Ask the gap questions grouped by application, in plain language (the rules in
+   `gap-analysis-and-provenance.md` apply). Put the application name in the header
+   of each question (example: "IHSS: SSN", "WIC: clinic"). The user answers
+   questions for two or more forms in one list, so the header is the only signal of
+   which form a question belongs to. For a scouted application, tell the user what
+   comes next (example: "The food-assistance application needs more answers — I
+   will ask them when the survey of that site is complete"). Do not ask a question
+   that the scout did not confirm.
+5. When a scout report arrives, build the gap analysis for that application from
+   the report, and ask a second round of questions. A large application can have
+   20 or more gaps — obey "Large Forms" in `gap-analysis-and-provenance.md`: show
+   the full table first, then ask in groups that follow the sections of the form.
+6. Report a submit blocker in the gap analysis, with the gaps. Examples: a reCAPTCHA
+   on the form, or an account wall from a scout report. The fill can finish, but the
+   submit needs the user. The user must know this before the fill starts, not after.
+7. Do not start a fill agent before its application has all its required answers.
+   Start the applications that are ready. The warm applications usually start while
+   the scouts run.
+
+#### The Scout (Cold-Start Discovery)
+
+A scout is a background agent that reads ONE application site and returns the field
+inventory. Start it with the Agent tool, `model: "sonnet"` (it must find the real
+form behind menus and interstitial pages, and that needs judgment). The scout uses
+the session name and the tab that the fill agent will use later, so the browser is
+already on the form when the fill agent starts. Scout prompt template:
+
+```
+Survey ONE application site for a form fill that a different agent will do later.
+Do not fill any field. Do not enter any data. Do not create an account. Do not
+talk to a user. Do not write files.
+
+- Application: <url>
+- Browser: from <client dir> run `./node_modules/.bin/agent-browser --session
+  <name> <cmd>`. The session is ALREADY connected and the tab is ALREADY open.
+  Your FIRST command is `tab <label>`; then `get url` to confirm the selection.
+  Do NOT run `connect`. Do NOT run `tab new`.
+- Helpers: `source <skill-dir>/scripts/fill-helpers.sh; SESSION=<name>` gives
+  SURVEY, FIELDS, IFRAMES, and OPTIONS.
+
+Procedure:
+1. Find the real form. Follow the apply or start links through the interstitial
+   pages. Record the URL chain.
+2. If the site asks for an account or a login before the form, stop there. Report
+   it. Do not make an account.
+3. On each form page that you can reach: run SURVEY, then FIELDS. Record the ids,
+   the types, the labels, the required marks, the maxlength values, and the exact
+   select option texts.
+4. A multi-page form hides the later pages until data goes in. Do not enter data
+   to reach them. Report the pages that you reached. When the page shows its own
+   section list (a progress bar, a menu, a table of contents), record the section
+   names and mark each unreached section UNCONFIRMED.
+5. Leave the browser on the first form page (or on the account wall). The fill
+   agent continues from there.
+
+Return SITE FACTS only (this report is for the orchestrator and the scribe, not
+for a user):
+- STATUS: FORM-REACHED, ACCOUNT-WALL, or NOT-FOUND
+- The URL chain
+- The account or login requirement, if one exists
+- The field table for each page that you reached
+- The section names for the pages that you did not reach, each marked UNCONFIRMED
+- Bot checks that you saw (do not try to pass one)
+- Approximate tool call count
+```
+
+The scout report arrives as a task notification. It also lands in the orchestrator
+transcript, so the scribe writes the first playbook for the domain from it
+(`knowledge-scribe.md`). The fill-agent prompt for that application then contains
+the scout's field table as its field map.
 
 ### 2. Browser Isolation
 
@@ -121,6 +178,7 @@ model choice controls most of the run cost.
 |---|---|---|
 | Fill agent with a playbook (warm path) | `haiku` | The playbook gives the exact selectors and methods. The fill is checklist work. |
 | Fill agent with no playbook (cold start) | `sonnet` | Discovery needs judgment: label mapping, gate polarity. |
+| Scout | `sonnet` | It must find the real form behind menus and interstitial pages. |
 | Scribe | `sonnet` | It writes the knowledge files that later runs depend on. |
 
 A small-model fill agent stays safe because of the BLOCKED rule: when the playbook
@@ -143,8 +201,9 @@ Fill ONE application. Do not talk to a user. Follow the form-completion skill
   Do NOT run `connect` again. Do NOT use port <M> — another agent owns it.
 - Helpers: `source <skill-dir>/scripts/fill-helpers.sh; SESSION=<name>` gives
   S/K/C/U/V/FIELDS. Use K for each masked field. Use FIELDS for a same-id group.
-- Field map (cold start only): <the inventory from step 1.2, plus the fields that
-  the agent must NOT fill and why>
+- Field map (cold start only): <the field table from the scout report, plus the
+  fields that the agent must NOT fill and why. The browser is already ON the form
+  page — the scout left it there.>
 - Answered gap table: <the values and decisions from intake, for this application.
   Give the exact selector and the exact value for each field. Say which checkbox
   values stay clear.>
@@ -213,6 +272,8 @@ tool calls, and no silent failure on the first readback pass. The warm applicati
 
 ## Failure Behavior
 
+- A scout dies or finds no form: report it to the user with the scout's last known
+  state. The other applications continue. Do not survey the site yourself.
 - A fill agent dies: report that application as failed with its last known state.
   The other applications continue. Offer the user a restart of the failed one.
 - The scribe dies: no effect on the fills (see `knowledge-scribe.md`).

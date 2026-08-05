@@ -84,6 +84,41 @@ the report.
 One question holds a maximum of four options. If a checkbox group has more than
 four items, split the group across two questions in the same call.
 
+### Large Forms (20 or More Gaps)
+
+A large application (a state benefits portal, a multi-page application) can have 20
+to 30 gaps. The count does not change the rules. It changes the presentation:
+
+- Show the FULL gap-analysis table first, in one message. The user must see the
+  full scope of the questions before the first question call. Do not show the
+  gaps in small parts.
+- Then ask with question calls in sequence. Group each call by a section of the
+  form. Put the application name and the section name in each header (example:
+  "SNAP — Income", "SNAP — Household").
+- Thirty gaps take approximately eight question calls. That is correct. Do not
+  remove a gap to make the list short.
+- A conditional field depends on an answer (example: due date applies only when
+  the person is pregnant). Ask the controlling question first. Ask the dependent
+  question only when the answer makes the field applicable.
+
+### Values You Must Not Derive
+
+A fact next to a field is not the value of the field. Do not derive these values.
+Ask for them:
+
+- **A status from an address.** An address on file does not show that the person
+  has stable housing. Many people without housing have a mailing address or a
+  shelter address. Use only an explicit status value. When none exists, ask.
+- **A contact preference from the available contacts.** A phone number on file
+  does not show that the person prefers phone contact. When the form asks for a
+  preferred contact method and no source states one, ask.
+- **A household answer from a marital status.** "Single" does not show that the
+  person lives alone.
+
+The pattern is the same in each example: the form asks for a statement from the
+person, and the record holds an adjacent fact. The fact does not answer the
+question. These fields go in the MISSING group.
+
 ### How to Write the Questions
 
 The user is a person who wants to complete a form. The user is not a developer.
