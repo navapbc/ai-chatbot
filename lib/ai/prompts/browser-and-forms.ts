@@ -56,9 +56,8 @@ Snapshots return refs in this format:
 ["fill", "@e3", "John"]
 ["fill", "#firstNameTxt", "John"]
 
-// Masked — click, type with clear, verify:
-["click", "#ssnTxt"]
-["type", "#ssnTxt", "123456789"]
+// Masked — fill first, verify, and only fall back to type if the value is wrong:
+["fill", "#ssnTxt", "123456789"]
 ["get", "value", "#ssnTxt"]
 
 // Checkbox — use the specific id to avoid ambiguity:
@@ -67,10 +66,12 @@ Snapshots return refs in this format:
 
 ## Masked Fields Rule
 
-- **\`fill\`** = plain text only (name, address, city, email). Sets value programmatically.
-- **\`type\` with \`clear: true\`** = masked/formatted fields (SSN, date, phone, state, zip). Simulates keystrokes so JS formatters fire.
+- **\`fill\` is the default for every text field**, including masked ones (SSN, date, phone, state, zip). It clears the field and sets the value in one step, and it fires the events JS formatters listen for.
+- **\`type\` does NOT clear first — it appends.** \`["fill","#f","ABC"]\` then \`["type","#f","XYZ"]\` leaves \`ABCXYZ\`. There is no \`clear\` option. To retype a field, \`fill\` it with \`""\` first.
+- **\`type\` can also scramble masked fields.** Masks that reposition the caret on each keystroke reverse the input — typing \`92595\` into a zip mask yields \`59529\`. \`fill\` sets the value in one operation and is immune.
+- **Only reach for \`type\`** when \`fill\` leaves the field empty or unformatted — some widgets ignore programmatic value sets and need real keystrokes. Clear the field first: \`["fill","#f",""]\` then \`["type","#f","..."]\`.
 - **Respect \`maxlength\`**: Strip dashes/slashes/spaces. SSN → 9 digits, date → 8 digits, phone → 10 digits, state → 2 chars.
-- **Always verify**: After typing into masked fields, use \`get value\` to confirm. If wrong, click → wait → re-type.
+- **Always verify**: After filling a masked field, use \`["get","value","#f"]\` to confirm. If the value is wrong or reversed, \`fill\` with \`""\` and retry.
 
 ## Field Type Patterns
 

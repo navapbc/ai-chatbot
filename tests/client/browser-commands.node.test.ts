@@ -134,3 +134,35 @@ test('a failing command reports the error instead of throwing', async () => {
   expect(result.success).toBe(false);
   expect(result.error).toBeTruthy();
 });
+
+test('type appends to an existing value; fill replaces it', async () => {
+  // Regression: prompts told the model to use `type` for masked fields,
+  // carried over from the pre-0.33 library where `type` took clear: true.
+  // The CLI has no clear option, so `type` appends.
+  await executeCliCommand(page, refs, ['fill', '#first', 'ABC']);
+  await executeCliCommand(page, refs, ['type', '#first', 'XYZ']);
+  expect(await page.inputValue('#first')).toBe('ABCXYZ');
+
+  await executeCliCommand(page, refs, ['fill', '#first', 'ZZZ']);
+  expect(await page.inputValue('#first')).toBe('ZZZ');
+});
+
+test('fill survives a mask that repositions the caret, type does not', async () => {
+  // A mask that resets the caret to 0 on every input reverses keystroke entry
+  // (92595 -> 59529, exactly what the IHSS zip field did). `fill` sets the
+  // value in one operation, so it is unaffected.
+  await page.setContent(`<!doctype html><html><body>
+    <input id="zip" name="zip">
+    <script>
+      const z = document.querySelector('#zip');
+      z.addEventListener('input', () => z.setSelectionRange(0, 0));
+    </script>
+  </body></html>`);
+
+  await executeCliCommand(page, refs, ['type', '#zip', '92595']);
+  expect(await page.inputValue('#zip')).toBe('59529');
+
+  await executeCliCommand(page, refs, ['fill', '#zip', '']);
+  await executeCliCommand(page, refs, ['fill', '#zip', '92595']);
+  expect(await page.inputValue('#zip')).toBe('92595');
+});

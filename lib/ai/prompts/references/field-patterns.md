@@ -1,6 +1,16 @@
 # Field Type Patterns
 
-JSON examples for the most common form controls. Load when you need an exact action shape.
+Command examples for the most common form controls. Load when you need an exact action shape.
+
+> **`fill` first, always — including masked fields.** `fill` clears the field and sets the value in one step. `type` does NOT clear (it appends), and on masks that reposition the caret per keystroke it reverses the input: typing `92595` into a zip mask produces `59529`.
+>
+> Use `type` only when `fill` leaves a field empty or unformatted, and clear it first:
+>
+> ```json
+> ["fill", "@e1", ""]
+> ["type", "@e1", "92595"]
+> ["get", "value", "@e1"]
+> ```
 
 ## Text Fields (use `fill`)
 
@@ -9,13 +19,12 @@ JSON examples for the most common form controls. Load when you need an exact act
 ["fill", "#firstNameTxt", "John Doe"]
 ```
 
-## Date Fields (use `type`)
+## Date Fields
 
-Check `maxlength`. If `maxlength="8"`, use digits only (MMDDYYYY). Click first, then type:
+Check `maxlength`. If `maxlength="8"`, use digits only (MMDDYYYY). Fill it, then verify:
 
 ```json
-["click", "@e1"]
-["type", "@e1", "01152000"]
+["fill", "@e1", "01152000"]
 ["get", "value", "@e1"]
 ```
 
@@ -27,33 +36,30 @@ Or if using a date picker:
 ["click", "@e5"]
 ```
 
-## SSN Fields (use `type`)
+## SSN Fields
 
 Check `maxlength`. If `maxlength="9"`, digits only:
 
 ```json
-["click", "@e1"]
-["type", "@e1", "123456789"]
+["fill", "@e1", "123456789"]
 ["get", "value", "@e1"]
 ```
 
-## Phone Number Fields (use `type`)
+## Phone Number Fields
 
 Check `maxlength`. If `maxlength="10"`, digits only:
 
 ```json
-["click", "@e1"]
-["type", "@e1", "5551234567"]
+["fill", "@e1", "5551234567"]
 ["get", "value", "@e1"]
 ```
 
-## State Fields (use `type`)
+## State Fields
 
 Check `maxlength`. If `maxlength="2"`, use abbreviation:
 
 ```json
-["click", "@e1"]
-["type", "@e1", "CA"]
+["fill", "@e1", "CA"]
 ["get", "value", "@e1"]
 ```
 
