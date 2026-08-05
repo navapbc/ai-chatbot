@@ -66,8 +66,8 @@ try to fill it.
 | City | `cityTxt` | fill | max 25 |
 | State | `stateTxt` | **per-key** | masked, max 2 — use `CA`, not `California` |
 | Zip | `zipCodeTxt` | fill | max 10 |
-| SSN | `ssnTxt` | **per-key** | masked, 9 digits → `123-45-6789` |
-| Birthdate | `birthDateTxt` | **per-key** | masked, `MMDDYYYY` → `01/02/2000` |
+| SSN | `ssnTxt` | **per-key** | masked, 9 digits → `NNN-NN-NNNN` |
+| Birthdate | `birthDateTxt` | **per-key** | masked, `MMDDYYYY` → `MM/DD/YYYY` |
 | Phone | `telephoneTxt` | **per-key** | masked, 10 digits |
 | Email | `emailTxt` | fill | max 50 |
 | Sex | `chkBxSexMale` / `chkBxSexFemale` | check | |
@@ -97,13 +97,40 @@ shows the formatted string, so a digit-for-digit comparison is the correct check
 
 | Field | Keys you send | Value that `get value` returns |
 |---|---|---|
-| `ssnTxt` | nine digits | `123-45-6789` |
-| `birthDateTxt` | MMDDYYYY | `01/02/2000` |
-| `telephoneTxt` | ten digits | `(777) 777-7777` |
+| `ssnTxt` | nine digits | `NNN-NN-NNNN` |
+| `birthDateTxt` | MMDDYYYY | `MM/DD/YYYY` |
+| `telephoneTxt` | ten digits | `(NNN) NNN-NNNN` |
 | `stateTxt` | the 2-letter state code | the same two characters, no separator |
 
 A readback that differs from the keys you sent is not a failure here. A readback that
 shows `__/__/____` or an empty string is a failure.
+
+### Never Use `eval` on the Masked Fields Here — the Per-Key Method Works
+
+**Confirmed 2026-08-05: `stateTxt`, `ssnTxt`, `birthDateTxt`, and `telephoneTxt` all
+accept the per-key `K` method correctly.** One fill agent reported the per-key method
+"ineffective" and switched to `eval` with a direct JavaScript assignment and a
+dispatched change event. This report was wrong. A second, independent check on the
+same fields with the same `K` helper produced correctly masked values for all four
+fields (`CA`, `NNN-NN-NNNN`, `MM/DD/YYYY`, `(NNN) NNN-NNNN`). Do not read one agent's
+"the documented method failed" as proof. Retry the documented method yourself before
+you conclude that it fails, and never use `eval` on a form that a government agency
+receives — see SKILL.md, "Tool Rules."
+
+**Proof that `eval` bypasses the mask on this site:** after the `eval` writes, `get
+value` returned the RAW digits with no separators (`NNNNNNNNN`, `MMDDYYYY`) instead of
+the masked format (`NNN-NN-NNNN`, `MM/DD/YYYY`). The mask inserts separators only when
+real keydown events reach it. A value with no separators is proof that the mask never
+ran, whether or not the raw digits look plausible on a screenshot.
+
+**If a field was previously written with `eval` or another non-keyboard method, the
+mask's internal buffer can be in a state that rejects the first `K` retry.** Confirmed
+on `ssnTxt`: the first `K "#ssnTxt" "NNNNNNNNN"` call after an `eval` write left the
+field EMPTY, not masked. A second attempt, using the same `K` helper again with no
+other change, produced the correct `NNN-NN-NNNN`. The field needed one extra clear
+pass to flush the leftover state before it accepted keys. If a per-key write returns
+empty right after a non-keyboard write to the same field, retry the same `K` call once
+more before you escalate to a different diagnosis.
 
 ### There Are No `required` Attributes
 

@@ -36,6 +36,12 @@ matches the working directory.
 4. When the scribe completes, its report arrives as a task notification. Relay the
    list of written files in your final report (report item 3).
 
+5. After the submit decision (Phase 6), send the scribe ONE message that contains
+   the word FINALIZE (SendMessage, with the scribe's agent id). This is the
+   scribe's stop signal. Without it, the scribe guesses the end of the run from
+   stall timeouts, and it guesses badly: a fill can pause for many minutes while
+   the user answers questions.
+
 ## Scribe Prompt Template
 
 ```
@@ -47,17 +53,46 @@ to the user.
 Transcript: <transcript>
 Skill directory: <skill-dir>   (contains playbooks/, references/, scripts/)
 
-## Loop
+## Loop — Wake on Markers, Not on Minutes
 
-1. Read the new transcript bytes since your last pass:
-   OFFSET=0 at start; then: tail -c +$((OFFSET+1)) "<transcript>"; update OFFSET
-   with: wc -c < "<transcript>".
-2. Distill findings from the tool calls and results (see "What to Extract").
-3. Write or update the files.
-4. Wait approximately 60 seconds. Then repeat.
-5. Stop when one of these is true: the transcript shows the provenance report or a
-   submit decision; or the file has no new bytes for 5 minutes. Do one final pass,
-   then return your report.
+Each of your turns reads your full conversation again. A 60-second poll loop in one
+run made 606 turns and read 125 million cached tokens. Your budget for the full run
+is approximately 40 turns. Obey these rules:
+
+1. NEVER call a tool to pass the time. No sleep, no "echo waiting", no size checks
+   while you wait. When there is no new marker, END YOUR TURN. The Monitor
+   notification starts your next turn.
+2. Load the Monitor tool (ToolSearch "select:Monitor"). Start ONE Monitor with the
+   script below, non-persistent. The script is silent until the new bytes hold a
+   marker, then it prints one line and exits. One notification for each wake.
+3. On a wake: read the new bytes ONCE (tail -c +$((OFFSET+1)); update OFFSET with
+   wc -c). Extract. Write the files. Start the Monitor again with the new offset.
+   End the turn.
+4. The Monitor's byte count and your own read can differ. A partial line write
+   causes this. Do NOT investigate the difference. Parse complete JSON lines only
+   and continue.
+5. Finalize when a message with the word FINALIZE arrives from the main agent, or
+   when the Monitor prints STALL (the backstop). Then do ONE final pass: the leak
+   check (Hard Rules), then your report.
+
+Monitor script (replace <transcript> and <offset>):
+
+   F="<transcript>"; OFF=<offset>; CYCLES=0
+   while true; do
+     sleep 30
+     CUR=$(wc -c < "$F")
+     if [ "$CUR" -gt "$OFF" ]; then
+       if tail -c +$((OFF+1)) "$F" | grep -qE "SITE FACTS|task-notification|FINALIZE"; then
+         echo "MARKER"; exit 0
+       fi
+       OFF=$CUR
+     fi
+     CYCLES=$((CYCLES+1))
+     [ "$CYCLES" -ge 40 ] && { echo "STALL"; exit 0; }
+   done
+
+Growth without a marker is intake dialogue — participant answers, not site facts.
+The script skips it without a wake. Your read on the next wake covers those bytes.
 
 ## What to Extract, and Where It Goes
 
@@ -84,7 +119,12 @@ Skill directory: <skill-dir>   (contains playbooks/, references/, scripts/)
 - NEVER write participant data into any file. The transcript contains names, phone
   numbers, addresses, and possibly an SSN. Playbook examples use placeholders
   ("MMDDYYYY", "the 2-letter state code", "input[value='N']"), never the
-  participant's values.
+  participant's values. A value that equals a participant value from the transcript
+  IS participant data, also when it looks like an example: the 9 digits that the
+  transcript shows in an SSN fill are the participant's entry — write "NNN-NN-NNNN"
+  in the file. Before your final report, run the leak check: grep every knowledge
+  file for the participant's names, numbers, dates, and address parts that you saw
+  in the transcript. Remove each hit. Your report includes the leak-check result.
 - Record a finding when the transcript CONFIRMS it (a readback, an is-check, a
   count). Do not record a finding when the main agent only tries something. A failed
   try is a finding only when the transcript shows the correct alternative with it.
@@ -108,9 +148,10 @@ playbook for a cold-start domain from the SCOUT report — the URL chain, the ac
 requirement, the field tables, and the unreached sections (keep the UNCONFIRMED
 marks). When the fill-agent report for that domain arrives, merge it into the same
 playbook: confirmed methods replace UNCONFIRMED entries. The scribe also merges the
-findings about tool behavior into the references. The scribe stop condition changes
-in this mode: stop after the LAST fill-agent report is in the transcript, not after
-the first.
+findings about tool behavior into the references. The stop signal does not change:
+the orchestrator sends FINALIZE after the last submit decision. Do not stop on a
+fill-agent report — a BLOCKED application continues after the user answers, and one
+application can report five or more times.
 
 ## Failure Behavior
 
@@ -122,7 +163,9 @@ the first.
 
 ## Cost
 
-The scribe is one background agent that reads a local file each minute. It reads
-only the new bytes in each pass, not the full file. The cost is approximately the
-tokens of one more short session. The main run spends no turns on documentation,
-and the playbook is complete when the run ends.
+The content the scribe ingests is small. The turns are the cost: each turn reads
+the scribe's full conversation again at cache-read prices. A poll-loop scribe in
+one run made 606 turns and read 125 million cached tokens — more than the fill
+agents that did the work. The marker-wake loop above makes approximately one turn
+for each report, near 40 turns for a three-application run. The main run still
+spends no turns on documentation, and the playbook is complete when the run ends.

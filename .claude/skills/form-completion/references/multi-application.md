@@ -53,12 +53,24 @@ parallel. Sections of one form share one page, so they cannot.
    questions for two or more forms in one list, so the header is the only signal of
    which form a question belongs to. For a scouted application, tell the user what
    comes next (example: "The food-assistance application needs more answers — I
-   will ask them when the survey of that site is complete"). Do not ask a question
-   that the scout did not confirm.
+   will ask them when the survey of that site is complete"). In this round, ask
+   only the questions that a playbook confirms. Expected questions for a scouted
+   application come in the second round (the next step).
 5. When a scout report arrives, build the gap analysis for that application from
    the report, and ask a second round of questions. A large application can have
    20 or more gaps — obey "Large Forms" in `gap-analysis-and-provenance.md`: show
    the full table first, then ask in groups that follow the sections of the form.
+   **A sequential portal needs an EXPECTED round.** Some portals show one question
+   for each page and hide the later pages. The scout's field table then covers
+   only the first pages. Do not dispatch with only those answers — each hidden
+   question later stops the fill agent for a full user round trip, and one run
+   took six round trips this way. Build the expected questions from the scout's
+   UNCONFIRMED section names and from the usual topics of that program type
+   (household, income, expenses, assets, disability, student status, citizenship,
+   work). Tell the user which questions are expected, and that you discard an
+   answer the form never asks for. The do-not-derive rules still apply. The costs
+   are not equal: an unneeded answer costs nothing, and a missing answer costs a
+   stopped agent and a round trip.
 6. Report a submit blocker in the gap analysis, with the gaps. Examples: a reCAPTCHA
    on the form, or an account wall from a scout report. The fill can finish, but the
    submit needs the user. The user must know this before the fill starts, not after.
@@ -269,6 +281,9 @@ tool calls, and no silent failure on the first readback pass. The warm applicati
   a time. Approval for one application is not approval for the others. On approval,
   tell the fill agent to submit with SendMessage; it verifies the submit result and
   reports back.
+- **After the last submit decision, send the scribe ONE message with the word
+  FINALIZE** (SendMessage). This is the scribe's stop signal (`knowledge-scribe.md`).
+  Without it, the scribe waits on stall timeouts and makes many turns with no work.
 
 ## Failure Behavior
 

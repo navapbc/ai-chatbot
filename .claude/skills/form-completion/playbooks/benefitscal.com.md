@@ -1,0 +1,397 @@
+# Playbook: benefitscal.com (California CalFresh/SNAP Application)
+
+Scout survey and five fill-agent passes, 2026-08-05, with agent-browser 0.33.2.
+Cold start. The fill agent reached a Citizenship question (page 24 of the
+chain below) and confirmed the program-selection step narrows the flow to
+CalFresh only. It stopped there, and four times before, on forbidden data
+categories. The rest of "Your Information" and Sections 2 through 8 are
+UNCONFIRMED.
+
+**WARNING: This is a live government benefits form. Do not submit test data. Do not
+submit without explicit approval from the user.**
+
+**Freshness probe.** Each command below must return 1. If a command does not return 1,
+the site changed. Use the cold-start procedure. Write this file again.
+
+```bash
+agent-browser get count "#primarylang"
+agent-browser get count "#addressLine1"
+agent-browser get count "#zip5"
+```
+
+## URL Chain — Twenty-Four Pages Confirmed So Far
+
+```
+ 1. https://benefitscal.com/                                        home page
+ 2. .../ApplyForBenefits/begin/ABOVR?lang=en                         interstitial: "Here's how it works"
+ 3. .../ApplyForBenefits/ABHLT                                       "Helpful Tips" — has an account offer, and a no-account path
+ 4. .../ApplyForBenefits/ABDEI                                       "Diversity, Equity, and Inclusion Statement" — text only
+ 5. .../ApplyForBenefits/ABSNC                                       optional mood check — none of the choices are required
+ 6. .../ApplyForBenefits/ABNAV                                       "Application Summary" — the master section list
+ 7. .../ApplyForBenefits/ABLPR                                       "Language Preferences"
+ 8. .../ApplyForBenefits/ABNMI                                       "Name Information"
+ 9. .../ApplyForBenefits/ABNHA                                       "Home Address" — has a gate, an address-check modal, a county picker
+10. .../ApplyForBenefits/ABMAD                                       "Mailing Address" — gate: same as home?
+11. .../ApplyForBenefits/ABCON                                       "Contact Information" — phone and email
+12. .../ApplyForBenefits/ABCOP                                       "Contact Preferences" — text/email alert opt-in
+13. .../ApplyForBenefits/ABPRI                                       "Select Benefit Programs" — narrows the rest of the flow
+14. .../ApplyForBenefits/ABCSD                                       "CalFresh Submit App Divider" — an informational nudge page
+15. .../ApplyForBenefits/ABDIS                                       "Disability" — a forbidden data category, answered after the user confirmed
+16. .../ApplyForBenefits/ABCOS                                       "College Student" — a forbidden data category, answered after the user confirmed
+17. .../ApplyForBenefits/ABCFA                                       "CalFresh Authorized Rep" — "authorize someone to help with your case?"
+18. .../ApplyForBenefits/ABCFS                                       "CalFresh Spend Benefits" — "name someone to get/spend your benefits?"
+19. .../ApplyForBenefits/ABRDT                                       "Birthdate" — a MASKED field, see below
+20. .../ApplyForBenefits/ABSSN                                       "SSN" — a three-way status gate, answered after the user confirmed
+21. .../ApplyForBenefits/ABSNA                                       "SSN A" — the actual SSN digit-entry page, a MASKED field
+22. .../ApplyForBenefits/ABMRS                                       "Marital Status" — a radio group of 8 options
+23. .../ApplyForBenefits/ABCID                                       "Citizenship Immigration Divider" — an informational nudge page, no fields
+24. .../ApplyForBenefits/ABDOC                                       page title "Citizenship" — CONFIRMED STOP POINT. Note: the URL slug (ABDOC) does not match the page title or topic.
+```
+
+**Do not trust the URL slug as the page topic.** `ABDOC` asks about citizenship,
+not "documents." Read the page title and heading to identify a page, not its
+URL segment.
+
+Click through in this order: APPLY FOR BENEFITS -> BEGIN -> Next -> Next -> Next
+(without a mood choice) -> Start Your Information -> Next through ABLPR, ABNMI,
+ABNHA (plus its modal and dialog, see below), ABMAD, ABCON, ABCOP, ABPRI -> on
+ABCSD click "CONTINUE APPLICATION", **not** the "Skip and submit now (not
+recommended)" link -> Next through ABDIS, ABCOS, ABCFA, ABCFS, ABRDT.
+
+**Ids on this site are sometimes generic and do not name the question they
+belong to.** Confirmed on `ABCFA` (id `filingTax` for a "authorize a
+representative" question — nothing to do with tax filing) and `ABCFS` (id
+`select_group` for a "name someone to spend your benefits" question). Do not
+guess a field's purpose from its id. Always confirm the Yes/No mapping by
+reading the visible label text, not by id name or by position.
+
+**Two different markup patterns carry the label text — check both.** Most
+radio pairs use `<label for="<id>">`. Confirmed on `ABSSN`: that page instead
+uses `aria-labelledby` pointing at a separate `<span id="..._inner_label">`
+with the visible text. A selector that only checks `for=` can miss the label
+on a page built this way. If a `for=` lookup finds nothing, check
+`aria-labelledby` and its target span next before you conclude the page has no
+accessible label.
+
+The page advance button on these pages has no id. Match it by its visible text,
+"Next" (or "CONTINUE APPLICATION" on `ABCSD`).
+
+**The site keeps entered data when you navigate back.** A fill agent went back
+five pages (from `ABDIS` through `ABNMI`) with the site's own "Back to Previous
+Page" button to fix a field, then re-advanced through every page again. Every
+value it had entered on the pages in between was still there. Back navigation is
+safe to use for a correction on this site.
+
+**The step counter changes when the program selection narrows.** Before
+`ABPRI`, pages show "Step 1 of 9". After a fill agent chose CalFresh only on
+`ABPRI`, the counter became "Step 1 of 8" from `ABCSD` onward. Do not treat a
+changed step count as a sign of a broken fill — read it as a sign of which
+programs are selected.
+
+## Account Requirement — None, if You Take the Right Path
+
+The "Helpful Tips" page (`ABHLT`) offers a "Create an account now" link. IGNORE it.
+The same page has a "Next" button that continues WITHOUT an account. Confirmed
+2026-08-05: the scout reached the first form page with no account and no login.
+
+## Section List (From the Application Summary Page, `ABNAV`)
+
+This page is the master progress list for the whole application. Section 2 was
+disabled at scout time (labeled "People Not Available") until Section 1 has data
+in it.
+
+| # | Section | Status |
+|---|---|---|
+| 1 | Your Information | REACHED |
+| 2 | People | UNCONFIRMED — button disabled until Section 1 has data |
+| 3 | Household Details | UNCONFIRMED |
+| 4 | Income | UNCONFIRMED |
+| 5 | Expenses | UNCONFIRMED |
+| 6 | Assets | UNCONFIRMED |
+| 7 | Other Situations | UNCONFIRMED |
+| 8 | Document Upload | UNCONFIRMED |
+| 9 | Review & Submit | UNCONFIRMED |
+
+The first form page (`ABLPR`) also shows its own "Step 1 of 9" sub-stepper inside
+Section 1. Steps 2 to 9 of this inner sequence are also UNCONFIRMED.
+
+## Field Table — Page `ABLPR` ("Language Preferences")
+
+| id | type | Label | Required | Fill method | Notes |
+|---|---|---|---|---|---|
+| `primarylang` | select | What language do you prefer to read? | required | select by exact text | Shows a "-Select One-" placeholder, but `get value` reads `03` (English) as the current selection at page load — confirm with `option:checked` before you trust a default |
+| `spokenlang` | select | What language do you prefer to speak? | required | select by exact text | Same option list as `primarylang`, plus "American Sign Language" |
+| `applang` | select | In what language would you like to complete this application? | required | select by exact text | Pre-selected to English (value `03`), no "-Select One-" placeholder. Shorter option list than the other two selects — check the option text is in THIS list before you select |
+
+No text `input` fields are on this page (`get count input` returned 0). One
+`iframe` is present: an "Ask Robin" chat-assistant widget
+(`daghqzwjxmect.cloudfront.net`) — not a form field, do not enter data in it. A
+"Need Language Help?" accordion is present with no additional fields observed.
+
+Confirmed by a fill agent: when the record language is English, all three selects
+already default to English. No write is needed — read each with
+`get text "#id option:checked"` to confirm, then move on.
+
+No county selector is on this page.
+
+## Field Table — Page `ABNMI` ("Name Information")
+
+| id | type | Label | Required | Fill method | Notes |
+|---|---|---|---|---|---|
+| `text1` | text | First Name | required | fill | |
+| `text2` | text | Middle Name | optional | fill | |
+| `text3` | text | Last Name | required | fill | See the suffix note below before you put a suffix word here |
+| `suffix` | select | Suffix | optional | select by exact text | Options: I, II, III, IV, V, VI, VII, VIII, IX, X, Jr., Sr. |
+| `text4` | text | Other Names | optional | fill, or leave empty | |
+
+**A suffix such as "II" has its own dropdown. Do not append it to the last name.**
+A fill on this site put a last name and its suffix word whole into `text3`
+(example: "Smith II") because the source value carried the suffix as part of the
+last name. The site has a `suffix` select with a matching "II" option. Split a
+last-name value that ends in a suffix word (II, III, Jr., Sr., and so on) between
+`text3` and `suffix`.
+
+The ids `text1` to `text4` are generic and not name-derived. The `FIELDS` helper's
+HTML-based labels can misread them, because this page's markup puts placeholder
+text before the real label. Cross-reference with `snapshot -i -u` for the true
+label of each box on this page.
+
+## Field Table — Page `ABNHA` ("Home Address")
+
+| id | type | Label | Required | Fill method | Notes |
+|---|---|---|---|---|---|
+| `radioCard_0` / `radioCard_1` | radio | Are you experiencing homelessness? | appears required, a gate | check | Yes = `radioCard_0`, No = `radioCard_1`. This is a GAP-DECISION — the usual payload has no housing-status value. Do not derive it from an address on file (see `references/gap-analysis-and-provenance.md`, "Values You Must Not Derive"). Ask the user. |
+| `addressLine1` | text | Address Line 1 | required | fill | |
+| `addressLine2` | text | Address Line 2 | optional | fill | |
+| `city` | text | City | required | fill | |
+| `state` | select | State | required | none — DISABLED | Pre-set to California and locked. This site serves California only. Do not try to change it. |
+| `zip5` | text | Zip Code | required | fill | |
+
+**The homelessness gate sits above the address fields in the DOM, but does not
+hide or disable them.** A fill agent filled every address field while the gate
+was unanswered, and every fill succeeded. This is different from a hide-on-gate
+site: read the gate's own answer requirement from the Next-button behavior, not
+from whether the address fields accept a fill. Confirmed value mapping: No =
+`radioCard_1`.
+
+**`zip5` can read back empty right after the homelessness radio is checked, even
+though the ZIP was correct moments before.** Confirmed once in one run — not
+yet seen a second time. Re-read `zip5` right before you click Next, and refill
+it if it is empty. Treat this as a possible site quirk on this page, not a
+one-time fluke, until a second run confirms or clears it.
+
+**An address-check modal can appear after Next on this page.** If the entered
+address does not match the site's validation data (for example, a test
+address), a modal opens: heading "We can't validate your address. Let's double
+check if it's right.", a pre-checked radio "Address You Entered", a button "USE
+THIS ADDRESS", and a link "Correct my address". Click "USE THIS ADDRESS" to
+keep the address exactly as entered. Do NOT click "Correct my address" — that
+lets the site rewrite the value the user gave.
+
+**A county picker can appear after the address modal.** If the site cannot
+derive the county from the address, a dialog opens: heading "What county are
+you currently in?", a required `select#county`, and a "CONTINUE" button. Select
+the county by exact option text (confirmed: "Riverside"), then verify with
+`get text "#county option:checked"`.
+
+**Confirmed stop point (first pass):** a fill agent stopped on this page with
+the homelessness gate unanswered, and did not click Next. A second pass, after
+the user answered No, passed through the modal and the county picker
+successfully and continued to `ABMAD`.
+
+## Field Table — Page `ABMAD` ("Mailing Address")
+
+| id | type | Label | Required | Fill method | Notes |
+|---|---|---|---|---|---|
+| `mailadr1_radio_0` (Y) / `mailadr1_radio_1` (N) | radio | Do you get your mail at a different address? | gate, no default | check | **Inverse polarity: "No" means the mailing address is the SAME as home.** Selecting No shows no extra text block (confirmed). Selecting Yes is UNCONFIRMED — expected to reveal a mailing-address block, not yet tested. |
+
+## Field Table — Page `ABCON` ("Contact Information")
+
+| id | type | Label | Required | Fill method | Notes |
+|---|---|---|---|---|---|
+| `homePhone` | text | Home Phone | optional | fill, or leave empty | |
+| `mobilePhone` | text | Mobile Phone | optional | fill | Ten digits go in; confirmed the site auto-formats to `(NNN) NNN-NNNN` on a plain `fill` — no mask helper needed here |
+| `altPhone` | text | Work Phone/Alternate Phone | optional | fill, or leave empty | |
+| `mail` | text | Email | optional, maxlength 100 | fill | This id is reused with a different role on `ABCOP` — see the warning below |
+
+## Field Table — Page `ABCOP` ("Contact Preferences")
+
+| id | type | Label | Required | Fill method | Notes |
+|---|---|---|---|---|---|
+| `mail` | checkbox | Email (alert opt-in) | optional | check, or leave clear | **Same id `mail` as the EMAIL TEXT FIELD on `ABCON` — a different page, a different element, a different role (checkbox here, not text).** Confirm which page you are on before you use `#mail`. |
+| `phone` | checkbox | Text Message (alert opt-in) | optional | check, or leave clear | |
+| `acceptance_agreement` | checkbox | Terms/Privacy acceptance | disabled by default | none — becomes enabled only when an alert box above it is checked (UNCONFIRMED which one) | |
+
+Neither alert checkbox has an HTML `required` attribute, and the Next button
+stayed enabled with both clear. This page's checkboxes are a contact
+PREFERENCE, not a required field — the skill's "Values You Must Not Derive"
+rule against inventing a contact preference still applies: leave both clear
+unless the user states a preference.
+
+## Field Table — Page `ABPRI` ("Select Benefit Programs")
+
+| id | type | Label | Required | Fill method | Notes |
+|---|---|---|---|---|---|
+| `snap` | checkbox | Food (CalFresh) | part of a required group (pick at least one) | check | Independent of the other two — CalFresh alone is a valid, uncontested selection |
+| `tanf` | checkbox | Cash Aid (CalWORKs, TCVAP, RCA) | part of the same group | check, or leave clear | |
+| `medicaid` | checkbox | Health Coverage (Medi-Cal) | part of the same group | check, or leave clear | |
+| `label_0` (Y) / `label_1` (N) | radio | Are you applying for benefits for yourself? | required | check | Confirmed: Yes = `label_0` |
+
+**The program selection here narrows every page after `ABCSD`.** Selecting
+CalFresh only changed the step counter from "Step 1 of 9" to "Step 1 of 8" from
+`ABCSD` onward (see the URL-chain section). Expect a different page sequence
+after this point if a future fill selects more than one program.
+
+## Page `ABCSD` ("CalFresh Submit App Divider") — No Fields, One Choice of Button
+
+An informational nudge page with no form fields. Two buttons: "CONTINUE
+APPLICATION" (advances to the next page in the normal sequence) and "Skip and
+submit now (not recommended)" (a shortcut toward submit). **Always use "CONTINUE
+APPLICATION." Never use the skip link** — it is submit-adjacent and skips
+sections the gap analysis has not covered.
+
+## Field Table — Page `ABDIS` ("Disability")
+
+| id | type | Label | Required (HTML) | Notes |
+|---|---|---|---|---|
+| `disability0` (Y) / `disability1` (N) | radio | Are you a person with a disability and need help to apply? | no `required` attribute found | FORBIDDEN DATA CATEGORY — do not answer from a derived guess. Ask the user. Confirmed value mapping: read the visible `<label for="disability1">No</label>` text before you click — do not assume index 0/1 maps to Yes/No. |
+| `deaf0` (Y) / `deaf1` (N) | radio | Are you a person who is deaf or hard of hearing? | no `required` attribute found | Same rule as above. |
+
+Answered No/No after the user confirmed both, verified by reading the label
+text before the click and `is checked` on both ids of each pair after.
+
+## Field Table — Page `ABCOS` ("College Student")
+
+| id | type | Label | Required (HTML) | Notes |
+|---|---|---|---|---|
+| `CollegeStudentE_radio_button_0` (Y) / `CollegeStudentE_radio_button_1` (N) | radio | Are you a college student? | none found in HTML | FORBIDDEN DATA CATEGORY (student status) — ask the user. |
+
+Confirmed stop, verified clean: neither radio was touched, Next was not
+clicked. Answered No after the user confirmed it, and the fill continued.
+
+## Field Table — Page `ABCFA` ("CalFresh Authorized Rep")
+
+| id | type | Label | Notes |
+|---|---|---|---|
+| `filingTax_0` (Y) / `filingTax_1` (N) | radio | Do you want to authorize someone to help you with your CalFresh case? | The id name (`filingTax`) is unrelated to the question — do not trust it. Confirm the Yes/No mapping from the label text. Answered No; do not invent a representative. |
+
+## Field Table — Page `ABCFS` ("CalFresh Spend Benefits")
+
+| id | type | Label | Notes |
+|---|---|---|---|
+| `select_group_0` (Y) / `select_group_1` (N) | radio | Do you want to name someone to get and spend your CalFresh benefits for you? | Same generic-id warning as `ABCFA` — the id (`select_group`) does not name the question. Answered No; do not invent a person. |
+
+## Field Table — Page `ABRDT` ("Birthdate") — a Masked Field
+
+| id | type | Label | Required | Mask | Fill method | Notes |
+|---|---|---|---|---|---|---|
+| `birthDate_primary_input` | `type="password"`, `datatype="date"` | Date of Birth | required | YES | **per-key (`K`)** | Placeholder shows `MM/DD/YYYY`, attribute `maxdate="today"`. Confirmed: this input renders as a password-type field. A plain `fill` is expected to fail silently here, the same as the masked fields on other sites in this skill — use the keypress helper and read the value back with `get value` to confirm the formatted date. |
+
+## Field Table — Page `ABSSN` ("SSN")
+
+| id | type | Label | Notes |
+|---|---|---|---|
+| `ssn_group0` | radio | "Do you have a Social Security number?" — option Yes | GAP-DECISION, not a simple forbidden-category skip. Ask the user which of the three options is true. |
+| `ssn_group1` | radio | same question — option No | |
+| `ssn_group2` | radio | same question — option "I don't have it right now" | |
+
+**This page is a three-way STATUS gate, not a text box for SSN digits.** It
+does not ask for the number itself — it asks whether one exists. Do not treat
+"SSN is forbidden data" as a reason to always skip this page with no answer:
+the status question itself is answerable (the user can say whether the
+applicant has a number), and the site's later flow likely depends on the
+answer. Stop and ask the user to choose Yes / No / "I don't have it right now"
+before you continue. If the answer is Yes, the site opens a SEPARATE digit-entry
+page next (`ABSNA`, below) — treat entering the digits as its own decision,
+even after the status gate is answered Yes.
+
+Confirmed: choosing Yes on this gate opens `ABSNA` next.
+
+## Field Table — Page `ABSNA` ("SSN A") — the Actual SSN Digit Entry, a Masked Field
+
+| id | type | Label | Required | Mask | Fill method | Notes |
+|---|---|---|---|---|---|---|
+| `ssn` | `type="password"`, `inputmode="numeric"` | Social Security Number | not explicitly marked, but required for this flow | YES — masked | **per-key (`K`)** | Confirmed: nine digits sent by keypress read back as `NNN-NN-NNNN` (formatted, digits match). No confirm/re-enter box on this page — a single field only. A "Show social security number" toggle button is present but not needed; verify with `get value`, not by revealing the digits on screen. |
+
+## Field Table — Page `ABMRS` ("Marital Status")
+
+| id | type | Label | Notes |
+|---|---|---|---|
+| `maritalStatus_0` … `maritalStatus_7` | radio group (8 options) | What's your marital status? | Exact option order and text: Common Law, Divorced, Married, Never Married, Registered Domestic Partner, Separated, Single, Widowed. A payload value of "single parent household" matches "Single" — a direct, unambiguous match on the household-status word. Do not match it to "Never Married," which is a different, more specific legal status the payload does not state. |
+
+## Page `ABCID` ("Citizenship Immigration Divider") — No Fields
+
+An informational transition screen with no form fields, the same pattern as
+`ABCSD`: text along the lines of "Next, let's go over some questions about
+citizenship and immigration," then a `Next` button. **This site uses these
+divider pages before it opens a new sensitive topic area.** Expect a divider
+page like this before other sensitive sections too (income, assets) — a page
+with no fields and a topic-announcement sentence is not a fill failure, it is
+this site's own section-transition pattern.
+
+## Field Table — Page `ABDOC` ("Citizenship") — CONFIRMED STOP POINT
+
+| id | type | Label | Notes |
+|---|---|---|---|
+| `citizen_radio_0` (Y) | radio | Are you a U.S. citizen or national? — option Yes | FORBIDDEN DATA CATEGORY (citizenship/immigration status) — ask the user. |
+| `citizen_radio_1` (N) | radio | same question — option No | |
+
+Confirmed stop: neither radio touched, Next not clicked.
+
+## A Site-Wide Pattern: Individual-Status Gates Never Carry a `required` Attribute
+
+Confirmed across four separate pages (`ABNHA` homelessness, `ABDIS`
+disability and hearing, `ABCOS` college student, `ABCFA`/`ABCFS` third-party
+authorization): a personal-status Yes/No question on this site never has an
+HTML `required` attribute, and its Next button stays enabled even when the
+question is unanswered. Do not read the absence of `required` or an enabled
+Next button as "this question is optional." Every one of these questions is a
+single-question page with two or three named radios (`..._0`/`..._1`, or a
+word pair) — that page shape, by itself, is the site's own signal that the
+question needs a real answer, HTML attribute or not. Expect more pages shaped
+like this later in the flow (examples: pregnancy status, citizenship, veteran
+status, striker status — none reached yet). Ask the user before you answer any
+of them; never leave one at a guessed default because the button did not
+block you.
+
+## Bot Checks
+
+None seen across the twenty-four pages reached so far (home page through
+`ABDOC`). Confirm this again if a fill agent reaches later sections — a
+captcha can appear later in a multi-page flow even when the entry pages have
+none.
+
+## Unreached Pages — Ask the User Before You Guess
+
+Everything after `ABDOC` is UNCONFIRMED. Expected but not yet seen in "Your
+Information": more citizenship/immigration sub-questions, gender/sex,
+ethnicity (the usual payload has values for both, but no page has asked for
+them yet), and more individual-status gate pages (see the pattern below —
+pregnancy, veteran, striker, work registration, and similar questions are
+plausible and untested). Expenses (rent/mortgage and utilities figures) and
+Assets (a savings amount) are now ALLOWED values once a fill agent reaches
+those pages — see the field tables above for the categories still forbidden
+inside those sections (bank name/account number, cash on hand, vehicles,
+property). Also UNCONFIRMED: the household/People section (the CalFresh
+application needs a name and birth date for every household member — this is
+a common stop point when a payload describes only the primary applicant),
+Household Details, Other Situations, Document Upload, and Review & Submit.
+This is a large state benefits application — expect 20 or more gaps once
+these sections open. Do not derive a household size or an income answer from
+an adjacent fact (see `references/gap-analysis-and-provenance.md`, "Values You
+Must Not Derive"). Ask the user.
+
+## Forbidden and Sensitive Categories Seen So Far
+
+Some pages ask for data that a fill agent should not answer even when a value
+is technically available or pattern-matchable, because a wrong or guessed
+answer on a benefits application has consequences beyond a simple form error.
+Confirmed categories seen through `ABDOC`: disability status, hearing status,
+college-student status, citizenship/immigration status, and Social Security
+number (the status gate is answerable by the user; the digits, on the
+follow-up page `ABSNA`, are a separate and stricter stop — ask again even
+after the status gate is answered Yes). Treat these the same way as financial
+account numbers — ask the user, do not guess, do not pattern-match from an
+adjacent fact. A value the user already gave for a DIFFERENT application in
+the same session (example: an SSN typed for a different site's form) is not
+automatically valid for this site — ask again before reusing it.

@@ -6,7 +6,7 @@
 #   source .claude/skills/form-completion/scripts/fill-helpers.sh
 #   SESSION=localchrome
 #   S fill "#firstName" "Maria"
-#   K "#birthDate" "01022000"           # Masked field: one key for each character
+#   K "#birthDate" "MMDDYYYY"           # Masked field: one key for each character
 #   C "#agreeYes"                       # Idempotent check
 #   V firstName birthDate               # Readback. Always do this.
 #
