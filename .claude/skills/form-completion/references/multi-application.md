@@ -78,10 +78,37 @@ Give each fill agent its own session name. Use the domain as the name
 # then: agent-browser --session <name> connect <9222+N>
 ```
 
-Do not connect two writer sessions to one port. Two sessions on one browser attach
-to the same active tab (confirmed by test). Do not put two applications in two tabs
-of one browser: the applications share the browser cookies, and a portal that
-permits one session for each login can cancel tab 1 when tab 2 sends a request.
+- Watchable one-window mode — use this when the user wants ONE window with one tab
+  for each application. Two sessions can share one debug Chrome when each session
+  owns its own tab (confirmed by test on 2026-08-05: interleaved keystrokes and
+  fills landed in the correct tabs with no cross-contamination). The procedure has
+  strict order rules:
+
+```bash
+# SETUP PHASE — the orchestrator does ALL tab creation, before any fill starts.
+# The `tab new` command moves the tab pointer of EVERY session in the window.
+# A `tab new` during a fill sends the next keystrokes into the wrong application.
+agent-browser --session <app1> connect 9222
+agent-browser --session <app1> tab new --label <app1> <url1>
+agent-browser --session <app2> connect 9222
+agent-browser --session <app2> tab new --label <app2> <url2>
+
+# FILL PHASE — the FIRST command of each fill agent pins its own tab:
+agent-browser --session <app1> tab <app1>
+agent-browser --session <app1> get url        # make sure the pin is correct
+```
+
+  Rules for this mode: no agent runs `tab new` after the fills start. Each fill
+  agent pins its tab by label as its first command and checks the URL. One writer
+  for each TAB — the one-writer rule applies to the tab, not to the window. The
+  applications share the browser cookies: this is acceptable for applications on
+  different domains, and not acceptable for two applications on one portal that
+  permits one session for each login. Clean up with `tab close <label>`, not with
+  `close`.
+
+Do not connect two writer sessions to one port without the tab procedure above.
+Two sessions that connect to one port attach to the same active tab (confirmed by
+test), and two writers on one tab corrupt each other's fills.
 
 ### 3. Dispatch (Orchestrator)
 
