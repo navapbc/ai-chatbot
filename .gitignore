@@ -53,7 +53,9 @@ yarn-error.log*
 .mastra/
 vertex-ai-credentials.json
 
-.claude/
+# Ignore personal Claude Code settings, but track shared skills
+.claude/*
+!.claude/skills/
 docs/superpowers/
 
 # Terraform
