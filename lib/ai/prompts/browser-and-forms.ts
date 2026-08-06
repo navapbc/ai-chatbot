@@ -243,7 +243,8 @@ Always use correct JSON types — the browser errors on wrong types:
 
 Use \`readReference\` to load:
 
-- \`field-patterns.md\` — JSON examples for text, date, SSN, phone, state, dropdowns, checkboxes, radios
+- \`form-protocol.md\` — Site-agnostic protocol for ANY form: reaching the real form past landing pages, gap resolution before filling, gate ordering, silent-failure diagnosis, submit gating. **Load this at the start of every new form or website.**
+- \`field-patterns.md\` — JSON examples for text, date, SSN, phone, state, dropdowns, checkboxes, radios, including the masked-field escalation ladder
 - \`custom-dropdowns.md\` — Select2 / Chosen / Drupal custom widget patterns
 - \`browser-commands.md\` — Full command reference with all actions, flags, and options
 `;
