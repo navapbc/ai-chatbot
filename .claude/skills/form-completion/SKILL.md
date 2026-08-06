@@ -35,6 +35,11 @@ If the file is available:
    tool calls.
 3. If an id is missing, the site changed. Use the cold-start procedure. Write the
    playbook again.
+4. **A partial playbook also needs the scribe.** Read the playbook for the word
+   UNCONFIRMED. When the playbook marks pages or sections UNCONFIRMED and the fill
+   will enter them, start the scribe (cold-start step 1) before the fill. The run
+   makes new site facts in that territory, and without a scribe they are lost. A
+   playbook with no UNCONFIRMED parts needs no scribe.
 
 If the file is not available, use the cold-start procedure:
 

@@ -45,6 +45,12 @@ parallel. Sections of one form share one page, so they cannot.
    (see "The Scout" below). Do not survey the site yourself — the hard rule above.
    You cannot make a correct gap analysis for a form that no agent read, so the
    scout reads it while you talk to the user.
+   **Start the scribe when any application is cold OR has a partial playbook**
+   (the playbook contains the word UNCONFIRMED and the fill will enter those
+   parts). A partial playbook does not need a new scout — the playbook already
+   maps the path to the frontier — but it does need the scribe, because the fill
+   agent's reports from the unconfirmed territory are new site facts. When every
+   application has a complete playbook, start no scribe.
 3. Build the gap analysis for the applications WITH playbooks, from their playbook
    field tables. Show it and ask the questions NOW. Do not wait for the scouts.
 4. Ask the gap questions grouped by application, in plain language (the rules in

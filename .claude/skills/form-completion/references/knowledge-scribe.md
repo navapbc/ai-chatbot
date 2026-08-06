@@ -12,7 +12,12 @@ Claude Code writes each session to a transcript file on disk, live:
 The main agent does not send findings to the scribe. This costs the main agent zero
 tokens and zero turns.
 
-## How the Main Agent Starts the Scribe (Phase 0, Cold Start Only)
+## How the Main Agent Starts the Scribe (Phase 0 — Cold Start or Partial Playbook)
+
+Start the scribe when there is no playbook for the domain, and also when the
+playbook marks parts of the flow UNCONFIRMED and the fill will enter them. A run
+through unconfirmed territory makes new site facts. Do not start the scribe for a
+run that a complete playbook covers — it has nothing to write.
 
 1. Find the transcript path. The current session file is the newest `.jsonl` in the
    project directory:
