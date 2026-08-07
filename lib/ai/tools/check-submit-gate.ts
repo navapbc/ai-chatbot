@@ -1,9 +1,8 @@
 import { tool } from 'ai';
 import { z } from 'zod';
-import { nanoid } from 'nanoid';
-import { executeCommand } from 'agent-browser/dist/actions.js';
-import type { Command } from 'agent-browser/dist/types.js';
 import { getOrCreateBrowser } from '@/lib/kernel/browser';
+import { runCommand } from '@/lib/kernel/cli';
+import { cliSessionName } from '@/lib/kernel/session-store';
 
 /**
  * Runs after formSummary. Diagnoses why a submit button is disabled on pages
@@ -39,9 +38,14 @@ const PROBE_SCRIPT = `(() => {
   };
 })()`;
 
-const FORCE_ENABLE_SCRIPT = (selector: string, callbackName: string | null) => `(() => {
+const FORCE_ENABLE_SCRIPT = (
+  selector: string,
+  callbackName: string | null,
+) => `(() => {
   const results = { callbackInvoked: false, disabledRemoved: false };
-  ${callbackName ? `
+  ${
+    callbackName
+      ? `
   try {
     const token = document.querySelector('[name="cf-turnstile-response"]')?.value;
     if (token && typeof window[${JSON.stringify(callbackName)}] === 'function') {
@@ -49,7 +53,9 @@ const FORCE_ENABLE_SCRIPT = (selector: string, callbackName: string | null) => `
       results.callbackInvoked = true;
     }
   } catch (_) {}
-  ` : ''}
+  `
+      : ''
+  }
   const btn = document.querySelector(${JSON.stringify(selector)});
   if (btn) {
     btn.disabled = false;
@@ -60,6 +66,31 @@ const FORCE_ENABLE_SCRIPT = (selector: string, callbackName: string | null) => `
   return results;
 })()`;
 
+/**
+ * Run a script through `agent-browser eval` and return its value.
+ *
+ * The CLI nests the script's return value under `data.result`; older
+ * in-process calls returned it directly, so unwrap in one place.
+ */
+async function evaluate(
+  script: string,
+  session: { cliSession: string; cdpUrl: string },
+): Promise<
+  { success: true; value: unknown } | { success: false; error: string }
+> {
+  const response = await runCommand(['eval', script], {
+    session: session.cliSession,
+    cdpUrl: session.cdpUrl,
+  });
+
+  if (!response.success) {
+    return { success: false, error: response.error || 'eval failed' };
+  }
+
+  const data = response.data as { result?: unknown } | null;
+  return { success: true, value: data?.result };
+}
+
 export const createCheckSubmitGateTool = (sessionId: string, userId: string) =>
   tool({
     description: `Call when the submit button is disabled and the page has a Cloudflare Turnstile widget. Probes the DOM, then force-enables the button so the caseworker can take control and submit. Never clicks submit.`,
@@ -67,46 +98,67 @@ export const createCheckSubmitGateTool = (sessionId: string, userId: string) =>
       forceEnable: z
         .boolean()
         .default(true)
-        .describe('If true, after probing also force-enable the submit button (invoke Turnstile callback if present, then remove disabled attribute).'),
+        .describe(
+          'If true, after probing also force-enable the submit button (invoke Turnstile callback if present, then remove disabled attribute).',
+        ),
     }),
     execute: async (
       { forceEnable }: { forceEnable: boolean },
       { abortSignal }: { abortSignal?: AbortSignal },
     ) => {
       try {
-        const session = await getOrCreateBrowser(sessionId, userId);
+        const browser = await getOrCreateBrowser(sessionId, userId);
+        const session = {
+          cliSession: cliSessionName(userId, sessionId),
+          cdpUrl: browser.cdpWsUrl,
+        };
 
-        const probe = await executeCommand(
-          { id: nanoid(), action: 'evaluate', script: PROBE_SCRIPT } as Command,
-          session.browserManager,
-        );
+        const probe = await evaluate(PROBE_SCRIPT, session);
         if (!probe.success) {
-          return { success: false, error: probe.error || 'probe failed', state: null, action: null };
+          return {
+            success: false,
+            error: probe.error,
+            state: null,
+            action: null,
+          };
         }
-        if (!probe.data) {
-          return { success: false, error: 'probe returned no data', state: null, action: null };
+        if (!probe.value) {
+          return {
+            success: false,
+            error: 'probe returned no data',
+            state: null,
+            action: null,
+          };
         }
-        const state = typeof probe.data === 'string' ? JSON.parse(probe.data) : probe.data;
+        const state =
+          typeof probe.value === 'string'
+            ? JSON.parse(probe.value)
+            : probe.value;
 
         if (abortSignal?.aborted) {
           return { success: false, error: 'aborted', state, action: null };
         }
 
-        if (!forceEnable || !state.submit?.found || state.submit?.disabled !== true) {
+        if (
+          !forceEnable ||
+          !state.submit?.found ||
+          state.submit?.disabled !== true
+        ) {
           return { success: true, state, action: null };
         }
 
-        const enable = await executeCommand(
-          {
-            id: nanoid(),
-            action: 'evaluate',
-            script: FORCE_ENABLE_SCRIPT(state.submit.selector, state.turnstile.callbackName),
-          } as Command,
-          session.browserManager,
+        const enable = await evaluate(
+          FORCE_ENABLE_SCRIPT(
+            state.submit.selector,
+            state.turnstile.callbackName,
+          ),
+          session,
         );
         const action = enable.success
-          ? (typeof enable.data === 'string' ? JSON.parse(enable.data) : enable.data)
-          : { error: enable.error || 'force-enable failed' };
+          ? typeof enable.value === 'string'
+            ? JSON.parse(enable.value)
+            : enable.value
+          : { error: enable.error };
 
         return { success: true, state, action };
       } catch (error: unknown) {

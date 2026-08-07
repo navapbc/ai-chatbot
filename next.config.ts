@@ -4,10 +4,23 @@ const nextConfig: NextConfig = {
   // cacheComponents disabled to allow runtime env vars in API routes
   // See: https://github.com/vercel/next.js/discussions/84894
   cacheComponents: false,
-  // agent-browser uses playwright-core internally (for CDP connection).
-  // Must be external so Next.js doesn't try to bundle Playwright's server
-  // code (which requires 'electron' and other native modules).
-  serverExternalPackages: ['agent-browser', 'playwright-core'],
+  // agent-browser is a native binary invoked as a subprocess, not an imported
+  // module, so there is nothing for Next.js to bundle or externalize.
+  //
+  // The OpenTelemetry packages DO need to be external. `@opentelemetry/api`
+  // keeps its global tracer provider in module scope, so if the bundler emits
+  // one copy into instrumentation.js and another into the route chunks,
+  // `register()` configures a provider that `trace.getTracer()` in
+  // lib/observability never sees — spans are created against a no-op tracer
+  // and silently vanish. Cloud Trace received Cloud Run's own request spans
+  // but none of ours until these were externalized.
+  serverExternalPackages: [
+    '@opentelemetry/api',
+    '@opentelemetry/sdk-trace-base',
+    '@google-cloud/opentelemetry-cloud-trace-exporter',
+    '@braintrust/otel',
+    '@vercel/otel',
+  ],
   images: {
     remotePatterns: [
       {

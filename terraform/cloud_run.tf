@@ -15,7 +15,7 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
     # VPC Access - Connect to VPC network
     vpc_access {
       connector = local.vpc_connector.id
-      egress    = "ALL_TRAFFIC"  # Route all traffic through VPC/Cloud NAT for static IP
+      egress    = "ALL_TRAFFIC" # Route all traffic through VPC/Cloud NAT for static IP
     }
 
     containers {
@@ -97,7 +97,7 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
       # Apricot API Configuration
       # Prod uses /api/ endpoint with prod credentials, all others use /sandbox/ with sandbox credentials
       env {
-        name = "APRICOT_API_BASE_URL"
+        name  = "APRICOT_API_BASE_URL"
         value = "https://f5r-api.iws.sidekick.solutions/apricot"
       }
 
@@ -301,6 +301,18 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         }
       }
 
+      # Braintrust API key. instrumentation.ts exports no traces without it, so
+      # leaving it unset silently disables OpenTelemetry in the deployed app.
+      env {
+        name = "BRAINTRUST_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = "braintrust-api-key"
+            version = "latest"
+          }
+        }
+      }
+
       # Runtime configuration
       env {
         name  = "NODE_ENV"
@@ -463,6 +475,19 @@ resource "google_project_iam_member" "cloud_run_secrets" {
   member  = "serviceAccount:${google_service_account.cloud_run.email}"
 
   # Recreate when service account changes
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
+# Lets instrumentation.ts export OpenTelemetry spans to Cloud Trace. The SA
+# already has logWriter and metricWriter; without this it can emit logs and
+# metrics but not traces.
+resource "google_project_iam_member" "cloud_run_trace" {
+  project = local.project_id
+  role    = "roles/cloudtrace.agent"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
   lifecycle {
     replace_triggered_by = [google_service_account.cloud_run]
   }

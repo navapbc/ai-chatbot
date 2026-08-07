@@ -10,36 +10,36 @@ The `select` action ONLY works on native `<select>` elements. Custom dropdown wi
 
 ```json
 // 1. Click the dropdown trigger
-{ "action": "click", "selector": "@e5" }
+["click", "@e5"]
 // 2. Wait for the panel to render
-{ "action": "wait", "timeout": 300 }
+["wait", "300"]
 // 3. Snapshot to see options
-{ "action": "snapshot", "interactive": true }
+["snapshot", "-i"]
 // 4. Click the desired option
-{ "action": "click", "selector": "@e12" }
+["click", "@e12"]
 // 5. Re-snapshot (DOM changed)
-{ "action": "snapshot", "selector": "form" }
+["snapshot", "-s", "main"]
 ```
 
 ## Select2 with Search (common in Drupal)
 
 ```json
 // 1. Click to open
-{ "action": "click", "selector": "@e5" }
-{ "action": "wait", "timeout": 300 }
+["click", "@e5"]
+["wait", "300"]
 // 2. Type into search (auto-focused in Select2)
-{ "action": "type", "selector": ":focus", "text": "Riverside" }
-{ "action": "wait", "timeout": 300 }
+["type", ":focus", "Riverside"]
+["wait", "300"]
 // 3. Snapshot filtered results
-{ "action": "snapshot", "interactive": true }
+["snapshot", "-i"]
 // 4. Click match
-{ "action": "click", "selector": "@e12" }
+["click", "@e12"]
 // 5. Re-snapshot
-{ "action": "snapshot", "selector": "form" }
+["snapshot", "-s", "main"]
 ```
 
 ## Drupal Tips
 
-- Always use `{ action: "snapshot", selector: "form" }` after the initial full snapshot — Drupal pages have heavy nav/sidebar/footer.
+- Always use `["snapshot", "-s", "main"]` after the initial full snapshot — Drupal pages have heavy nav/sidebar/footer.
 - Drupal webforms frequently use Select2 for dropdowns with many options (clinics, locations, languages).
 - If clicking the trigger opens a search input inside the dropdown, type into `:focus` rather than finding the search input's ref.
