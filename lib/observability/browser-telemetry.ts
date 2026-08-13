@@ -54,10 +54,58 @@ function log(
   severity: 'INFO' | 'WARNING' | 'ERROR',
   event: string,
   fields: Record<string, unknown>,
+  /**
+   * Span to correlate against. `startCommandTelemetry` uses `startSpan` rather
+   * than `startActiveSpan` (the subprocess call is awaited elsewhere, so there
+   * is no callback scope to make it active in), and its logs should point at
+   * that span rather than at whatever ambient span happens to be current.
+   */
+  span?: Span,
 ): void {
-  const line = JSON.stringify({ severity, event, ...fields });
+  const line = JSON.stringify({
+    severity,
+    event,
+    ...traceCorrelation(span),
+    ...fields,
+  });
   if (severity === 'ERROR' || severity === 'WARNING') console.error(line);
   else console.log(line);
+}
+
+/**
+ * Cloud Logging's trace-correlation fields for the active span, if any.
+ *
+ * These exact magic keys are what make a log entry clickable through to its
+ * span in the Cloud Trace UI. Emitting the raw `traceId` as an ordinary field
+ * (which this module already did, as an exporter diagnostic) does not achieve
+ * that — the console only links on `logging.googleapis.com/trace`, and it wants
+ * the fully-qualified `projects/<id>/traces/<hex>` form rather than a bare id.
+ *
+ * Returns nothing when there is no recording span or no project id, so a
+ * non-GCP environment emits the same JSON it did before rather than entries
+ * carrying an unresolvable trace reference.
+ */
+function traceCorrelation(
+  explicitSpan?: Span,
+): Record<string, string | boolean> {
+  const span = explicitSpan ?? trace.getActiveSpan();
+  if (!span) return {};
+
+  const { traceId, spanId, traceFlags } = span.spanContext();
+  // An all-zero id means a no-op tracer produced this context: there is no span
+  // in the backend for a link to resolve to.
+  if (!traceId || traceId === '0'.repeat(32)) return {};
+
+  const projectId = process.env.GOOGLE_CLOUD_PROJECT;
+  if (!projectId) return {};
+
+  return {
+    'logging.googleapis.com/trace': `projects/${projectId}/traces/${traceId}`,
+    'logging.googleapis.com/spanId': spanId,
+    // TraceFlags.SAMPLED is the low bit; Cloud Logging uses this to decide
+    // whether the trace is worth fetching for the log-to-trace jump.
+    'logging.googleapis.com/trace_sampled': (traceFlags & 1) === 1,
+  };
 }
 
 export interface CommandTelemetry {
@@ -171,16 +219,21 @@ export function startCommandTelemetry(
     .getTracer(TRACER_NAME)
     .startSpan(`agent-browser ${command}`, { attributes });
 
-  log('INFO', 'agent_browser.command.start', {
-    command,
-    session: meta.session,
-    remote: meta.remote,
-    timeoutMs: meta.timeoutMs,
-    // A no-op tracer (no SDK visible to THIS module instance) yields an
-    // all-zero trace id. Emitting it distinguishes "span exported nowhere"
-    // from "span never really created", which are otherwise identical in logs.
-    traceId: span.spanContext().traceId,
-  });
+  log(
+    'INFO',
+    'agent_browser.command.start',
+    {
+      command,
+      session: meta.session,
+      remote: meta.remote,
+      timeoutMs: meta.timeoutMs,
+      // A no-op tracer (no SDK visible to THIS module instance) yields an
+      // all-zero trace id. Emitting it distinguishes "span exported nowhere"
+      // from "span never really created", which are otherwise identical in logs.
+      traceId: span.spanContext().traceId,
+    },
+    span,
+  );
 
   return {
     end({ outcome, error }) {
@@ -209,6 +262,8 @@ export function startCommandTelemetry(
           durationMs,
           ...(error ? { error } : {}),
         },
+        // Ended spans keep a readable context, so this still resolves.
+        span,
       );
     },
   };
