@@ -26,6 +26,9 @@ importers:
       '@ai-sdk/openai':
         specifier: ^4.0.24
         version: 4.0.24(zod@3.25.76)
+      '@ai-sdk/otel':
+        specifier: 1.0.42
+        version: 1.0.42(zod@3.25.76)
       '@ai-sdk/provider':
         specifier: 4.0.4
         version: 4.0.4
@@ -416,6 +419,10 @@ packages:
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/otel@1.0.42':
+    resolution: {integrity: sha512-KD0MQmDbSRHd8YgPqRSRLXO492ETgMJKbxOTSgVG/MDoqfSGOV1doSnOn7aHLxRAT9ojHLYFYrSkiJ9BG2WEgg==}
+    engines: {node: '>=22'}
 
   '@ai-sdk/provider-utils@5.0.15':
     resolution: {integrity: sha512-dnDM4/fS17qO+D7LxVU4003V1+8ZDEWgG7rPhvcDNNFs269qLx+Jnm2mTf72ejyjdzu+f0J+rKNSLXWjZWzxwA==}
@@ -1428,6 +1435,7 @@ packages:
   '@google-cloud/opentelemetry-cloud-trace-exporter@3.0.0':
     resolution: {integrity: sha512-mUfLJBFo+ESbO0dAGboErx2VyZ7rbrHcQvTP99yH/J72dGaPbH2IzS+04TFbTbEd1VW5R9uK3xq2CqawQaG+1Q==}
     engines: {node: '>=18'}
+    deprecated: Google Cloud Platform now supports native OpenTelemetry Protocol (OTLP) endpoints via the Telemetry API. Please follow https://github.com/GoogleCloudPlatform/opentelemetry-operations-js/blob/main/MIGRATION.md
     peerDependencies:
       '@opentelemetry/api': ^1.0.0
       '@opentelemetry/core': ^2.0.0
@@ -1437,6 +1445,7 @@ packages:
   '@google-cloud/opentelemetry-resource-util@3.0.0':
     resolution: {integrity: sha512-CGR/lNzIfTKlZoZFfS6CkVzx+nsC9gzy6S8VcyaLegfEJbiPjxbMLP7csyhJTvZe/iRRcQJxSk0q8gfrGqD3/Q==}
     engines: {node: '>=18'}
+    deprecated: Google Cloud Platform now supports native OpenTelemetry Protocol (OTLP) endpoints via the Telemetry API. Please follow https://github.com/GoogleCloudPlatform/opentelemetry-operations-js/blob/main/MIGRATION.md
     peerDependencies:
       '@opentelemetry/core': ^2.0.0
       '@opentelemetry/resources': ^2.0.0
@@ -1770,6 +1779,10 @@ packages:
 
   '@opentelemetry/api@1.9.0':
     resolution: {integrity: sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg==}
+    engines: {node: '>=8.0.0'}
+
+  '@opentelemetry/api@1.9.1':
+    resolution: {integrity: sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q==}
     engines: {node: '>=8.0.0'}
 
   '@opentelemetry/core@2.7.1':
@@ -5753,6 +5766,14 @@ snapshots:
       '@ai-sdk/provider-utils': 5.0.15(zod@3.25.76)
       zod: 3.25.76
 
+  '@ai-sdk/otel@1.0.42(zod@3.25.76)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.4
+      '@opentelemetry/api': 1.9.1
+      ai: 7.0.42(zod@3.25.76)
+    transitivePeerDependencies:
+      - zod
+
   '@ai-sdk/provider-utils@5.0.15(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 4.0.4
@@ -6743,6 +6764,8 @@ snapshots:
       '@opentelemetry/api': 1.9.0
 
   '@opentelemetry/api@1.9.0': {}
+
+  '@opentelemetry/api@1.9.1': {}
 
   '@opentelemetry/core@2.7.1(@opentelemetry/api@1.9.0)':
     dependencies:
