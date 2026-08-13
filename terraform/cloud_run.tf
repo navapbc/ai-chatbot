@@ -506,6 +506,20 @@ resource "google_project_iam_member" "cloud_run_telemetry" {
   }
 }
 
+# ADC attaches a quota project to every Telemetry API call, and billing a
+# request to a project needs serviceusage.services.use. Without it the exporter
+# gets a bare 403 ("OTLPExporterError: Forbidden") that BatchSpanProcessor
+# swallows, so spans record normally and silently never arrive.
+resource "google_project_iam_member" "cloud_run_service_usage" {
+  project = local.project_id
+  role    = "roles/serviceusage.serviceUsageConsumer"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
 resource "google_project_iam_member" "cloud_run_logging" {
   project = local.project_id
   role    = "roles/logging.logWriter"
