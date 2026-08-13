@@ -56,31 +56,31 @@ resource "google_compute_network" "main" {
 locals {
   vpc_network = startswith(var.environment, "preview-") ? (
     data.google_compute_network.preview_shared[0]
-  ) : (
+    ) : (
     google_compute_network.main[0]
   )
-  
+
   public_subnet = startswith(var.environment, "preview-") ? (
     data.google_compute_subnetwork.preview_public[0]
-  ) : (
+    ) : (
     google_compute_subnetwork.public[0]
   )
-  
+
   private_subnet = startswith(var.environment, "preview-") ? (
     data.google_compute_subnetwork.preview_private[0]
-  ) : (
+    ) : (
     google_compute_subnetwork.private[0]
   )
-  
+
   db_subnet = startswith(var.environment, "preview-") ? (
     data.google_compute_subnetwork.preview_db[0]
-  ) : (
+    ) : (
     google_compute_subnetwork.db[0]
   )
-  
+
   vpc_connector = startswith(var.environment, "preview-") ? (
     data.google_vpc_access_connector.preview_connector[0]
-  ) : (
+    ) : (
     google_vpc_access_connector.cloud_run[0]
   )
 }
@@ -192,10 +192,10 @@ resource "google_vpc_access_connector" "cloud_run" {
   region        = local.region
   network       = google_compute_network.main[0].name
   ip_cidr_range = var.vpc_connector_cidr
-  
+
   # Connector machine type (f1-micro, e2-micro, or e2-standard-4)
   machine_type = "e2-micro"
-  
+
   min_instances = 2
   max_instances = 10
 
@@ -346,31 +346,6 @@ resource "google_compute_firewall" "browser_streaming" {
   description = "Allow browser streaming WebSocket access on port ${var.firewall_rules.browser_streaming.port} from internal VPC only (internal service)"
 }
 
-# Legacy API access (configurable port, only for dev/prod)
-resource "google_compute_firewall" "mastra_app" {
-  count   = 0
-  name    = "labs-asp-mastra-app-${var.environment}"
-  network = google_compute_network.main[0].name
-
-  allow {
-    protocol = "tcp"
-    ports    = [tostring(var.firewall_rules.mastra_api.port)]
-  }
-
-  # Combine internal VPC ranges with allowed external ranges
-  source_ranges = concat(
-    [
-      var.vpc_cidr_public,
-      var.vpc_cidr_private,
-      var.vpc_connector_cidr
-    ],
-    var.firewall_rules.mastra_api.allow_public_access ? ["0.0.0.0/0"] : var.firewall_rules.mastra_api.allowed_ip_ranges
-  )
-
-  target_tags = ["mastra-app"]
-
-  description = "Allow Mastra API access on port ${var.firewall_rules.mastra_api.port} from VPC and approved external IPs"
-}
 
 # ============================================================================
 # VPC Peering Configuration

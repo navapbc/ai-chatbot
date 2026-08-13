@@ -62,7 +62,6 @@ jobs:
           TAG=${{ steps.sha.outputs.short_sha }}
           echo "browser_image=${ARTIFACT_REGISTRY}/browser-streaming:${TAG}" >> $GITHUB_OUTPUT
           echo "browser_ws_proxy_image=${ARTIFACT_REGISTRY}/browser-ws-proxy:${TAG}" >> $GITHUB_OUTPUT
-          echo "mastra_image=${ARTIFACT_REGISTRY}/mastra-app:${TAG}" >> $GITHUB_OUTPUT
           echo "chatbot_image=${ARTIFACT_REGISTRY}/ai-chatbot:${TAG}" >> $GITHUB_OUTPUT
 
       - name: Verify images exist
@@ -70,7 +69,6 @@ jobs:
           echo "Verifying images exist in Artifact Registry..."
           gcloud artifacts docker images describe ${{ steps.images.outputs.browser_image }} || echo "Warning: browser image not found"
           gcloud artifacts docker images describe ${{ steps.images.outputs.browser_ws_proxy_image }} || echo "Warning: proxy image not found"
-          gcloud artifacts docker images describe ${{ steps.images.outputs.mastra_image }} || echo "Warning: mastra image not found"
           gcloud artifacts docker images describe ${{ steps.images.outputs.chatbot_image }} || echo "Warning: chatbot image not found"
 
       - name: Setup Terraform
@@ -90,7 +88,6 @@ jobs:
           terraform plan \
             -var="environment=${{ github.event.inputs.environment }}" \
             -var="browser_image_url=${{ steps.images.outputs.browser_image }}" \
-            -var="mastra_image_url=${{ steps.images.outputs.mastra_image }}" \
             -var="chatbot_image_url=${{ steps.images.outputs.chatbot_image }}" \
             -var="browser_ws_proxy_image_url=${{ steps.images.outputs.browser_ws_proxy_image }}" \
             -out=tfplan
@@ -109,7 +106,6 @@ jobs:
         id: tf_outputs
         run: |
           echo "chatbot_url=$(terraform output -raw chatbot_public_url)" >> $GITHUB_OUTPUT
-          echo "vm_ip=$(terraform output -raw vm_internal_ip)" >> $GITHUB_OUTPUT
 
       - name: Deployment Summary
         run: |
@@ -118,9 +114,6 @@ jobs:
 
           ### Service URLs
           - **AI Chatbot**: ${{ steps.tf_outputs.outputs.chatbot_url }}
-          - **Mastra API**: http://${{ steps.tf_outputs.outputs.vm_ip }}:4112 (internal IP, accessible via VPC)
-          - **Browser MCP**: http://${{ steps.tf_outputs.outputs.vm_ip }}:8931/mcp (internal IP, accessible via VPC)
-          - **Browser Streaming**: ws://${{ steps.tf_outputs.outputs.vm_ip }}:8933 (internal IP, accessible via VPC)
 
           ### Deployment Info
           - **Version**: ${{ github.event.inputs.version }}

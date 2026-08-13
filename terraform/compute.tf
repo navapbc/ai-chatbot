@@ -42,21 +42,6 @@ data "google_secret_manager_secret_version" "xai_api_key" {
   secret = "xai-api-key"
 }
 
-data "google_secret_manager_secret_version" "mastra_jwt_secret" {
-  count  = 0
-  secret = "mastra-jwt-secret"
-}
-
-data "google_secret_manager_secret_version" "mastra_app_password" {
-  count  = 0
-  secret = "mastra-app-password"
-}
-
-data "google_secret_manager_secret_version" "mastra_jwt_token" {
-  count  = 0
-  secret = "mastra-jwt-token"
-}
-
 data "google_secret_manager_secret_version" "vertex_ai_credentials" {
   secret = "vertex-ai-credentials"
 }
@@ -86,7 +71,7 @@ data "google_secret_manager_secret_version" "apricot_client_secret_sandbox" {
 # Internet access is provided via Cloud NAT
 # If external IP is needed for API whitelisting, consider using Cloud NAT's external IPs
 
-# Compute VM - Runs browser-streaming and mastra-app containers
+# Compute VM - Runs the browser-streaming container
 resource "google_compute_instance" "app_vm" {
   count        = 0
   name         = "app-vm-${var.environment}"
@@ -123,31 +108,26 @@ resource "google_compute_instance" "app_vm" {
   # IMPORTANT: Image version metadata triggers VM restart when images change
   metadata = {
     browser-image-version = var.browser_image_url
-    mastra-image-version  = var.mastra_image_url
     startup-script = templatefile("${path.module}/scripts/startup.sh", {
-      browser_image           = var.browser_image_url
-      mastra_image            = var.mastra_image_url
-      project_id              = local.project_id
-      environment             = var.environment
-      database_url            = ""
-      openai_api_key          = data.google_secret_manager_secret_version.openai_api_key.secret_data
-      anthropic_api_key       = data.google_secret_manager_secret_version.anthropic_api_key.secret_data
-      exa_api_key             = data.google_secret_manager_secret_version.exa_api_key.secret_data
-      google_ai_key           = data.google_secret_manager_secret_version.google_ai_key.secret_data
-      grok_api_key            = data.google_secret_manager_secret_version.grok_api_key.secret_data
-      xai_api_key             = data.google_secret_manager_secret_version.xai_api_key.secret_data
-      mastra_jwt_secret       = length(data.google_secret_manager_secret_version.mastra_jwt_secret) > 0 ? data.google_secret_manager_secret_version.mastra_jwt_secret[0].secret_data : ""
-      mastra_app_password     = length(data.google_secret_manager_secret_version.mastra_app_password) > 0 ? data.google_secret_manager_secret_version.mastra_app_password[0].secret_data : ""
-      mastra_jwt_token        = length(data.google_secret_manager_secret_version.mastra_jwt_token) > 0 ? data.google_secret_manager_secret_version.mastra_jwt_token[0].secret_data : ""
-      vertex_ai_credentials   = data.google_secret_manager_secret_version.vertex_ai_credentials.secret_data
-      apricot_api_base_url    = data.google_secret_manager_secret_version.apricot_api_base_url.secret_data
-      apricot_client_id       = local.apricot_client_id
-      apricot_client_secret   = local.apricot_client_secret
+      browser_image         = var.browser_image_url
+      project_id            = local.project_id
+      environment           = var.environment
+      database_url          = ""
+      openai_api_key        = data.google_secret_manager_secret_version.openai_api_key.secret_data
+      anthropic_api_key     = data.google_secret_manager_secret_version.anthropic_api_key.secret_data
+      exa_api_key           = data.google_secret_manager_secret_version.exa_api_key.secret_data
+      google_ai_key         = data.google_secret_manager_secret_version.google_ai_key.secret_data
+      grok_api_key          = data.google_secret_manager_secret_version.grok_api_key.secret_data
+      xai_api_key           = data.google_secret_manager_secret_version.xai_api_key.secret_data
+      vertex_ai_credentials = data.google_secret_manager_secret_version.vertex_ai_credentials.secret_data
+      apricot_api_base_url  = data.google_secret_manager_secret_version.apricot_api_base_url.secret_data
+      apricot_client_id     = local.apricot_client_id
+      apricot_client_secret = local.apricot_client_secret
     })
   }
 
-  # Allow HTTP traffic for MCP, WebSocket, and Mastra API
-  tags = ["http-server", "https-server", "browser-mcp", "browser-streaming", "mastra-app"]
+  # Allow HTTP traffic for MCP and WebSocket
+  tags = ["http-server", "https-server", "browser-mcp", "browser-streaming"]
 
   labels = merge(local.common_labels, {
     environment = var.environment
@@ -163,7 +143,7 @@ resource "google_compute_instance" "app_vm" {
     google_project_service.required_apis,
     google_compute_network.main,
     google_compute_subnetwork.private,
-    google_compute_router_nat.main  # Ensure NAT is ready for internet access
+    google_compute_router_nat.main # Ensure NAT is ready for internet access
   ]
 }
 
@@ -172,7 +152,6 @@ resource "terraform_data" "image_versions" {
   count = 0
   input = {
     browser_image = var.browser_image_url
-    mastra_image  = var.mastra_image_url
   }
 }
 
