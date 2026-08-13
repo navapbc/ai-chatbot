@@ -61,7 +61,7 @@ export function register() {
     spanProcessors.push(
       new BatchSpanProcessor(
         new BraintrustExporter({
-          // Keep AI spans and our browser tracer's spans; drop HTTP/RSC noise.
+          // Keep the AI spans and the browser tracer's spans. Drop the rest.
           filterAISpans: true,
           customFilter: (span) =>
             span.instrumentationScope?.name === BROWSER_TRACER

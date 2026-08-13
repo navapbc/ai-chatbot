@@ -98,17 +98,17 @@ export interface CommandTelemetry {
   end(result: { outcome: CommandOutcome; error?: string | null }): void;
 }
 
-/** One event from an external timeline (e.g. Kernel Browser Telemetry). */
+/** One event from an external timeline, for example Kernel Browser Telemetry. */
 export interface TimelineEvent {
-  /** Span-event name, e.g. `kernel.console_error`. */
+  /** Span-event name, for example `kernel.console_error`. */
   name: string;
   timestamp: Date;
   attributes?: Record<string, string | number | boolean>;
 }
 
 /**
- * Fetches external timeline events for a time window. Kept as an injected
- * callback so this module stays free of vendor SDK dependencies.
+ * Reads external timeline events for a time window. The callback is injected
+ * so this module does not import vendor SDKs.
  */
 export type TimelineCollector = (window: {
   sinceIso: string;
@@ -116,9 +116,9 @@ export type TimelineCollector = (window: {
 }) => Promise<TimelineEvent[]>;
 
 /**
- * Stamp attributes onto whatever span is currently active (no-op without one).
- * Used to put Kernel session ids and replay URLs on the enclosing tool span so
- * the recording is one click away from the trace.
+ * Set attributes on the span that is active now. Do nothing when no span is
+ * active. Callers use this to put Kernel session ids and replay URLs on the
+ * tool span, which makes the recording reachable from the trace.
  */
 export function annotateActiveSpan(
   attributes: Record<string, string | number | boolean>,
@@ -215,7 +215,7 @@ export function startCommandTelemetry(
     session: string;
     remote: boolean;
     timeoutMs: number;
-    /** When set, the command's window of external events becomes a child span. */
+    /** When set, external events from the command window become a child span. */
     collectTimeline?: TimelineCollector;
   },
 ): CommandTelemetry {
@@ -234,8 +234,8 @@ export function startCommandTelemetry(
     .getTracer(TRACER_NAME)
     .startSpan(`agent-browser ${command}`, { attributes });
 
-  // Captured now: end() runs from a subprocess callback, where the active
-  // context that should parent the timeline span is long gone.
+  // Capture the parent context now. end() runs from a subprocess callback,
+  // where the active context is gone.
   const parentContext = trace.setSpan(context.active(), span);
 
   log(
@@ -298,22 +298,20 @@ export function startCommandTelemetry(
 }
 
 /**
- * How long to wait before reading the timeline. Kernel archives events to a
- * durable log as they happen, but a click's consequences (console errors, CDP
- * disconnects) can land just after the command returns.
+ * Wait time before the timeline read. The events that a command causes can
+ * arrive after the command returns.
  */
 const TIMELINE_SETTLE_MS = 1_500;
 
-/** A page can fire hundreds of events a second; the span stays legible. */
+/** A page can send hundreds of events each second. Keep the span readable. */
 const TIMELINE_MAX_EVENTS = 100;
 
 /**
- * Fetch the external events that occurred during one command's window and emit
- * them as a child span with explicit timestamps. A separate span (rather than
- * events on the command span itself) keeps the command's duration honest: the
- * fetch happens after the command span has already ended.
+ * Read the external events from one command's window and emit them as a child
+ * span with explicit timestamps. A separate span keeps the command duration
+ * correct, because the read occurs after the command span ends.
  *
- * Fire-and-forget by design — the agent loop must never wait on this.
+ * Callers do not await this function. The agent loop must not wait for it.
  */
 async function emitTimelineSpan(args: {
   collect: TimelineCollector;
@@ -349,7 +347,7 @@ async function emitTimelineSpan(args: {
     }
     span.end(new Date(endedAtMs + TIMELINE_SETTLE_MS));
   } catch (error: unknown) {
-    // Best-effort enrichment; the command span and logs already exist.
+    // The command span and logs already exist. Do not fail the command.
     log('WARNING', 'kernel.timeline.error', {
       command,
       error: error instanceof Error ? error.message : String(error),

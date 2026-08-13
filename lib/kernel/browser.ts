@@ -60,8 +60,7 @@ async function archiveReplayVideo(
     const videoBuffer = await videoResponse.arrayBuffer();
     const url = await uploadReplayVideo(chatId, kernelSessionId, videoBuffer);
     await upsertSessionMapping({ chatId, userId, kernelReplayUrl: url });
-    // Archival runs inside a request (standby/delete), so when a span is
-    // active the archived video becomes reachable from the trace too.
+    // When a span is active, the archived video is reachable from the trace.
     annotateActiveSpan({ 'kernel.replay_url': url });
   } catch (err) {
     console.error('[Kernel] Failed to archive replay video:', err);
@@ -221,9 +220,8 @@ export async function getOrCreateBrowser(
             timeout_seconds: KERNEL_TIMEOUT_SECONDS,
             kiosk_mode: false,
             stealth: true,
-            // Kernel Browser Telemetry: the default operational set (control,
-            // connection, system, captcha) plus console errors/logs. `network`
-            // stays off — headers and bodies carry applicant PII.
+            // Capture the default operational set plus console. Do not
+            // capture network data: it contains applicant PII.
             telemetry: {
               enabled: true,
               browser: { console: { enabled: true } },
@@ -265,8 +263,8 @@ export async function getOrCreateBrowser(
 
       sessions.set(key, session);
 
-      // Put the Kernel ids and live-view URL on the enclosing tool span, so
-      // the session (and its recording) is reachable from the trace.
+      // Put the Kernel ids and the live-view URL on the active tool span.
+      // The session and its recording are then reachable from the trace.
       annotateActiveSpan({
         'kernel.session_id': browser.session_id,
         'kernel.live_view_url': browser.browser_live_view_url,
@@ -473,7 +471,7 @@ export async function reconnectBrowser(
     session: cliSessionName(userId, sessionId),
     cdpUrl: session.cdpWsUrl,
     timeoutMs: RECONNECT_TIMEOUT_MS,
-    // Reconnects are where CDP connect/disconnect events matter most.
+    // CDP connect and disconnect events are most important at reconnect.
     collectTimeline: kernelTimelineCollector(session.kernelSessionId),
   }).catch((err: unknown) => {
     console.error('[Kernel] CDP reconnect probe failed to run:', err);

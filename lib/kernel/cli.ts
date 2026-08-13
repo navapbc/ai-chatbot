@@ -34,8 +34,8 @@ export interface CliOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   /**
-   * When set, the browser-internal events that occurred during this command
-   * (from Kernel Browser Telemetry) are attached to the trace as a child span.
+   * When set, the Kernel browser events from this command's window are
+   * attached to the trace as a child span.
    */
   collectTimeline?: TimelineCollector;
 }

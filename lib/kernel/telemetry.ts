@@ -1,15 +1,15 @@
 /**
- * Kernel Browser Telemetry → OpenTelemetry bridge.
+ * Bridge from Kernel Browser Telemetry to OpenTelemetry.
  *
- * Kernel records what happens *inside* the browser VM — console errors, CDP
- * connects/disconnects, captcha outcomes, OOM kills — on a durable timeline
- * keyed by browser session. This module reads the slice of that timeline
- * matching one agent-browser command so the span layer can attach it to the
- * trace: a failed click then carries the page's own evidence.
+ * Kernel records the events that occur in the browser VM: console errors,
+ * CDP connects and disconnects, captcha results, and OOM kills. This module
+ * reads the events that match one agent-browser command. The span layer
+ * attaches them to the trace, so a failed click shows the browser's own
+ * evidence.
  *
- * Capture is opt-in per category at browser creation (see
- * `getOrCreateBrowser`). `network` stays off: request/response headers and
- * bodies carry applicant PII.
+ * Capture is set for each category when the browser is created (see
+ * `getOrCreateBrowser`). The `network` category stays off because request
+ * data contains applicant PII.
  */
 
 import Kernel from '@onkernel/sdk';
@@ -18,24 +18,21 @@ import type {
   TimelineEvent,
 } from '@/lib/observability/browser-telemetry';
 
-// Lazy: the SDK constructor throws without KERNEL_API_KEY, and this module's
-// pure mapping half must stay importable (tests, environments without Kernel).
+// Create the client on first use. The SDK constructor fails when
+// KERNEL_API_KEY is not set, and tests import the pure functions here.
 let client: Kernel | undefined;
 function kernelClient(): Kernel {
   client ??= new Kernel();
   return client;
 }
 
-/**
- * Payload strings are page-controlled (console text, URLs); keep them short
- * enough for a span event and mark the cut.
- */
+/** The page controls payload strings. Keep them short and mark the cut. */
 const MAX_ATTR_STRING = 500;
 
-/** Payload fields can be arbitrary; a span event should stay skimmable. */
+/** Keep span events small so they are easy to read. */
 const MAX_ATTRS_PER_EVENT = 16;
 
-/** Shape shared by every member of Kernel's telemetry event union. */
+/** The fields that all members of Kernel's telemetry event union share. */
 interface KernelEvent {
   category: string;
   type: string;
@@ -46,10 +43,9 @@ interface KernelEvent {
 }
 
 /**
- * Map one Kernel event to a span event: `kernel.<type>` named, stamped with
- * the event's own timestamp, carrying the primitive payload fields. Nested
- * objects (call stacks, header maps) are dropped — the durable timeline keeps
- * the full record, the trace needs the headline.
+ * Map one Kernel event to a span event named `kernel.<type>`, with the
+ * event's own timestamp and its primitive payload fields. Nested objects are
+ * dropped: Kernel's durable timeline keeps the full record.
  *
  * Exported for tests.
  */
@@ -86,8 +82,8 @@ export function toTimelineEvent(
 }
 
 /**
- * Build a collector that reads a Kernel browser session's telemetry events
- * for a time window. The SDK paginates transparently; the caller caps volume.
+ * Make a collector that reads one Kernel browser session's telemetry events
+ * for a time window.
  */
 export function kernelTimelineCollector(
   kernelSessionId: string,
@@ -103,7 +99,7 @@ export function kernelTimelineCollector(
     );
     for await (const item of page) {
       events.push(toTimelineEvent(item.event as KernelEvent, item.seq));
-      // Bound pagination; the span layer trims further for legibility.
+      // Stop after 200 events. The span layer applies a lower limit.
       if (events.length >= 200) break;
     }
     return events;
