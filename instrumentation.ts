@@ -19,8 +19,13 @@ import { OpenTelemetry } from '@ai-sdk/otel';
  * Cloud Trace over OTLP. Replaces the deprecated cloud-trace-exporter, which
  * also capped spans at 32 attributes / 256-byte values — too small for GenAI
  * spans. `headers` is async because ADC tokens expire hourly.
+ *
+ * No x-goog-user-project header: it makes the API bill the request to that
+ * project, which needs serviceusage.services.use — not in
+ * roles/telemetry.tracesWriter, so every export 403'd. The gcp.project_id
+ * resource attribute below already routes the spans.
  */
-function cloudTraceProcessor(projectId: string): SpanProcessor {
+function cloudTraceProcessor(): SpanProcessor {
   const auth = new GoogleAuth({
     scopes: 'https://www.googleapis.com/auth/cloud-platform',
   });
@@ -33,10 +38,7 @@ function cloudTraceProcessor(projectId: string): SpanProcessor {
         // google-auth-library@9 types this as Headers but returns a plain
         // object at runtime; Object.entries handles both.
         const authHeaders = await client.getRequestHeaders();
-        return {
-          ...Object.fromEntries(Object.entries(authHeaders)),
-          'x-goog-user-project': projectId,
-        };
+        return Object.fromEntries(Object.entries(authHeaders));
       },
     }),
   );
@@ -63,7 +65,7 @@ export function register() {
   // runtime-injected vars are not visible to the instrumentation hook.
   const projectId = process.env.GOOGLE_CLOUD_PROJECT;
   if (projectId) {
-    spanProcessors.push(cloudTraceProcessor(projectId));
+    spanProcessors.push(cloudTraceProcessor());
     enabled.push('cloud-trace-otlp');
   }
 
