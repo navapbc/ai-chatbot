@@ -14,6 +14,7 @@ import {
 } from '@opentelemetry/sdk-trace-base';
 import { registerTelemetry } from 'ai';
 import { OpenTelemetry } from '@ai-sdk/otel';
+import { TRACER_NAME as BROWSER_TRACER } from '@/lib/observability/browser-telemetry';
 
 /**
  * Cloud Trace over OTLP. Replaces the deprecated cloud-trace-exporter, which
@@ -58,7 +59,16 @@ export function register() {
 
   if (process.env.BRAINTRUST_API_KEY) {
     spanProcessors.push(
-      new BatchSpanProcessor(new BraintrustExporter({ filterAISpans: true })),
+      new BatchSpanProcessor(
+        new BraintrustExporter({
+          // Keep AI spans and our browser tracer's spans; drop HTTP/RSC noise.
+          filterAISpans: true,
+          customFilter: (span) =>
+            span.instrumentationScope?.name === BROWSER_TRACER
+              ? true
+              : undefined,
+        }),
+      ),
     );
     enabled.push('braintrust');
   }

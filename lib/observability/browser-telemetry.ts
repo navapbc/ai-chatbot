@@ -17,7 +17,8 @@
 
 import { SpanStatusCode, context, trace, type Span } from '@opentelemetry/api';
 
-const TRACER_NAME = 'labs-asp.agent-browser';
+/** Scope name on every span this module creates; exporters filter on it. */
+export const TRACER_NAME = 'labs-asp.agent-browser';
 
 /** Attribute keys, named once so spans and logs cannot disagree. */
 export const ATTR = {
