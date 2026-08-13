@@ -313,6 +313,13 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         }
       }
 
+      # Without a parent, the Braintrust exporter dumps spans into a project
+      # literally named "default-otel-project". All preview PRs share one.
+      env {
+        name  = "BRAINTRUST_PARENT"
+        value = "project_name:labs-asp-${local.base_environment}"
+      }
+
       # Runtime configuration
       env {
         name  = "NODE_ENV"
