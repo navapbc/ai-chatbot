@@ -2,6 +2,7 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import { getOrCreateBrowser } from '@/lib/kernel/browser';
 import { runCommand } from '@/lib/kernel/cli';
+import { kernelTimelineCollector } from '@/lib/kernel/telemetry';
 import { cliSessionName } from '@/lib/kernel/session-store';
 
 const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes
@@ -111,6 +112,7 @@ NEVER navigate away from the target application domain. Do NOT click social medi
             cdpUrl: session.cdpWsUrl,
             timeoutMs: COMMAND_TIMEOUT_MS,
             signal: abortSignal,
+            collectTimeline: kernelTimelineCollector(session.kernelSessionId),
           });
 
           if (response.success) {

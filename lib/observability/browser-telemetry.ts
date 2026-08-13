@@ -15,7 +15,7 @@
  * without a translation layer.
  */
 
-import { SpanStatusCode, trace, type Span } from '@opentelemetry/api';
+import { SpanStatusCode, context, trace, type Span } from '@opentelemetry/api';
 
 const TRACER_NAME = 'labs-asp.agent-browser';
 
@@ -95,6 +95,34 @@ function traceCorrelation(
 export interface CommandTelemetry {
   /** Record the result and close the span. */
   end(result: { outcome: CommandOutcome; error?: string | null }): void;
+}
+
+/** One event from an external timeline (e.g. Kernel Browser Telemetry). */
+export interface TimelineEvent {
+  /** Span-event name, e.g. `kernel.console_error`. */
+  name: string;
+  timestamp: Date;
+  attributes?: Record<string, string | number | boolean>;
+}
+
+/**
+ * Fetches external timeline events for a time window. Kept as an injected
+ * callback so this module stays free of vendor SDK dependencies.
+ */
+export type TimelineCollector = (window: {
+  sinceIso: string;
+  untilIso: string;
+}) => Promise<TimelineEvent[]>;
+
+/**
+ * Stamp attributes onto whatever span is currently active (no-op without one).
+ * Used to put Kernel session ids and replay URLs on the enclosing tool span so
+ * the recording is one click away from the trace.
+ */
+export function annotateActiveSpan(
+  attributes: Record<string, string | number | boolean>,
+): void {
+  trace.getActiveSpan()?.setAttributes(attributes);
 }
 
 /**
@@ -186,6 +214,8 @@ export function startCommandTelemetry(
     session: string;
     remote: boolean;
     timeoutMs: number;
+    /** When set, the command's window of external events becomes a child span. */
+    collectTimeline?: TimelineCollector;
   },
 ): CommandTelemetry {
   const command = argv[0] ?? 'unknown';
@@ -202,6 +232,10 @@ export function startCommandTelemetry(
   const span: Span = trace
     .getTracer(TRACER_NAME)
     .startSpan(`agent-browser ${command}`, { attributes });
+
+  // Captured now: end() runs from a subprocess callback, where the active
+  // context that should parent the timeline span is long gone.
+  const parentContext = trace.setSpan(context.active(), span);
 
   log(
     'INFO',
@@ -248,6 +282,76 @@ export function startCommandTelemetry(
         },
         span,
       );
+
+      if (meta.collectTimeline) {
+        void emitTimelineSpan({
+          collect: meta.collectTimeline,
+          parentContext,
+          command,
+          startedAtMs: startedAt,
+          endedAtMs: startedAt + durationMs,
+        });
+      }
     },
   };
+}
+
+/**
+ * How long to wait before reading the timeline. Kernel archives events to a
+ * durable log as they happen, but a click's consequences (console errors, CDP
+ * disconnects) can land just after the command returns.
+ */
+const TIMELINE_SETTLE_MS = 1_500;
+
+/** A page can fire hundreds of events a second; the span stays legible. */
+const TIMELINE_MAX_EVENTS = 100;
+
+/**
+ * Fetch the external events that occurred during one command's window and emit
+ * them as a child span with explicit timestamps. A separate span (rather than
+ * events on the command span itself) keeps the command's duration honest: the
+ * fetch happens after the command span has already ended.
+ *
+ * Fire-and-forget by design — the agent loop must never wait on this.
+ */
+async function emitTimelineSpan(args: {
+  collect: TimelineCollector;
+  parentContext: ReturnType<typeof trace.setSpan>;
+  command: string;
+  startedAtMs: number;
+  endedAtMs: number;
+}): Promise<void> {
+  const { collect, parentContext, command, startedAtMs, endedAtMs } = args;
+  try {
+    await new Promise((resolve) => setTimeout(resolve, TIMELINE_SETTLE_MS));
+    const events = (
+      await collect({
+        sinceIso: new Date(startedAtMs).toISOString(),
+        untilIso: new Date(endedAtMs + TIMELINE_SETTLE_MS).toISOString(),
+      })
+    ).slice(0, TIMELINE_MAX_EVENTS);
+    if (events.length === 0) return;
+
+    const span = trace.getTracer(TRACER_NAME).startSpan(
+      `kernel timeline ${command}`,
+      {
+        startTime: new Date(startedAtMs),
+        attributes: {
+          [ATTR.command]: command,
+          'kernel.event_count': events.length,
+        },
+      },
+      parentContext,
+    );
+    for (const event of events) {
+      span.addEvent(event.name, event.attributes, event.timestamp);
+    }
+    span.end(new Date(endedAtMs + TIMELINE_SETTLE_MS));
+  } catch (error: unknown) {
+    // Best-effort enrichment; the command span and logs already exist.
+    log('WARNING', 'kernel.timeline.error', {
+      command,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }

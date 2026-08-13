@@ -2,8 +2,12 @@ import Kernel from '@onkernel/sdk';
 import { upsertSessionMapping } from '@/lib/db/queries';
 import { uploadReplayVideo } from '@/lib/storage/gcs';
 import { KERNEL_TIMEOUT_SECONDS } from './session-config';
-import { withKernelSpan } from '@/lib/observability/browser-telemetry';
+import {
+  annotateActiveSpan,
+  withKernelSpan,
+} from '@/lib/observability/browser-telemetry';
 import { runCommand } from './cli';
+import { kernelTimelineCollector } from './telemetry';
 import {
   buildSessionStatus,
   cacheKey,
@@ -56,6 +60,9 @@ async function archiveReplayVideo(
     const videoBuffer = await videoResponse.arrayBuffer();
     const url = await uploadReplayVideo(chatId, kernelSessionId, videoBuffer);
     await upsertSessionMapping({ chatId, userId, kernelReplayUrl: url });
+    // Archival runs inside a request (standby/delete), so when a span is
+    // active the archived video becomes reachable from the trace too.
+    annotateActiveSpan({ 'kernel.replay_url': url });
   } catch (err) {
     console.error('[Kernel] Failed to archive replay video:', err);
   }
@@ -207,13 +214,20 @@ export async function getOrCreateBrowser(
 
       const browser = (await withKernelSpan(
         'browsers.create',
-        { 'kernel.has_profile': hasProfile, 'kernel.session_id': sessionId },
+        { 'kernel.has_profile': hasProfile, 'app.session_id': sessionId },
         () =>
           kernel.browsers.create({
             viewport,
             timeout_seconds: KERNEL_TIMEOUT_SECONDS,
             kiosk_mode: false,
             stealth: true,
+            // Kernel Browser Telemetry: the default operational set (control,
+            // connection, system, captcha) plus console errors/logs. `network`
+            // stays off — headers and bodies carry applicant PII.
+            telemetry: {
+              enabled: true,
+              browser: { console: { enabled: true } },
+            },
             ...(hasProfile
               ? { profile: { name: profileName, save_changes: true } }
               : {}),
@@ -250,6 +264,14 @@ export async function getOrCreateBrowser(
       };
 
       sessions.set(key, session);
+
+      // Put the Kernel ids and live-view URL on the enclosing tool span, so
+      // the session (and its recording) is reachable from the trace.
+      annotateActiveSpan({
+        'kernel.session_id': browser.session_id,
+        'kernel.live_view_url': browser.browser_live_view_url,
+        ...(replayId ? { 'kernel.replay_id': replayId } : {}),
+      });
 
       // Record the kernel session/replay ids against the chat so they can be
       // correlated with the PostHog session (reported from the client). The
@@ -451,6 +473,8 @@ export async function reconnectBrowser(
     session: cliSessionName(userId, sessionId),
     cdpUrl: session.cdpWsUrl,
     timeoutMs: RECONNECT_TIMEOUT_MS,
+    // Reconnects are where CDP connect/disconnect events matter most.
+    collectTimeline: kernelTimelineCollector(session.kernelSessionId),
   }).catch((err: unknown) => {
     console.error('[Kernel] CDP reconnect probe failed to run:', err);
     return { success: false, error: String(err) };

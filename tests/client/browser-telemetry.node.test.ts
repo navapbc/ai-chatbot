@@ -118,6 +118,51 @@ test('withKernelSpan logs and rethrows a failure', async () => {
   });
 });
 
+test('a failing timeline collector logs a warning and never throws', async () => {
+  vi.useFakeTimers();
+  const t = startCommandTelemetry(['click', '@e1'], {
+    session: 'u:c',
+    remote: true,
+    timeoutMs: 1000,
+    collectTimeline: async () => {
+      throw new Error('kernel events unavailable');
+    },
+  });
+  t.end({ outcome: 'success' });
+  await vi.runAllTimersAsync();
+  vi.useRealTimers();
+
+  const warning = parsed(err).find((e) => e.event === 'kernel.timeline.error');
+  expect(warning).toMatchObject({
+    severity: 'WARNING',
+    command: 'click',
+    error: 'kernel events unavailable',
+  });
+});
+
+test('the timeline collector receives a window covering the command', async () => {
+  vi.useFakeTimers();
+  const windows: Array<{ sinceIso: string; untilIso: string }> = [];
+  const t = startCommandTelemetry(['open', 'https://example.com'], {
+    session: 'u:c',
+    remote: true,
+    timeoutMs: 1000,
+    collectTimeline: async (window) => {
+      windows.push(window);
+      return [];
+    },
+  });
+  t.end({ outcome: 'success' });
+  await vi.runAllTimersAsync();
+  vi.useRealTimers();
+
+  expect(windows).toHaveLength(1);
+  const { sinceIso, untilIso } = windows[0];
+  expect(new Date(sinceIso).getTime()).toBeLessThanOrEqual(
+    new Date(untilIso).getTime(),
+  );
+});
+
 test('agent step events record tool names but never arguments', () => {
   logAgentStep({
     index: 3,
