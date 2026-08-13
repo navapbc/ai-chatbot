@@ -7,7 +7,7 @@ import {
 } from '@opentelemetry/api';
 import { BraintrustExporter } from '@braintrust/otel';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
-import { GoogleAuth } from 'google-auth-library';
+import { Compute } from 'google-auth-library';
 import {
   BatchSpanProcessor,
   type SpanProcessor,
@@ -26,18 +26,20 @@ import { OpenTelemetry } from '@ai-sdk/otel';
  * resource attribute below already routes the spans.
  */
 function cloudTraceProcessor(): SpanProcessor {
-  const auth = new GoogleAuth({
-    scopes: 'https://www.googleapis.com/auth/cloud-platform',
+  // Compute, not GoogleAuth: ADC prefers GOOGLE_APPLICATION_CREDENTIALS (the
+  // Vertex key file, no trace roles) over the runtime SA that terraform
+  // grants telemetry.tracesWriter. Only the metadata server serves the SA.
+  const auth = new Compute({
+    scopes: ['https://www.googleapis.com/auth/cloud-platform'],
   });
 
   return new BatchSpanProcessor(
     new OTLPTraceExporter({
       url: 'https://telemetry.googleapis.com/v1/traces',
       async headers() {
-        const client = await auth.getClient();
         // google-auth-library@9 types this as Headers but returns a plain
         // object at runtime; Object.entries handles both.
-        const authHeaders = await client.getRequestHeaders();
+        const authHeaders = await auth.getRequestHeaders();
         return Object.fromEntries(Object.entries(authHeaders));
       },
     }),
