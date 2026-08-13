@@ -60,15 +60,11 @@ jobs:
         id: images
         run: |
           TAG=${{ steps.sha.outputs.short_sha }}
-          echo "browser_image=${ARTIFACT_REGISTRY}/browser-streaming:${TAG}" >> $GITHUB_OUTPUT
-          echo "browser_ws_proxy_image=${ARTIFACT_REGISTRY}/browser-ws-proxy:${TAG}" >> $GITHUB_OUTPUT
           echo "chatbot_image=${ARTIFACT_REGISTRY}/ai-chatbot:${TAG}" >> $GITHUB_OUTPUT
 
       - name: Verify images exist
         run: |
           echo "Verifying images exist in Artifact Registry..."
-          gcloud artifacts docker images describe ${{ steps.images.outputs.browser_image }} || echo "Warning: browser image not found"
-          gcloud artifacts docker images describe ${{ steps.images.outputs.browser_ws_proxy_image }} || echo "Warning: proxy image not found"
           gcloud artifacts docker images describe ${{ steps.images.outputs.chatbot_image }} || echo "Warning: chatbot image not found"
 
       - name: Setup Terraform
@@ -87,9 +83,7 @@ jobs:
         run: |
           terraform plan \
             -var="environment=${{ github.event.inputs.environment }}" \
-            -var="browser_image_url=${{ steps.images.outputs.browser_image }}" \
             -var="chatbot_image_url=${{ steps.images.outputs.chatbot_image }}" \
-            -var="browser_ws_proxy_image_url=${{ steps.images.outputs.browser_ws_proxy_image }}" \
             -out=tfplan
 
       - name: Terraform Apply

@@ -298,53 +298,7 @@ resource "google_compute_firewall" "allow_health_checks" {
 }
 
 # Browser MCP access (internal only - accessed via Cloud Run → VPC → VM)
-# Preview environments use shared VPC firewall rules
-resource "google_compute_firewall" "browser_mcp" {
-  count   = 0
-  name    = "labs-asp-browser-mcp-${var.environment}"
-  network = google_compute_network.main[0].name
 
-  allow {
-    protocol = "tcp"
-    ports    = [tostring(var.firewall_rules.browser_mcp.port)]
-  }
-
-  # Internal VPC access only - Cloud Run accesses via VPC Connector
-  source_ranges = [
-    var.vpc_cidr_public,
-    var.vpc_cidr_private,
-    var.vpc_cidr_db,
-    var.vpc_connector_cidr
-  ]
-
-  target_tags = ["browser-mcp"]
-
-  description = "Allow Playwright MCP access on port ${var.firewall_rules.browser_mcp.port} from internal VPC only (internal service)"
-}
-
-# Browser Streaming WebSocket access (internal only - accessed via Cloud Run browser-ws-proxy → VPC → VM)
-resource "google_compute_firewall" "browser_streaming" {
-  count   = 0
-  name    = "labs-asp-browser-streaming-${var.environment}"
-  network = google_compute_network.main[0].name
-
-  allow {
-    protocol = "tcp"
-    ports    = [tostring(var.firewall_rules.browser_streaming.port)]
-  }
-
-  # Internal VPC access only - browser-ws-proxy Cloud Run accesses via VPC Connector
-  source_ranges = [
-    var.vpc_cidr_public,
-    var.vpc_cidr_private,
-    var.vpc_cidr_db,
-    var.vpc_connector_cidr
-  ]
-
-  target_tags = ["browser-streaming"]
-
-  description = "Allow browser streaming WebSocket access on port ${var.firewall_rules.browser_streaming.port} from internal VPC only (internal service)"
-}
 
 
 # ============================================================================

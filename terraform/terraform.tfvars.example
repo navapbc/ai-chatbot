@@ -19,26 +19,8 @@ vpc_connector_cidr   = "10.0.48.0/28"  # VPC Connector (must be /28)
 
 # Firewall Configuration
 # Granular firewall rules per service with configurable ports and IPs
-firewall_rules = {
-  browser_mcp = {
-    port                = 8931           # Playwright MCP port
-    allow_public_access = true
-    allowed_ip_ranges   = ["0.0.0.0/0"]
-  }
-  browser_streaming = {
-    port                = 8933           # Browser WebSocket port
-    allow_public_access = true
-    allowed_ip_ranges   = ["0.0.0.0/0"]
-  }
-}
 
 # Example: Production with custom ports and different rules per service
-# firewall_rules = {
-#   browser_mcp = {
-#     port                = 9931           # Custom port!
-#     allow_public_access = false
-#     allowed_ip_ranges   = ["203.0.113.0/24"]              # Office only
-#   }
 #   browser_streaming = {
 #     port                = 9933           # Custom port!
 #     allow_public_access = false
@@ -47,9 +29,6 @@ firewall_rules = {
 # }
 
 # Browser VM Configuration
-browser_vm_machine_type = "e2-standard-2"  # 2 vCPUs, 8GB RAM
-browser_vm_disk_size    = 20                # GB
-browser_image_url       = "us-central1-docker.pkg.dev/nava-labs/labs-asp/browser-streaming:latest"
 
 # AI Chatbot Service Configuration (Next.js Frontend)
 chatbot_image_url     = "us-central1-docker.pkg.dev/nava-labs/labs-asp/ai-chatbot:latest"

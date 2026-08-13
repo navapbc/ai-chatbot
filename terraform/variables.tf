@@ -30,31 +30,6 @@ variable "enable_custom_domain" {
   default     = false # Default to false to avoid verification issues
 }
 
-# VM configuration (runs browser-streaming)
-variable "vm_machine_type" {
-  description = "Machine type for application VM"
-  type        = string
-  default     = "e2-standard-16" # 16 vCPUs, 64GB RAM
-}
-
-variable "vm_disk_size" {
-  description = "Boot disk size for VM in GB"
-  type        = number
-  default     = 200 # Increased for Docker image storage and accumulated layers
-}
-
-variable "browser_image_url" {
-  description = "Container image URL for browser service"
-  type        = string
-  default     = "us-central1-docker.pkg.dev/nava-labs/labs-asp/browser-streaming:latest"
-}
-
-variable "browser_ws_proxy_image_url" {
-  description = "Container image URL for browser WebSocket proxy service"
-  type        = string
-  default     = "us-central1-docker.pkg.dev/nava-labs/labs-asp/browser-ws-proxy:latest"
-}
-
 # AI Chatbot Cloud Run configuration
 variable "chatbot_image_url" {
   description = "Container image URL for AI chatbot service"
@@ -135,47 +110,6 @@ variable "vpc_connector_cidr" {
 
 # Firewall Configuration
 # Granular firewall rules per service with configurable ports
-variable "firewall_rules" {
-  description = "Firewall rules per service. Each service can have different ports and IP restrictions."
-  type = object({
-    browser_mcp = object({
-      port                = number
-      allow_public_access = bool
-      allowed_ip_ranges   = list(string)
-    })
-    browser_streaming = object({
-      port                = number
-      allow_public_access = bool
-      allowed_ip_ranges   = list(string)
-    })
-  })
-  default = {
-    browser_mcp = {
-      port                = 8931
-      allow_public_access = true
-      allowed_ip_ranges   = ["0.0.0.0/0"]
-    }
-    browser_streaming = {
-      port                = 8933
-      allow_public_access = true
-      allowed_ip_ranges   = ["0.0.0.0/0"]
-    }
-  }
-}
-
-# Legacy variables for backward compatibility (deprecated)
-variable "allowed_ip_ranges" {
-  description = "DEPRECATED: Use firewall_rules instead. List of IP ranges allowed to access application services."
-  type        = list(string)
-  default     = ["0.0.0.0/0"]
-}
-
-variable "allow_public_access" {
-  description = "DEPRECATED: Use firewall_rules instead. Allow public access (0.0.0.0/0) to application services."
-  type        = bool
-  default     = true
-}
-
 # Database passwords are stored in Secret Manager:
 # - nava-db-password-dev (for dev environment)
 # - database-password-prod (for prod environment)
