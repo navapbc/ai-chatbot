@@ -1,5 +1,5 @@
 # Cloud Run Services
-# Note: mastra-app now runs on VM, only ai-chatbot frontend runs on Cloud Run
+# Note: only the ai-chatbot frontend runs on Cloud Run
 
 # AI Chatbot Service - Next.js Frontend
 resource "google_cloud_run_v2_service" "ai_chatbot" {
