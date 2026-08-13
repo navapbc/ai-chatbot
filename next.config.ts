@@ -17,7 +17,7 @@ const nextConfig: NextConfig = {
   serverExternalPackages: [
     '@opentelemetry/api',
     '@opentelemetry/sdk-trace-base',
-    '@google-cloud/opentelemetry-cloud-trace-exporter',
+    '@opentelemetry/exporter-trace-otlp-proto',
     '@braintrust/otel',
     '@vercel/otel',
     '@ai-sdk/otel',
