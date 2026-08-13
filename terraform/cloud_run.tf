@@ -493,6 +493,19 @@ resource "google_project_iam_member" "cloud_run_trace" {
   }
 }
 
+# The OTLP endpoint (telemetry.googleapis.com) authorizes on telemetry.*, which
+# cloudtrace.agent does not grant. That role is kept above for the legacy
+# cloudtrace.googleapis.com path until nothing writes to it.
+resource "google_project_iam_member" "cloud_run_telemetry" {
+  project = local.project_id
+  role    = "roles/telemetry.tracesWriter"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
 resource "google_project_iam_member" "cloud_run_logging" {
   project = local.project_id
   role    = "roles/logging.logWriter"
