@@ -230,6 +230,12 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         value = local.project_id
       }
 
+      # TEMP: surface swallowed OTLP exporter errors; remove before merge.
+      env {
+        name  = "OTEL_DIAG"
+        value = "1"
+      }
+
       # Google Cloud Storage
       env {
         name  = "GCS_BUCKET_NAME"
