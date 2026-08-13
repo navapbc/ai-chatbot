@@ -1,5 +1,10 @@
 import { registerOTel } from '@vercel/otel';
-import { trace } from '@opentelemetry/api';
+import {
+  diag,
+  DiagConsoleLogger,
+  DiagLogLevel,
+  trace,
+} from '@opentelemetry/api';
 import { BraintrustExporter } from '@braintrust/otel';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
 import { GoogleAuth } from 'google-auth-library';
@@ -38,6 +43,12 @@ function cloudTraceProcessor(projectId: string): SpanProcessor {
 }
 
 export function register() {
+  // BatchSpanProcessor swallows exporter errors, so a rejected export is
+  // indistinguishable from no traffic. Set OTEL_DIAG=1 to surface them.
+  if (process.env.OTEL_DIAG) {
+    diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.DEBUG);
+  }
+
   const spanProcessors: SpanProcessor[] = [];
   const enabled: string[] = [];
 
