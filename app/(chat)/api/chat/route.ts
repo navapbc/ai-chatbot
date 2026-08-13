@@ -292,9 +292,25 @@ export async function POST(request: Request) {
               transient: true,
             });
           },
+          // Join keys for correlating spans back to a chat/user/SessionMapping.
+          // AI SDK 7 has no telemetry.metadata, so they go through
+          // runtimeContext and are opted in below.
+          runtimeContext: {
+            chatId: id,
+            userId: session.user.id,
+            sessionId,
+            environment: process.env.ENVIRONMENT ?? 'unknown',
+            model: resolvedModelOverride ?? 'web-automation-default',
+          },
           telemetry: {
-            isEnabled: !!process.env.BRAINTRUST_API_KEY,
             functionId: 'web-automation-agent',
+            includeRuntimeContext: {
+              chatId: true,
+              userId: true,
+              sessionId: true,
+              environment: true,
+              model: true,
+            },
           },
         });
 

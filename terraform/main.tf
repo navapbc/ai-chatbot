@@ -102,7 +102,18 @@ resource "google_project_service" "required_apis" {
     "cloudbuild.googleapis.com",
     "iamcredentials.googleapis.com",
     "vpcaccess.googleapis.com",
-    "servicenetworking.googleapis.com"
+    "servicenetworking.googleapis.com",
+    # Observability and Vertex AI. All five are already enabled on nava-labs by
+    # hand, so these are no-ops there — declared so a fresh project (or a
+    # rebuild from state) gets them without the failure mode they cause when
+    # absent: cloudtrace in particular is NOT on by default, and the Cloud Run
+    # SA already holds roles/cloudtrace.agent, so a missing API surfaces as
+    # spans silently not arriving rather than as a permission error.
+    "cloudtrace.googleapis.com",
+    "telemetry.googleapis.com",
+    "logging.googleapis.com",
+    "monitoring.googleapis.com",
+    "aiplatform.googleapis.com"
   ])
 
   service = each.key

@@ -313,6 +313,13 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         }
       }
 
+      # Without a parent, the Braintrust exporter dumps spans into a project
+      # literally named "default-otel-project". All preview PRs share one.
+      env {
+        name  = "BRAINTRUST_PARENT"
+        value = "project_name:labs-asp-${local.base_environment}"
+      }
+
       # Runtime configuration
       env {
         name  = "NODE_ENV"
@@ -486,6 +493,33 @@ resource "google_project_iam_member" "cloud_run_secrets" {
 resource "google_project_iam_member" "cloud_run_trace" {
   project = local.project_id
   role    = "roles/cloudtrace.agent"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
+# The OTLP endpoint (telemetry.googleapis.com) authorizes on telemetry.*, which
+# cloudtrace.agent does not grant. That role is kept above for the legacy
+# cloudtrace.googleapis.com path until nothing writes to it.
+resource "google_project_iam_member" "cloud_run_telemetry" {
+  project = local.project_id
+  role    = "roles/telemetry.tracesWriter"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
+# ADC attaches a quota project to every Telemetry API call, and billing a
+# request to a project needs serviceusage.services.use. Without it the exporter
+# gets a bare 403 ("OTLPExporterError: Forbidden") that BatchSpanProcessor
+# swallows, so spans record normally and silently never arrive.
+resource "google_project_iam_member" "cloud_run_service_usage" {
+  project = local.project_id
+  role    = "roles/serviceusage.serviceUsageConsumer"
   member  = "serviceAccount:${google_service_account.cloud_run.email}"
 
   lifecycle {

@@ -1,31 +1,58 @@
 import { registerOTel } from '@vercel/otel';
-import { trace } from '@opentelemetry/api';
+import {
+  diag,
+  DiagConsoleLogger,
+  DiagLogLevel,
+  trace,
+} from '@opentelemetry/api';
 import { BraintrustExporter } from '@braintrust/otel';
-import { TraceExporter } from '@google-cloud/opentelemetry-cloud-trace-exporter';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
+import { Compute } from 'google-auth-library';
 import {
   BatchSpanProcessor,
   type SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
+import { registerTelemetry } from 'ai';
+import { OpenTelemetry } from '@ai-sdk/otel';
 
 /**
- * Register OpenTelemetry exporters.
+ * Cloud Trace over OTLP. Replaces the deprecated cloud-trace-exporter, which
+ * also capped spans at 32 attributes / 256-byte values — too small for GenAI
+ * spans. `headers` is async because ADC tokens expire hourly.
  *
- * Two backends, because they answer different questions and neither covers the
- * other:
- *
- * - **Braintrust** — eval-oriented: prompt/completion inspection, scoring,
- *   dataset regressions. Configured with `filterAISpans: true`, so it receives
- *   only AI spans; the `agent-browser` and `kernel` spans from
- *   `lib/observability/browser-telemetry.ts` are filtered out before export.
- * - **Cloud Trace** — operational: span waterfalls, latency distributions, and
- *   dependency timing for the browser/Kernel path. This is where the
- *   subprocess and SDK spans actually land, and it correlates with the Cloud
- *   Run request logs already being collected.
- *
- * Each is registered only when its prerequisite is present, so a missing key or
- * a non-GCP environment degrades to "no traces" rather than a boot failure.
+ * No x-goog-user-project header: it makes the API bill the request to that
+ * project, which needs serviceusage.services.use — not in
+ * roles/telemetry.tracesWriter, so every export 403'd. The gcp.project_id
+ * resource attribute below already routes the spans.
  */
+function cloudTraceProcessor(): SpanProcessor {
+  // Compute, not GoogleAuth: ADC prefers GOOGLE_APPLICATION_CREDENTIALS (the
+  // Vertex key file, no trace roles) over the runtime SA that terraform
+  // grants telemetry.tracesWriter. Only the metadata server serves the SA.
+  const auth = new Compute({
+    scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+  });
+
+  return new BatchSpanProcessor(
+    new OTLPTraceExporter({
+      url: 'https://telemetry.googleapis.com/v1/traces',
+      async headers() {
+        // google-auth-library@9 types this as Headers but returns a plain
+        // object at runtime; Object.entries handles both.
+        const authHeaders = await auth.getRequestHeaders();
+        return Object.fromEntries(Object.entries(authHeaders));
+      },
+    }),
+  );
+}
+
 export function register() {
+  // BatchSpanProcessor swallows exporter errors, so a rejected export is
+  // indistinguishable from no traffic. Set OTEL_DIAG=1 to surface them.
+  if (process.env.OTEL_DIAG) {
+    diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.DEBUG);
+  }
+
   const spanProcessors: SpanProcessor[] = [];
   const enabled: string[] = [];
 
@@ -36,21 +63,15 @@ export function register() {
     enabled.push('braintrust');
   }
 
-  // Gate on GOOGLE_CLOUD_PROJECT, which terraform/cloud_run.tf sets explicitly.
-  // An earlier version gated on K_SERVICE — injected by the Cloud Run runtime
-  // rather than the service spec, and evidently not visible to the
-  // instrumentation hook, so the exporter was never registered and spans went
-  // nowhere while Braintrust's initialized normally.
+  // Gate on GOOGLE_CLOUD_PROJECT (set in terraform), not K_SERVICE — the
+  // runtime-injected vars are not visible to the instrumentation hook.
   const projectId = process.env.GOOGLE_CLOUD_PROJECT;
   if (projectId) {
-    spanProcessors.push(
-      new BatchSpanProcessor(new TraceExporter({ projectId })),
-    );
-    enabled.push('cloud-trace');
+    spanProcessors.push(cloudTraceProcessor());
+    enabled.push('cloud-trace-otlp');
   }
 
-  // Say which exporters came up. Silence here previously looked identical to a
-  // working setup, which is what made the missing spans hard to attribute.
+  // Silence here is indistinguishable from a working setup, so say what came up.
   console.log(
     JSON.stringify({
       severity: 'INFO',
@@ -61,12 +82,20 @@ export function register() {
 
   if (spanProcessors.length === 0) return;
 
-  registerOTel({ serviceName: 'labs-asp-chat', spanProcessors });
+  // The Telemetry API rejects any payload whose resource lacks gcp.project_id
+  // ("Resource is missing required attribute").
+  registerOTel({
+    serviceName: 'labs-asp-chat',
+    spanProcessors,
+    ...(projectId ? { attributes: { 'gcp.project_id': projectId } } : {}),
+  });
 
-  // Prove the provider registered here is the one this module can see. If the
-  // bundler gives lib/observability a separate @opentelemetry/api instance,
-  // that module's spans get an all-zero trace id while this one reports a real
-  // one — the two logs together localize the split immediately.
+  // AI SDK 7 emits no model spans until an integration is registered. Must
+  // follow registerOTel — it binds the tracer from that provider.
+  registerTelemetry(new OpenTelemetry());
+
+  // All-zero trace id here means the bundler split @opentelemetry/api and this
+  // provider is not the one route handlers see.
   const probe = trace.getTracer('otel-self-check').startSpan('register-probe');
   const probeTraceId = probe.spanContext().traceId;
   probe.end();
