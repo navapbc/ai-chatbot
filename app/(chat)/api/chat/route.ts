@@ -292,23 +292,9 @@ export async function POST(request: Request) {
               transient: true,
             });
           },
-          // Gated on either backend, not just Braintrust. Cloud Trace is
-          // registered whenever GOOGLE_CLOUD_PROJECT is set (see
-          // instrumentation.ts), but keying `isEnabled` off BRAINTRUST_API_KEY
-          // alone meant the AI SDK emitted no spans at all in environments
-          // without that key — so prod produced operational browser/kernel
-          // spans and zero model spans, and the absence looked like an export
-          // failure rather than a disabled emitter.
-          //
-          // The join keys travel as `runtimeContext`. AI SDK v7 dropped the
-          // `telemetry.metadata` field that v6 used for this, so arbitrary
-          // attributes now have to be declared as runtime context and then
-          // opted into telemetry explicitly via `includeRuntimeContext` —
-          // context is excluded from spans unless a key is set to `true`.
-          //
-          // Without these a span cannot be tied back to a chat, a user, or the
-          // SessionMapping row holding the Kernel replay, which is what left
-          // the four telemetry sinks uncorrelated.
+          // Join keys for correlating spans back to a chat/user/SessionMapping.
+          // AI SDK 7 has no telemetry.metadata, so they go through
+          // runtimeContext and are opted in below.
           runtimeContext: {
             chatId: id,
             userId: session.user.id,
@@ -317,9 +303,6 @@ export async function POST(request: Request) {
             model: resolvedModelOverride ?? 'web-automation-default',
           },
           telemetry: {
-            isEnabled: !!(
-              process.env.BRAINTRUST_API_KEY || process.env.GOOGLE_CLOUD_PROJECT
-            ),
             functionId: 'web-automation-agent',
             includeRuntimeContext: {
               chatId: true,

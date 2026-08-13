@@ -6,6 +6,8 @@ import {
   BatchSpanProcessor,
   type SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
+import { registerTelemetry } from 'ai';
+import { OpenTelemetry } from '@ai-sdk/otel';
 
 /**
  * Register OpenTelemetry exporters.
@@ -62,6 +64,10 @@ export function register() {
   if (spanProcessors.length === 0) return;
 
   registerOTel({ serviceName: 'labs-asp-chat', spanProcessors });
+
+  // AI SDK 7 emits no model spans until an integration is registered. Must
+  // follow registerOTel — it binds the tracer from that provider.
+  registerTelemetry(new OpenTelemetry());
 
   // Prove the provider registered here is the one this module can see. If the
   // bundler gives lib/observability a separate @opentelemetry/api instance,

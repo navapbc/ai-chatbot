@@ -20,6 +20,7 @@ const nextConfig: NextConfig = {
     '@google-cloud/opentelemetry-cloud-trace-exporter',
     '@braintrust/otel',
     '@vercel/otel',
+    '@ai-sdk/otel',
   ],
   images: {
     remotePatterns: [
