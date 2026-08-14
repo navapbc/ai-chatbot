@@ -14,7 +14,10 @@
  */
 
 import { execFile } from 'node:child_process';
-import { startCommandTelemetry } from '@/lib/observability/browser-telemetry';
+import {
+  startCommandTelemetry,
+  type TimelineCollector,
+} from '@/lib/observability/browser-telemetry';
 
 /** The JSON envelope every `--json` invocation prints on stdout. */
 export interface CliResponse {
@@ -30,6 +33,11 @@ export interface CliOptions {
   session: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /**
+   * When set, the Kernel browser events from this command's window are
+   * attached to the trace as a child span.
+   */
+  collectTimeline?: TimelineCollector;
 }
 
 /** Resolved from PATH — the Docker image symlinks the native binary there. */
@@ -140,6 +148,7 @@ export async function runCommand(
     session: options.session,
     remote: Boolean(options.cdpUrl),
     timeoutMs,
+    collectTimeline: options.collectTimeline,
   });
 
   return new Promise<CliResponse>((resolve, reject) => {
