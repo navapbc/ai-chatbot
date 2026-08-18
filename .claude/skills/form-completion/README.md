@@ -43,23 +43,7 @@ export AGENT_BROWSER_BIN=agent-browser
 
 ### A browser
 
-agent-browser attaches to a Chromium browser through CDP. Use one of these options:
-
-Local Chrome. This option lets you watch the fill. Start Chrome with remote debugging, then attach:
-
-```bash
-# macOS
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  --remote-debugging-port=9222 --user-data-dir="$HOME/.chrome-debug" &
-
-agent-browser --session form-fill --cdp http://localhost:9222 open https://example.org
-```
-
-Bundled browser. With no `--cdp` flag, agent-browser starts its own browser. Add `--headed` to watch it.
-
-Remote browser provider (Kernel, Browserbase, and others). Pass the provider CDP WebSocket URL with `--cdp <ws_url>`.
-
-Use one `--session <name>` value for the full run. The daemon holds the CDP connection between calls, so element refs such as `@e1` stay valid across commands.
+You do not set up a browser. The agent starts and controls the browser itself. By default agent-browser starts its own browser. If you want to watch the fill, tell the agent to show the browser window or to attach to your own Chrome. The agent can also attach to a remote browser provider such as Kernel or Browserbase.
 
 ## Use
 
