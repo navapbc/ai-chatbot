@@ -1,77 +1,51 @@
-# Form Completion Skill
+[![skills.sh](https://skills.sh/b/navapbc/ai-chatbot)](https://skills.sh/navapbc/ai-chatbot)
 
-This skill gives Claude Code a tested procedure to complete web forms with
-[agent-browser](https://www.npmjs.com/package/agent-browser). It covers
-application forms, benefits forms, and multi-step apply flows. Each rule in the
-procedure comes from a failure that occurred in a real session — silent fill
-failures, masked date fields, gated sections, and checkbox polarity traps.
+An agent skill that completes web forms with [agent-browser](https://github.com/vercel-labs/agent-browser). It covers application forms, benefits forms, and multi-step apply flows. Each rule in the procedure comes from a failure that occurred in a real session.
 
-## What You Get
+## Skills
 
-- `SKILL.md` — the six-phase fill procedure (find playbook → find form → gap
-  analysis → fill → verify → submit with approval)
-- `references/` — deep guides for silent-failure diagnosis, gap-analysis and
-  provenance reports, the knowledge-scribe background agent, and
-  multi-application orchestration
-- `playbooks/` — one file per site with confirmed selectors and gates; the
-  skill writes a new playbook for each new site it completes
-- `scripts/fill-helpers.sh` — bash helpers for batch fill, masked-field
-  keypress fill, and value readback in one tool call
+- [**form-completion**](SKILL.md): A six-phase procedure to complete a web form. The skill finds the form, shows a gap analysis, asks the user for missing data, fills the fields, verifies each write, and waits for approval from the user before it submits. It includes references for silent-failure diagnosis, site playbooks with confirmed selectors, and bash helpers for batch fill and readback.
 
-## Install the Skill
+## Install
 
-The fastest path is the [skills CLI](https://github.com/vercel-labs/skills). It
-works with Claude Code and 70+ other agents:
+### CLI
+
+Works in Claude Code, Codex, Opencode and other agents.
 
 ```bash
-npx skills add navapbc/ai-chatbot --skill form-completion
+npx skills add navapbc/ai-chatbot
 ```
 
-Or install manually. Copy this directory into your project or user skills
-directory:
+### Claude Code plugin
 
-```bash
-# Project scope (this project only)
-git clone --depth 1 https://github.com/navapbc/ai-chatbot /tmp/ai-chatbot
-cp -r /tmp/ai-chatbot/.claude/skills/form-completion .claude/skills/
+Installs the skill and updates in place. Run these inside Claude Code:
 
-# User scope (all your projects)
-cp -r /tmp/ai-chatbot/.claude/skills/form-completion ~/.claude/skills/
+```text
+/plugin marketplace add navapbc/ai-chatbot
+/plugin install form-completion@ai-chatbot
 ```
 
-Claude Code loads the skill automatically when a task matches its
-description. You can also invoke it directly with `/form-completion`.
+## Requirements
 
-## Dependency: agent-browser
+### agent-browser
 
-The skill does not work without the `agent-browser` CLI. It is a native Rust
-binary distributed through npm. Install it in one of two ways:
+The skill does not work without the agent-browser CLI, version 0.33 or later. It is a native Rust binary on npm.
 
 ```bash
-# Global — the binary is on your PATH
 npm install -g agent-browser
-
-# Project-local — the binary is at ./node_modules/.bin/agent-browser
-npm install agent-browser
 ```
 
-The skill and its helpers look for the binary at
-`./node_modules/.bin/agent-browser` by default. If you installed it globally
-or somewhere else, point the helpers at it:
+A project-local installation also works. The helper scripts look for the binary at `./node_modules/.bin/agent-browser`. If the binary is at a different location, set the path:
 
 ```bash
 export AGENT_BROWSER_BIN=agent-browser
 ```
 
-Version `0.33` or later is required. Earlier versions do not have the daemon
-`--session` flag that keeps element refs valid across CLI calls.
+### A browser
 
-## Dependency: a Browser to Drive
+agent-browser attaches to a Chromium browser through CDP. Use one of these options:
 
-agent-browser attaches to a Chromium browser over CDP. Pick one:
-
-**Local Chrome (recommended for watching the fill).** Start Chrome with remote
-debugging, then attach:
+Local Chrome. This option lets you watch the fill. Start Chrome with remote debugging, then attach:
 
 ```bash
 # macOS
@@ -81,39 +55,31 @@ debugging, then attach:
 agent-browser --session form-fill --cdp http://localhost:9222 open https://example.org
 ```
 
-**Bundled browser.** With no `--cdp` flag, agent-browser launches its own
-browser. Add `--headed` to watch it.
+Bundled browser. With no `--cdp` flag, agent-browser starts its own browser. Add `--headed` to watch it.
 
-**Remote browser provider** (Kernel.sh, Browserbase, etc.). Pass the
-provider's CDP WebSocket URL with `--cdp <ws_url>`.
+Remote browser provider (Kernel, Browserbase, and others). Pass the provider CDP WebSocket URL with `--cdp <ws_url>`.
 
-Use one `--session <name>` value for the whole run. The daemon holds the CDP
-connection between calls, so element refs (`@e1`) stay valid across commands.
+Use one `--session <name>` value for the full run. The daemon holds the CDP connection between calls, so element refs such as `@e1` stay valid across commands.
 
-## Quick Start
+## Use
 
-1. Install the skill and agent-browser (above).
-2. Start Claude Code in your project.
-3. Ask: *"Fill out the application at https://forms.example.org for Maria
-   Garcia"* — include the applicant data in the message or point at a file.
+Ask your agent to fill a form and give it the applicant data:
 
-The skill then:
+```text
+Fill out the application at https://forms.example.org for Maria Garcia.
+```
 
-1. Checks `playbooks/` for the target domain and probes that it is fresh
-2. Navigates from the landing page to the actual form
-3. Shows you a **gap-analysis table** — what data it has, what it derived, and
-   what it needs from you — and asks for missing values before it fills
-4. Fills in gate order, then reads every field back to catch silent failures
-5. Shows a **provenance report** (every value and its source) and **stops for
-   your explicit approval before it submits**
+The skill then does these steps:
 
-The skill never clicks submit on its own, never invents values for required
-fields, and never attempts to defeat a bot challenge.
+1. Checks `playbooks/` for the target domain and makes sure the playbook is fresh
+2. Navigates from the landing page to the form
+3. Shows a gap-analysis table with the data it has, the data it derived, and the data it needs, then asks for the missing values before it fills
+4. Fills the fields in gate order, then reads each field again to catch silent failures
+5. Shows a provenance report with the source of each value and stops for explicit approval before it submits
+
+The skill never clicks submit on its own, never invents values for required fields, and never tries to defeat a bot challenge.
 
 ## Notes for Maintainers
 
-- General patterns confirmed on two or more sites go in `SKILL.md` or
-  `references/`. Single-site facts go in that site's playbook only. See "Rules
-  for New Findings" in `SKILL.md`.
-- `scripts/fill-helpers.sh` is bash. On Windows, run it through WSL or Git
-  Bash.
+- General patterns confirmed on two or more sites go in `SKILL.md` or `references/`. Facts from one site go in the playbook of that site only. See "Rules for New Findings" in `SKILL.md`.
+- `scripts/fill-helpers.sh` is bash. On Windows, run it through WSL or Git Bash.
