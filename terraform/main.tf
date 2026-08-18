@@ -47,25 +47,22 @@ locals {
   # Environment configurations - reuse existing pattern
   environments = {
     dev = {
-      mastra_service_name = "mastra-app-dev"
       chatbot_service_name = "ai-chatbot-dev"
-      sql_instance_name = "nava-db-dev"  # dev database
-      storage_bucket_name = "nava-storage-dev"  # dev storage bucket
-      domain_prefix = "dev"
+      sql_instance_name    = "nava-db-dev"      # dev database
+      storage_bucket_name  = "nava-storage-dev" # dev storage bucket
+      domain_prefix        = "dev"
     }
     preview = {
-      mastra_service_name = "mastra-app-${var.environment}"  # Use full env name for unique resources
       chatbot_service_name = "ai-chatbot-${var.environment}"
-      sql_instance_name = "nava-db-dev"  # ALL preview environments use dev database
-      storage_bucket_name = "nava-storage-dev"  # ALL preview environments use dev storage bucket
-      domain_prefix = var.environment  # preview-pr-123 gets preview-pr-123.labs-asp.com
+      sql_instance_name    = "nava-db-dev"      # ALL preview environments use dev database
+      storage_bucket_name  = "nava-storage-dev" # ALL preview environments use dev storage bucket
+      domain_prefix        = var.environment    # preview-pr-123 gets preview-pr-123.labs-asp.com
     }
     prod = {
-      mastra_service_name = "mastra-app-prod"
       chatbot_service_name = "ai-chatbot-prod"
-      sql_instance_name = "nava-db-prod"  # prod database
-      storage_bucket_name = "nava-storage-prod"  # prod storage bucket
-      domain_prefix = "app"
+      sql_instance_name    = "nava-db-prod"      # prod database
+      storage_bucket_name  = "nava-storage-prod" # prod storage bucket
+      domain_prefix        = "app"
     }
   }
 
@@ -74,9 +71,9 @@ locals {
 
   # Common labels
   common_labels = {
-    project     = "labs-asp"
-    managed_by  = "terraform"
-    deployment  = "client-server-architecture"
+    project    = "labs-asp"
+    managed_by = "terraform"
+    deployment = "client-server-architecture"
   }
 
   # VPC Connector name - must be max 25 chars, start/end with alphanumeric
@@ -89,7 +86,7 @@ locals {
   }
   # For preview-pr-N, use prN format (e.g., preview-pr-114 -> labs-conn-pr114)
   connector_env_short = startswith(var.environment, "preview-pr-") ? "pr${replace(var.environment, "preview-pr-", "")}" : var.environment
-  vpc_connector_name = lookup(local.connector_names, local.connector_env_short, "labs-conn-${substr(local.connector_env_short, 0, 14)}")
+  vpc_connector_name  = lookup(local.connector_names, local.connector_env_short, "labs-conn-${substr(local.connector_env_short, 0, 14)}")
 }
 
 # Enable required APIs
@@ -105,12 +102,23 @@ resource "google_project_service" "required_apis" {
     "cloudbuild.googleapis.com",
     "iamcredentials.googleapis.com",
     "vpcaccess.googleapis.com",
-    "servicenetworking.googleapis.com"
+    "servicenetworking.googleapis.com",
+    # Observability and Vertex AI. All five are already enabled on nava-labs by
+    # hand, so these are no-ops there — declared so a fresh project (or a
+    # rebuild from state) gets them without the failure mode they cause when
+    # absent: cloudtrace in particular is NOT on by default, and the Cloud Run
+    # SA already holds roles/cloudtrace.agent, so a missing API surfaces as
+    # spans silently not arriving rather than as a permission error.
+    "cloudtrace.googleapis.com",
+    "telemetry.googleapis.com",
+    "logging.googleapis.com",
+    "monitoring.googleapis.com",
+    "aiplatform.googleapis.com"
   ])
 
   service = each.key
   project = local.project_id
 
   disable_dependent_services = false
-  disable_on_destroy        = false
+  disable_on_destroy         = false
 }

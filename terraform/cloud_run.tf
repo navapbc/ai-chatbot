@@ -1,5 +1,5 @@
 # Cloud Run Services
-# Note: mastra-app now runs on VM, only ai-chatbot frontend runs on Cloud Run
+# Note: only the ai-chatbot frontend runs on Cloud Run
 
 # AI Chatbot Service - Next.js Frontend
 resource "google_cloud_run_v2_service" "ai_chatbot" {
@@ -15,7 +15,7 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
     # VPC Access - Connect to VPC network
     vpc_access {
       connector = local.vpc_connector.id
-      egress    = "ALL_TRAFFIC"  # Route all traffic through VPC/Cloud NAT for static IP
+      egress    = "ALL_TRAFFIC" # Route all traffic through VPC/Cloud NAT for static IP
     }
 
     containers {
@@ -97,7 +97,7 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
       # Apricot API Configuration
       # Prod uses /api/ endpoint with prod credentials, all others use /sandbox/ with sandbox credentials
       env {
-        name = "APRICOT_API_BASE_URL"
+        name  = "APRICOT_API_BASE_URL"
         value = "https://f5r-api.iws.sidekick.solutions/apricot"
       }
 
@@ -301,6 +301,25 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         }
       }
 
+      # Braintrust API key. instrumentation.ts exports no traces without it, so
+      # leaving it unset silently disables OpenTelemetry in the deployed app.
+      env {
+        name = "BRAINTRUST_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = "braintrust-api-key"
+            version = "latest"
+          }
+        }
+      }
+
+      # Without a parent, the Braintrust exporter dumps spans into a project
+      # literally named "default-otel-project". All preview PRs share one.
+      env {
+        name  = "BRAINTRUST_PARENT"
+        value = "project_name:labs-asp-${local.base_environment}"
+      }
+
       # Runtime configuration
       env {
         name  = "NODE_ENV"
@@ -463,6 +482,46 @@ resource "google_project_iam_member" "cloud_run_secrets" {
   member  = "serviceAccount:${google_service_account.cloud_run.email}"
 
   # Recreate when service account changes
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
+# Lets instrumentation.ts export OpenTelemetry spans to Cloud Trace. The SA
+# already has logWriter and metricWriter; without this it can emit logs and
+# metrics but not traces.
+resource "google_project_iam_member" "cloud_run_trace" {
+  project = local.project_id
+  role    = "roles/cloudtrace.agent"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
+# The OTLP endpoint (telemetry.googleapis.com) authorizes on telemetry.*, which
+# cloudtrace.agent does not grant. That role is kept above for the legacy
+# cloudtrace.googleapis.com path until nothing writes to it.
+resource "google_project_iam_member" "cloud_run_telemetry" {
+  project = local.project_id
+  role    = "roles/telemetry.tracesWriter"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
+  lifecycle {
+    replace_triggered_by = [google_service_account.cloud_run]
+  }
+}
+
+# ADC attaches a quota project to every Telemetry API call, and billing a
+# request to a project needs serviceusage.services.use. Without it the exporter
+# gets a bare 403 ("OTLPExporterError: Forbidden") that BatchSpanProcessor
+# swallows, so spans record normally and silently never arrive.
+resource "google_project_iam_member" "cloud_run_service_usage" {
+  project = local.project_id
+  role    = "roles/serviceusage.serviceUsageConsumer"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+
   lifecycle {
     replace_triggered_by = [google_service_account.cloud_run]
   }

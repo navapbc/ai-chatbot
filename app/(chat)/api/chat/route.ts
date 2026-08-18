@@ -33,10 +33,14 @@ import { createCheckSubmitGateTool } from '@/lib/ai/tools/check-submit-gate';
 import { gapAnalysis } from '@/lib/ai/tools/gap-analysis';
 import { formSummary } from '@/lib/ai/tools/form-summary';
 import { actionLabel } from '@/lib/ai/tools/action-label';
-import { getWebAutomationSystemPrompt, getCurrentDateString } from '@/lib/ai/prompts/web-automation';
+import {
+  getWebAutomationSystemPrompt,
+  getCurrentDateString,
+} from '@/lib/ai/prompts/web-automation';
 import { readReference } from '@/lib/ai/tools/read-reference';
 import { createMessageCompressor } from '@/lib/ai/context-compression';
 import { registerChatAbort, clearChatAbort } from '@/lib/chat-abort-registry';
+import { logAgentStep } from '@/lib/observability/browser-telemetry';
 
 export const maxDuration = 300; // 5 minutes for web automation tasks
 
@@ -69,15 +73,12 @@ export async function POST(request: Request) {
   }
 
   try {
-    const {
-      id,
-      message,
-      modelOverride,
-      selectedVisibilityType,
-    } = requestBody;
+    const { id, message, modelOverride, selectedVisibilityType } = requestBody;
 
     // Only honour modelOverride in non-production environments.
-    const resolvedModelOverride = !isProductionEnvironment ? modelOverride : undefined;
+    const resolvedModelOverride = !isProductionEnvironment
+      ? modelOverride
+      : undefined;
 
     const session = await auth();
 
@@ -120,7 +121,9 @@ export async function POST(request: Request) {
     const existingMessageIds = new Set(uiMessages.map((m) => m.id));
 
     // Save only messages generated during this request (not already in DB).
-    const saveNewMessages = async (messages: Array<{ id: string; role: string; parts: unknown }>) => {
+    const saveNewMessages = async (
+      messages: Array<{ id: string; role: string; parts: unknown }>,
+    ) => {
       const newMessages = messages.filter((m) => !existingMessageIds.has(m.id));
       if (newMessages.length > 0) {
         await saveMessages({
@@ -172,6 +175,10 @@ export async function POST(request: Request) {
         // (step 0 has no prior usage data, so it runs uncompacted).
         const compressStep = createMessageCompressor();
 
+        // Per-step progress accounting for onStepFinish below.
+        let stepIndex = 0;
+        let lastStepAt = Date.now();
+
         const activeModel = resolvedModelOverride
           ? myProvider.languageModel(resolvedModelOverride)
           : webAutomationModel;
@@ -203,7 +210,10 @@ export async function POST(request: Request) {
             formSummary,
             actionLabel,
             browser: createBrowserTool(sessionId, session.user.id),
-            checkSubmitGate: createCheckSubmitGateTool(sessionId, session.user.id),
+            checkSubmitGate: createCheckSubmitGateTool(
+              sessionId,
+              session.user.id,
+            ),
             readReference,
           },
           // request.signal.aborted is checked at each step boundary so the
@@ -216,24 +226,42 @@ export async function POST(request: Request) {
           // tool-call with no matching tool-result, triggering
           // AI_MissingToolResultsError on the next turn.
           stopWhen: [isStepCount(500), () => chatAbort.signal.aborted],
+          // Emit one event per completed step. The loop can run for minutes
+          // inside a single request; without this the logs show only the
+          // request's start and end, so a slow tool is indistinguishable from
+          // a stalled one.
+          onStepFinish: ({ toolCalls, finishReason, usage }) => {
+            stepIndex += 1;
+            const now = Date.now();
+            logAgentStep({
+              index: stepIndex,
+              toolNames: (toolCalls ?? []).map((c) => c.toolName),
+              finishReason,
+              inputTokens: usage?.inputTokens,
+              outputTokens: usage?.outputTokens,
+              durationMs: now - lastStepAt,
+            });
+            lastStepAt = now;
+          },
           // Compress message history when token usage approaches the context
           // window limit (75% of 200K). First step has no prior usage data so
           // compression is skipped (correct — first step is always small).
           prepareStep: async ({ messages: stepMessages, steps }) => {
-            const lastInputTokens = steps.length > 0
-              ? steps[steps.length - 1].usage.inputTokens
-              : undefined;
-            const { messages: compressed, compacted, summary } = await compressStep(
-              stepMessages,
-              lastInputTokens,
-              () => {
-                dataStream.write({
-                  type: 'data-compacting',
-                  data: { timestamp: Date.now() },
-                  transient: true,
-                });
-              },
-            );
+            const lastInputTokens =
+              steps.length > 0
+                ? steps[steps.length - 1].usage.inputTokens
+                : undefined;
+            const {
+              messages: compressed,
+              compacted,
+              summary,
+            } = await compressStep(stepMessages, lastInputTokens, () => {
+              dataStream.write({
+                type: 'data-compacting',
+                data: { timestamp: Date.now() },
+                transient: true,
+              });
+            });
             if (compacted) {
               dataStream.write({
                 type: 'data-checkpoint',
@@ -258,14 +286,31 @@ export async function POST(request: Request) {
               data: {
                 inputTokens: usage.inputTokens ?? 0,
                 outputTokens: usage.outputTokens ?? 0,
-                cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens ?? 0,
+                cachedInputTokens:
+                  usage.inputTokenDetails?.cacheReadTokens ?? 0,
               },
               transient: true,
             });
           },
+          // Join keys for correlating spans back to a chat/user/SessionMapping.
+          // AI SDK 7 has no telemetry.metadata, so they go through
+          // runtimeContext and are opted in below.
+          runtimeContext: {
+            chatId: id,
+            userId: session.user.id,
+            sessionId,
+            environment: process.env.ENVIRONMENT ?? 'unknown',
+            model: resolvedModelOverride ?? 'web-automation-default',
+          },
           telemetry: {
-            isEnabled: !!process.env.BRAINTRUST_API_KEY,
             functionId: 'web-automation-agent',
+            includeRuntimeContext: {
+              chatId: true,
+              userId: true,
+              sessionId: true,
+              environment: true,
+              model: true,
+            },
           },
         });
 
@@ -286,8 +331,8 @@ export async function POST(request: Request) {
     if (streamContext) {
       return new Response(
         await streamContext.resumableStream(streamId, () =>
-          stream.pipeThrough(new JsonToSseTransformStream())
-        )
+          stream.pipeThrough(new JsonToSseTransformStream()),
+        ),
       );
     }
     return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
@@ -295,7 +340,7 @@ export async function POST(request: Request) {
     if (error instanceof ChatSDKError) {
       return error.toResponse();
     }
-    
+
     console.error('Unexpected error in chat API:', {
       chatId: requestBody?.id,
       error,

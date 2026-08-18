@@ -23,10 +23,10 @@ test('decluttered: a group shows only specific tool calls when expanded', async 
   const { getByRole, getByText } = render(
     <ToolCallGroup
       parts={[
-        part('1', { action: 'click' }),
-        part('2', { action: 'fill', value: '05/05/2026' }),
-        part('3', { action: 'snapshot' }),
-        part('4', { action: 'select', values: ['Female'] }),
+        part('1', { command: ['click', '@e1'] }),
+        part('2', { command: ['fill', '@e2', '05/05/2026'] }),
+        part('3', { command: ['snapshot'] }),
+        part('4', { command: ['select', '@e4', 'Female'] }),
       ]}
     />,
   );
@@ -43,7 +43,10 @@ test('decluttered: a group shows only specific tool calls when expanded', async 
 test('decluttered: a group with only generic actions shows a summary line and no expander', async () => {
   const { getByText, getByRole } = render(
     <ToolCallGroup
-      parts={[part('1', { action: 'click' }), part('2', { action: 'snapshot' })]}
+      parts={[
+        part('1', { command: ['click', '@e1'] }),
+        part('2', { command: ['snapshot'] }),
+      ]}
     />,
   );
 
@@ -54,7 +57,7 @@ test('decluttered: a group with only generic actions shows a summary line and no
 
 test('decluttered: a single generic action collapses to the summary line', async () => {
   const { getByText, getByRole } = render(
-    <ToolCallGroup parts={[part('1', { action: 'click' })]} />,
+    <ToolCallGroup parts={[part('1', { command: ['click', '@e1'] })]} />,
   );
 
   await expect.element(getByText('Completed actions')).toBeVisible();
@@ -66,8 +69,8 @@ test('flag off: all tool calls remain visible (dev default)', async () => {
   const { getByRole, getByText } = render(
     <ToolCallGroup
       parts={[
-        part('1', { action: 'click' }),
-        part('2', { action: 'fill', value: '05/05/2026' }),
+        part('1', { command: ['click', '@e1'] }),
+        part('2', { command: ['fill', '@e2', '05/05/2026'] }),
       ]}
     />,
   );
@@ -75,4 +78,52 @@ test('flag off: all tool calls remain visible (dev default)', async () => {
   await getByRole('button').click();
   await expect.element(getByText(/Clicking/)).toBeVisible();
   await expect.element(getByText(/Filling "05\/05\/2026"/)).toBeVisible();
+});
+
+test('streaming: an in-flight tool call is visible before its result arrives', async () => {
+  // Regression: filtering to `output-available` while streaming meant a
+  // long-running browser command rendered nothing until it finished, so the
+  // group showed only a spinner and revealed its work when the stream ended.
+  setFlagOverride('declutterToolCalls', false);
+  const { getByRole, getByText } = render(
+    <ToolCallGroup
+      isStreaming
+      parts={[
+        {
+          ...part('1', { command: ['click', '@e1'] }),
+          state: 'output-available',
+        },
+        {
+          ...part('2', { command: ['open', 'https://example.com'] }),
+          state: 'input-available',
+        },
+      ]}
+    />,
+  );
+
+  await getByRole('button').click();
+  await expect
+    .element(getByText(/Opening https:\/\/example\.com/))
+    .toBeVisible();
+});
+
+test('streaming: a partial input-streaming call stays hidden until its input lands', async () => {
+  // Its input is incomplete, so the label would flicker as arguments arrive.
+  setFlagOverride('declutterToolCalls', false);
+  const { getByRole, getByText } = render(
+    <ToolCallGroup
+      isStreaming
+      parts={[
+        {
+          ...part('1', { command: ['click', '@e1'] }),
+          state: 'output-available',
+        },
+        { ...part('2', { command: ['open'] }), state: 'input-streaming' },
+      ]}
+    />,
+  );
+
+  await getByRole('button').click();
+  await expect.element(getByText(/Clicking/)).toBeVisible();
+  await expect.element(getByText(/Opening/)).not.toBeInTheDocument();
 });
