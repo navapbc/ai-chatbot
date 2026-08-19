@@ -19,10 +19,28 @@ jobs:
           cache: 'pnpm'
       - name: Install dependencies
         run: pnpm install
+      # Cache key comes from the resolved playwright version in the lockfile, so a
+      # dependency bump invalidates it and any other change reuses the browser.
+      - name: Resolve Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browser
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
       # Vitest runs in browser mode (Playwright Chromium), so the browser and its
-      # system deps must be present in CI.
+      # system deps must be present in CI. The download is the slowest step in this
+      # job and has hung on Microsoft's CDN, so skip it when the cache hit.
       - name: Install Playwright Chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
         run: pnpm exec playwright install --with-deps chromium
+      # apt-installed system libs live outside the cached path, so they are still
+      # needed on a cache hit.
+      - name: Install Playwright system dependencies
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
       # Non-blocking: a failing test reports here but must not block merging.
       # Remove `continue-on-error` once the suite is stable enough to gate on.
       - name: Run tests
