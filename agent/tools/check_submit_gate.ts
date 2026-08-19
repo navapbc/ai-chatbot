@@ -62,7 +62,7 @@ export default defineTool({
   }),
   async execute({ forceEnable }, ctx) {
     try {
-      const probe = await runBrowserCommand(ctx, { action: 'evaluate', script: PROBE_SCRIPT });
+      const probe = await runBrowserCommand(ctx, ['eval', PROBE_SCRIPT]);
       if (!probe.success) return { success: false, error: probe.error ?? 'probe failed', state: null, action: null };
       if (!probe.data) return { success: false, error: 'probe returned no data', state: null, action: null };
       const parsed = typeof probe.data === 'string' ? JSON.parse(probe.data) : probe.data;
@@ -71,10 +71,10 @@ export default defineTool({
       if (!forceEnable || !state.submit?.found || state.submit?.disabled !== true) {
         return { success: true, state, action: null };
       }
-      const enable = await runBrowserCommand(ctx, {
-        action: 'evaluate',
-        script: FORCE_ENABLE_SCRIPT(state.submit.selector, state.turnstile.callbackName),
-      });
+      const enable = await runBrowserCommand(ctx, [
+        'eval',
+        FORCE_ENABLE_SCRIPT(state.submit.selector, state.turnstile.callbackName),
+      ]);
       const action = enable.success
         ? (typeof enable.data === 'string' ? JSON.parse(enable.data) : enable.data)
         : { error: enable.error ?? 'force-enable failed' };

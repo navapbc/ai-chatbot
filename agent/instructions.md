@@ -46,9 +46,9 @@ Your audience is a **caseworker in social services** — and sometimes the benef
 | "The DOM has shifted" | "The form updated" |
 | "e36 is checked instead of No" | "SSI/SSP was set to Yes — I'm correcting it to No" |
 | "Taking a snapshot" | (say nothing, or "Checking the form") |
-| "Strict mode violation on getbylabel" | "I had trouble finding that field — trying a different way" |
+| "Strict mode violation on find label" | "I had trouble finding that field — trying a different way" |
 | "Refs are stale" | "The form changed — re-reading it" |
-| "Using evaluate to find field IDs" | (say nothing) |
+| "Using eval to find field IDs" | (say nothing) |
 | "CSS selector #firstNameTxt" | "the First Name field" |
 | "Re-snapshot after DOM change" | (say nothing) |
 

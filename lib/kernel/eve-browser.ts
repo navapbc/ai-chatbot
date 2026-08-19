@@ -1,11 +1,14 @@
 import Kernel from '@onkernel/sdk';
-import { nanoid } from 'nanoid';
-import { BrowserManager } from 'agent-browser/dist/browser.js';
-import { executeCommand } from 'agent-browser/dist/actions.js';
-import type { Command } from 'agent-browser/dist/types.js';
 import type { ToolContext } from 'eve/tools';
+import { runCommand } from '@/lib/kernel/cli';
+import { kernelTimelineCollector } from '@/lib/kernel/telemetry';
 import { KERNEL_TIMEOUT_SECONDS } from '@/lib/kernel/session-config';
-import { cacheKey, isProfileUsable, profileNameFor } from '@/lib/kernel/session-store';
+import {
+  cacheKey,
+  cliSessionName,
+  isProfileUsable,
+  profileNameFor,
+} from '@/lib/kernel/session-store';
 
 // -----------------------------------------------------------------------------
 // DEVIATION FROM THE TASK BRIEF — read before touching this file.
@@ -37,9 +40,12 @@ import { cacheKey, isProfileUsable, profileNameFor } from '@/lib/kernel/session-
 //
 // So this file does NOT import `getOrCreateBrowser` from `lib/kernel/browser.ts`.
 // Instead it reimplements the minimal slice of that function needed for a
-// working browser tool: create-or-reuse a Kernel browser + BrowserManager,
-// cached by session in this module's own process-lifetime Map. It reuses the
-// two `lib/kernel/*` helper modules that are provably free of the `server-only`
+// working browser tool: create-or-reuse a Kernel browser, cached by session in
+// this module's own process-lifetime Map, and drive it with the agent-browser
+// CLI over CDP (`lib/kernel/cli.ts` — same transport `lib/ai/tools/browser.ts`
+// uses; the CLI's own daemon holds the CDP connection between calls, keyed by
+// `--session`, so `@eN` refs survive across commands). It reuses the two
+// `lib/kernel/*` helper modules that are provably free of the `server-only`
 // chain (`session-store.ts`'s own header says so; `session-config.ts` is pure
 // constants) so the profile-naming and cache-key conventions stay identical to
 // the production path.
@@ -49,8 +55,8 @@ import { cacheKey, isProfileUsable, profileNameFor } from '@/lib/kernel/session-
 // `lib/storage/gcs.ts`, which are exactly the modules that can't be pulled into
 // this bundle). Both are already scoped to a later sub-project (replay/mapping
 // is SP-C per the brief) — this file's job is only to prove the browser tool
-// itself, i.e. that a `BrowserManager` (and its ref map) can be created once
-// and reused across multiple Eve tool calls in the same session.
+// itself, i.e. that a Kernel browser can be created once and reused across
+// multiple Eve tool calls in the same session.
 //
 // Real fix for later reuse of the shared `getOrCreateBrowser` as originally
 // specced: either (a) get Eve to resolve `server-only` under the `react-server`
@@ -68,7 +74,8 @@ const kernel = new Kernel();
 const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes — Kernel commands can hang.
 
 interface EveBrowserSession {
-  browserManager: BrowserManager;
+  cdpWsUrl: string;
+  kernelSessionId: string;
 }
 
 const sessions = new Map<string, EveBrowserSession>();
@@ -129,14 +136,10 @@ async function getOrCreateEveBrowser(
           : {}),
       })) as { session_id: string; cdp_ws_url: string };
 
-      const manager = new BrowserManager();
-      await manager.launch({
-        id: 'launch',
-        action: 'launch',
-        cdpUrl: browser.cdp_ws_url,
-      });
-
-      const session: EveBrowserSession = { browserManager: manager };
+      const session: EveBrowserSession = {
+        cdpWsUrl: browser.cdp_ws_url,
+        kernelSessionId: browser.session_id,
+      };
       sessions.set(key, session);
       return session;
     } finally {
@@ -149,9 +152,9 @@ async function getOrCreateEveBrowser(
 }
 
 // Stable browser-session identity from Eve's session context. Re-resolved on
-// EVERY call (no module-held Playwright handle passed around), which is the
+// EVERY call (no module-held browser handle passed around), which is the
 // durable-safe pattern from the spike's browser sketch. getOrCreateEveBrowser's
-// own in-memory cache reuses the live BrowserManager within the eve-dev process.
+// own in-memory cache reuses the live Kernel browser within the eve-dev process.
 export function browserIdentity(ctx: ToolContext): { sessionId: string; userId: string } {
   const sessionId = ctx.session.id;
   // Standalone `eve dev` has no channel auth. getOrCreateEveBrowser requires a
@@ -164,20 +167,17 @@ export function browserIdentity(ctx: ToolContext): { sessionId: string; userId: 
 
 export async function runBrowserCommand(
   ctx: ToolContext,
-  params: Record<string, unknown>,
-): Promise<{ success: boolean; data?: unknown; error?: string }> {
+  command: readonly string[],
+): Promise<{ success: boolean; data?: unknown; error?: string | null }> {
   const { sessionId, userId } = browserIdentity(ctx);
   return withSessionQueue(sessionId, async () => {
     const session = await getOrCreateEveBrowser(sessionId, userId);
-    const command = { id: nanoid(), ...params } as Command;
-    return Promise.race([
-      executeCommand(command, session.browserManager),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error('Command timed out after 2 minutes')),
-          COMMAND_TIMEOUT_MS,
-        ),
-      ),
-    ]);
+    const response = await runCommand(command, {
+      session: cliSessionName(userId, sessionId),
+      cdpUrl: session.cdpWsUrl,
+      timeoutMs: COMMAND_TIMEOUT_MS,
+      collectTimeline: kernelTimelineCollector(session.kernelSessionId),
+    });
+    return response;
   });
 }

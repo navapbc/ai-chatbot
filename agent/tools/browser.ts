@@ -3,36 +3,48 @@ import { z } from 'zod';
 import { runBrowserCommand } from '@/lib/kernel/eve-browser';
 
 export default defineTool({
-  description: `Execute browser automation commands on a remote Kernel browser.
+  description: `Execute an agent-browser command on a remote Kernel browser.
 
-Send a structured command with an "action" field and action-specific parameters. See the browser-automation skill for snapshot discipline, selector strategy, and workflow rules. Snapshot before interacting; re-snapshot after every DOM change. NEVER navigate away from the target application domain and NEVER click the final submit button.
+Pass the command as an argv array, exactly as the agent-browser CLI takes it — the first element is the command, the rest are its arguments and flags. Values are passed through as-is, so never quote or shell-escape them. See the browser-automation skill for snapshot discipline, selector strategy, and workflow rules. Snapshot before interacting; re-snapshot after every DOM change. NEVER navigate away from the target application domain and NEVER click the final submit button.
 
-Actions: navigate, snapshot (optional selector / interactive), click, fill, type (clear?), select (values[]), getbylabel (subaction), press (key), hover, check, uncheck, scrollintoview, wait (selector or timeout), waitforloadstate (state), gettext, inputvalue, url, title, scroll (direction/amount), screenshot, back, forward, evaluate (script — reading only), tab_list/tab_switch/tab_new/tab_close, dialog (response), frame/mainframe.`,
-  inputSchema: z.object({
-    action: z.string(),
-    selector: z.string().optional(),
-    value: z.string().optional(),
-    text: z.string().optional(),
-    url: z.string().optional(),
-    key: z.string().optional(),
-    label: z.string().optional(),
-    subaction: z.string().optional(),
-    script: z.string().optional(),
-    values: z.array(z.string()).optional(),
-    timeout: z.number().optional(),
-    amount: z.number().optional(),
-    delay: z.number().optional(),
-    interactive: z.boolean().optional(),
-    clear: z.boolean().optional(),
-    direction: z.string().optional(),
-    state: z.string().optional(),
-    index: z.number().optional(),
-    response: z.string().optional(),
-    promptText: z.string().optional(),
-  }),
-  async execute(params, ctx) {
+Common commands:
+- ["open", "<url>"] - Navigate to URL (waits for load; no separate wait needed)
+- ["snapshot"] - Full accessibility tree (ALWAYS do this first)
+- ["snapshot", "-s", "form"] - Scoped snapshot (reduces noise)
+- ["snapshot", "-i"] - Interactive elements only, with refs
+- ["click", "@e1"] - Click element by ref
+- ["fill", "@e1", "text"] - Clear field and fill (use for plain text fields)
+- ["type", "@e1", "text"] - Real keystrokes, no clear (use for masked fields: SSN, date, phone, state, zip)
+- ["select", "@e1", "option"] - Select native dropdown option (repeat the value argument for multi-select)
+- ["find", "label", "Field Name", "fill", "val"] - Act on a field by its accessible label
+- ["find", "role", "button", "click", "--name", "Submit"] - Act on an element by ARIA role
+- ["press", "Enter"] - Press key (Tab, Escape, ArrowDown, Control+a, …)
+- ["hover", "@e1"] / ["check", "@e1"] / ["uncheck", "@e1"]
+- ["scrollintoview", "@e1"] - Scroll element into view
+- ["wait", "@e1"] - Wait for element; ["wait", "2000"] - wait ms; ["wait", "--load", "networkidle"]
+- ["get", "text", "@e1"] / ["get", "value", "@e1"] / ["get", "url"] / ["get", "title"]
+- ["scroll", "down", "500"] - Scroll down 500px
+- ["screenshot"] - Take screenshot
+- ["back"] / ["forward"] - Browser navigation (AVOID during form filling — may wipe state)
+- ["eval", "document.title"] - Run JavaScript (ONLY for reading simple values — NEVER to find/click elements)
+- ["tab"] / ["tab", "t2"] / ["tab", "new"] / ["tab", "close"] - Tab management (ids look like t1, t2)
+- ["dialog", "accept"] / ["dialog", "dismiss"] - Handle browser dialogs
+- ["frame", "#iframe"] / ["frame", "main"] - Switch between frames
+
+NEVER navigate away from the target application domain. Do NOT click social media links, share buttons, or external links.`,
+  inputSchema: z
+    .object({
+      command: z
+        .array(z.string())
+        .min(1)
+        .describe(
+          'agent-browser CLI argv, e.g. ["click", "@e1"] or ["fill", "@e1", "John"]. One argument per array element; do not quote or escape values.',
+        ),
+    })
+    .describe('An agent-browser CLI command as an argv array'),
+  async execute({ command }, ctx) {
     try {
-      const response = await runBrowserCommand(ctx, params);
+      const response = await runBrowserCommand(ctx, command);
       if (response.success) {
         const output =
           typeof response.data === 'string'
