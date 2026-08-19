@@ -11,9 +11,13 @@ sequence. Each rule comes from a failure that occurred in a real session.
 The most dangerous failure is the silent success. The tool shows `✓ Done`, but the
 field stays empty. Phase 4 finds these failures. Do not skip Phase 4.
 
-Use the binary `./node_modules/.bin/agent-browser` from the `client/` directory. There
-is no global installation. To attach to a local Chrome, read the
-`agent-browser-local-cdp-setup` memory.
+Find the binary in this sequence: `$AGENT_BROWSER_BIN`, then
+`./node_modules/.bin/agent-browser`, then `agent-browser` on the PATH. You start and
+control the browser — do not ask the user to do it. With no `--cdp` flag the CLI
+starts its own browser; add `--headed` when the user wants to watch. To attach to the
+user's own Chrome instead, start Chrome with `--remote-debugging-port=9222` and a
+dedicated `--user-data-dir`, then pass `--cdp http://localhost:9222`. A remote
+provider (Kernel, Browserbase) gives a CDP WebSocket URL for `--cdp`.
 
 **When one run has two or more applications**, read `references/multi-application.md`
 first. The main session becomes the orchestrator: it does the intake for all the
