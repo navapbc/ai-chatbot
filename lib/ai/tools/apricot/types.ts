@@ -18,7 +18,7 @@ export const getUsersSchema = z.object({
       'Field to sort by (e.g., "username", "-username" for descending)'
     ),
   filters: z
-    .record(z.string())
+    .record(z.string(), z.string())
     .optional()
     .describe('Filters to apply (e.g., {"active": "1"})'),
 });
@@ -47,7 +47,7 @@ export const getFormsSchema = z.object({
     .optional()
     .describe('Field to sort by (e.g., "name", "-name" for descending)'),
   filters: z
-    .record(z.string())
+    .record(z.string(), z.string())
     .optional()
     .describe('Filters to apply (e.g., {"field_123": "value"})'),
 });

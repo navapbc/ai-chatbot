@@ -13,3 +13,6 @@ allowBuilds:
 
 overrides:
   boxen: 5.1.2
+
+packages:
+  - "."

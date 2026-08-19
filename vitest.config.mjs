@@ -27,6 +27,10 @@ const EXCLUDE = [
   '**/tests/e2e/**',
   '**/tests/routes/**',
   '**/lib/ai/models.test.ts', // This is not a test file, it exports mocks
+  // Node-only tests (node:fs, eve/tools) — run via vitest.config.node.mjs.
+  // They crash the browser runner on import, so keep them out of `pnpm test`.
+  '**/tests/agent/**',
+  '**/.eve/**', // transient `eve dev` runtime snapshots
 ];
 
 export default defineConfig({

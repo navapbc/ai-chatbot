@@ -46,7 +46,7 @@ export const getApricotForms = tool({
       .string()
       .optional()
       .describe('Field to sort by (e.g., "name", "-name" for descending)'),
-    filters: z.record(z.string()).optional().describe('Filters to apply'),
+    filters: z.record(z.string(), z.string()).optional().describe('Filters to apply'),
   }),
   execute: async ({
     pageSize,
