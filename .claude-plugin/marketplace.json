@@ -1,0 +1,20 @@
+{
+  "name": "ai-chatbot",
+  "owner": {
+    "name": "Nava PBC",
+    "url": "https://www.navapbc.com"
+  },
+  "plugins": [
+    {
+      "name": "form-completion",
+      "source": "./",
+      "description": "Complete, test, or debug a web form with agent-browser: application, benefits, or government forms, multi-step apply flows, or any site form filling.",
+      "version": "1.0.0",
+      "strict": false,
+      "author": {
+        "name": "Nava PBC"
+      },
+      "skills": "./.claude/skills/"
+    }
+  ]
+}
