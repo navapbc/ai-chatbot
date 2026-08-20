@@ -5,7 +5,7 @@ import {
   DiagLogLevel,
   trace,
 } from '@opentelemetry/api';
-import { BraintrustExporter } from '@braintrust/otel';
+import { BraintrustExporter, isRootSpan } from '@braintrust/otel';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
 import { Compute } from 'google-auth-library';
 import {
@@ -61,12 +61,14 @@ export function register() {
     spanProcessors.push(
       new BatchSpanProcessor(
         new BraintrustExporter({
-          // Keep the AI spans and the browser tracer's spans. Drop the rest.
+          // Keep the AI spans, the browser tracer's spans, and the root span
+          // that parents them. Drop the rest.
           filterAISpans: true,
-          customFilter: (span) =>
-            span.instrumentationScope?.name === BROWSER_TRACER
-              ? true
-              : undefined,
+          customFilter: (span) => {
+            if (span.instrumentationScope?.name === BROWSER_TRACER) return true;
+            if (isRootSpan(span)) return true;
+            return undefined;
+          },
         }),
       ),
     );
@@ -102,7 +104,8 @@ export function register() {
 
   // AI SDK 7 emits no model spans until an integration is registered. Must
   // follow registerOTel — it binds the tracer from that provider.
-  registerTelemetry(new OpenTelemetry());
+  // runtimeContext defaults to false, dropping the route's join keys.
+  registerTelemetry(new OpenTelemetry({ runtimeContext: true }));
 
   // All-zero trace id here means the bundler split @opentelemetry/api and this
   // provider is not the one route handlers see.
