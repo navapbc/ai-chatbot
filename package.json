@@ -21,6 +21,7 @@
     "eval": "rc=0; for f in evals/*.eval.ts; do dotenv -e .env.local -- braintrust eval $f --external-packages agent-browser playwright playwright-core chromium-bidi || rc=1; done; exit $rc",
     "eval:tool-selection": "dotenv -e .env.local -- braintrust eval evals/tool-selection.eval.ts",
     "eval:check-harness": "tsx evals/browser-harness.check.ts",
+    "eval:online:apply": "dotenv -e .env.local -- tsx evals/online/apply.ts",
     "eval:ci": "rc=0; for f in evals/*.eval.ts; do braintrust eval $f --external-packages agent-browser playwright playwright-core chromium-bidi || rc=1; done; exit $rc"
   },
   "dependencies": {
