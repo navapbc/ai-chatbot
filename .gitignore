@@ -53,6 +53,7 @@ yarn-error.log*
 .mastra/
 vertex-ai-credentials.json
 .eve/
+.output/
 
 # Ignore personal Claude Code settings, but track shared skills
 .claude/*
