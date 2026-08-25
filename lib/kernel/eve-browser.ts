@@ -76,6 +76,15 @@ const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes — Kernel commands can hang.
 interface EveBrowserSession {
   cdpWsUrl: string;
   kernelSessionId: string;
+  /**
+   * Remote URL for watching this browser, or null for a headless session.
+   *
+   * The Next app cannot read it from this map — `eve dev` is a separate OS
+   * process — so it rides out on the browser tool's result and is cached on the
+   * Next side by the /api/eve-chat stream reader. See
+   * `lib/ai/eve/live-view-store.ts`.
+   */
+  liveViewUrl: string | null;
 }
 
 const sessions = new Map<string, EveBrowserSession>();
@@ -134,11 +143,17 @@ async function getOrCreateEveBrowser(
         ...(hasProfile
           ? { profile: { name: profileName, save_changes: true } }
           : {}),
-      })) as { session_id: string; cdp_ws_url: string };
+      })) as {
+        session_id: string;
+        cdp_ws_url: string;
+        // Optional on the SDK response: only non-headless sessions get one.
+        browser_live_view_url?: string;
+      };
 
       const session: EveBrowserSession = {
         cdpWsUrl: browser.cdp_ws_url,
         kernelSessionId: browser.session_id,
+        liveViewUrl: browser.browser_live_view_url ?? null,
       };
       sessions.set(key, session);
       return session;
@@ -155,20 +170,39 @@ async function getOrCreateEveBrowser(
 // EVERY call (no module-held browser handle passed around), which is the
 // durable-safe pattern from the spike's browser sketch. getOrCreateEveBrowser's
 // own in-memory cache reuses the live Kernel browser within the eve-dev process.
-export function browserIdentity(ctx: ToolContext): { sessionId: string; userId: string } {
+export function browserIdentity(ctx: ToolContext): {
+  sessionId: string;
+  userId: string;
+} {
   const sessionId = ctx.session.id;
-  // Standalone `eve dev` has no channel auth. getOrCreateEveBrowser requires a
-  // non-empty userId for cache-key isolation, so fall back to a constant.
-  // Confirmed against eve's SessionAuthContext (channel/types.d.ts): `subject`
-  // is the optional principal field on the authenticated caller.
-  const userId = ctx.session.auth.current?.subject ?? 'eve-local';
+  // Prefer `initiator` over `current`: eve pins `initiator` to whoever created
+  // the session, while `current` tracks the caller of the most recent request
+  // (see eve's SessionAuth in context/keys.d.ts). A browser belongs to the
+  // conversation, so it must be keyed on the session-stable principal — keying
+  // on `current` changed this id on the first follow-up turn, which renamed the
+  // agent-browser daemon and silently orphaned the browser and its `@eN` refs
+  // mid-form. `agent/agent.ts` resolves eveModel with the same precedence.
+  //
+  // Resolve one principal and read both fields off it, so we never mix
+  // initiator's subject with current's principalId. `subject` is optional on
+  // SessionAuthContext but `principalId` is required, so fall through to it
+  // rather than collapsing a real principal to the constant below.
+  // Standalone `eve dev` has no channel auth at all, and getOrCreateEveBrowser
+  // requires a non-empty userId for cache-key isolation — hence the constant.
+  const principal = ctx.session.auth.initiator ?? ctx.session.auth.current;
+  const userId = principal?.subject ?? principal?.principalId ?? 'eve-local';
   return { sessionId, userId };
 }
 
 export async function runBrowserCommand(
   ctx: ToolContext,
   command: readonly string[],
-): Promise<{ success: boolean; data?: unknown; error?: string | null }> {
+): Promise<{
+  success: boolean;
+  data?: unknown;
+  error?: string | null;
+  liveViewUrl: string | null;
+}> {
   const { sessionId, userId } = browserIdentity(ctx);
   return withSessionQueue(sessionId, async () => {
     const session = await getOrCreateEveBrowser(sessionId, userId);
@@ -178,6 +212,8 @@ export async function runBrowserCommand(
       timeoutMs: COMMAND_TIMEOUT_MS,
       collectTimeline: kernelTimelineCollector(session.kernelSessionId),
     });
-    return response;
+    // Reported on every command, not just the first: the Next side may start
+    // reading the stream partway through a turn, and repeats are idempotent.
+    return { ...response, liveViewUrl: session.liveViewUrl };
   });
 }

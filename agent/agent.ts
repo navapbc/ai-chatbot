@@ -10,7 +10,7 @@ import { defineAgent, defineDynamic } from 'eve';
 // attribute `eveModel` (dev/eval only, loopback-gated).
 export default defineAgent({
   model: defineDynamic({
-    fallback: 'anthropic/claude-sonnet-4.6',
+    fallback: 'openai/gpt-5.4-mini',
     events: {
       'session.started': (_event, ctx) => {
         const value =

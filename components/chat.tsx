@@ -10,6 +10,7 @@ import { useSWRConfig } from 'swr';
 import { useLocalStorage } from 'usehooks-ts';
 import { fetchWithErrorHandlers, generateUUID } from '@/lib/utils';
 import { isProductionEnvironment } from '@/lib/constants';
+import { DEFAULT_CHAT_MODEL } from '@/lib/ai/models';
 import { isFeatureEnabled } from '@/lib/feature-flags';
 import { Artifact } from './artifact';
 import { MultimodalInput } from './multimodal-input';
@@ -138,7 +139,13 @@ export function Chat({
           message: messages.at(-1),
           selectedChatModel: initialChatModel,
           selectedVisibilityType: visibilityType,
-          ...(!isProductionEnvironment && selectedModelIdRef.current
+          // Only a genuine override travels: picking the production model
+          // means "no override", and its id is not in the schema's
+          // modelOverride enum (nor in Eve's MODEL_MAP), so sending it would
+          // 400 the legacy route.
+          ...(!isProductionEnvironment &&
+          selectedModelIdRef.current &&
+          selectedModelIdRef.current !== DEFAULT_CHAT_MODEL
             ? { modelOverride: selectedModelIdRef.current }
             : {}),
           ...body,

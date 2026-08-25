@@ -45,17 +45,36 @@ NEVER navigate away from the target application domain. Do NOT click social medi
   async execute({ command }, ctx) {
     try {
       const response = await runBrowserCommand(ctx, command);
+      // `liveViewUrl` is carried for the chat UI's live browser panel, not for
+      // the model: `eve dev` is a separate process from the Next app, so the
+      // tool result is how the URL crosses over. The Next stream reader caches
+      // it (lib/ai/eve/live-view-store.ts) and /api/kernel-browser serves it.
       if (response.success) {
         const output =
           typeof response.data === 'string'
             ? response.data
             : JSON.stringify(response.data);
-        return { success: true, output, error: null };
+        return {
+          success: true,
+          output,
+          error: null,
+          liveViewUrl: response.liveViewUrl,
+        };
       }
-      return { success: false, output: null, error: response.error ?? 'command failed' };
+      return {
+        success: false,
+        output: null,
+        error: response.error ?? 'command failed',
+        liveViewUrl: response.liveViewUrl,
+      };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      return { success: false, output: null, error: message };
+      return {
+        success: false,
+        output: null,
+        error: message,
+        liveViewUrl: null,
+      };
     }
   },
 });

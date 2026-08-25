@@ -43,13 +43,25 @@ export async function continueEveSession(
   return { continuationToken: next };
 }
 
+/**
+ * Read a session's durable event stream from `startIndex` (an absolute event
+ * count, so it is also the number of events already consumed).
+ *
+ * Always send it explicitly: omitting the parameter makes Eve replay from event
+ * 0, which on a follow-up turn re-delivers the previous turn and its
+ * `session.waiting` boundary. Passing the cursor also makes the read immune to
+ * the gap between starting a turn and subscribing — events emitted in between
+ * are still waiting at that index rather than being missed.
+ */
 export async function openEveStream(
   sessionId: string,
+  startIndex = 0,
   signal?: AbortSignal,
 ): Promise<Response> {
-  const res = await fetch(`${EVE_URL}/eve/v1/session/${sessionId}/stream`, {
-    signal,
-  });
+  const res = await fetch(
+    `${EVE_URL}/eve/v1/session/${sessionId}/stream?startIndex=${startIndex}`,
+    { signal },
+  );
   if (!res.ok || !res.body) {
     throw new Error(`Eve stream ${sessionId} responded ${res.status}`);
   }

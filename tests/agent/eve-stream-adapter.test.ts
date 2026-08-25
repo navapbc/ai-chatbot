@@ -94,4 +94,65 @@ describe('translateEveEvent', () => {
     expect(chunks).toEqual([{ type: 'start-step' }]);
     expect(r.done).toBe(false);
   });
+
+  // The live-view URL can only reach the Next process on a tool result: the
+  // Kernel browser is created inside the separate `eve dev` process.
+  it('reports liveViewUrl off a browser tool result', () => {
+    const { writer } = collect();
+    const r = translateEveEvent(
+      {
+        type: 'action.result',
+        data: {
+          result: {
+            kind: 'tool-result',
+            callId: 'call-9',
+            output: { success: true, output: 'ok', liveViewUrl: 'https://live.example/v/abc' },
+          },
+        },
+      },
+      writer,
+      { textId: null, generateId: gen },
+    );
+    expect(r.liveViewUrl).toBe('https://live.example/v/abc');
+  });
+  it('still forwards the tool output when a liveViewUrl rides along', () => {
+    const { writer, chunks } = collect();
+    translateEveEvent(
+      {
+        type: 'action.result',
+        data: {
+          result: {
+            kind: 'tool-result',
+            callId: 'call-9',
+            output: { success: true, output: 'ok', liveViewUrl: 'https://live.example/v/abc' },
+          },
+        },
+      },
+      writer,
+      { textId: null, generateId: gen },
+    );
+    expect(chunks).toEqual([
+      {
+        type: 'tool-output-available',
+        toolCallId: 'call-9',
+        output: { success: true, output: 'ok', liveViewUrl: 'https://live.example/v/abc' },
+      },
+    ]);
+  });
+  it('leaves liveViewUrl undefined for other tools and for a headless browser', () => {
+    const { writer } = collect();
+    const other = translateEveEvent(
+      { type: 'action.result', data: { result: { kind: 'tool-result', callId: 'c1', output: { rendered: true } } } },
+      writer,
+      { textId: null, generateId: gen },
+    );
+    expect(other.liveViewUrl).toBeUndefined();
+    // A headless session reports null rather than a URL — must not be stored.
+    const headless = translateEveEvent(
+      { type: 'action.result', data: { result: { kind: 'tool-result', callId: 'c2', output: { success: true, liveViewUrl: null } } } },
+      writer,
+      { textId: null, generateId: gen },
+    );
+    expect(headless.liveViewUrl).toBeUndefined();
+  });
 });

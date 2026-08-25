@@ -37,8 +37,16 @@ export function translateEveEvent(
   event: any,
   writer: Writer,
   ctx: Ctx,
-): { textId: string | null; done: boolean; continuationToken?: string } {
+): {
+  textId: string | null;
+  done: boolean;
+  continuationToken?: string;
+  liveViewUrl?: string;
+} {
   let textId = ctx.textId;
+  // Reported by the browser tool so the chat UI's live panel can find the
+  // Kernel browser that `eve dev` created in its own process.
+  let liveViewUrl: string | undefined;
   switch (event?.type) {
     case 'message.appended': {
       const delta = event.data?.messageDelta ?? '';
@@ -73,6 +81,10 @@ export function translateEveEvent(
       const r = event.data?.result;
       if (r?.kind === 'tool-result') {
         writer.write({ type: 'tool-output-available', toolCallId: r.callId, output: r.output });
+        // Only the browser tool reports this field, so no callId->toolName
+        // correlation is needed to recognize it.
+        const url = (r.output as { liveViewUrl?: unknown } | null)?.liveViewUrl;
+        if (typeof url === 'string' && url) liveViewUrl = url;
       }
       break;
     }
@@ -109,5 +121,5 @@ export function translateEveEvent(
     default:
       break;
   }
-  return { textId, done: false };
+  return { textId, done: false, liveViewUrl };
 }
