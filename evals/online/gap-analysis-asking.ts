@@ -7,6 +7,9 @@ export const CHOICE_SCORES = { A: 1, B: 0.5, C: 0 } as const;
 
 export const JUDGE_MODEL = 'claude-sonnet-5';
 
+// Only A (1.0) passes.
+export const PASS_THRESHOLD = 0.75;
+
 export const EVALUATOR_SLUG = 'gap-analysis-asking-online';
 export const RULE_NAME = 'Gap analysis asking quality';
 
@@ -121,6 +124,8 @@ export const EVALUATOR_DEFINITION = {
     // empty traces. BTQL_FILTER is what actually keeps those out.
     allow_skip: true,
   },
+  // B (0.5) is "minor issues" and should not count as passing.
+  metadata: { __pass_threshold: PASS_THRESHOLD },
 };
 
 // Trace scope, not span: filterAISpans drops the OTEL root.

@@ -25,17 +25,21 @@ if (!apiKey) {
 }
 
 const args = process.argv.slice(2);
-const env = args.find((a) => !a.startsWith('--')) as Environment | undefined;
+const target = args.find((a) => !a.startsWith('--'));
 const activate = args.includes('--activate');
 const dryRun = args.includes('--dry-run');
 
-if (!env || !ENVIRONMENTS.includes(env)) {
+if (
+  !target ||
+  (target !== 'all' && !ENVIRONMENTS.includes(target as Environment))
+) {
   throw new Error(
-    `Usage: apply.ts <${ENVIRONMENTS.join('|')}> [--activate] [--dry-run]`,
+    `Usage: apply.ts <${ENVIRONMENTS.join('|')}|all> [--activate] [--dry-run]`,
   );
 }
 
-const projectName = `labs-asp-${env}`;
+const targets: Environment[] =
+  target === 'all' ? [...ENVIRONMENTS] : [target as Environment];
 
 const request = async (
   method: string,
@@ -58,7 +62,9 @@ const request = async (
   return res.json();
 };
 
-const main = async () => {
+const applyEnv = async (env: Environment) => {
+  const projectName = `labs-asp-${env}`;
+
   // Braintrust creates projects on first trace, so prod may not exist yet.
   const { objects: projects } = await request(
     'GET',
@@ -66,27 +72,20 @@ const main = async () => {
   );
   const project = projects?.[0];
   if (!project) {
-    throw new Error(
-      `Project "${projectName}" does not exist. Braintrust creates it on the ` +
-        `first exported trace — deploy ${env} and send one request first.`,
-    );
+    return {
+      project: projectName,
+      skipped: `does not exist yet — send one trace from ${env} first`,
+    };
   }
 
   if (dryRun) {
-    console.log(
-      JSON.stringify(
-        {
-          project: projectName,
-          project_id: project.id,
-          evaluator: EVALUATOR_SLUG,
-          rule: RULE_NAME,
-          status: activate ? 'active' : 'paused',
-        },
-        null,
-        2,
-      ),
-    );
-    return;
+    return {
+      project: projectName,
+      project_id: project.id,
+      evaluator: EVALUATOR_SLUG,
+      rule: RULE_NAME,
+      status: activate ? 'active' : 'paused',
+    };
   }
 
   // Upsert by slug.
@@ -113,18 +112,20 @@ const main = async () => {
     },
   });
 
-  console.log(
-    JSON.stringify(
-      {
-        project: projectName,
-        evaluator_id: evaluator.id,
-        rule_id: rule.id,
-        status: activate ? 'active' : 'paused',
-      },
-      null,
-      2,
-    ),
-  );
+  return {
+    project: projectName,
+    evaluator_id: evaluator.id,
+    rule_id: rule.id,
+    status: activate ? 'active' : 'paused',
+  };
+};
+
+const main = async () => {
+  const results = [];
+  for (const env of targets) {
+    results.push(await applyEnv(env));
+  }
+  console.log(JSON.stringify(results, null, 2));
 };
 
 main().catch((error) => {
