@@ -283,6 +283,30 @@ jobs:
         working-directory: ./terraform
         run: terraform apply -auto-approve tfplan
 
+      # Reconciles the Braintrust online-scoring rules with evals/online/.
+      # Same env -> project mapping as BRAINTRUST_PARENT in cloud_run.tf.
+      - name: Set up Node
+        if: needs.setup.outputs.should_deploy == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Apply Braintrust online evals
+        if: needs.setup.outputs.should_deploy == 'true'
+        env:
+          BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
+          ENVIRONMENT: ${{ needs.setup.outputs.environment }}
+        run: |
+          if [ -z "$BRAINTRUST_API_KEY" ]; then
+            echo "::warning::BRAINTRUST_API_KEY is not configured — skipping online evals."
+            exit 0
+          fi
+          case "$ENVIRONMENT" in
+            preview-pr-*) BT_ENV=preview ;;
+            *) BT_ENV="$ENVIRONMENT" ;;
+          esac
+          npx -y tsx evals/online/apply.ts "$BT_ENV" --activate
+
       - name: Get Terraform Outputs
         if: needs.setup.outputs.should_deploy == 'true'
         working-directory: ./terraform
