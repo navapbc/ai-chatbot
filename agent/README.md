@@ -237,6 +237,13 @@ EVE_SERVER_URL=http://127.0.0.1:2000 pnpm dev
 running on a different port. The Next side needs no Eve import and no Node 24
 — it only does HTTP + AI SDK stream translation.
 
+The `set -a` line matters more than it looks: the agent calls Vertex AI
+directly, so `eve dev` needs `GOOGLE_APPLICATION_CREDENTIALS` (a *relative*
+path, so run from the repo root), `GOOGLE_VERTEX_PROJECT`, and
+`GOOGLE_VERTEX_LOCATION` in its environment, plus `KERNEL_API_KEY` and
+`DATABASE_URL` for the browser tool. `AI_GATEWAY_API_KEY` is no longer used by
+anything under `agent/`.
+
 ### Enabling the flag
 
 The chat transport is chosen by the `useEveAgent` feature flag
@@ -310,73 +317,136 @@ which model the Eve agent runs on, when the `useEveAgent` flag is on. The path:
    non-production environments (`!isProductionEnvironment`) — this is the
    same conditional send the legacy route already relies on; nothing new was
    added here.
-2. **`modelOverride` → gateway slug.** `app/(chat)/api/eve-chat/route.ts` (the
-   adapter) passes `body.modelOverride` through
-   `toGatewaySlug` (`lib/ai/eve/model-map.ts`), which maps the picker's dev
-   ids (`claude-opus-4-8`, `claude-opus-4-7`, `claude-sonnet-4-6`,
-   `claude-haiku-4-5`, `gpt-5.4`, `gpt-5.4-pro`, `gpt-5.4-mini`,
-   `gpt-5.4-nano`) to dot-versioned AI Gateway slugs (e.g.
-   `anthropic/claude-opus-4.8`). Ids with no entry (`chat-model`,
-   `chat-model-reasoning`, unknown/empty) map to `undefined`.
-3. **Slug → `x-eve-model` header.** Only on session *create*
+2. **`modelOverride` → Vertex model id.** `app/(chat)/api/eve-chat/route.ts`
+   (the adapter) passes `body.modelOverride` through `toVertexModelId`
+   (`lib/ai/eve/model-map.ts`), which maps the picker's dev Claude ids
+   (`claude-opus-4-8`, `claude-opus-4-7`, `claude-sonnet-4-6`,
+   `claude-haiku-4-5`) to the model ids Vertex AI takes. The mapping is
+   identity today — the picker already uses Anthropic's native hyphenated
+   version format, which is also Vertex's — but it stays a map so the two can
+   diverge, and so the same module can supply an allowlist. Ids with no entry
+   (`chat-model`, `chat-model-reasoning`, unknown/empty) map to `undefined`.
+
+   The picker's `gpt-5.4*` entries are **deliberately unmapped**: Vertex does
+   not serve OpenAI models, and the agent no longer routes anything through the
+   AI Gateway, so there is nothing left to run them on. Selecting one sends no
+   header and lands on the fallback.
+3. **Model id → `x-eve-model` header.** Only on session *create*
    (`createEveSession` in `lib/ai/eve/eve-client.ts`) — never on continue —
-   the adapter sends the resolved slug as the `x-eve-model` request header.
-   If `toGatewaySlug` returned `undefined`, no header is sent at all.
+   the adapter sends the resolved id as the `x-eve-model` request header.
+   If `toVertexModelId` returned `undefined`, no header is sent at all.
 4. **Header → auth attribute.** `agent/channels/eve.ts`'s `modelAttributeAuth`
    `AuthFn` reads `x-eve-model` off the request, but only accepts it on a
    loopback request (`isLoopbackRequest`, the same trust boundary as Eve's own
    `localDev()`). It returns the value as auth attribute `eveModel`; every
    other channel/auth path is unchanged. The header value is treated as
-   untrusted input — it only ever gets looked up as a known gateway slug
-   downstream, never used as a credential.
+   untrusted input — downstream it is only ever validated against
+   `isVertexModelId`'s allowlist, never used as a credential.
 5. **Attribute → resolved model.** `agent/agent.ts`'s `defineDynamic({
-   fallback: 'anthropic/claude-sonnet-4.6', events: { 'session.started': ... } })`
+   fallback: vertexAnthropic('claude-sonnet-4-6'), events: { 'step.started': ... } })`
    reads `ctx.session.auth.initiator?.attributes?.eveModel` (falling back to
-   `ctx.session.auth.current?.attributes?.eveModel`) on `session.started` and
-   uses it as the session's model if present.
+   `ctx.session.auth.current?.attributes?.eveModel`), validates it against the
+   allowlist, and returns a live `vertexAnthropic(...)` instance plus
+   `modelContextWindowTokens`.
 
-**Session-scoped, not per-turn.** The header is only read on session create,
-so a model change from the picker takes effect on the **next new chat**, not
-mid-conversation — an existing Eve session keeps whatever model it started
-with.
+**Why `step.started` and not `session.started`.** Eve rejects live
+`LanguageModel` objects from session- and turn-scoped resolvers — those
+selections have to be serializable, i.e. model id *strings*, which Eve resolves
+through the AI Gateway. Step scope is the only place an authored provider
+instance survives to the model call (`dispatchDynamicModelEvent` in
+`node_modules/eve/dist/src/context/dynamic-model-lifecycle.js` logs an error and
+drops the selection otherwise). Returning a provider instance is what keeps the
+picker on the same direct-Vertex path as the fallback.
 
-**Fallback.** Any of these break the chain back to the `anthropic/claude-sonnet-4.6`
-fallback: production (adapter never receives `modelOverride`), an unmapped
-picker id (`toGatewaySlug` returns `undefined`, no header sent), or a
+**Still session-scoped in practice, not per-turn.** The resolver now runs on
+every step, but the value it reads (`eveModel`) is a session auth attribute set
+once at session create, so it cannot change mid-session. A model change from the
+picker still takes effect on the **next new chat**; an existing Eve session
+keeps whatever model it started with.
+
+**Fallback.** Any of these break the chain back to the
+`vertexAnthropic('claude-sonnet-4-6')` fallback: production (adapter never
+receives `modelOverride`), an unmapped picker id (`toVertexModelId` returns
+`undefined`, no header sent), a value that fails the allowlist, or a
 non-loopback request (channel auth attribute never set).
 
-**Note on gateway access tiers.** Selecting a model here only changes *which
-model Eve asks the AI Gateway to run* — it does not change what the
-underlying Vercel account is provisioned for. Some models (observed:
-`anthropic/claude-haiku-4.5`, `anthropic/claude-opus-4.7`) return a 403
-(`Free tier users do not have access to this model`) on a free-tier gateway
-account. That is a billing/tier restriction downstream of selection, not a
-failure of the selection mechanism — the gateway's own routing debug info
-echoes back the exact requested slug (`originalModelId`) before rejecting it,
-confirming the header's model was the one actually attempted.
+**Why the context window is hard-coded.** Both `agent/agent.ts` and the
+subagents set `modelContextWindowTokens: VERTEX_CONTEXT_WINDOW_TOKENS`
+(200,000). This is not optional: a `vertexAnthropic(...)` instance reports its
+provider as `googleVertex.anthropic.messages`, whose first dot-segment
+(`googleVertex`) matches neither the AI Gateway catalog's `vertex` provider slug
+nor any provider alias, so Eve's catalog lookup misses and
+`compileAgentConfig` **throws** (`does not have known AI Gateway context window
+metadata`). 200K is Claude's default window on Vertex; the gateway catalog
+advertises 1M for these models, but that window is tier-gated and the value
+drives the compaction trigger — setting it too high would delay compaction past
+the point where Vertex hard-errors on context length, while setting it too low
+only compacts early. Raise it only once 1M is confirmed for the project/region.
+
+**Historical note: why this left the AI Gateway.** The original wiring resolved
+gateway slugs (`anthropic/claude-sonnet-4.6`, `openai/gpt-5.4-mini`) instead of
+Vertex model ids. Selection worked, but this account's gateway tier returned 403
+(`Free tier users do not have access to this model`) for
+`anthropic/claude-haiku-4.5` and `anthropic/claude-opus-4.7` — a billing
+restriction downstream of selection, which is what pushed the fallback down to
+`openai/gpt-5.4-mini`. Calling Vertex directly reuses the credentials the legacy
+production route has always used (`lib/ai/providers.ts`) and removes the tier
+constraint. What it gives up: the gateway's `costUsd` /
+`providerMetadata.gateway.generationId` on usage records, automatic
+context-window metadata, and OIDC-based auth on Vercel deployments (a deployment
+will need the service-account JSON as an env var, or the
+`@ai-sdk/google-vertex/anthropic/edge` variant with
+`GOOGLE_CLIENT_EMAIL`/`GOOGLE_PRIVATE_KEY` — see SP-D).
 
 ### Automated verification
 
 - `pnpm exec vitest run -c vitest.config.node.mjs tests/agent/eve-model-map.test.ts`
-  covers `toGatewaySlug`'s id→slug mapping and its `undefined` fallthrough for
-  unmapped/empty/missing ids.
-- The header→attribute→resolver wiring (steps 4–5 above) was proven directly
-  against a running `eve dev` server with `curl`: a request with no
-  `x-eve-model` header resolves and completes on
-  `dynamic:anthropic/claude-sonnet-4.6`; a request with
-  `x-eve-model: anthropic/claude-sonnet-4.6` also completes; a request with
-  `x-eve-model: openai/gpt-5.4-mini` completes without error, with a
-  token/cost usage signature (far fewer input tokens, different cache
-  behavior) that differs from the sonnet-4.6 runs — consistent with, though
-  not conclusive proof of, a different model actually running. The
-  unambiguous proof is two other mapped-model requests
-  (`anthropic/claude-haiku-4.5`, `anthropic/claude-opus-4.7`): both are
-  rejected by the gateway itself (403, free-tier restriction), but the
-  rejection's own routing metadata echoes back `originalModelId` equal to
-  the *requested* model, not the sonnet-4.6 fallback — proving the header's
-  value reached the gateway as the selected model even though the
-  completion itself was billing-blocked. See
-  `.superpowers/sdd/task-4-report.md` for the full transcripts.
+  covers `toVertexModelId`'s picker-id mapping, its `undefined` fallthrough for
+  unmapped/GPT/empty/missing ids, and `isVertexModelId`'s rejection of the old
+  gateway slug forms.
+- **Compile-time routing, from `.eve/compile/compiled-agent-manifest.json`**
+  after `npx eve info`: the root agent and both subagents each resolve to
+  `routing: { kind: "external", provider: "googleVertex" }` with
+  `contextWindowTokens: 200000`, and `dynamicModel.eventNames` is
+  `["step.started"]`. Removing `modelContextWindowTokens` was tried on purpose
+  and fails the build with `Cannot compile agent compaction because the primary
+  compaction trigger model "googleVertex/claude-sonnet-4.6" does not have known
+  AI Gateway context window metadata.`
+- **Live, with `AI_GATEWAY_API_KEY` and `VERCEL_OIDC_TOKEN` unset** (`npx eve
+  dev --no-ui`, curl against `/eve/v1/session`):
+  - No header: `session.started` reports
+    `modelId: dynamic:googleVertex/claude-sonnet-4.6` and the turn completes.
+  - `x-eve-model: claude-haiku-4-5`: the resolver returns `"claude-haiku-4-5"`
+    (confirmed with a temporary `console.log` in the resolver, since a
+    successful override is otherwise indistinguishable from the fallback) and
+    the turn completes. This model **403'd on the AI Gateway** — it is the
+    clearest single piece of evidence for the change.
+  - `x-eve-model: claude-opus-4-7`: the model call fails, but the failure names
+    the endpoint that was actually called —
+    `us-east5-aiplatform.googleapis.com/v1/projects/nava-labs/locations/us-east5/publishers/anthropic/models/claude-opus-4-7:streamRawPredict`
+    — proving the override reached Vertex directly with no gateway in the path.
+    See the quota note below for the failure itself.
+  - `x-eve-model: anthropic/claude-opus-4.7` (the old gateway slug form): the
+    allowlist rejects it, no resolver error is logged, and the turn completes on
+    the fallback.
+
+**Open issue, pre-existing and not caused by this change: opus is 429ing on
+Vertex.** A direct `generateText` probe against
+`vertexAnthropic(...)`, outside Eve entirely, on `nava-labs`/`us-east5`:
+
+| Model | Result |
+| --- | --- |
+| `claude-sonnet-4-6` | completes |
+| `claude-haiku-4-5` | completes |
+| `claude-opus-4-7` | `429 Too Many Requests` (reproduced 3×) |
+| `claude-opus-4-8` | `429 Too Many Requests` |
+
+So the picker can now reach haiku and sonnet, which the gateway tier blocked,
+but **not** opus — for an unrelated reason. This is a project/region capacity or
+quota condition, and it applies equally to the **legacy production route**,
+which pins `vertexAnthropic('claude-opus-4-7')`
+(`lib/ai/providers.ts`). Worth checking GCP quota for
+`us-east5` before assuming the Eve path is at fault.
 
 ### Manual end-to-end checklist (picker → Eve, in the browser)
 
@@ -387,15 +457,17 @@ end. With both servers up (see "Running it" above):
 1. In the browser, non-production build: open the dev flag menu and confirm
    `useEveAgent` is ON (reload after toggling — see "Enabling the flag"
    above).
-2. Open the model picker and select a mapped model your AI Gateway account
-   can actually complete (`claude-sonnet-4.6` is the safe default; some
-   others may 403 on a free-tier account — see the note above).
+2. Open the model picker and select a mapped Claude model (`claude-sonnet-4-6`
+   is the safe default; `claude-haiku-4-5` also works). The `gpt-5.4*` entries
+   are unmapped and will silently fall back — that is expected, not a bug. The
+   two opus entries currently 429 on Vertex — see the quota note above.
 3. Start a **new** chat (not a continuation of an existing one — the header
    is only read on session create) and send a message.
 4. Confirm the turn completes and, in the Eve dev-server log/output, the
    session's model metadata matches the picked model (not the
-   `anthropic/claude-sonnet-4.6` fallback), unless you picked sonnet-4.6
-   itself.
+   `claude-sonnet-4-6` fallback), unless you picked sonnet-4-6 itself. Runtime
+   identity reports a dynamic agent as `dynamic:<fallback id>`, so check the
+   per-step model rather than the agent identity line.
 5. Change the picker to a different mapped model, start another **new**
    chat, and confirm that chat resolves to the newly picked model.
 6. Reset the picker to the unmapped/base option (or leave it at first load),

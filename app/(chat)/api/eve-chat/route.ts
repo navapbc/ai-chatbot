@@ -14,7 +14,7 @@ import {
   translateEveEvent,
   extractLatestUserText,
 } from '@/lib/ai/eve/stream-adapter';
-import { toGatewaySlug } from '@/lib/ai/eve/model-map';
+import { toVertexModelId } from '@/lib/ai/eve/model-map';
 import { isProductionEnvironment } from '@/lib/constants';
 
 export const maxDuration = 300; // 5 min for long web-automation turns
@@ -78,7 +78,7 @@ export async function POST(request: Request) {
       // modelOverride in non-prod).
       const model = isProductionEnvironment
         ? undefined
-        : toGatewaySlug(body.modelOverride);
+        : toVertexModelId(body.modelOverride);
       const created = await createEveSession(text, model);
       sessionId = created.sessionId;
       setContinuity(userId, chatId, {

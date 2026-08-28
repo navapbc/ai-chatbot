@@ -13,8 +13,8 @@ import {
 // agent/agent.ts reads. Returns null for anything non-loopback or
 // header-less, so the existing auth walk (vercelOidc/localDev/placeholderAuth)
 // is unchanged for all other traffic. The header value is untrusted input —
-// it is only ever looked up as a known gateway model slug downstream, never
-// used as a credential here.
+// downstream it is only ever validated against the Vertex model allowlist in
+// lib/ai/eve/model-map.ts, never used as a credential here.
 const modelAttributeAuth: AuthFn<Request> = (request) => {
   const model = request.headers.get("x-eve-model");
   if (!model || !isLoopbackRequest(request)) return null;
