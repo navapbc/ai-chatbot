@@ -44,7 +44,7 @@ This document shows how environment variables from your local `.env` files map t
 | `GCP_PROJECT_ID` | `nava-labs` | Both |
 | `GOOGLE_CLOUD_PROJECT` | `nava-labs` | Both |
 | `GOOGLE_VERTEX_PROJECT` | `nava-labs` | Both |
-| `GOOGLE_VERTEX_LOCATION` | `us-east5` | Both |
+| `GOOGLE_VERTEX_LOCATION` | `global` | Both |
 | `CORS_ORIGINS` | `https://{domain}` or `*` | Mastra |
 
 ## 🏗️ **Architecture Flow**

@@ -27,7 +27,7 @@ const stubTools = {
       pageSize: z.number().optional(),
       pageNumber: z.number().optional(),
       sort: z.string().optional(),
-      filters: z.record(z.string()).optional(),
+      filters: z.record(z.string(), z.string()).optional(),
     }),
     execute: async () => ({ forms: [], count: 0, success: true }),
   }),

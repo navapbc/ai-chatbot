@@ -10,6 +10,8 @@ import { useSWRConfig } from 'swr';
 import { useLocalStorage } from 'usehooks-ts';
 import { fetchWithErrorHandlers, generateUUID } from '@/lib/utils';
 import { isProductionEnvironment } from '@/lib/constants';
+import { DEFAULT_CHAT_MODEL } from '@/lib/ai/models';
+import { isFeatureEnabled } from '@/lib/feature-flags';
 import { Artifact } from './artifact';
 import { MultimodalInput } from './multimodal-input';
 import { Messages } from './messages';
@@ -101,6 +103,9 @@ export function Chat({
   const selectedModelIdRef = useRef(selectedModelId);
   selectedModelIdRef.current = selectedModelId;
 
+  const useEve = isFeatureEnabled('useEveAgent');
+  const eveApi = useEve ? '/api/eve-chat' : '/api/chat';
+
   const {
     messages,
     setMessages,
@@ -114,11 +119,19 @@ export function Chat({
     messages: initialMessages,
     experimental_throttle: 100,
     generateId: generateUUID,
-    sendAutomaticallyWhen: ({ messages }) =>
-      !stoppedRef.current &&
-      lastAssistantMessageIsCompleteWithToolCalls({ messages }),
+    // Eve owns its agent loop server-side: a turn's stream already contains
+    // the entire turn and ends at session.waiting. The client must NEVER
+    // auto-continue for the Eve transport — auto-sending would scrape the
+    // assistant's own reply and feed it back to Eve as a bogus user turn.
+    // This predicate exists only for the legacy AI-SDK-managed client<->server
+    // tool continuation flow, so it stays exactly as-is when Eve is off.
+    sendAutomaticallyWhen: useEve
+      ? () => false
+      : ({ messages }) =>
+          !stoppedRef.current &&
+          lastAssistantMessageIsCompleteWithToolCalls({ messages }),
     transport: new DefaultChatTransport({
-      api: '/api/chat',
+      api: eveApi,
       fetch: fetchWithErrorHandlers,
       prepareSendMessagesRequest: ({ messages, id, body }) => ({
         body: {
@@ -126,7 +139,13 @@ export function Chat({
           message: messages.at(-1),
           selectedChatModel: initialChatModel,
           selectedVisibilityType: visibilityType,
-          ...(!isProductionEnvironment && selectedModelIdRef.current
+          // Only a genuine override travels: picking the production model
+          // means "no override", and its id is not in the schema's
+          // modelOverride enum (nor in Eve's MODEL_MAP), so sending it would
+          // 400 the legacy route.
+          ...(!isProductionEnvironment &&
+          selectedModelIdRef.current &&
+          selectedModelIdRef.current !== DEFAULT_CHAT_MODEL
             ? { modelOverride: selectedModelIdRef.current }
             : {}),
           ...body,

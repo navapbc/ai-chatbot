@@ -13,6 +13,7 @@ import {
 import { SessionTimeoutModal } from '@/components/session-timeout-modal';
 import { useSessionLifecycle } from '@/hooks/use-session-lifecycle';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { useFeatureFlag } from '@/hooks/use-feature-flag';
 import {
   Sheet,
   SheetContent,
@@ -52,6 +53,9 @@ export function KernelBrowserClient({
   const [isConnected, setIsConnected] = useState(false);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const isMobile = useIsMobile();
+  // Which transport is driving this chat. On Eve the browser belongs to the
+  // agent's own process, so this panel only ever observes it.
+  const useEve = useFeatureFlag('useEveAgent');
 
   // Use refs to avoid dependency changes triggering re-initialization
   const onConnectionChangeRef = useRef(onConnectionChange);
@@ -95,8 +99,12 @@ export function KernelBrowserClient({
 
         // force=true (refresh button) → create a new browser directly
         // force=false (normal mount) → poll for the browser the tool creates
-        const action = force ? 'create' : 'get';
-        const maxAttempts = force ? 1 : 30; // poll up to 30s for tool to create
+        //
+        // On the Eve transport the agent owns the browser (it lives in the
+        // `eve dev` process), so there is nothing for this panel to create —
+        // refresh polls for the agent's browser instead of demanding a new one.
+        const action = force && !useEve ? 'create' : 'get';
+        const maxAttempts = force && !useEve ? 1 : 30; // poll up to 30s
         let attempts = 0;
 
         while (attempts < maxAttempts) {
@@ -107,6 +115,7 @@ export function KernelBrowserClient({
               action,
               sessionId,
               isMobile: isMobileRef.current,
+              useEve,
             }),
           });
 
@@ -143,7 +152,7 @@ export function KernelBrowserClient({
         initInFlightRef.current = false;
       }
     },
-    [sessionId],
+    [sessionId, useEve],
   );
 
   // Keep sessionId in a ref so the beforeunload handler always has the latest value

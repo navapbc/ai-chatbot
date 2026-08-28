@@ -1,0 +1,219 @@
+import Kernel from '@onkernel/sdk';
+import type { ToolContext } from 'eve/tools';
+import { runCommand } from '@/lib/kernel/cli';
+import { kernelTimelineCollector } from '@/lib/kernel/telemetry';
+import { KERNEL_TIMEOUT_SECONDS } from '@/lib/kernel/session-config';
+import {
+  cacheKey,
+  cliSessionName,
+  isProfileUsable,
+  profileNameFor,
+} from '@/lib/kernel/session-store';
+
+// -----------------------------------------------------------------------------
+// DEVIATION FROM THE TASK BRIEF — read before touching this file.
+//
+// The brief's `runBrowserCommand` was meant to call `getOrCreateBrowser` from
+// `lib/kernel/browser.ts` directly. That module transitively imports
+// `lib/db/queries.ts`, which does `import 'server-only'`. Eve's compile/
+// discovery step (v0.27.0) statically loads every `agent/tools/*.ts` file's
+// whole import graph at boot to read tool schemas, and — unlike Next.js's
+// webpack config, which resolves `server-only` to a no-op (`empty.js`, via the
+// package's `react-server` export condition) on the server graph — Eve's
+// rolldown-based bundler doesn't set that condition, so the package's default
+// export (`index.js`, which unconditionally throws "This module cannot be
+// imported from a Client Component module...") runs at boot and crashes `eve
+// dev` before any request is served. Confirmed empirically:
+//   - stub agent/tools/browser.ts (no lib/kernel/browser import): boots clean.
+//   - static OR dynamic `import('@/lib/kernel/browser')`: same crash either way
+//     (Eve's compile step follows dynamic imports into the same bundle graph
+//     too, so deferring the import doesn't dodge it).
+//   - `NODE_OPTIONS='--conditions=react-server'` (which *does* make Node's own
+//     resolver pick `server-only`'s `empty.js`) fixes THAT crash, but then
+//     breaks Eve's *own* internal bundling for this specific import graph —
+//     requests fail with "Export 'moduleMap' is not defined in module" from
+//     Eve's generated `.eve/compile/module-map.mjs`. Reproduced with the
+//     diagnostic stub under the same flag: session creation succeeds fine, so
+//     the corruption is specific to pulling in `lib/kernel/browser.ts`'s full
+//     tree (postgres/drizzle, GCS storage, etc.) under a forced condition —
+//     not something safe to ship as a workaround.
+//
+// So this file does NOT import `getOrCreateBrowser` from `lib/kernel/browser.ts`.
+// Instead it reimplements the minimal slice of that function needed for a
+// working browser tool: create-or-reuse a Kernel browser, cached by session in
+// this module's own process-lifetime Map, and drive it with the agent-browser
+// CLI over CDP (`lib/kernel/cli.ts` — same transport `lib/ai/tools/browser.ts`
+// uses; the CLI's own daemon holds the CDP connection between calls, keyed by
+// `--session`, so `@eN` refs survive across commands). It reuses the two
+// `lib/kernel/*` helper modules that are provably free of the `server-only`
+// chain (`session-store.ts`'s own header says so; `session-config.ts` is pure
+// constants) so the profile-naming and cache-key conventions stay identical to
+// the production path.
+//
+// Dropped relative to `getOrCreateBrowser`: Kernel replay recording/archival to
+// GCS and the `SessionMapping` DB upsert (both require `lib/db/queries.ts` /
+// `lib/storage/gcs.ts`, which are exactly the modules that can't be pulled into
+// this bundle). Both are already scoped to a later sub-project (replay/mapping
+// is SP-C per the brief) — this file's job is only to prove the browser tool
+// itself, i.e. that a Kernel browser can be created once and reused across
+// multiple Eve tool calls in the same session.
+//
+// Real fix for later reuse of the shared `getOrCreateBrowser` as originally
+// specced: either (a) get Eve to resolve `server-only` under the `react-server`
+// condition scoped to just the tool-discovery bundle (not the whole process —
+// a bundler-level plugin/alias, the way Eve's own workflow-step bundler already
+// does for CJS `require('server-only')`, extended to ESM `import 'server-only'`
+// and to the general compile pipeline, not just workflow steps), or (b) lift
+// the `server-only`-guarded DB/GCS calls in `lib/kernel/browser.ts` out of its
+// module-load path (e.g. behind a lazy accessor) so importing the module for
+// its browser-creation logic doesn't also drag in the replay/DB side path.
+// -----------------------------------------------------------------------------
+
+const kernel = new Kernel();
+
+const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes — Kernel commands can hang.
+
+interface EveBrowserSession {
+  cdpWsUrl: string;
+  kernelSessionId: string;
+  /**
+   * Remote URL for watching this browser, or null for a headless session.
+   *
+   * The Next app cannot read it from this map — `eve dev` is a separate OS
+   * process — so it rides out on the browser tool's result and is cached on the
+   * Next side by the /api/eve-chat stream reader. See
+   * `lib/ai/eve/live-view-store.ts`.
+   */
+  liveViewUrl: string | null;
+}
+
+const sessions = new Map<string, EveBrowserSession>();
+const pendingCreations = new Map<string, Promise<EveBrowserSession>>();
+
+// Per-session serialization: Playwright's page is not concurrency-safe, so if
+// Eve ever dispatches two browser commands for the same session concurrently we
+// queue them. Keyed by the Eve session id; lives for the eve-dev process.
+const sessionQueues = new Map<string, Promise<unknown>>();
+function withSessionQueue<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = sessionQueues.get(sessionId) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  sessionQueues.set(sessionId, next.then(() => {}, () => {}));
+  return next;
+}
+
+async function ensureProfile(profileName: string): Promise<boolean> {
+  try {
+    await kernel.profiles.create({ name: profileName });
+    return true;
+  } catch (err: unknown) {
+    const status = (err as { status?: number }).status;
+    if (isProfileUsable(status)) return true;
+    console.error('[eve-browser] Failed to ensure profile:', err);
+    return false;
+  }
+}
+
+/**
+ * Minimal stand-in for `getOrCreateBrowser` (see the file-level comment above
+ * for why this isn't the shared one). Same cache-key scheme, same profile
+ * naming, no replay/DB side effects.
+ */
+async function getOrCreateEveBrowser(
+  sessionId: string,
+  userId: string,
+): Promise<EveBrowserSession> {
+  const key = cacheKey(userId, sessionId);
+
+  const cached = sessions.get(key);
+  if (cached) return cached;
+
+  const pending = pendingCreations.get(key);
+  if (pending) return pending;
+
+  const createPromise = (async () => {
+    try {
+      const profileName = profileNameFor(sessionId);
+      const hasProfile = await ensureProfile(profileName);
+
+      const browser = (await kernel.browsers.create({
+        viewport: { width: 1280, height: 800 },
+        timeout_seconds: KERNEL_TIMEOUT_SECONDS,
+        kiosk_mode: false,
+        stealth: true,
+        ...(hasProfile
+          ? { profile: { name: profileName, save_changes: true } }
+          : {}),
+      })) as {
+        session_id: string;
+        cdp_ws_url: string;
+        // Optional on the SDK response: only non-headless sessions get one.
+        browser_live_view_url?: string;
+      };
+
+      const session: EveBrowserSession = {
+        cdpWsUrl: browser.cdp_ws_url,
+        kernelSessionId: browser.session_id,
+        liveViewUrl: browser.browser_live_view_url ?? null,
+      };
+      sessions.set(key, session);
+      return session;
+    } finally {
+      pendingCreations.delete(key);
+    }
+  })();
+
+  pendingCreations.set(key, createPromise);
+  return createPromise;
+}
+
+// Stable browser-session identity from Eve's session context. Re-resolved on
+// EVERY call (no module-held browser handle passed around), which is the
+// durable-safe pattern from the spike's browser sketch. getOrCreateEveBrowser's
+// own in-memory cache reuses the live Kernel browser within the eve-dev process.
+export function browserIdentity(ctx: ToolContext): {
+  sessionId: string;
+  userId: string;
+} {
+  const sessionId = ctx.session.id;
+  // Prefer `initiator` over `current`: eve pins `initiator` to whoever created
+  // the session, while `current` tracks the caller of the most recent request
+  // (see eve's SessionAuth in context/keys.d.ts). A browser belongs to the
+  // conversation, so it must be keyed on the session-stable principal — keying
+  // on `current` changed this id on the first follow-up turn, which renamed the
+  // agent-browser daemon and silently orphaned the browser and its `@eN` refs
+  // mid-form. `agent/agent.ts` resolves eveModel with the same precedence.
+  //
+  // Resolve one principal and read both fields off it, so we never mix
+  // initiator's subject with current's principalId. `subject` is optional on
+  // SessionAuthContext but `principalId` is required, so fall through to it
+  // rather than collapsing a real principal to the constant below.
+  // Standalone `eve dev` has no channel auth at all, and getOrCreateEveBrowser
+  // requires a non-empty userId for cache-key isolation — hence the constant.
+  const principal = ctx.session.auth.initiator ?? ctx.session.auth.current;
+  const userId = principal?.subject ?? principal?.principalId ?? 'eve-local';
+  return { sessionId, userId };
+}
+
+export async function runBrowserCommand(
+  ctx: ToolContext,
+  command: readonly string[],
+): Promise<{
+  success: boolean;
+  data?: unknown;
+  error?: string | null;
+  liveViewUrl: string | null;
+}> {
+  const { sessionId, userId } = browserIdentity(ctx);
+  return withSessionQueue(sessionId, async () => {
+    const session = await getOrCreateEveBrowser(sessionId, userId);
+    const response = await runCommand(command, {
+      session: cliSessionName(userId, sessionId),
+      cdpUrl: session.cdpWsUrl,
+      timeoutMs: COMMAND_TIMEOUT_MS,
+      collectTimeline: kernelTimelineCollector(session.kernelSessionId),
+    });
+    // Reported on every command, not just the first: the Next side may start
+    // reading the stream partway through a turn, and repeats are idempotent.
+    return { ...response, liveViewUrl: session.liveViewUrl };
+  });
+}

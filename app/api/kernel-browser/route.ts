@@ -8,6 +8,7 @@ import {
   standbyBrowser,
   reconnectBrowser,
 } from '@/lib/kernel/browser';
+import { getLiveViewUrl } from '@/lib/ai/eve/live-view-store';
 
 export async function POST(request: Request) {
   const session = await auth();
@@ -18,7 +19,7 @@ export async function POST(request: Request) {
   const userId = session.user.id;
 
   try {
-    const { action, sessionId, isMobile } = await request.json();
+    const { action, sessionId, isMobile, useEve } = await request.json();
 
     if (!sessionId) {
       return Response.json({ error: 'sessionId is required' }, { status: 400 });
@@ -35,7 +36,16 @@ export async function POST(request: Request) {
     if (action === 'get') {
       const browser = await getBrowser(sessionId, userId);
       if (!browser) {
-        return Response.json({ liveViewUrl: null });
+        // No legacy browser: on the Eve transport the browser belongs to the
+        // `eve dev` process, so the only handle this process has is the URL the
+        // browser tool reported over the chat stream. `sessionId` is
+        // `${chatId}-${userId}` (already ownership-checked above), so trimming
+        // the suffix recovers the chatId that store is keyed by.
+        const chatId = sessionId.slice(0, -(userId.length + 1));
+        const eveLiveViewUrl = getLiveViewUrl(userId, chatId);
+        // Deliberately no `sessionId` in this response: the Kernel session id
+        // is not known on this side, and the artifact only needs the URL.
+        return Response.json({ liveViewUrl: eveLiveViewUrl ?? null });
       }
       return Response.json({
         liveViewUrl: browser.liveViewUrl,
@@ -44,6 +54,17 @@ export async function POST(request: Request) {
     }
 
     if (action === 'create') {
+      // On the Eve transport the agent owns the browser's lifecycle, inside the
+      // `eve dev` process. Creating one HERE would start a second, real Kernel
+      // browser (billed, replay-recorded) that the agent is not driving and the
+      // user would be watching by mistake — so never create on this path, just
+      // report whatever the agent has reported to us.
+      if (useEve) {
+        const chatId = sessionId.slice(0, -(userId.length + 1));
+        return Response.json({
+          liveViewUrl: getLiveViewUrl(userId, chatId) ?? null,
+        });
+      }
       const browser = await getOrCreateBrowser(sessionId, userId, {
         isMobile,
       });
