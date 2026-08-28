@@ -13,13 +13,15 @@ import { vertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
 // the same credential path the legacy chat route already uses in production
 // (lib/ai/providers.ts), and it avoids the gateway tier that 403s opus/haiku on
 // this account. Auth comes from GOOGLE_APPLICATION_CREDENTIALS +
-// GOOGLE_VERTEX_PROJECT/GOOGLE_VERTEX_LOCATION; `eve dev` does not auto-load
-// .env.local, so export them first. AI_GATEWAY_API_KEY is no longer needed.
+// GOOGLE_VERTEX_PROJECT/GOOGLE_VERTEX_LOCATION — start the server with
+// `pnpm eve:dev`, which loads .env.local (bare `eve dev` does not).
+// GOOGLE_VERTEX_LOCATION must be `global` for the opus models; see
+// agent/README.md "Vertex region". AI_GATEWAY_API_KEY is no longer needed.
 //
 // Eve manages context compaction internally (there is no prepareStep hook) —
 // configure it here rather than porting lib/ai/context-compression.ts. See
 // docs/eve-spike-findings.md Q2.
-const DEFAULT_MODEL_ID = 'claude-opus-4-8';
+const DEFAULT_MODEL_ID = 'claude-opus-4.8';
 
 // The dev model picker can override the model per session via the x-eve-model
 // header, which agent/channels/eve.ts surfaces as auth attribute `eveModel`

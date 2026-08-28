@@ -223,26 +223,34 @@ the Eve session id + continuation token).
 Two servers, side by side:
 
 ```bash
-# Terminal 1 — the Eve agent server (Node 24, secrets loaded)
+# Terminal 1 — the Eve agent server (Node 24)
 export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"
-set -a; . ./.env.local; set +a
-npx eve dev --no-ui --port 2000
+pnpm eve:dev
 
 # Terminal 2 — the Next app, pointed at that Eve server
 EVE_SERVER_URL=http://127.0.0.1:2000 pnpm dev
 ```
+
+`pnpm eve:dev` is `dotenv -e .env.local -- eve dev`, so it loads `.env.local`
+for you — `eve dev` on its own does not. Running the bare command means the
+agent starts with no Vertex credentials, no `KERNEL_API_KEY`, and no
+`GOOGLE_VERTEX_LOCATION`. Add flags after it (`pnpm eve:dev --no-ui --port
+2000`).
 
 `EVE_SERVER_URL` defaults to `http://127.0.0.1:2000` if unset (see
 `lib/ai/eve/eve-client.ts`), so it only needs to be set explicitly when Eve is
 running on a different port. The Next side needs no Eve import and no Node 24
 — it only does HTTP + AI SDK stream translation.
 
-The `set -a` line matters more than it looks: the agent calls Vertex AI
-directly, so `eve dev` needs `GOOGLE_APPLICATION_CREDENTIALS` (a *relative*
-path, so run from the repo root), `GOOGLE_VERTEX_PROJECT`, and
-`GOOGLE_VERTEX_LOCATION` in its environment, plus `KERNEL_API_KEY` and
-`DATABASE_URL` for the browser tool. `AI_GATEWAY_API_KEY` is no longer used by
-anything under `agent/`.
+The agent calls Vertex AI directly, so it needs
+`GOOGLE_APPLICATION_CREDENTIALS` (a *relative* path, so run from the repo
+root), `GOOGLE_VERTEX_PROJECT`, and `GOOGLE_VERTEX_LOCATION` (see "Vertex
+region" below — this one is the usual cause of an opus 429), plus
+`KERNEL_API_KEY` and `DATABASE_URL` for the browser tool.
+`AI_GATEWAY_API_KEY` is no longer used by anything under `agent/`.
+
+Env changes only take effect on restart: dotenv-cli reads `.env.local` once at
+boot, so editing it under a running server changes nothing until you restart.
 
 ### Enabling the flag
 
@@ -430,23 +438,40 @@ will need the service-account JSON as an env var, or the
     allowlist rejects it, no resolver error is logged, and the turn completes on
     the fallback.
 
-**Open issue, pre-existing and not caused by this change: opus is 429ing on
-Vertex.** A direct `generateText` probe against
-`vertexAnthropic(...)`, outside Eve entirely, on `nava-labs`/`us-east5`:
+### Vertex region: opus only works on the `global` endpoint
 
-| Model | Result |
-| --- | --- |
-| `claude-sonnet-4-6` | completes |
-| `claude-haiku-4-5` | completes |
-| `claude-opus-4-7` | `429 Too Many Requests` (reproduced 3×) |
-| `claude-opus-4-8` | `429 Too Many Requests` |
+If an opus turn fails with `429 Too Many Requests` / `RESOURCE_EXHAUSTED`, the
+cause is almost certainly `GOOGLE_VERTEX_LOCATION`, not the model or the wiring.
 
-So the picker can now reach haiku and sonnet, which the gateway tier blocked,
-but **not** opus — for an unrelated reason. This is a project/region capacity or
-quota condition, and it applies equally to the **legacy production route**,
-which pins `vertexAnthropic('claude-opus-4-7')`
-(`lib/ai/providers.ts`). Worth checking GCP quota for
-`us-east5` before assuming the Eve path is at fault.
+`nava-labs` has no
+`aiplatform.googleapis.com/online_prediction_input_tokens_per_minute_per_base_model`
+quota for the `anthropic-claude-opus-4-7` / `anthropic-claude-opus-4-8` base
+models in any **regional** endpoint. Even a 10-input-token request is rejected,
+so the limit is effectively zero rather than momentarily saturated — request size
+is irrelevant (`max_tokens: 1024` fails identically to `max_tokens: 128000`).
+
+Probed directly with `generateText` against `vertexAnthropic(...)`:
+
+| `GOOGLE_VERTEX_LOCATION` | opus-4-8 | opus-4-7 | sonnet-4-6 | haiku-4-5 |
+| --- | --- | --- | --- | --- |
+| `global` | completes | completes | completes | completes |
+| `us-east5` | 429 quota | 429 quota | completes | completes |
+| `europe-west1` | 429 quota | — | — | — |
+| `asia-southeast1` | 429 quota | — | — | — |
+| `us-central1` | 400 not servable | — | — | — |
+
+**Production already runs on `global`** — Cloud Run hardcodes
+`GOOGLE_VERTEX_LOCATION = "global"` (`terraform/cloud_run.tf`), which is why the
+legacy route's `vertexAnthropic('claude-opus-4-7')`
+(`lib/ai/providers.ts`) works there. Local dev must match it; a `.env.local`
+carrying `us-east5` is what produces the 429. `terraform/ENV_MAPPING.md`
+previously documented `us-east5` for both environments, which was stale — it now
+reflects the terraform.
+
+No quota increase is needed for the models the picker offers. Requesting
+regional opus quota would only matter if the project ever needed to move off the
+global endpoint (e.g. a data-residency requirement), which would be a change to
+production's current behavior, not a restoration of it.
 
 ### Manual end-to-end checklist (picker → Eve, in the browser)
 

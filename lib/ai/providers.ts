@@ -14,7 +14,15 @@ import { isTestEnvironment } from '../constants';
 import { openai } from '@ai-sdk/openai';
 import { vertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
 
-// Anthropic model for web automation via Vertex AI
+// Anthropic model for web automation via Vertex AI.
+//
+// Requires GOOGLE_VERTEX_LOCATION=global, which is what Cloud Run sets
+// (terraform/cloud_run.tf). The opus base models have NO
+// `online_prediction_input_tokens_per_minute_per_base_model` quota on `nava-labs`
+// in any regional endpoint — us-east5, europe-west1, and asia-southeast1 all
+// return 429 RESOURCE_EXHAUSTED even for a 10-token request, and only the global
+// endpoint serves them. If this 429s locally, check GOOGLE_VERTEX_LOCATION
+// first; sonnet-4-6 and haiku-4-5 are the only models with regional quota.
 export const webAutomationModel = vertexAnthropic('claude-opus-4-7');
 export const prepareStepModel = vertexAnthropic('claude-haiku-4-5');
 
