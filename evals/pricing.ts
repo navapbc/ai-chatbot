@@ -29,6 +29,10 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   // TODO(verify) — Anthropic (historical Opus tier: $15 in / $75 out)
   "claude-opus-4-7": { input: 15, output: 75, cachedInput: 1.5 },
   "claude-opus-4-8": { input: 15, output: 75, cachedInput: 1.5 },
+  // TODO(verify) — Opus 5 / Sonnet 5 list at first-party rates; Vertex bills
+  // at Google partner rates, which may differ.
+  "claude-opus-5": { input: 5, output: 25, cachedInput: 0.5 },
+  "claude-sonnet-5": { input: 2, output: 10, cachedInput: 0.2 },
   // TODO(verify) — Google (Gemini 2.5 Pro was ~$1.25 in / $10 out under 200k)
   "gemini-3-pro": { input: 2, output: 12, cachedInput: 0.2 },
 };

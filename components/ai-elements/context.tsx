@@ -16,10 +16,12 @@ import { createContext, useContext, useMemo } from "react";
 // Inline pricing lookup — replaces tokenlens which doesn't support claude-sonnet-4-6.
 // Prices are per million tokens. Source: https://platform.claude.com/docs/en/about-claude/pricing
 const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead?: number }> = {
+  'claude-sonnet-5':    { input: 2, output: 10, cacheRead: 0.20 },
   'claude-sonnet-4-6':  { input: 3, output: 15, cacheRead: 0.30 },
   'claude-sonnet-4-5':  { input: 3, output: 15, cacheRead: 0.30 },
   'claude-sonnet-4':    { input: 3, output: 15, cacheRead: 0.30 },
   'claude-haiku-4-5':   { input: 1, output: 5,  cacheRead: 0.10 },
+  'claude-opus-5':      { input: 5, output: 25, cacheRead: 0.50 },
   'claude-opus-4-6':    { input: 5, output: 25, cacheRead: 0.50 },
   'claude-opus-4-1':    { input: 5, output: 25, cacheRead: 0.50 },
   'claude-opus-4':      { input: 5, output: 25, cacheRead: 0.50 },

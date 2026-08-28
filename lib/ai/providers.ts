@@ -51,7 +51,9 @@ export const myProvider = isTestEnvironment
         'gpt-5.4-nano': openai('gpt-5.4-nano'),
         'claude-opus-4-7': vertexAnthropic('claude-opus-4-7'),
         'claude-opus-4-8': vertexAnthropic('claude-opus-4-8'),
+        'claude-opus-5': vertexAnthropic('claude-opus-5'),
         'claude-sonnet-4-6': vertexAnthropic('claude-sonnet-4-6'),
+        'claude-sonnet-5': vertexAnthropic('claude-sonnet-5'),
         'claude-haiku-4-5': vertexAnthropic('claude-haiku-4-5'),
       },
       imageModels: {

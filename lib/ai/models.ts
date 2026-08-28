@@ -64,6 +64,11 @@ const devOnlyChatModels: Array<ChatModel> = [
     description: "Balanced Claude; Eve's default when no override is sent",
   },
   {
+    id: 'claude-sonnet-5',
+    name: 'Claude Sonnet 5',
+    description: 'Newest Sonnet; Vertex enablement unverified',
+  },
+  {
     id: 'claude-opus-4-7',
     name: 'Claude Opus 4.7',
     description: 'Strongest at long web-automation runs',
@@ -71,7 +76,12 @@ const devOnlyChatModels: Array<ChatModel> = [
   {
     id: 'claude-opus-4-8',
     name: 'Claude Opus 4.8',
-    description: 'Newest Opus',
+    description: 'Previous-generation Opus',
+  },
+  {
+    id: 'claude-opus-5',
+    name: 'Claude Opus 5',
+    description: 'Newest Opus; Vertex enablement unverified',
   },
 ];
 

@@ -468,7 +468,14 @@ carrying `us-east5` is what produces the 429. `terraform/ENV_MAPPING.md`
 previously documented `us-east5` for both environments, which was stale — it now
 reflects the terraform.
 
-No quota increase is needed for the models the picker offers. Requesting
+`claude-opus-5` and `claude-sonnet-5` were added to the picker before their
+Vertex status was confirmed, and are **not** in the table above. Quota is keyed
+on base model, so neither inherits sonnet-4-6's regional quota — both need a
+Model Garden enablement on `nava-labs` and their own quota check. Probe on
+`global` and read the failure: 404/400 = wrong id or not on Vertex, 403 = not
+enabled or missing IAM, 429 = enabled but no quota.
+
+No quota increase is needed for the other models the picker offers. Requesting
 regional opus quota would only matter if the project ever needed to move off the
 global endpoint (e.g. a data-residency requirement), which would be a change to
 production's current behavior, not a restoration of it.
