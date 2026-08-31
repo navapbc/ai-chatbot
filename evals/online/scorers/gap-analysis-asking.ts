@@ -3,19 +3,11 @@
 // Uses REST, not projects.scorers.create: ScorerPromptOpts has no preprocessor
 // or allow_skip.
 
+import { JUDGE_MODEL, PASS_THRESHOLD } from './shared';
+
 export const CHOICE_SCORES = { A: 1, B: 0.5, C: 0 } as const;
 
-export const JUDGE_MODEL = 'claude-sonnet-5';
-
-// Only A (1.0) passes.
-export const PASS_THRESHOLD = 0.75;
-
 export const EVALUATOR_SLUG = 'gap-analysis-asking-online';
-export const RULE_NAME = 'Gap analysis asking quality';
-
-// Without this, orphan `agent-browser close` spans form empty 1-span traces
-// that the judge scores anyway.
-export const BTQL_FILTER = "span_attributes.name = 'execute_tool gapAnalysis'";
 
 // Runs per span, merged in trace order. Dropping browser/reference spans cuts
 // a small trace from ~52KB to ~6KB.
@@ -127,6 +119,3 @@ export const EVALUATOR_DEFINITION = {
   // B (0.5) is "minor issues" and should not count as passing.
   metadata: { __pass_threshold: PASS_THRESHOLD },
 };
-
-// Trace scope, not span: filterAISpans drops the OTEL root.
-export const RULE_SCOPE = { type: 'trace' as const, idle_seconds: 60 };
