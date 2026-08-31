@@ -29,11 +29,15 @@ Verified against this repo (this branch carries the one-line change):
   on the **Next origin (:3000)**, identical to the Eve child's own port.
 - No compile errors from the existing `agent/` tree.
 
-On Vercel this deploys as one project: `withEve()` writes Build Output `services`
-for Eve plus `routes` sending `/eve/v1/**` to that service ahead of filesystem
-routing. Durability moves from the on-disk local Workflow world
-(`.eve/.workflow-data`) to Vercel Workflow. Authored schedules become Vercel Cron
-jobs. This is genuinely serverless — no long-running process to operate.
+**The Vercel shape below is doc-sourced, not verified here.** What was tested is
+`pnpm dev`, which Eve's own docs describe as a *different* topology (child process
++ rewrites). Per the docs, on Vercel this deploys as one project: `withEve()`
+writes Build Output `services` for Eve plus `routes` sending `/eve/v1/**` to that
+service ahead of filesystem routing; durability moves from the on-disk local
+Workflow world (`.eve/.workflow-data`) to Vercel Workflow; authored schedules
+become Vercel Cron jobs. That would be genuinely serverless — no long-running
+process to operate. Confirming it needs an actual preview deploy, which is still
+the deferred Task 5 from the original spike.
 
 ### What this deletes from SP-B
 
@@ -78,9 +82,13 @@ instance between `snapshot` and `click` breaks the snapshot-first discipline the
 entire browser prompt is built on.
 
 Recovery is possible — a fresh `snapshot` re-derives refs — but the agent has no
-signal that it hopped instances. Plausible mitigation: have the browser tool
-catch `Unknown ref:` and transparently re-snapshot + retry once. That turns a
-hard failure into a latency cost. Not built, not tested.
+signal that it hopped instances, and the obvious mitigation is worse than it
+looks. Catching `Unknown ref:` inside the tool and transparently re-snapshotting
+**cannot** then reissue `click @e2`: a fresh snapshot may bind `e2` to a
+different element, so a blind retry silently clicks the wrong thing — strictly
+worse than failing. Any sound recovery has to hand the new snapshot back to the
+model and let it re-choose, which makes this a turn-level concern, not a
+tool-level one. That is a substantially harder fix than a latency cost.
 
 ### Second, quieter problem: duplicate Kernel browsers
 
