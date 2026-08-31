@@ -29,8 +29,16 @@ fi
 echo "[start] applying app migrations"
 pnpm tsx lib/db/migrate
 
-echo "[start] applying Eve workflow schema"
-pnpm tsx scripts/bootstrap-workflow-db.ts
+# Only when a Postgres world is actually configured. agent/agent.ts keys the
+# world selection off the same variable, so an unset value means Eve is on its
+# local file world and there is no schema to create.
+if [[ -n "${WORKFLOW_POSTGRES_URL:-}" ]]; then
+  echo "[start] applying Eve workflow schema"
+  pnpm tsx scripts/bootstrap-workflow-db.ts
+else
+  echo "[start] WORKFLOW_POSTGRES_URL unset — Eve will use its local file world" >&2
+  echo "[start] (deployments must set it; see terraform/cloud_run.tf)" >&2
+fi
 
 # Eve listens on loopback only: it is reached through Next's /eve/v1/** rewrite,
 # never directly from outside the container. PORT is set per-process so it does

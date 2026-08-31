@@ -220,27 +220,62 @@ the Eve session id + continuation token).
 
 ### Running it
 
-Two servers, side by side:
+One command. `next.config.ts` wraps the config in `withEve()`, so `next dev`
+boots the Eve server as a child process and rewrites `/eve/v1/**` to it — same
+origin, no CORS, no `EVE_SERVER_URL`.
 
 ```bash
-# Terminal 1 — the Eve agent server (Node 24)
-export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"
-pnpm eve:dev
-
-# Terminal 2 — the Next app, pointed at that Eve server
-EVE_SERVER_URL=http://127.0.0.1:2000 pnpm dev
+nvm use            # Node 24 — .nvmrc; Eve requires it
+pnpm install
+pnpm dev
 ```
 
-`pnpm eve:dev` is `dotenv -e .env.local -- eve dev`, so it loads `.env.local`
-for you — `eve dev` on its own does not. Running the bare command means the
-agent starts with no Vertex credentials, no `KERNEL_API_KEY`, and no
-`GOOGLE_VERTEX_LOCATION`. Add flags after it (`pnpm eve:dev --no-ui --port
-2000`).
+Check it came up:
 
-`EVE_SERVER_URL` defaults to `http://127.0.0.1:2000` if unset (see
-`lib/ai/eve/eve-client.ts`), so it only needs to be set explicitly when Eve is
-running on a different port. The Next side needs no Eve import and no Node 24
-— it only does HTTP + AI SDK stream translation.
+```bash
+curl localhost:3000/eve/v1/health
+```
+
+`{"ok":true,"status":"ready",...}` on port **3000** (not Eve's own port) means
+the mount is working. `next dev` reads `.env.local` itself, so Vertex
+credentials, `KERNEL_API_KEY`, and `GOOGLE_VERTEX_LOCATION` reach the agent
+without `dotenv`.
+
+Locally Eve stores durable sessions on disk under `.eve/.workflow-data`, which
+needs no setup. Deployments set `WORKFLOW_POSTGRES_URL` and get the Postgres
+world instead (see `agent/agent.ts`). To exercise that path locally:
+
+```bash
+docker run -d --name eve-pg -e POSTGRES_PASSWORD=dev -e POSTGRES_USER=dev \
+  -e POSTGRES_DB=dev -p 55434:5432 postgres:16-alpine
+export WORKFLOW_POSTGRES_URL="postgresql://dev:dev@127.0.0.1:55434/dev"
+pnpm tsx scripts/bootstrap-workflow-db.ts   # once, creates the schema
+pnpm dev
+```
+
+Point `WORKFLOW_POSTGRES_URL` at a **direct** Postgres, never a pooled endpoint
+(a Neon `-pooler` host, PgBouncer in transaction mode): graphile-worker needs
+`LISTEN`/`NOTIFY` and the bootstrap takes a session-scoped advisory lock, and
+neither survives transaction pooling. Skipping the bootstrap makes `pnpm dev`
+exit at boot with `Development worker failed before readiness`.
+
+#### Standalone Eve, without the Next app
+
+`pnpm eve:dev` (= `dotenv -e .env.local -- eve dev`) still runs the agent on its
+own with the TUI, for agent-only work. It is no longer needed to develop the
+chat UI. Note `eve dev` on its own does *not* load `.env.local`; the `pnpm`
+script is what does.
+
+#### Production mode locally
+
+`next start` does **not** spawn Eve (see
+`docs/eve-on-cloud-run-options.md` — Next 16 bakes the rewrite at build time and
+never re-invokes `rewrites()`). Use the container entrypoint, which starts both:
+
+```bash
+pnpm eve build && pnpm next build
+bash scripts/start-container.sh
+```
 
 The agent calls Vertex AI directly, so it needs
 `GOOGLE_APPLICATION_CREDENTIALS` (a *relative* path, so run from the repo

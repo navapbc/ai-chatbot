@@ -23,6 +23,15 @@ import { vertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
 // docs/eve-spike-findings.md Q2.
 const DEFAULT_MODEL_ID = 'claude-opus-4.8';
 
+// Postgres-backed durability only where a session-mode Postgres is explicitly
+// configured; `undefined` leaves Eve on its built-in local file world. See the
+// `experimental.workflow` comment below for why this is opt-in.
+const WORKFLOW_WORLD =
+  process.env.WORKFLOW_POSTGRES_URL !== undefined &&
+  process.env.WORKFLOW_POSTGRES_URL !== ''
+    ? '@workflow/world-postgres'
+    : undefined;
+
 // The dev model picker can override the model per session via the x-eve-model
 // header, which agent/channels/eve.ts surfaces as auth attribute `eveModel`
 // (dev/eval only, loopback-gated). The header carries a Vertex model id already
@@ -72,19 +81,29 @@ export default defineAgent({
   },
   experimental: {
     workflow: {
-      // Durable session state lives in Postgres, not on container disk.
+      // Durable session state lives in Postgres when WORKFLOW_POSTGRES_URL is
+      // set, and on local disk otherwise.
       //
       // Eve's default Workflow world persists runs to `.eve/.workflow-data`.
       // That is per-instance and, on Cloud Run, in-memory tmpfs — so a session
       // dies with the instance that served it. This service runs at
       // min_instance_count = 2 / max 20 with best-effort session affinity
       // (terraform/cloud_run.tf), which means instance churn is routine and
-      // durable sessions would silently vanish.
+      // durable sessions would silently vanish. Hence Postgres in deployment,
+      // where terraform sets WORKFLOW_POSTGRES_URL.
       //
-      // world-postgres reads WORKFLOW_POSTGRES_URL, falling back to
-      // DATABASE_URL — already wired from Secret Manager — so it lands on the
-      // same Cloud SQL instance the app uses. The schema is created by
-      // scripts/bootstrap-workflow-db.ts at container start.
+      // Opt-in rather than unconditional, for two reasons found the hard way:
+      //   1. This config applies to `eve dev` too. Selecting Postgres always
+      //      means `pnpm dev` dies at boot ("Development worker failed before
+      //      readiness") on any machine that has not bootstrapped the workflow
+      //      schema. Local dev keeps the zero-setup file world.
+      //   2. Falling back to DATABASE_URL would be actively wrong locally: a
+      //      developer's DATABASE_URL is typically a *pooled* endpoint (Neon
+      //      `-pooler`), and graphile-worker needs LISTEN/NOTIFY on a
+      //      session-mode connection. Requiring an explicit variable keeps that
+      //      choice deliberate.
+      //
+      // The schema is created by scripts/bootstrap-workflow-db.ts.
       //
       // PINNED to @workflow/world-postgres@5.0.0-beta.33 — do not bump without
       // re-checking. Compatibility is by World *spec version*, not by npm
@@ -102,7 +121,7 @@ export default defineAgent({
       // So beta.33 is the newest usable release, and "latest" is broken. The
       // env kill switch on the newer packages only drops 7 to 6, never to 5.
       // Revisit when eve itself moves off spec 5.
-      world: '@workflow/world-postgres',
+      world: WORKFLOW_WORLD,
     },
   },
 });

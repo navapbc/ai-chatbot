@@ -43,10 +43,17 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         }
       }
 
-      # Eve durable-workflow state (@workflow/world-postgres, selected in
-      # agent/agent.ts). The package falls back to DATABASE_URL on its own, so
-      # no connection string is set here — it shares the Cloud SQL instance
-      # above.
+      # Eve durable-workflow state (@workflow/world-postgres). Same Cloud SQL
+      # instance as the app — the secrets in cloud_sql.tf are direct private-IP
+      # URLs, which matters: graphile-worker needs LISTEN/NOTIFY and
+      # pg_advisory_lock is session-scoped, so neither survives a
+      # transaction-mode pooler.
+      #
+      # Set explicitly rather than relying on the package's DATABASE_URL
+      # fallback, because agent/agent.ts keys the whole world selection off this
+      # variable's presence: unset means Eve stays on its local file world (the
+      # zero-setup path for `pnpm dev`), set means Postgres. Removing this makes
+      # the deployment silently non-durable.
       #
       # Pool and concurrency are set together because they trade off against
       # each other, and the defaults are wrong here in both directions.
@@ -67,6 +74,16 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
       # the workflow world is counted. This configuration does not fix that;
       # either the instance ceiling or the app pool size needs revisiting before
       # the service actually scales out.
+      env {
+        name = "WORKFLOW_POSTGRES_URL"
+        value_source {
+          secret_key_ref {
+            secret  = var.environment == "prod" ? "database-url-production" : (startswith(var.environment, "preview") ? "database-url-preview" : "database-url-dev")
+            version = "latest"
+          }
+        }
+      }
+
       env {
         name  = "WORKFLOW_POSTGRES_MAX_POOL_SIZE"
         value = "10"
