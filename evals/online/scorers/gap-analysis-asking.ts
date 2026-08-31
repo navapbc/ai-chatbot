@@ -3,12 +3,9 @@
 // Uses REST, not projects.scorers.create: ScorerPromptOpts has no preprocessor
 // or allow_skip.
 
+import { JUDGE_MODEL, PASS_THRESHOLD } from './shared';
+
 export const CHOICE_SCORES = { A: 1, B: 0.5, C: 0 } as const;
-
-export const JUDGE_MODEL = 'claude-sonnet-5';
-
-// Only A (1.0) passes.
-export const PASS_THRESHOLD = 0.75;
 
 export const EVALUATOR_SLUG = 'gap-analysis-asking-online';
 
