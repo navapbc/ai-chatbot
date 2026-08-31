@@ -19,6 +19,7 @@ set -euo pipefail
 
 EVE_PORT="${EVE_NEXT_PRODUCTION_PORT:-4274}"
 EVE_ENTRY=".output/server/index.mjs"
+SHUTDOWN_REQUESTED=0
 
 if [[ ! -f "${EVE_ENTRY}" ]]; then
   echo "[start] FATAL: ${EVE_ENTRY} missing — 'pnpm eve build' did not run in the image build." >&2
@@ -61,7 +62,13 @@ terminate() {
   done
   kill -9 "${EVE_PID}" "${NEXT_PID}" 2>/dev/null || true
 }
-trap terminate TERM INT
+on_signal() {
+  echo "[start] received shutdown signal" >&2
+  SHUTDOWN_REQUESTED=1
+  terminate
+  exit 0
+}
+trap on_signal TERM INT
 
 # Polled rather than `wait -n $PID...`: that form needs bash >= 5.1. The image
 # (node:24-slim) has it, but macOS ships bash 3.2, so `wait -n` cannot be
@@ -79,4 +86,10 @@ else
 fi
 
 terminate
+# Cloud Run SIGTERMs this process on every scale-in and every redeploy. Those
+# are routine, so they must not be reported as crashes — only an unprompted
+# child exit is a real failure.
+if [[ "${SHUTDOWN_REQUESTED}" -eq 1 ]]; then
+  exit 0
+fi
 exit 1

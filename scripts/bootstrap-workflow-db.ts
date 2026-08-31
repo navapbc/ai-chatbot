@@ -29,6 +29,10 @@ import { Pool } from 'pg';
 // this schema. This is ASCII "workflow", which fits in a signed bigint.
 const ADVISORY_LOCK_KEY = '8606223218533756791'; // ASCII "workflow", 0x776f726b666c6f77
 
+// Generous enough for a real first-deploy migration run, short enough to fail
+// before Cloud Run's startup probe gives up on the instance.
+const LOCK_TIMEOUT_MS = 120_000;
+
 function resolveConnectionString(): string {
   // Same precedence @workflow/world-postgres uses internally, so the lock is
   // always taken against the database the bootstrap will actually migrate.
@@ -50,8 +54,25 @@ async function main(): Promise<void> {
   const client = await pool.connect();
 
   try {
+    // Bounded rather than an indefinite block. The container opens no port
+    // until this finishes, and with min_instance_count = 2 the second instance
+    // waits behind the first one's bootstrap. If that ever outlasts Cloud Run's
+    // startup deadline the instance is killed with no explanation — a loud
+    // failure here is far easier to diagnose than a restart loop.
+    await client.query(`SET lock_timeout = '${LOCK_TIMEOUT_MS}ms'`);
+
     console.log('[workflow-db] waiting for advisory lock…');
-    await client.query('SELECT pg_advisory_lock($1)', [ADVISORY_LOCK_KEY]);
+    try {
+      await client.query('SELECT pg_advisory_lock($1)', [ADVISORY_LOCK_KEY]);
+    } catch (error: unknown) {
+      // 55P03 = lock_not_available
+      if ((error as { code?: string }).code === '55P03') {
+        throw new Error(
+          `bootstrap-workflow-db: timed out after ${LOCK_TIMEOUT_MS}ms waiting for the workflow schema lock. Another instance is probably still bootstrapping; if this repeats, check for a stale session holding the advisory lock.`,
+        );
+      }
+      throw error;
+    }
     console.log('[workflow-db] lock acquired, running schema setup');
 
     // Imported lazily so the lock is already held before the package opens its

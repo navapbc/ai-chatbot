@@ -38,7 +38,7 @@ it is already in production. It is a caveat below, not a blocker.
 | Platform | Cloud Run, one service, container port 3000 |
 | Scaling | `min_instance_count = 2`, `max = 20`, `session_affinity = true` |
 | Resources | 2 vCPU, 8Gi, request timeout 3600s |
-| Database | Cloud SQL Postgres over unix socket at `/cloudsql` |
+| Database | Cloud SQL Postgres. `DATABASE_URL` is built in terraform as a **direct** private-IP TCP connection (`cloud_sql.tf:152/197/332`); the `/cloudsql` socket is mounted but not used by it |
 | Image | `node:24-slim`, `next build` at image build, migrate + `next start` at boot |
 | Browser | `agent-browser` native binary at `/usr/local/bin`, `HOME=/tmp` for its daemon socket |
 
@@ -102,8 +102,8 @@ the usable pin is `5.0.0-beta.33`):
 
 - Matches Eve's required `5.0.0-beta` protocol line.
 - Reads `WORKFLOW_POSTGRES_URL`, **falling back to `DATABASE_URL`** — already set.
-- Standard `pg` connection string, so the existing `/cloudsql` unix socket works
-  (`postgres:///db?host=/cloudsql/INSTANCE`). Can also share an existing `pg.Pool`.
+- Standard `pg` connection string, so it works with the private-IP URL the
+  deployment already builds. Can also share an existing `pg.Pool`.
 - Built on `drizzle-orm` + `graphile-worker`, both compatible with this stack.
 
 Costs: a schema bootstrap step (`workflow-postgres-setup`, alongside the existing
@@ -261,17 +261,33 @@ first-deploy coin flip.
 - `next start` serves that same health payload on its own origin — the
   same-origin mount works in production mode.
 - Full `scripts/start-container.sh` run: migrations, schema, both processes,
-  health 200 through `:3000`. Killing Eve tears the container down.
+  health 200 through `:3000`. Killing Eve tears the container down (exit 1);
+  SIGTERM — what Cloud Run sends on every scale-in — exits 0 so routine
+  shutdowns are not logged as crashes.
 
 All of the above ran against a throwaway Postgres container, never the project's
 own database.
 
+### Connection form — checked, and it matters
+
+Both `pg_advisory_lock` (session-scoped) and graphile-worker (`LISTEN`/`NOTIFY`,
+long-lived sessions) break through a **transaction-mode** pooler: the lock can be
+taken on one backend and released on another, leaking it forever.
+
+The deployed secrets are safe — `terraform/cloud_sql.tf` builds `DATABASE_URL` as
+`postgresql://app_user:…@<private-ip>:5432/app_db`, a direct connection, for dev,
+preview, and prod alike. **Do not repoint `DATABASE_URL` at a pooled endpoint
+without also setting `WORKFLOW_POSTGRES_URL` to a direct one.** Note that
+`.env.local` on a developer machine may well be a Neon *pooler* URL, which is why
+local runs are not evidence about this.
+
 ### Not verified — needs the dev deploy
 
 - Anything in the built image (only the host build path was exercised).
-- Cloud Run specifics: the `/cloudsql` unix socket for the workflow world, the
-  pool/concurrency values under real load, cold-start timing against the
-  container's startup probe.
+- Cloud Run specifics: pool/concurrency under real load, and cold-start timing
+  against the container's startup probe — the entrypoint now opens no port until
+  both schema steps finish, and the second instance waits behind the first
+  (bounded at 120s, then fails loudly rather than hanging).
 - A real agent turn through Eve on the deployed service.
 
 ### Still open (unchanged by this work)
