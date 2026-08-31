@@ -291,16 +291,21 @@ jobs:
         with:
           node-version: 24
 
+      # Key comes from Secret Manager, not a repo secret: the job already
+      # authenticates to nava-labs, and cloud_run.tf reads the same secret.
       - name: Apply Braintrust online evals
         if: needs.setup.outputs.should_deploy == 'true'
         env:
-          BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
           ENVIRONMENT: ${{ needs.setup.outputs.environment }}
         run: |
+          BRAINTRUST_API_KEY=$(gcloud secrets versions access latest \
+            --secret=braintrust-api-key 2>/dev/null || true)
           if [ -z "$BRAINTRUST_API_KEY" ]; then
-            echo "::warning::BRAINTRUST_API_KEY is not configured — skipping online evals."
+            echo "::warning::braintrust-api-key unreadable — skipping online evals."
             exit 0
           fi
+          echo "::add-mask::$BRAINTRUST_API_KEY"
+          export BRAINTRUST_API_KEY
           case "$ENVIRONMENT" in
             preview-pr-*) BT_ENV=preview ;;
             *) BT_ENV="$ENVIRONMENT" ;;
