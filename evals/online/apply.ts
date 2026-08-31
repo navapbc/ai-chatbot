@@ -6,13 +6,7 @@
 // Project names mirror BRAINTRUST_PARENT in terraform/cloud_run.tf. Keep in
 // sync with terraform's `environments` map.
 
-import {
-  BTQL_FILTER,
-  EVALUATOR_DEFINITION,
-  EVALUATOR_SLUG,
-  RULE_NAME,
-  RULE_SCOPE,
-} from './gap-analysis-asking';
+import { RULES } from './rules';
 
 const ENVIRONMENTS = ['dev', 'preview', 'prod'] as const;
 type Environment = (typeof ENVIRONMENTS)[number];
@@ -82,42 +76,56 @@ const applyEnv = async (env: Environment) => {
     return {
       project: projectName,
       project_id: project.id,
-      evaluator: EVALUATOR_SLUG,
-      rule: RULE_NAME,
-      status: activate ? 'active' : 'paused',
+      rules: RULES.map((r) => ({
+        rule: r.name,
+        scorers: r.scorers.map((sc) => sc.slug),
+        status: activate ? 'active' : 'paused',
+      })),
     };
   }
 
-  // Upsert by slug.
-  const evaluator = await request('PUT', '/v1/function', {
-    project_id: project.id,
-    function_type: 'scorer',
-    ...EVALUATOR_DEFINITION,
-  });
+  const applied: unknown[] = [];
+  for (const rule of RULES) {
+    // Upsert each judge by slug, then point the rule at all of them.
+    const scorerIds: string[] = [];
+    for (const scorer of rule.scorers) {
+      const fn = await request('PUT', '/v1/function', {
+        project_id: project.id,
+        function_type: 'scorer',
+        ...scorer,
+      });
+      scorerIds.push(fn.id);
+    }
 
-  // PUT replaces by name; POST no-ops on an existing rule and leaves it stale.
-  const rule = await request('PUT', '/v1/project_score', {
-    project_id: project.id,
-    name: RULE_NAME,
-    score_type: 'online',
-    description: `Scores caseworker-facing gapAnalysis quality on ${env} traffic.`,
-    config: {
-      online: {
-        sampling_rate: 1,
-        scorers: [{ type: 'function', id: evaluator.id }],
-        btql_filter: BTQL_FILTER,
-        scope: RULE_SCOPE,
-        status: activate ? 'active' : 'paused',
+    // PUT replaces by name; POST no-ops on an existing rule and leaves it stale.
+    const saved = await request('PUT', '/v1/project_score', {
+      project_id: project.id,
+      name: rule.name,
+      score_type: 'online',
+      description: `${rule.description} (${env})`,
+      config: {
+        online: {
+          sampling_rate: rule.samplingRate,
+          scorers: scorerIds.map((id) => ({ type: 'function', id })),
+          btql_filter: rule.btqlFilter,
+          scope: rule.scope,
+          status: activate ? 'active' : 'paused',
+        },
       },
-    },
-  });
+    });
 
-  return {
-    project: projectName,
-    evaluator_id: evaluator.id,
-    rule_id: rule.id,
-    status: activate ? 'active' : 'paused',
-  };
+    applied.push({
+      rule: rule.name,
+      rule_id: saved.id,
+      scorers: rule.scorers.map((sc, i) => ({
+        slug: sc.slug,
+        id: scorerIds[i],
+      })),
+      status: activate ? 'active' : 'paused',
+    });
+  }
+
+  return { project: projectName, rules: applied };
 };
 
 const main = async () => {
