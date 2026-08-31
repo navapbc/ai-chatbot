@@ -124,3 +124,36 @@ variable "use_guest_login" {
   type        = string
   default     = "false"
 }
+# Braintrust -> Vertex AI workload identity federation.
+# Values come from the Braintrust AI provider setup screen; see
+# braintrust_vertex.tf. Disabled until those values are filled in, so the
+# pool is not created half-configured.
+variable "braintrust_wif_enabled" {
+  description = "Create the Braintrust workload identity pool and grant it Vertex access"
+  type        = bool
+  default     = false
+}
+
+variable "braintrust_wif_issuer_uri" {
+  description = "Issuer URL shown on the Braintrust AI provider screen"
+  type        = string
+  default     = ""
+}
+
+variable "braintrust_wif_attribute_mapping" {
+  description = "Attribute mapping from the Braintrust AI provider screen (Google attribute name -> CEL expression)"
+  type        = map(string)
+  default     = {}
+}
+
+variable "braintrust_wif_attribute_condition" {
+  description = "Attribute condition from the Braintrust AI provider screen; scopes trust to our Braintrust org"
+  type        = string
+  default     = ""
+}
+
+variable "braintrust_wif_principal_attribute" {
+  description = "principalSet suffix to grant aiplatform.user, e.g. attribute.org_id/<id>"
+  type        = string
+  default     = ""
+}
