@@ -21,7 +21,12 @@ import { vertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
 // Eve manages context compaction internally (there is no prepareStep hook) —
 // configure it here rather than porting lib/ai/context-compression.ts. See
 // docs/eve-spike-findings.md Q2.
-const DEFAULT_MODEL_ID = 'claude-opus-4.8';
+// Vertex publisher model ids use DASHES, not dots. 'claude-opus-4.8' 404s with
+// "Publisher model ... was not found or your project does not have access to
+// it" on every turn — it is not a valid id. Keep this in sync with the
+// allowlist in lib/ai/eve/model-map.ts, which is the set this project can
+// actually reach.
+const DEFAULT_MODEL_ID = 'claude-opus-4-8';
 
 // Postgres-backed durability only where a session-mode Postgres is explicitly
 // configured; `undefined` leaves Eve on its built-in local file world. See the
