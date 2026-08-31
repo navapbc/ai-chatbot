@@ -43,6 +43,40 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         }
       }
 
+      # Eve durable-workflow state (@workflow/world-postgres, selected in
+      # agent/agent.ts). The package falls back to DATABASE_URL on its own, so
+      # no connection string is set here — it shares the Cloud SQL instance
+      # above.
+      #
+      # Pool and concurrency are set together because they trade off against
+      # each other, and the defaults are wrong here in both directions.
+      #
+      # Connections are the scarce resource: max_connections is 100 (dev) /
+      # 200 (prod) while this service scales to max_instance_count = 20. The
+      # library's defaults (pool 10, concurrency 50) also log
+      # "having maxPoolSize (10) smaller than concurrency (50) may lead to
+      # non-optimal performance" on every boot — observed locally.
+      #
+      # 10/10 keeps the pool at least as large as the concurrency graphile-worker
+      # wants, while leaving concurrency far above this agent's subagent nesting
+      # depth (a parent awaiting a child holds a worker slot until the child
+      # terminates, so a low value risks deadlock — see agent/subagents/).
+      #
+      # NOTE for review: at max_instance_count = 20 the app's own postgres.js
+      # pool (default 10) already reaches the 200-connection prod ceiling before
+      # the workflow world is counted. This configuration does not fix that;
+      # either the instance ceiling or the app pool size needs revisiting before
+      # the service actually scales out.
+      env {
+        name  = "WORKFLOW_POSTGRES_MAX_POOL_SIZE"
+        value = "10"
+      }
+
+      env {
+        name  = "WORKFLOW_POSTGRES_WORKER_CONCURRENCY"
+        value = "10"
+      }
+
       # AI API Keys
       env {
         name = "OPENAI_API_KEY"

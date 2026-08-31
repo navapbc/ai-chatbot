@@ -70,4 +70,39 @@ export default defineAgent({
     // Compact when context passes this fraction of the window (default 0.9).
     thresholdPercent: 0.75,
   },
+  experimental: {
+    workflow: {
+      // Durable session state lives in Postgres, not on container disk.
+      //
+      // Eve's default Workflow world persists runs to `.eve/.workflow-data`.
+      // That is per-instance and, on Cloud Run, in-memory tmpfs — so a session
+      // dies with the instance that served it. This service runs at
+      // min_instance_count = 2 / max 20 with best-effort session affinity
+      // (terraform/cloud_run.tf), which means instance churn is routine and
+      // durable sessions would silently vanish.
+      //
+      // world-postgres reads WORKFLOW_POSTGRES_URL, falling back to
+      // DATABASE_URL — already wired from Secret Manager — so it lands on the
+      // same Cloud SQL instance the app uses. The schema is created by
+      // scripts/bootstrap-workflow-db.ts at container start.
+      //
+      // PINNED to @workflow/world-postgres@5.0.0-beta.33 — do not bump without
+      // re-checking. Compatibility is by World *spec version*, not by npm
+      // version, and the two have diverged:
+      //
+      //   eve 0.27.13 vendors world-local at spec 5 and hard-fails a World
+      //   declaring anything else ("requires a World with matching spec
+      //   version 5, but the configured World declares spec version 7").
+      //
+      //   world-postgres takes its spec from its @workflow/world dep:
+      //     beta.33 -> world beta.26 -> SPEC_VERSION_CURRENT = 5   ✅
+      //     beta.34 -> world beta.27 -> SLOT_IDENTITY        = 6   ❌
+      //     beta.38 -> world beta.31 -> mintedSpecVersion()  = 7   ❌
+      //
+      // So beta.33 is the newest usable release, and "latest" is broken. The
+      // env kill switch on the newer packages only drops 7 to 6, never to 5.
+      // Revisit when eve itself moves off spec 5.
+      world: '@workflow/world-postgres',
+    },
+  },
 });

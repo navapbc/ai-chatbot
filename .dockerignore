@@ -3,6 +3,11 @@
 .claude
 .next
 node_modules
+# Built in the image by `pnpm eve build` (Dockerfile builder stage). Copying a
+# local build in would ship a host-built Nitro bundle, and `.eve/` also carries
+# local dev workflow state (.eve/.workflow-data) that must never reach an image.
+.eve
+.output
 terraform
 test-results
 playwright-report

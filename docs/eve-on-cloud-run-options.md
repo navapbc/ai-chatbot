@@ -3,10 +3,16 @@
 Branch `explore/eve-serverless`, 2026-08-31. Question: can Eve run inside the
 deployment this app already has, rather than needing its own server?
 
-**Yes, and it needs no infrastructure change.** Eve's `withEve()` spawns the Eve
-runtime as a child process of `next start` — one container, one Cloud Run
-service, one port. The work is three lines of Dockerfile and a workflow-state
-decision.
+**Yes, and it needs no infrastructure change.** Eve's `withEve()` mounts the Eve
+runtime at `/eve/v1/**` on the app's own origin — one container, one Cloud Run
+service, one port. The work is a build step, a second process in the entrypoint,
+and a workflow-state decision.
+
+> **Implemented on this branch.** Two claims in the analysis below turned out to
+> be wrong once built — `next start` does not spawn Eve under Next 16, and the
+> `latest` Postgres world is incompatible with Eve 0.27.13. Both are corrected in
+> [Implemented](#implemented-2026-08-31); the analysis is left as written so the
+> reasoning and its errors stay legible.
 
 ## Correcting the previous finding
 
@@ -33,13 +39,16 @@ it is already in production. It is a caveat below, not a blocker.
 | Scaling | `min_instance_count = 2`, `max = 20`, `session_affinity = true` |
 | Resources | 2 vCPU, 8Gi, request timeout 3600s |
 | Database | Cloud SQL Postgres over unix socket at `/cloudsql` |
-| Image | `node:24-slim`, `next build` at image build, `pnpm tsx lib/db/migrate && pnpm start` at boot |
+| Image | `node:24-slim`, `next build` at image build, migrate + `next start` at boot |
 | Browser | `agent-browser` native binary at `/usr/local/bin`, `HOME=/tmp` for its daemon socket |
 
 Root filesystem is writable (no `read_only` set), backed by Cloud Run's
 in-memory tmpfs — anything written at runtime counts against the 8Gi.
 
-## The mechanism: `next start` spawns Eve
+## The mechanism: the `/eve/v1/**` rewrite
+
+⚠️ **Superseded — see [Correction 1](#correction-1--next-start-does-not-spawn-eve).**
+The spawn described here exists in `eve/next` but never fires under Next 16.
 
 From `eve/next`'s compiled `server.js`, `startEveProductionServer`:
 
@@ -86,8 +95,10 @@ gracefully: a `BrowserManager` cache miss just makes a new browser. With Eve on
 local disk it does not — a durable session whose state lived on a dead instance
 is simply gone, which defeats the reason to adopt Eve at all.
 
-**`@workflow/world-postgres@5.0.0-beta.38`** is the fix, and it fits unusually
-well:
+**`@workflow/world-postgres`** is the fix, and it fits unusually well
+(⚠️ version below is wrong — see
+[Correction 2](#correction-2--the-world-version-is-chosen-by-spec-version-not-npm-version);
+the usable pin is `5.0.0-beta.33`):
 
 - Matches Eve's required `5.0.0-beta` protocol line.
 - Reads `WORKFLOW_POSTGRES_URL`, **falling back to `DATABASE_URL`** — already set.
@@ -111,14 +122,16 @@ export default defineAgent({
 
 ### Option A — same container (recommended)
 
-`next start` spawns Eve. No new service, no new networking, no new IAM.
+Eve runs beside Next in the same container. No new service, no new networking,
+no new IAM.
 
 Changes:
-1. `withEve(nextConfig)` in `next.config.ts` (already on this branch).
+1. `withEve(nextConfig)` in `next.config.ts`.
 2. `RUN pnpm eve build` in the Dockerfile builder stage; `.output/` is gitignored,
    so the image must generate it.
 3. Copy `.output/` into the runtime stage (it lives under `/app/client`).
-4. Add the Postgres world (see above) + its bootstrap to `CMD`.
+4. Add the Postgres world + its bootstrap, and start the Eve process explicitly
+   (see Correction 1).
 
 Cost: Eve and Next share one instance's 2 vCPU / 8Gi and scale as one unit.
 
@@ -180,6 +193,94 @@ infrastructure is a set of tables in a Postgres instance already mounted into th
 container. Options B and C add operational surface without solving a problem this
 deployment has.
 
-Sequence: Dockerfile `eve build` → Postgres world + bootstrap → deploy to dev →
-confirm `/eve/v1/health` through the Cloud Run URL → run a real turn → then
-revisit the browser session store.
+## Implemented (2026-08-31)
+
+Option A is built on this branch. Two claims in the section above turned out to
+be **wrong** during implementation; both are corrected here.
+
+### Correction 1 — `next start` does NOT spawn Eve
+
+The mechanism described earlier is real in `eve/next`'s source, but it never
+fires under Next 16. `withEve()` resolves the Eve destination inside
+`rewrites()`, and Next bakes that into `.next/routes-manifest.json` at build
+time — `next start` does not call `rewrites()` again, so
+`startEveProductionServer` is never reached. Reproduced: `next build && next
+start` proxies `/eve/v1/**` to `127.0.0.1:4274` and every request fails
+`ECONNREFUSED`, with no Eve process anywhere.
+
+The baked rewrite is correct, so `scripts/start-container.sh` simply runs the
+process it points at, supervising Eve and Next together and exiting if either
+dies (a live Next with a dead Eve 502s on every agent request, which the HTTP
+health check would not catch).
+
+### Correction 2 — the world version is chosen by spec version, not npm version
+
+`5.0.0-beta.38` (latest) does **not** work. Eve 0.27.13 requires a World
+declaring spec version 5 and refuses anything else at boot:
+
+> This Workflow runtime requires a World with matching spec version 5, but the
+> configured World declares spec version 7.
+
+Compatibility tracks the transitive `@workflow/world` dep:
+
+| world-postgres | `@workflow/world` | spec | |
+|---|---|---|---|
+| `beta.33` | `beta.26` | 5 | ✅ newest usable |
+| `beta.34` | `beta.27` | 6 | ❌ |
+| `beta.38` | `beta.31` | 7 | ❌ |
+
+Pinned to `5.0.0-beta.33`. The kill switch on newer releases only drops 7 to 6,
+so there is no way to run them against Eve 0.27.13.
+
+### Changes
+
+| File | Change |
+|---|---|
+| `next.config.ts` | `withEve(nextConfig)` |
+| `agent/agent.ts` | `experimental.workflow.world` + the pinning rationale |
+| `Dockerfile` | `pnpm eve build` in builder; explicit `NODE_ENV`; new CMD |
+| `scripts/start-container.sh` | migrations → workflow schema → Eve + Next, supervised |
+| `scripts/bootstrap-workflow-db.ts` | advisory-locked schema bootstrap |
+| `.dockerignore` | exclude `.eve` / `.output` so the image builds its own |
+| `pnpm-workspace.yaml` | `cbor-extract: false` (image installs `--ignore-scripts`) |
+| `terraform/cloud_run.tf` | workflow pool/concurrency + connection-budget note |
+
+The bootstrap needed the advisory lock: with two processes racing on a fresh
+database, one succeeds and the other dies with `duplicate key value violates
+unique constraint` — reproduced directly. Under the lock both exit 0. Cloud Run
+starts `min_instance_count = 2` containers at once, so this was a real
+first-deploy coin flip.
+
+### Verified locally
+
+- `eve build` exits 0 with an empty environment (`env -i`) — no secrets needed
+  in the Docker builder stage.
+- Bootstrap creates `workflow`, `workflow_drizzle`, `graphile_worker`; idempotent
+  on re-run; two concurrent runs both succeed.
+- Eve boots on the Postgres world and serves `/eve/v1/health`.
+- `next start` serves that same health payload on its own origin — the
+  same-origin mount works in production mode.
+- Full `scripts/start-container.sh` run: migrations, schema, both processes,
+  health 200 through `:3000`. Killing Eve tears the container down.
+
+All of the above ran against a throwaway Postgres container, never the project's
+own database.
+
+### Not verified — needs the dev deploy
+
+- Anything in the built image (only the host build path was exercised).
+- Cloud Run specifics: the `/cloudsql` unix socket for the workflow world, the
+  pool/concurrency values under real load, cold-start timing against the
+  container's startup probe.
+- A real agent turn through Eve on the deployed service.
+
+### Still open (unchanged by this work)
+
+- The `server-only` barrier still blocks Eve tools from app DB access.
+- The browser session store is still per-instance: with durable sessions now
+  surviving instance loss, a resumed session on a new instance gets
+  `Unknown ref` and creates a duplicate Kernel browser. This gets *more* likely
+  to be hit, not less — see `docs/eve-serverless-findings.md`.
+- At `max_instance_count = 20` the app's own postgres.js pool already reaches the
+  200-connection prod ceiling before the workflow world is counted. Flagged in
+  `terraform/cloud_run.tf`; not fixed here.
