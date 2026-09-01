@@ -117,8 +117,16 @@ export function translateEveEvent(
       // message (see sendAutomaticallyWhen gating in components/chat.tsx).
       writer.write({ type: 'start-step' });
       break;
-    // session.started / turn.started / message.received: ignored.
+    case 'session.started':
+    case 'turn.started':
+    case 'message.received':
+      // Known lifecycle echoes with nothing for the client to render.
+      break;
     default:
+      // An event type this translator has no case for is silently dropped
+      // otherwise — the exact failure mode that made a completed gap_analysis
+      // tool call vanish client-side while Braintrust showed it succeeding.
+      console.warn('[eve-stream-adapter] unhandled Eve event type:', event?.type, event?.data);
       break;
   }
   return { textId, done: false, liveViewUrl };
