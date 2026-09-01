@@ -19,6 +19,15 @@ on:
           - preview
           - prod
 
+# Terraform locks state per environment (terraform/state/<env>), so two deploys
+# targeting the same one collide on the lock and the loser fails at plan. Queue
+# them instead. Keyed on the same expression the setup job resolves, since
+# push-to-develop and a preview PR share a ref namespace but not a state file.
+# Never cancel in progress: that would kill a terraform apply mid-flight.
+concurrency:
+  group: deploy-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || github.event_name == 'pull_request' && format('preview-pr-{0}', github.event.pull_request.number) || github.ref == 'refs/heads/main' && 'prod' || github.ref == 'refs/heads/develop' && 'dev' || github.ref }}
+  cancel-in-progress: false
+
 env:
   PROJECT_ID: nava-labs
   REGION: us-central1
