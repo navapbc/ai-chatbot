@@ -188,10 +188,16 @@ resolve. Map:
 
 Separately: `benefits-application/SKILL.md`'s Gap Analysis Protocol step 1
 and `requirements_research/instructions.md`'s Web Search Protocol both say
-"web search," but there is no root-level `web_search` tool — it lives only
-on the `requirements_research` subagent (`agent/subagents/requirements_research/tools/web_search.ts`).
-Prose written before the subagent split points at a tool that has since
-moved out of the top-level tool surface.
+"web search," but there is no root-level `web_search` tool — the
+`requirements_research` subagent has no `tools/web_search.ts` of its own
+either, so its `web_search` slot falls back to eve's framework default
+(provider-managed), same as the root agent gets automatically. An earlier
+version of this subagent shadowed it with a stub that always returned
+`results: []`; that stub was silently starving the subagent of real search
+results, forcing it to guess URLs via `web_fetch` and burn several minutes
+per run retrying 403s/404s/redirects against sites it could never find
+through search. Prose written before the subagent split points at a tool
+that has since moved out of the top-level tool surface.
 
 ### Sanctioned rewording: readReference → skills
 
