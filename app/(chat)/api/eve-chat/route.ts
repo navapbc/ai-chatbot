@@ -97,7 +97,15 @@ export async function POST(request: Request) {
     execute: async ({ writer }) => {
       const res = await openEveStream(sessionId, startIndex);
       if (!res.body) throw new Error('Eve stream returned no body');
-      let ctx = { textId: null as string | null, generateId: generateUUID };
+      let ctx = {
+        textId: null as string | null,
+        generateId: generateUUID,
+        // Shared for the life of this read: the adapter uses it to guarantee a
+        // tool result is never forwarded without its call, which the AI SDK
+        // reducer treats as fatal. Spread below copies the reference, so the
+        // set accumulates across events.
+        emittedToolCallIds: new Set<string>(),
+      };
       // Absolute stream position, counted from where this read started, so the
       // cursor stays meaningful across turns.
       let consumed = startIndex;
@@ -126,7 +134,26 @@ export async function POST(request: Request) {
       }
     },
     generateId: generateUUID,
-    onError: () => 'Oops, an error occurred running the agent.',
+    onError: (error) => {
+      // The client only ever sees the generic string below, so without this the
+      // actual exception is discarded and every distinct failure looks
+      // identical from the outside. Log the real cause: the candidates behave
+      // very differently and need telling apart — an undici body/inactivity
+      // timeout on the loopback read (`UND_ERR_BODY_TIMEOUT`), a dropped
+      // connection (`ECONNRESET`), an AI SDK `UIMessageStreamError` (a
+      // tool-output chunk whose tool-input never arrived, e.g. on a replayed
+      // startIndex), or a throw out of setContinuity/setLiveViewUrl.
+      console.error('[eve-chat] stream error:', {
+        sessionId,
+        chatId,
+        startIndex,
+        name: (error as { name?: string } | null)?.name,
+        code: (error as { code?: unknown } | null)?.code,
+        cause: (error as { cause?: unknown } | null)?.cause,
+        error,
+      });
+      return 'Oops, an error occurred running the agent.';
+    },
   });
 
   return new Response(stream.pipeThrough(new JsonToSseTransformStream()));

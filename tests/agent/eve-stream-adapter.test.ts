@@ -88,6 +88,100 @@ describe('translateEveEvent', () => {
     }
     expect(chunks).toEqual([]);
   });
+  // A dropped input.requested batch left the turn silently empty: the agent
+  // parked for a person, session.waiting ended the turn, and nothing rendered.
+  describe('input.requested (HITL)', () => {
+    const askQuestion = {
+      type: 'input.requested',
+      data: {
+        requests: [
+          {
+            requestId: 'req-1',
+            prompt: 'Which county issued the card?',
+            display: 'select',
+            options: [
+              { id: 'riverside', label: 'Riverside' },
+              { id: 'orange', label: 'Orange', description: 'Orange County' },
+            ],
+            action: { kind: 'tool-call', callId: 'call-q', toolName: 'ask_question', input: {} },
+          },
+        ],
+      },
+    };
+
+    it('renders the prompt and its option ids as assistant text', () => {
+      const { writer, chunks } = collect();
+      translateEveEvent(askQuestion, writer, {
+        textId: null,
+        generateId: gen,
+        emittedToolCallIds: new Set(),
+      });
+      expect(chunks[0]).toEqual({ type: 'text-start', id: 'txt-1' });
+      expect(chunks[2]).toEqual({ type: 'text-end', id: 'txt-1' });
+      const delta = chunks[1].delta as string;
+      expect(delta).toContain('Which county issued the card?');
+      // Eve resolves a follow-up matching an option id, so ids must be visible.
+      expect(delta).toContain('riverside');
+      expect(delta).toContain('Orange County');
+      expect(delta).toContain('Reply with one of: riverside, orange');
+    });
+
+    it('closes its text block so it never swallows later deltas', () => {
+      const { writer } = collect();
+      const r = translateEveEvent(askQuestion, writer, {
+        textId: null,
+        generateId: gen,
+        emittedToolCallIds: new Set(),
+      });
+      expect(r.textId).toBeNull();
+      expect(r.done).toBe(false);
+    });
+
+    it('writes nothing for an empty batch', () => {
+      const { writer, chunks } = collect();
+      translateEveEvent({ type: 'input.requested', data: { requests: [] } }, writer, {
+        textId: null,
+        generateId: gen,
+        emittedToolCallIds: new Set(),
+      });
+      expect(chunks).toEqual([]);
+    });
+
+    // An approval's result arrives on the turn that ANSWERS it — a different
+    // stream and UI message from the one that announced the call. The AI SDK
+    // reducer throws on a tool result it cannot match to a call, so the adapter
+    // must synthesize the missing input rather than emit the result alone.
+    it('synthesizes the missing call when a result arrives unannounced', () => {
+      const { writer, chunks } = collect();
+      translateEveEvent(
+        { type: 'action.result', data: { result: { kind: 'tool-result', callId: 'call-x', toolName: 'gap_analysis', output: { rendered: true } } } },
+        writer,
+        { textId: null, generateId: gen, emittedToolCallIds: new Set() },
+      );
+      expect(chunks).toEqual([
+        { type: 'tool-input-available', toolCallId: 'call-x', toolName: 'gapAnalysis', input: {} },
+        { type: 'tool-output-available', toolCallId: 'call-x', output: { rendered: true } },
+      ]);
+    });
+
+    it('does NOT synthesize (and so never clobbers real input) when the call was announced', () => {
+      const { writer, chunks } = collect();
+      const ctx = { textId: null, generateId: gen, emittedToolCallIds: new Set<string>() };
+      translateEveEvent(
+        { type: 'actions.requested', data: { actions: [{ kind: 'tool-call', toolName: 'gap_analysis', input: { formName: 'WIC' }, callId: 'call-1' }] } },
+        writer, ctx,
+      );
+      translateEveEvent(
+        { type: 'action.result', data: { result: { kind: 'tool-result', callId: 'call-1', toolName: 'gap_analysis', output: { rendered: true } } } },
+        writer, ctx,
+      );
+      expect(chunks).toEqual([
+        { type: 'tool-input-available', toolCallId: 'call-1', toolName: 'gapAnalysis', input: { formName: 'WIC' } },
+        { type: 'tool-output-available', toolCallId: 'call-1', output: { rendered: true } },
+      ]);
+    });
+  });
+
   it('emits start-step on step.started (restores per-step tool grouping; not done)', () => {
     const { writer, chunks } = collect();
     const r = translateEveEvent({ type: 'step.started', data: {} }, writer, { textId: null, generateId: gen });
