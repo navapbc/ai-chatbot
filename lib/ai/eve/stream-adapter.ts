@@ -17,6 +17,12 @@ interface Writer {
 }
 interface Ctx {
   textId: string | null;
+  /**
+   * Open reasoning-block id, tracked separately from `textId` because eve
+   * streams reasoning and message text as independent blocks that can
+   * interleave. Optional for callers that predate it.
+   */
+  reasoningId?: string | null;
   generateId: () => string;
   /**
    * callIds for which a `tool-input-available` chunk has already been written
@@ -80,11 +86,13 @@ export function translateEveEvent(
   ctx: Ctx,
 ): {
   textId: string | null;
+  reasoningId: string | null;
   done: boolean;
   continuationToken?: string;
   liveViewUrl?: string;
 } {
   let textId = ctx.textId;
+  let reasoningId = ctx.reasoningId ?? null;
   // Reported by the browser tool so the chat UI's live panel can find the
   // Kernel browser that `eve dev` created in its own process.
   let liveViewUrl: string | undefined;
@@ -103,6 +111,25 @@ export function translateEveEvent(
       if (textId !== null) {
         writer.write({ type: 'text-end', id: textId });
         textId = null;
+      }
+      break;
+    }
+    // Reasoning streams as its own block alongside message text. Dropped before,
+    // so extended-thinking output never reached the UI at all.
+    case 'reasoning.appended': {
+      const delta = event.data?.reasoningDelta ?? '';
+      if (!delta) break;
+      if (reasoningId === null) {
+        reasoningId = ctx.generateId();
+        writer.write({ type: 'reasoning-start', id: reasoningId });
+      }
+      writer.write({ type: 'reasoning-delta', id: reasoningId, delta });
+      break;
+    }
+    case 'reasoning.completed': {
+      if (reasoningId !== null) {
+        writer.write({ type: 'reasoning-end', id: reasoningId });
+        reasoningId = null;
       }
       break;
     }
@@ -192,12 +219,17 @@ export function translateEveEvent(
       break;
     }
     case 'session.waiting':
-      return { textId, done: true, continuationToken: event.data?.continuationToken };
+      return {
+        textId,
+        reasoningId,
+        done: true,
+        continuationToken: event.data?.continuationToken,
+      };
     case 'turn.completed':
       // turn.completed fires BEFORE session.waiting and carries no continuationToken.
       // Only session.waiting may signal done, or a route loop that breaks on
       // r.done would stop here and never read the continuationToken.
-      return { textId, done: false };
+      return { textId, reasoningId, done: false };
     case 'step.started':
       // Restores per-step tool grouping in the UI, and is defense-in-depth:
       // a start-step chunk between steps helps keep the client from ever
@@ -210,6 +242,18 @@ export function translateEveEvent(
     case 'message.received':
       // Known lifecycle echoes with nothing for the client to render.
       break;
+    case 'subagent.called':
+    case 'subagent.started':
+    case 'subagent.completed':
+      // Control-plane only. The child runs on its own session stream, which
+      // this route does not subscribe to, so there is nothing to forward. Named
+      // explicitly so the unhandled-type warning below stays meaningful.
+      //
+      // Worth knowing: the parent stream emits `subagent.called` and then goes
+      // SILENT until the child finishes. That silence is what trips undici's
+      // 300s body timeout on a long research step — see the reconnect loop in
+      // app/(chat)/api/eve-chat/route.ts.
+      break;
     default:
       // An event type this translator has no case for is silently dropped
       // otherwise — the exact failure mode that made a completed gap_analysis
@@ -217,5 +261,5 @@ export function translateEveEvent(
       console.warn('[eve-stream-adapter] unhandled Eve event type:', event?.type, event?.data);
       break;
   }
-  return { textId, done: false, liveViewUrl };
+  return { textId, reasoningId, done: false, liveViewUrl };
 }

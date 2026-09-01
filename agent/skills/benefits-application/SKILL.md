@@ -69,7 +69,10 @@ If the application does not have a built-in review page, you MUST still call `fo
 
 Before filling any fields, do this:
 
-1. **Research the application requirements upfront**: Before starting the form, use web search and your knowledge base to identify ALL fields that will be needed for the entire application (e.g., for CalFresh: personal info, household composition, income, expenses, assets, immigration status, etc.). This prevents piecemeal discovery of missing data as you go through each page.
+1. **Research the application requirements upfront**, by delegating to the `requirements_research` subagent. This prevents piecemeal discovery of missing data as you go through each page.
+   - **Pass the application URL in the `message`, verbatim**, along with the program name and locale. The subagent never sees this conversation, so the URL reaches it only if you put it there. It has no web search and will not find one on its own — call it without a URL and you get generic program knowledge back, after a wasted round trip.
+   - **If the caseworker did not give you a URL, ask them for it.** Do not guess one, do not search for one, and do not delegate without one. Web search does not work in this project (the provider tool it needs is not available on our model path), so a guessed URL costs minutes of failed fetches and returns nothing.
+   - You may skip the subagent entirely for a program you already know well, or when the caseworker only wants one page filled — your own knowledge of what these applications ask for is a valid substitute. It earns its cost on an unfamiliar program or a long multi-page flow.
 2. Snapshot the form to see ALL required fields on the current page
 3. Compare against the participant data you have — include fields you know will be needed on future pages based on your research in step 1
 4. Identify the gap: which required fields have NO matching data traceable to a caseworker message or a valid inference (do not say anything to the caseworker about this). See **Data Provenance** above.

@@ -88,6 +88,66 @@ describe('translateEveEvent', () => {
     }
     expect(chunks).toEqual([]);
   });
+
+  // Observed live in preview: fired four times in one turn and was dropped, so
+  // extended-thinking output never reached the UI.
+  describe('reasoning', () => {
+    it('streams reasoning as its own block, independent of message text', () => {
+      const { writer, chunks } = collect();
+      let ctx = { textId: null as string | null, reasoningId: null as string | null, generateId: gen };
+      let r = translateEveEvent({ type: 'reasoning.appended', data: { reasoningDelta: 'Think' } }, writer, ctx);
+      ctx = { ...ctx, textId: r.textId, reasoningId: r.reasoningId };
+      r = translateEveEvent({ type: 'reasoning.completed', data: {} }, writer, ctx);
+      expect(chunks).toEqual([
+        { type: 'reasoning-start', id: 'txt-1' },
+        { type: 'reasoning-delta', id: 'txt-1', delta: 'Think' },
+        { type: 'reasoning-end', id: 'txt-1' },
+      ]);
+      expect(r.reasoningId).toBeNull();
+    });
+
+    // Every reasoning.appended seen in preview carried an empty delta.
+    it('writes nothing for an empty reasoning delta', () => {
+      const { writer, chunks } = collect();
+      translateEveEvent(
+        { type: 'reasoning.appended', data: { reasoningDelta: '', reasoningSoFar: '' } },
+        writer,
+        { textId: null, reasoningId: null, generateId: gen },
+      );
+      expect(chunks).toEqual([]);
+    });
+
+    it('keeps the reasoning block separate from an open text block', () => {
+      const { writer, chunks } = collect();
+      const ctx = { textId: null as string | null, reasoningId: null as string | null, generateId: gen };
+      const a = translateEveEvent({ type: 'message.appended', data: { messageDelta: 'hi' } }, writer, ctx);
+      const b = translateEveEvent(
+        { type: 'reasoning.appended', data: { reasoningDelta: 'why' } },
+        writer,
+        { ...ctx, textId: a.textId, reasoningId: a.reasoningId },
+      );
+      // Same generateId stub, but they are tracked in separate slots.
+      expect(a.textId).toBe('txt-1');
+      expect(b.reasoningId).toBe('txt-1');
+      expect(chunks.map((c) => c.type)).toEqual([
+        'text-start',
+        'text-delta',
+        'reasoning-start',
+        'reasoning-delta',
+      ]);
+    });
+  });
+
+  it('treats subagent control-plane events as known no-ops', () => {
+    const { writer, chunks } = collect();
+    for (const t of ['subagent.called', 'subagent.started', 'subagent.completed']) {
+      translateEveEvent({ type: t, data: { callId: 'c1', name: 'requirements_research' } }, writer, {
+        textId: null,
+        generateId: gen,
+      });
+    }
+    expect(chunks).toEqual([]);
+  });
   // A dropped input.requested batch left the turn silently empty: the agent
   // parked for a person, session.waiting ended the turn, and nothing rendered.
   describe('input.requested (HITL)', () => {

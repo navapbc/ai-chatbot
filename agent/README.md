@@ -47,10 +47,10 @@ brief/report under `.superpowers/sdd/` for the before/after.
 
 `agent/instructions.md` is the always-on core. It carries identity, Applicant Identity,
 Core Approach, Step Management, and Action Labeling from the top level of
-`lib/ai/prompts/web-automation.ts`, but not that file's entire top level: Web Search
-Protocol moved to the `requirements_research` subagent and Resuming After Interruption
-moved to the `browser-automation` skill, since both are situational rather than
-always-needed. It also carries two sections promoted from elsewhere for the same
+`lib/ai/prompts/web-automation.ts`, but not that file's entire top level: the old Web
+Search Protocol is gone (see **Web search does not work** below) and Resuming After
+Interruption moved to the `browser-automation` skill, since it is situational rather
+than always-needed. It also carries two sections promoted from elsewhere for the same
 reason — always-needed, not situational: Communication Rules (originally in
 `lib/ai/prompts/application-protocol.ts`) and Forbidden Actions (originally in
 `lib/ai/prompts/browser-and-forms.ts`). `agent/instructions/date.ts` replaces
@@ -107,8 +107,9 @@ see `docs/eve-spike-findings.md` Q2.
 
 Two declared subagents each get their own `agent.ts` (description + model) and
 `instructions.md`, since a subagent inherits none of the top-level instructions or
-skills and must carry everything it needs. `requirements_research` carries Web Search
-Protocol from `web-automation.ts` plus its own `web_search` tool. `form_review` carries
+skills and must carry everything it needs. `requirements_research` is given the
+application URL by its caller and fetches it directly; it has no search tool (see
+**Web search does not work** below). `form_review` carries
 Review Screen and Form Completion Summary from `application-protocol.ts` (duplicated with
 the `benefits-application` skill, for the reason given above) plus its own `form_summary`
 tool. A third subagent that previously carried Data Provenance and Field Mapping &
@@ -116,12 +117,11 @@ Inference Rules plus a pair of external-record-lookup tools was deleted in Task 
 that integration was archived; see the Tree section above and the SDD task report for
 details.
 
-`requirements_research/instructions.md` also carries, verbatim, step 1 of the Gap
-Analysis Protocol ("Research the application requirements upfront…") from
-`application-protocol.ts` — the same sentence that opens the `benefits-application`
-skill's Gap Analysis Protocol. This is a second intended duplication alongside the
-`form_summary`/Review-Screen one above: that step is squarely this subagent's job, so
-it is copied in rather than referenced across agents.
+`requirements_research/instructions.md` used to carry step 1 of the Gap Analysis
+Protocol ("Research the application requirements upfront…") verbatim from
+`application-protocol.ts`. It no longer does: that step told the subagent to *search*,
+which it cannot do. Both sides were rewritten so the caller passes the application URL
+and the subagent fetches it — see **Web search does not work** below.
 
 ## Sandbox, Compaction, and Channel
 
@@ -161,7 +161,6 @@ resolve locally rather than across files.)
 |---|---|---|
 | "See **Data Provenance** above" | `skills/benefits-application/SKILL.md` (Gap Analysis Protocol) | same file — **Data Provenance (No Fabrication)**, near the top |
 | "see the **Data Provenance (No Fabrication)** section in the `benefits-application` skill" | `subagents/form_review/instructions.md` (Form Completion Summary) | `skills/benefits-application/SKILL.md` — Data Provenance (No Fabrication) |
-| "follow Web Search Protocol normally" | `skills/browser-automation/SKILL.md` (Resuming After Interruption) | `subagents/requirements_research/instructions.md` — Web Search Protocol |
 | "follow the Modal Handling section above" | `instructions.md` (Forbidden Actions, `evaluate` restrictions) | `skills/browser-automation/SKILL.md` — Modal Handling |
 
 ### Tool names
@@ -186,19 +185,6 @@ resolve. Map:
 | `actionLabel` | `action_label` | `agent/tools/action_label.ts` |
 | `readReference` | `read_reference` | `agent/tools/read_reference.ts` |
 
-Separately: `benefits-application/SKILL.md`'s Gap Analysis Protocol step 1
-and `requirements_research/instructions.md`'s Web Search Protocol both say
-"web search," but there is no root-level `web_search` tool — the
-`requirements_research` subagent has no `tools/web_search.ts` of its own
-either, so its `web_search` slot falls back to eve's framework default
-(provider-managed), same as the root agent gets automatically. An earlier
-version of this subagent shadowed it with a stub that always returned
-`results: []`; that stub was silently starving the subagent of real search
-results, forcing it to guess URLs via `web_fetch` and burn several minutes
-per run retrying 403s/404s/redirects against sites it could never find
-through search. Prose written before the subagent split points at a tool
-that has since moved out of the top-level tool surface.
-
 ### Sanctioned rewording: readReference → skills
 
 One part of the ported prose was deliberately reworded, not kept verbatim,
@@ -211,6 +197,39 @@ are now reached through Eve's skill mechanism (`ctx.getSkill(...).file(...)`,
 see Sandbox below) rather than the superseded `read_reference` tool. This is
 the documented readReference → skills supersession (see "Tools" above), not
 a verbatim-fidelity violation.
+
+## Web search does not work
+
+**No agent in this project can search the web.** Eve's built-in `web_search` has no
+local executor — the provider runs it — and on this project's model path it resolves to
+a Vercel AI Gateway tool, `gateway.parallel_search`. `agent/agent.ts` deliberately calls
+Vertex AI directly rather than through the gateway (see the comment there for why), so
+the provider rejects it. Observed in preview on every root-agent step:
+
+```
+AI SDK Warning (googleVertex.anthropic.messages / claude-sonnet-5):
+The feature "provider-defined tool gateway.parallel_search" is not supported.
+```
+
+This applies to the root agent and to both subagents. It is a property of the gateway
+bypass, not of any tool slot, so it cannot be fixed by adding or removing a
+`tools/web_search.ts`.
+
+Two dead ends already tried, recorded so they are not retried:
+
+1. `requirements_research/tools/web_search.ts` shadowed the built-in with a stub that
+   always returned `results: []`. Removing it changed nothing — the framework default
+   underneath is the unsupported gateway tool.
+2. With no search, the subagent guessed URLs through `web_fetch` and burned 3–5 minutes
+   per run on `403`s, dead county URLs, and `web.archive.org` redirects. That silence
+   on the parent stream is what tripped undici's 300s body timeout and killed the
+   caseworker's connection (see the reconnect loop in
+   `app/(chat)/api/eve-chat/route.ts`).
+
+So the contract is: **the caseworker supplies the URL, the root agent passes it to
+`requirements_research` in the `message`, and the subagent fetches it.** A subagent never
+sees the parent's history, so the `message` is the only channel for it. With no URL, ask
+the caseworker — do not guess, and do not delegate without one.
 
 ## Using Eve from the app UI (SP-B)
 

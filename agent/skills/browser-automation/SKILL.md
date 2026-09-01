@@ -227,7 +227,7 @@ After `checkSubmitGate` runs, do NOT click submit. Proceed with `formSummary` so
 
 ## Resuming After Interruption
 
-This section applies ONLY when there is an in-progress application from a prior turn — i.e., the caseworker says "continue" / "keep going" / "pick up where you left off", or the previous turn was clearly interrupted mid-form. On a fresh task (no prior application state), ignore this section and follow Web Search Protocol normally.
+This section applies ONLY when there is an in-progress application from a prior turn — i.e., the caseworker says "continue" / "keep going" / "pick up where you left off", or the previous turn was clearly interrupted mid-form. On a fresh task (no prior application state), ignore this section and start from the Gap Analysis Protocol in the `benefits-application` skill.
 
 When resuming: the browser is still on the last page and mid-form. Call `["get", "url"]` and `["snapshot"]` to confirm state, then continue filling from where you stopped. NEVER call `open`, `back`, or `reload` as a recovery move — they wipe form state. NEVER restart the application from scratch unless the caseworker explicitly asks. If you can't tell where you are, stop and report to the caseworker; do not re-navigate.
 
