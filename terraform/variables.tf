@@ -124,43 +124,12 @@ variable "use_guest_login" {
   type        = string
   default     = "false"
 }
-# Braintrust -> Vertex AI workload identity federation.
-# Values come from the Braintrust AI provider setup screen; see
-# braintrust_vertex.tf. Disabled until those values are filled in, so the
-# pool is not created half-configured.
+
+# Braintrust -> Vertex AI workload identity federation. The pool config itself
+# lives in braintrust_vertex.tf; this only gates whether it is created.
 variable "braintrust_wif_enabled" {
   description = "Create the Braintrust workload identity pool and grant it Vertex access"
   type        = bool
   default     = true
 }
 
-variable "braintrust_wif_issuer_uri" {
-  description = "Issuer URL shown on the Braintrust AI provider screen"
-  type        = string
-  default     = "https://identity.braintrust.dev"
-}
-
-variable "braintrust_wif_attribute_mapping" {
-  description = "Attribute mapping from the Braintrust AI provider screen (Google attribute name -> CEL expression)"
-  type        = map(string)
-  default = {
-    "google.subject"              = "assertion.sub"
-    "attribute.braintrust_env"    = "assertion.braintrust_env"
-    "attribute.braintrust_org_id" = "assertion.braintrust_org_id"
-  }
-}
-
-variable "braintrust_wif_attribute_condition" {
-  description = "Attribute condition from the Braintrust AI provider screen; scopes trust to our Braintrust org"
-  type        = string
-  default     = "assertion.braintrust_env == 'production' && assertion.braintrust_org_id == '6c5cfe55-c301-4353-a51a-f471cae4dd8c'"
-}
-
-# Scopes the Vertex grant to our Braintrust org only. The attribute_condition
-# already rejects other orgs at token exchange; this narrows the IAM binding too,
-# so a condition regression cannot silently widen access.
-variable "braintrust_wif_principal_attribute" {
-  description = "principalSet suffix to grant aiplatform.user"
-  type        = string
-  default     = "attribute.braintrust_org_id/6c5cfe55-c301-4353-a51a-f471cae4dd8c"
-}

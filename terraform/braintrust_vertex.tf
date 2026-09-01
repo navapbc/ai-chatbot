@@ -5,27 +5,29 @@
 #
 # GLOBAL resources, managed only by the 'dev' environment (is_managing_globals).
 #
-# Two-pass setup: Braintrust shows the issuer, attribute mapping, and condition
-# only after you start creating the provider in its UI. Fill the variables in
-# terraform.tfvars from that screen, apply, then finish the Braintrust side with
-# the pool/provider IDs below.
+# Values below come from the Braintrust AI provider screen. They are
+# identifiers, not credentials — the whole point of WIF is that no Google
+# credential is stored in Braintrust. Pinned as locals rather than variables
+# for the same reason iam.tf hardcodes 'navapbc': they define a trust boundary
+# and must not vary per environment or be overridable by a stray -var.
+locals {
+  # Our Braintrust organization. Trust is scoped to this org in both the
+  # attribute condition and the IAM binding.
+  braintrust_org_id = "6c5cfe55-c301-4353-a51a-f471cae4dd8c"
 
-# Enabling without the Braintrust-supplied values would create a pool that
-# trusts nothing (or worse, everything). Fail the plan instead.
-resource "terraform_data" "braintrust_wif_preconditions" {
-  count = var.braintrust_wif_enabled ? 1 : 0
+  braintrust_wif_issuer_uri = "https://identity.braintrust.dev"
 
-  lifecycle {
-    precondition {
-      condition = alltrue([
-        var.braintrust_wif_issuer_uri != "",
-        length(var.braintrust_wif_attribute_mapping) > 0,
-        var.braintrust_wif_attribute_condition != "",
-        var.braintrust_wif_principal_attribute != "",
-      ])
-      error_message = "braintrust_wif_enabled requires issuer_uri, attribute_mapping, attribute_condition, and principal_attribute (all from the Braintrust AI provider screen)."
-    }
+  braintrust_wif_attribute_mapping = {
+    "google.subject"              = "assertion.sub"
+    "attribute.braintrust_env"    = "assertion.braintrust_env"
+    "attribute.braintrust_org_id" = "assertion.braintrust_org_id"
   }
+
+  braintrust_wif_attribute_condition = "assertion.braintrust_env == 'production' && assertion.braintrust_org_id == '${local.braintrust_org_id}'"
+
+  # Narrower than the pool as a whole: a regression in the condition above
+  # cannot silently widen Vertex access to another Braintrust org.
+  braintrust_wif_principal = "attribute.braintrust_org_id/${local.braintrust_org_id}"
 }
 
 resource "google_iam_workload_identity_pool" "braintrust" {
@@ -48,15 +50,14 @@ resource "google_iam_workload_identity_pool_provider" "braintrust" {
   display_name                       = "Braintrust Provider"
   description                        = "OIDC provider for Braintrust-signed tokens"
 
-  # Both come from the Braintrust AI provider setup screen. The condition scopes
-  # the trust to our org — without it any Braintrust tenant could mint tokens.
-  attribute_condition = var.braintrust_wif_attribute_condition
-  attribute_mapping   = var.braintrust_wif_attribute_mapping
+  # Without the condition, any Braintrust tenant could mint tokens for us.
+  attribute_condition = local.braintrust_wif_attribute_condition
+  attribute_mapping   = local.braintrust_wif_attribute_mapping
 
   oidc {
     # No jwks_json: Braintrust serves its public keys at the issuer's OIDC
     # discovery endpoint, and the default audience is what Braintrust expects.
-    issuer_uri = var.braintrust_wif_issuer_uri
+    issuer_uri = local.braintrust_wif_issuer_uri
   }
 
   lifecycle {
@@ -71,7 +72,7 @@ resource "google_project_iam_member" "braintrust_vertex_user" {
 
   project = local.project_id
   role    = "roles/aiplatform.user"
-  member  = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.braintrust[0].name}/${var.braintrust_wif_principal_attribute}"
+  member  = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.braintrust[0].name}/${local.braintrust_wif_principal}"
 }
 
 # Paste these into the Braintrust provider screen to finish setup.
