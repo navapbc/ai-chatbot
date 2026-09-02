@@ -107,9 +107,9 @@ see `docs/eve-spike-findings.md` Q2.
 
 Two declared subagents each get their own `agent.ts` (description + model) and
 `instructions.md`, since a subagent inherits none of the top-level instructions or
-skills and must carry everything it needs. `requirements_research` is given the
-application URL by its caller and fetches it directly; it has no search tool (see
-**Web search does not work** below). `form_review` carries
+skills and must carry everything it needs. `requirements_research` is **not called on
+the normal path any more** — see **Web search does not work** below for why the caller
+is now steered away from it. `form_review` carries
 Review Screen and Form Completion Summary from `application-protocol.ts` (duplicated with
 the `benefits-application` skill, for the reason given above) plus its own `form_summary`
 tool. A third subagent that previously carried Data Provenance and Field Mapping &
@@ -120,8 +120,9 @@ details.
 `requirements_research/instructions.md` used to carry step 1 of the Gap Analysis
 Protocol ("Research the application requirements upfront…") verbatim from
 `application-protocol.ts`. It no longer does: that step told the subagent to *search*,
-which it cannot do. Both sides were rewritten so the caller passes the application URL
-and the subagent fetches it — see **Web search does not work** below.
+which it cannot do. It now takes a URL from its caller and fetches it, and stops after
+two failures on the same URL rather than hunting — see **Web search does not work**
+below.
 
 ## Sandbox, Compaction, and Channel
 
@@ -226,10 +227,33 @@ Two dead ends already tried, recorded so they are not retried:
    caseworker's connection (see the reconnect loop in
    `app/(chat)/api/eve-chat/route.ts`).
 
-So the contract is: **the caseworker supplies the URL, the root agent passes it to
-`requirements_research` in the `message`, and the subagent fetches it.** A subagent never
-sees the parent's history, so the `message` is the only channel for it. With no URL, ask
-the caseworker — do not guess, and do not delegate without one.
+### What the agent does instead
+
+Passing the URL through to `requirements_research` was the first fix, and it worked as
+far as it went — measured on an IHSS run in preview, the subagent went from 3-5 minutes
+and 10+ fetch attempts down to **8 seconds and 2 attempts**, stopping itself with "returned
+403 Forbidden on both attempts... Per protocol, I will not retry it."
+
+But it still returned nothing useful, because **`riversideihss.org` 403s the subagent's
+`web_fetch` on every format while the Kernel browser loads that same URL fine.** County
+and state application sites generally block server-side fetches. So the research step
+cost ~80 seconds (8s of work plus ~71s of eve child-completion overhead) to return
+program knowledge the root model already had, for a gap analysis that came out of the
+browser snapshot anyway.
+
+So the contract is now:
+
+- **The caseworker supplies the URL.** With none, ask for one — never guess, never search.
+- **The root agent does the requirements thinking itself**, from its own program knowledge
+  plus the snapshot of the real page. This is the normal path.
+- **`requirements_research` is a narrow exception**, for a program or county variant the
+  root genuinely does not know. It still needs a URL in its `message` (a subagent never
+  sees the parent's history), and it will still probably get a 403 — its value is its own
+  program knowledge, not the fetch.
+
+Both the skill (`benefits-application/SKILL.md`, Gap Analysis Protocol step 1) and the
+subagent's own `description` in `agent.ts` carry this steer. The description matters most:
+it is always in the caller's context, whereas the skill has to be `load_skill`'d first.
 
 ## Using Eve from the app UI (SP-B)
 

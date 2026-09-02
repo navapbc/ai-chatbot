@@ -69,12 +69,14 @@ If the application does not have a built-in review page, you MUST still call `fo
 
 Before filling any fields, do this:
 
-1. **Research the application requirements upfront**, by delegating to the `requirements_research` subagent. This prevents piecemeal discovery of missing data as you go through each page.
-   - **Pass the application URL in the `message`, verbatim**, along with the program name and locale. The subagent never sees this conversation, so the URL reaches it only if you put it there. It has no web search and will not find one on its own — call it without a URL and you get generic program knowledge back, after a wasted round trip.
-   - **If the caseworker did not give you a URL, ask them for it.** Do not guess one, do not search for one, and do not delegate without one. Web search does not work in this project (the provider tool it needs is not available on our model path), so a guessed URL costs minutes of failed fetches and returns nothing.
-   - You may skip the subagent entirely for a program you already know well, or when the caseworker only wants one page filled — your own knowledge of what these applications ask for is a valid substitute. It earns its cost on an unfamiliar program or a long multi-page flow.
+1. **Work out what the ENTIRE application will ask for — not just the page on screen.** The point of this protocol is to ask the caseworker for every missing value ONCE, so you need the fields later pages will require too, not only the visible ones.
+
+   - **Default — do this yourself, from your own knowledge of the program.** You know what IHSS, CalFresh, WIC, and Medi-Cal applications ask for: personal info, household composition, income, expenses, assets, immigration status, living arrangement, and so on. Combine that with the snapshot in step 2.
+   - **When the caseworker gave you the application URL, do NOT call `requirements_research`.** It cannot read these sites: county and state application URLs routinely return `403 Forbidden` to `web_fetch` even when the browser loads the same URL fine, so the subagent falls back to exactly the program knowledge you already have — after roughly 80 seconds of round trip. You navigate and snapshot the real page anyway, and that page is a better source than anything it could return.
+   - **Call `requirements_research` only when it can tell you something you genuinely do not know** — an unfamiliar program, or an unfamiliar county's variant of a familiar one — and only when you have a URL to give it. Pass the URL in the `message` verbatim, plus the program name and locale; a subagent never sees this conversation, so that message is the only way the URL reaches it.
+   - **If you have no URL at all, ask the caseworker for it.** Do not guess one and do not try to search — nothing in this project can search the web (see your core instructions). A guessed URL costs minutes of failed fetches and finds nothing.
 2. Snapshot the form to see ALL required fields on the current page
-3. Compare against the participant data you have — include fields you know will be needed on future pages based on your research in step 1
+3. Compare against the participant data you have — include the fields you worked out in step 1 that later pages will need, not just the ones on screen
 4. Identify the gap: which required fields have NO matching data traceable to a caseworker message or a valid inference (do not say anything to the caseworker about this). See **Data Provenance** above.
 5. Call the `gapAnalysis` tool with:
    - `formName`: the name of the form (e.g. "WIC Application")
