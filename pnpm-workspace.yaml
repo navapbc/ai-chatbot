@@ -6,6 +6,12 @@ allowBuilds:
   '@biomejs/biome': true
   agent-browser: true
   bufferutil: true
+  # Optional native accelerator for cbor-x, pulled in by
+  # @workflow/world-postgres. Left off deliberately: the Docker build installs
+  # with --ignore-scripts, so the image never gets the native binding and
+  # cbor-x falls back to its pure-JS path there. Building it locally would make
+  # dev faster than production in a way nothing else here does.
+  cbor-extract: false
   core-js: true
   esbuild: true
   protobufjs: true

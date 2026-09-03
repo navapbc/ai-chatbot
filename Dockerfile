@@ -41,6 +41,22 @@ ENV KERNEL_API_KEY=${KERNEL_API_KEY}
 ENV ENVIRONMENT=${ENVIRONMENT}
 ENV NEXT_PUBLIC_ENVIRONMENT=${ENVIRONMENT}
 
+# Compile the Eve agent to its Nitro server bundle at .output/server/index.mjs.
+#
+# This is what makes Eve run inside this container instead of as a separate
+# service. `withEve()` in next.config.ts bakes a rewrite from /eve/v1/** to
+# 127.0.0.1:4274 into .next/routes-manifest.json at build time;
+# scripts/start-container.sh runs this bundle at that address. Without this
+# step the rewrite points at nothing and every agent request 502s at runtime
+# rather than failing the build — so it is mandatory, and `.eve`/`.output` are
+# in .dockerignore to guarantee the bundle is built here rather than copied
+# from a developer machine.
+#
+# Runs before `next build` deliberately: it needs no secrets (verified with an
+# empty environment) and is the faster of the two, so a broken agent tree fails
+# the image early.
+RUN pnpm eve build
+
 # Build Next.js client only (migrations run at container startup)
 RUN pnpm next build
 
@@ -104,6 +120,11 @@ ENV HOME=/tmp
 # Node shim and pay a process spawn on every command.
 ENV AGENT_BROWSER_BIN=/usr/local/bin/agent-browser
 
+# Set explicitly rather than relying on `next start` to imply it. Both Next and
+# the Eve runtime read NODE_ENV, and eve/next branches on it; making it explicit
+# keeps the two processes agreeing about which mode the container is in.
+ENV NODE_ENV=production
+
 # Set working directory to client
 WORKDIR /app/client
 
@@ -114,5 +135,7 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:3000/health || curl -f http://localhost:3000 || exit 1
 
-# Start Next.js server (run migrations first, then start)
-CMD ["sh", "-c", "pnpm tsx lib/db/migrate && pnpm start"]
+# Start the container: migrations, Eve's durable-workflow schema, then the Eve
+# runtime and Next.js side by side. See scripts/start-container.sh for why Eve
+# has to be started explicitly rather than left to withEve().
+CMD ["bash", "scripts/start-container.sh"]

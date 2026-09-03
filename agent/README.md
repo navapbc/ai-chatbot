@@ -47,10 +47,10 @@ brief/report under `.superpowers/sdd/` for the before/after.
 
 `agent/instructions.md` is the always-on core. It carries identity, Applicant Identity,
 Core Approach, Step Management, and Action Labeling from the top level of
-`lib/ai/prompts/web-automation.ts`, but not that file's entire top level: Web Search
-Protocol moved to the `requirements_research` subagent and Resuming After Interruption
-moved to the `browser-automation` skill, since both are situational rather than
-always-needed. It also carries two sections promoted from elsewhere for the same
+`lib/ai/prompts/web-automation.ts`, but not that file's entire top level: the old Web
+Search Protocol is gone (see **Web search does not work** below) and Resuming After
+Interruption moved to the `browser-automation` skill, since it is situational rather
+than always-needed. It also carries two sections promoted from elsewhere for the same
 reason — always-needed, not situational: Communication Rules (originally in
 `lib/ai/prompts/application-protocol.ts`) and Forbidden Actions (originally in
 `lib/ai/prompts/browser-and-forms.ts`). `agent/instructions/date.ts` replaces
@@ -107,8 +107,9 @@ see `docs/eve-spike-findings.md` Q2.
 
 Two declared subagents each get their own `agent.ts` (description + model) and
 `instructions.md`, since a subagent inherits none of the top-level instructions or
-skills and must carry everything it needs. `requirements_research` carries Web Search
-Protocol from `web-automation.ts` plus its own `web_search` tool. `form_review` carries
+skills and must carry everything it needs. `requirements_research` is **not called on
+the normal path any more** — see **Web search does not work** below for why the caller
+is now steered away from it. `form_review` carries
 Review Screen and Form Completion Summary from `application-protocol.ts` (duplicated with
 the `benefits-application` skill, for the reason given above) plus its own `form_summary`
 tool. A third subagent that previously carried Data Provenance and Field Mapping &
@@ -116,12 +117,12 @@ Inference Rules plus a pair of external-record-lookup tools was deleted in Task 
 that integration was archived; see the Tree section above and the SDD task report for
 details.
 
-`requirements_research/instructions.md` also carries, verbatim, step 1 of the Gap
-Analysis Protocol ("Research the application requirements upfront…") from
-`application-protocol.ts` — the same sentence that opens the `benefits-application`
-skill's Gap Analysis Protocol. This is a second intended duplication alongside the
-`form_summary`/Review-Screen one above: that step is squarely this subagent's job, so
-it is copied in rather than referenced across agents.
+`requirements_research/instructions.md` used to carry step 1 of the Gap Analysis
+Protocol ("Research the application requirements upfront…") verbatim from
+`application-protocol.ts`. It no longer does: that step told the subagent to *search*,
+which it cannot do. It now takes a URL from its caller and fetches it, and stops after
+two failures on the same URL rather than hunting — see **Web search does not work**
+below.
 
 ## Sandbox, Compaction, and Channel
 
@@ -161,7 +162,6 @@ resolve locally rather than across files.)
 |---|---|---|
 | "See **Data Provenance** above" | `skills/benefits-application/SKILL.md` (Gap Analysis Protocol) | same file — **Data Provenance (No Fabrication)**, near the top |
 | "see the **Data Provenance (No Fabrication)** section in the `benefits-application` skill" | `subagents/form_review/instructions.md` (Form Completion Summary) | `skills/benefits-application/SKILL.md` — Data Provenance (No Fabrication) |
-| "follow Web Search Protocol normally" | `skills/browser-automation/SKILL.md` (Resuming After Interruption) | `subagents/requirements_research/instructions.md` — Web Search Protocol |
 | "follow the Modal Handling section above" | `instructions.md` (Forbidden Actions, `evaluate` restrictions) | `skills/browser-automation/SKILL.md` — Modal Handling |
 
 ### Tool names
@@ -186,13 +186,6 @@ resolve. Map:
 | `actionLabel` | `action_label` | `agent/tools/action_label.ts` |
 | `readReference` | `read_reference` | `agent/tools/read_reference.ts` |
 
-Separately: `benefits-application/SKILL.md`'s Gap Analysis Protocol step 1
-and `requirements_research/instructions.md`'s Web Search Protocol both say
-"web search," but there is no root-level `web_search` tool — it lives only
-on the `requirements_research` subagent (`agent/subagents/requirements_research/tools/web_search.ts`).
-Prose written before the subagent split points at a tool that has since
-moved out of the top-level tool surface.
-
 ### Sanctioned rewording: readReference → skills
 
 One part of the ported prose was deliberately reworded, not kept verbatim,
@@ -205,6 +198,62 @@ are now reached through Eve's skill mechanism (`ctx.getSkill(...).file(...)`,
 see Sandbox below) rather than the superseded `read_reference` tool. This is
 the documented readReference → skills supersession (see "Tools" above), not
 a verbatim-fidelity violation.
+
+## Web search does not work
+
+**No agent in this project can search the web.** Eve's built-in `web_search` has no
+local executor — the provider runs it — and on this project's model path it resolves to
+a Vercel AI Gateway tool, `gateway.parallel_search`. `agent/agent.ts` deliberately calls
+Vertex AI directly rather than through the gateway (see the comment there for why), so
+the provider rejects it. Observed in preview on every root-agent step:
+
+```
+AI SDK Warning (googleVertex.anthropic.messages / claude-sonnet-5):
+The feature "provider-defined tool gateway.parallel_search" is not supported.
+```
+
+This applies to the root agent and to both subagents. It is a property of the gateway
+bypass, not of any tool slot, so it cannot be fixed by adding or removing a
+`tools/web_search.ts`.
+
+Two dead ends already tried, recorded so they are not retried:
+
+1. `requirements_research/tools/web_search.ts` shadowed the built-in with a stub that
+   always returned `results: []`. Removing it changed nothing — the framework default
+   underneath is the unsupported gateway tool.
+2. With no search, the subagent guessed URLs through `web_fetch` and burned 3–5 minutes
+   per run on `403`s, dead county URLs, and `web.archive.org` redirects. That silence
+   on the parent stream is what tripped undici's 300s body timeout and killed the
+   caseworker's connection (see the reconnect loop in
+   `app/(chat)/api/eve-chat/route.ts`).
+
+### What the agent does instead
+
+Passing the URL through to `requirements_research` was the first fix, and it worked as
+far as it went — measured on an IHSS run in preview, the subagent went from 3-5 minutes
+and 10+ fetch attempts down to **8 seconds and 2 attempts**, stopping itself with "returned
+403 Forbidden on both attempts... Per protocol, I will not retry it."
+
+But it still returned nothing useful, because **`riversideihss.org` 403s the subagent's
+`web_fetch` on every format while the Kernel browser loads that same URL fine.** County
+and state application sites generally block server-side fetches. So the research step
+cost ~80 seconds (8s of work plus ~71s of eve child-completion overhead) to return
+program knowledge the root model already had, for a gap analysis that came out of the
+browser snapshot anyway.
+
+So the contract is now:
+
+- **The caseworker supplies the URL.** With none, ask for one — never guess, never search.
+- **The root agent does the requirements thinking itself**, from its own program knowledge
+  plus the snapshot of the real page. This is the normal path.
+- **`requirements_research` is a narrow exception**, for a program or county variant the
+  root genuinely does not know. It still needs a URL in its `message` (a subagent never
+  sees the parent's history), and it will still probably get a 403 — its value is its own
+  program knowledge, not the fetch.
+
+Both the skill (`benefits-application/SKILL.md`, Gap Analysis Protocol step 1) and the
+subagent's own `description` in `agent.ts` carry this steer. The description matters most:
+it is always in the caller's context, whereas the skill has to be `load_skill`'d first.
 
 ## Using Eve from the app UI (SP-B)
 
@@ -220,27 +269,62 @@ the Eve session id + continuation token).
 
 ### Running it
 
-Two servers, side by side:
+One command. `next.config.ts` wraps the config in `withEve()`, so `next dev`
+boots the Eve server as a child process and rewrites `/eve/v1/**` to it — same
+origin, no CORS, no `EVE_SERVER_URL`.
 
 ```bash
-# Terminal 1 — the Eve agent server (Node 24)
-export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"
-pnpm eve:dev
-
-# Terminal 2 — the Next app, pointed at that Eve server
-EVE_SERVER_URL=http://127.0.0.1:2000 pnpm dev
+nvm use            # Node 24 — .nvmrc; Eve requires it
+pnpm install
+pnpm dev
 ```
 
-`pnpm eve:dev` is `dotenv -e .env.local -- eve dev`, so it loads `.env.local`
-for you — `eve dev` on its own does not. Running the bare command means the
-agent starts with no Vertex credentials, no `KERNEL_API_KEY`, and no
-`GOOGLE_VERTEX_LOCATION`. Add flags after it (`pnpm eve:dev --no-ui --port
-2000`).
+Check it came up:
 
-`EVE_SERVER_URL` defaults to `http://127.0.0.1:2000` if unset (see
-`lib/ai/eve/eve-client.ts`), so it only needs to be set explicitly when Eve is
-running on a different port. The Next side needs no Eve import and no Node 24
-— it only does HTTP + AI SDK stream translation.
+```bash
+curl localhost:3000/eve/v1/health
+```
+
+`{"ok":true,"status":"ready",...}` on port **3000** (not Eve's own port) means
+the mount is working. `next dev` reads `.env.local` itself, so Vertex
+credentials, `KERNEL_API_KEY`, and `GOOGLE_VERTEX_LOCATION` reach the agent
+without `dotenv`.
+
+Locally Eve stores durable sessions on disk under `.eve/.workflow-data`, which
+needs no setup. Deployments set `WORKFLOW_POSTGRES_URL` and get the Postgres
+world instead (see `agent/agent.ts`). To exercise that path locally:
+
+```bash
+docker run -d --name eve-pg -e POSTGRES_PASSWORD=dev -e POSTGRES_USER=dev \
+  -e POSTGRES_DB=dev -p 55434:5432 postgres:16-alpine
+export WORKFLOW_POSTGRES_URL="postgresql://dev:dev@127.0.0.1:55434/dev"
+pnpm tsx scripts/bootstrap-workflow-db.ts   # once, creates the schema
+pnpm dev
+```
+
+Point `WORKFLOW_POSTGRES_URL` at a **direct** Postgres, never a pooled endpoint
+(a Neon `-pooler` host, PgBouncer in transaction mode): graphile-worker needs
+`LISTEN`/`NOTIFY` and the bootstrap takes a session-scoped advisory lock, and
+neither survives transaction pooling. Skipping the bootstrap makes `pnpm dev`
+exit at boot with `Development worker failed before readiness`.
+
+#### Standalone Eve, without the Next app
+
+`pnpm eve:dev` (= `dotenv -e .env.local -- eve dev`) still runs the agent on its
+own with the TUI, for agent-only work. It is no longer needed to develop the
+chat UI. Note `eve dev` on its own does *not* load `.env.local`; the `pnpm`
+script is what does.
+
+#### Production mode locally
+
+`next start` does **not** spawn Eve (see
+`docs/eve-on-cloud-run-options.md` — Next 16 bakes the rewrite at build time and
+never re-invokes `rewrites()`). Use the container entrypoint, which starts both:
+
+```bash
+pnpm eve build && pnpm next build
+bash scripts/start-container.sh
+```
 
 The agent calls Vertex AI directly, so it needs
 `GOOGLE_APPLICATION_CREDENTIALS` (a *relative* path, so run from the repo

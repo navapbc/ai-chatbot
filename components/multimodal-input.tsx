@@ -22,6 +22,7 @@ import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { SuggestedActions } from './suggested-actions';
+import { SuggestedActionsLocal } from './suggested-actions-local';
 import equal from 'fast-deep-equal';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -262,13 +263,19 @@ function PureMultimodalInput({
         attachments.length === 0 &&
         uploadQueue.length === 0 &&
         isLoggedIn &&
-        !isProductionEnvironment && (
+        (isProductionEnvironment ? (
           <SuggestedActions
             sendMessage={sendMessage}
             chatId={chatId}
             selectedVisibilityType={selectedVisibilityType}
           />
-        )}
+        ) : (
+          <SuggestedActionsLocal
+            sendMessage={sendMessage}
+            chatId={chatId}
+            selectedVisibilityType={selectedVisibilityType}
+          />
+        ))}
 
       <input
         type="file"

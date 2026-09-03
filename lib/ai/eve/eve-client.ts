@@ -1,4 +1,17 @@
-const EVE_URL = process.env.EVE_SERVER_URL ?? 'http://127.0.0.1:2000';
+// Eve is mounted on this app's own origin: next.config.ts wraps the config in
+// `withEve()`, which rewrites /eve/v1/** to the Eve runtime. So the default
+// target is our own loopback address, and the rewrite does the rest.
+//
+// It used to default to 127.0.0.1:2000, the port a standalone `eve dev` listens
+// on. That is wrong under withEve(): in dev the child server takes an EPHEMERAL
+// port (55788 on one run here), and in the container it is on 4274 — nothing
+// ever listens on 2000, so every turn failed with ECONNREFUSED. Addressing our
+// own origin works in both, without needing to know Eve's port.
+//
+// EVE_SERVER_URL still overrides, for pointing the adapter at an Eve server you
+// run yourself.
+const EVE_URL =
+  process.env.EVE_SERVER_URL ?? `http://127.0.0.1:${process.env.PORT ?? 3000}`;
 
 async function postJson(
   path: string,
