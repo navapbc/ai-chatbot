@@ -32,7 +32,10 @@ import type { VisibilityType } from './visibility-selector';
 import type { Attachment, ChatMessage } from '@/lib/types';
 import type { Session } from 'next-auth';
 import { useRouter } from 'next/navigation';
-import { isProductionEnvironment } from '@/lib/constants';
+import {
+  isDevelopmentEnvironment,
+  isProductionEnvironment,
+} from '@/lib/constants';
 import { ModelSelectorButton } from './model-selector-button';
 import { ContextUsage } from './context-usage';
 import { FeatureFlagsMenu } from './feature-flags-menu';
@@ -263,7 +266,7 @@ function PureMultimodalInput({
         attachments.length === 0 &&
         uploadQueue.length === 0 &&
         isLoggedIn &&
-        (isProductionEnvironment ? (
+        (isProductionEnvironment || isDevelopmentEnvironment ? (
           <SuggestedActions
             sendMessage={sendMessage}
             chatId={chatId}
