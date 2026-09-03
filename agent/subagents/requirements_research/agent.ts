@@ -17,6 +17,6 @@ export default defineAgent({
   // Called directly on Vertex AI rather than through the Vercel AI Gateway,
   // matching agent/agent.ts. The explicit context window is required: Eve
   // cannot look a direct provider instance up in the gateway model catalog.
-  model: vertexAnthropic('claude-sonnet-4-6'),
+  model: vertexAnthropic('claude-haiku-4-5'),
   modelContextWindowTokens: VERTEX_CONTEXT_WINDOW_TOKENS,
 });

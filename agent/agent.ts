@@ -1,11 +1,22 @@
 import {
   VERTEX_CONTEXT_WINDOW_TOKENS,
+  contextWindowTokensFor,
+  isOpenAIModelId,
   isVertexModelId,
   toVertexModelId,
 } from '@/lib/ai/eve/model-map';
 import { defineAgent, defineDynamic } from 'eve';
 
+import { openai } from '@ai-sdk/openai';
 import { vertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
+
+// GPT goes straight to OpenAI's own API (OPENAI_API_KEY), not Vertex — there
+// is no OpenAI-on-Vertex path. Same "direct provider, not gateway" reasoning
+// as vertexAnthropic below: it avoids the gateway tier this project moved off
+// of, at the cost of needing an explicit modelContextWindowTokens override
+// (see contextWindowTokensFor in model-map.ts).
+const resolveDirectModel = (modelId: string) =>
+  isOpenAIModelId(modelId) ? openai(modelId) : vertexAnthropic(modelId);
 
 // Models are called directly on Vertex AI, not routed through the Vercel AI
 // Gateway: `vertexAnthropic(...)` is an AI SDK `LanguageModel`, which Eve
@@ -26,7 +37,7 @@ import { vertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
 // it" on every turn — it is not a valid id. Keep this in sync with the
 // allowlist in lib/ai/eve/model-map.ts, which is the set this project can
 // actually reach.
-const DEFAULT_MODEL_ID = 'claude-opus-4-8';
+const DEFAULT_MODEL_ID = 'claude-opus-5';
 
 // Postgres-backed durability only where a session-mode Postgres is explicitly
 // configured; `undefined` leaves Eve on its built-in local file world. See the
@@ -70,8 +81,8 @@ export default defineAgent({
         );
         if (modelId === null || modelId === DEFAULT_MODEL_ID) return null;
         return {
-          model: vertexAnthropic(modelId),
-          modelContextWindowTokens: VERTEX_CONTEXT_WINDOW_TOKENS,
+          model: resolveDirectModel(modelId),
+          modelContextWindowTokens: contextWindowTokensFor(modelId),
         };
       },
     },
