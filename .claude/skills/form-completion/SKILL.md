@@ -26,6 +26,43 @@ application with no playbook, a background scout agent surveys the site — the
 orchestrator stays with the user and does not survey a site itself. Each fill agent
 gets its own browser. Do not give one page to two writers.
 
+## Prefer a site script
+
+A playbook is prose: it tells an agent what the confirmed method is. A **site script**,
+`scripts/<domain>.sh`, *is* the method. When one exists for the target site and the
+freshness probe passes, **run the script instead of reproducing its steps command by
+command.**
+
+The reason is not tidiness. Prose has to be interpreted, and interpretation is where a
+fill agent gets lost. Measured 2026-09-02: a fill agent on a form whose playbook documented
+every field, including the awkward datepicker, spent 135 browser commands, took 56
+whole-page snapshots hunting for a widget the playbook had already described, and re-opened
+the form six times — discarding its own completed fills each time. The knowledge was
+present and correct. Following it was the failure.
+
+A script removes that failure mode, and three others with it:
+
+- **Cost stops scaling with the agent's confusion.** A scripted fill is a couple of
+  commands, so a run's cost stops depending on how well the model reads.
+- **The cheap model becomes safe.** `haiku` was a bad fill agent because it had to exercise
+  judgment. Given a script it does not, which is what makes the cheap-model routing work as
+  originally intended.
+- **The method stops drifting.** Prose gets re-derived slightly differently every run. A
+  script that worked yesterday runs identically today, and when the site changes it fails
+  loudly at the probe rather than degrading into exploration.
+
+Rules:
+
+- A script never submits. Submission is Phase 6, with a person approving it.
+- A non-zero return from a script function is a **BLOCKED** condition. Report it with the
+  command and its output. Do not explore for a workaround and never re-open the page.
+- A script does not replace the Phase 4 readback — it should *provide* it. Every site script
+  exposes a readback that prints one `field=value` line per field, so verification is one
+  command instead of one per field.
+- The freshness probe still runs first. A script is exactly as stale as its playbook.
+
+`scripts/demoqa.com.sh` is the worked example of the shape.
+
 ## Phase 0 — Find the Playbook
 
 Look in the `playbooks/` directory of this skill for a file with the domain name of the
