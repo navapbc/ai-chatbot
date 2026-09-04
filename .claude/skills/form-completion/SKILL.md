@@ -26,6 +26,38 @@ application with no playbook, a background scout agent surveys the site — the
 orchestrator stays with the user and does not survey a site itself. Each fill agent
 gets its own browser. Do not give one page to two writers.
 
+## Model for each dispatched agent
+
+**This applies whenever you start an agent — including a single-application run.** A cold
+start dispatches a scribe, and a scout if the form has to be found, so most runs dispatch
+something. Previously this guidance lived in `references/multi-application.md`, which
+`SKILL.md` only sent you to for two or more applications; single-form runs never read it and
+so never passed a `model` parameter.
+
+The `Agent` tool takes a `model` parameter. **Pass it every time.** Without it the agent
+inherits the orchestrator model, which costs roughly ten times more for each input token.
+
+| Agent | Model | Reason |
+|---|---|---|
+| Scout | `sonnet` | It must find the real form behind menus and interstitial pages. |
+| Scribe | `sonnet` | It writes the knowledge files that later runs depend on. |
+| Fill agent, no playbook (cold start) | `sonnet` | Discovery needs judgment: label mapping, gate polarity. |
+| Fill agent, playbook present (warm path) | `sonnet` — see below | Was `haiku`. Changed on measured evidence. |
+
+**Why the warm fill agent is no longer `haiku` by default.** The reasoning for `haiku` was
+that the fill agent reads the large DOM outputs, so a cheaper model controls most of the run
+cost. Measured on 2026-09-02, that did not hold, for a reason the reasoning did not
+anticipate: **the volume of reading is not fixed across models.** A `haiku` fill agent on a
+form whose playbook documented every field took **135 browser commands, 56 of them whole-page
+`snapshot` calls, and re-opened the form 6 times** — each re-open discarding the fills. It
+never returned BLOCKED, and it reported a site fact that was false. The run cost more than
+doing the whole job on `sonnet` in one session, and the cost was a symptom of the thrash, not
+a pricing effect.
+
+`haiku` is still the right choice for a fill agent whose whole sequence is a script — see
+*Prefer a site script* — because a script removes the judgment the small model was failing
+at. Until a site has one, use `sonnet` for the fill agent and record the exception.
+
 ## Phase 0 — Find the Playbook
 
 Look in the `playbooks/` directory of this skill for a file with the domain name of the
