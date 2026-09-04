@@ -22,7 +22,6 @@ import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { SuggestedActions } from './suggested-actions';
-import { SuggestedActionsLocal } from './suggested-actions-local';
 import equal from 'fast-deep-equal';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -32,10 +31,7 @@ import type { VisibilityType } from './visibility-selector';
 import type { Attachment, ChatMessage } from '@/lib/types';
 import type { Session } from 'next-auth';
 import { useRouter } from 'next/navigation';
-import {
-  isDevelopmentEnvironment,
-  isProductionEnvironment,
-} from '@/lib/constants';
+import { isProductionEnvironment } from '@/lib/constants';
 import { ModelSelectorButton } from './model-selector-button';
 import { ContextUsage } from './context-usage';
 import { FeatureFlagsMenu } from './feature-flags-menu';
@@ -265,20 +261,13 @@ function PureMultimodalInput({
       {messages.length === 0 &&
         attachments.length === 0 &&
         uploadQueue.length === 0 &&
-        isLoggedIn &&
-        (isProductionEnvironment || isDevelopmentEnvironment ? (
+        isLoggedIn && (
           <SuggestedActions
             sendMessage={sendMessage}
             chatId={chatId}
             selectedVisibilityType={selectedVisibilityType}
           />
-        ) : (
-          <SuggestedActionsLocal
-            sendMessage={sendMessage}
-            chatId={chatId}
-            selectedVisibilityType={selectedVisibilityType}
-          />
-        ))}
+        )}
 
       <input
         type="file"

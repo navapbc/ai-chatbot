@@ -139,8 +139,8 @@ type FieldSourceBadgeProps = {
 };
 
 // Maps the four-value source enum to a design pill variant + a tooltip
-// explaining what the source means. The `database` label keeps the
-// Nava-specific "Apricot 360" wording.
+// explaining what the source means. `database` covers values that came from
+// the participant record supplied with the request.
 export function FieldSourceBadge({ source, required, inferredFrom }: FieldSourceBadgeProps) {
   const baseCls =
     'inline-flex items-center gap-1.5 text-[10px] font-medium uppercase font-mono leading-[1.5] px-1.5 py-1 rounded-[4px] border whitespace-nowrap cursor-default';
@@ -168,9 +168,9 @@ export function FieldSourceBadge({ source, required, inferredFrom }: FieldSource
     tooltip = inferredFrom ? `Filled by AI; based on ${inferredFrom}.` : 'Filled by AI.';
     Icon = WandSparkles;
   } else if (source === 'database') {
-    label = 'Apricot 360';
+    label = 'Client record';
     toneCls = 'bg-stone-50 text-stone-700 border-stone-200';
-    tooltip = 'Filled in automatically from Apricot 360.';
+    tooltip = 'Filled in automatically from the client record.';
   } else {
     label = 'Manual';
     toneCls = 'bg-stone-50 text-stone-700 border-stone-200';

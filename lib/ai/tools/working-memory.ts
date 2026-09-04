@@ -4,7 +4,7 @@ import { z } from 'zod';
 export const updateWorkingMemory = tool({
   description:
     'Update the working memory with participant data, caseworker inputs, or form state. ' +
-    'Call this after retrieving Apricot records, when the caseworker provides gap analysis answers, ' +
+    'Call this after reading the participant data, when the caseworker provides gap analysis answers, ' +
     'or when form state changes significantly. ' +
     'Each call REPLACES the entire working memory — always include the COMPLETE current state.',
   inputSchema: z.object({
@@ -12,7 +12,7 @@ export const updateWorkingMemory = tool({
       .record(z.string(), z.unknown())
       .optional()
       .describe(
-        'All participant fields from Apricot database records (name, DOB, SSN, address, etc.)',
+        'All participant fields from the record provided with the request (name, DOB, address, etc.)',
       ),
     household: z
       .array(z.record(z.string(), z.unknown()))
