@@ -12,6 +12,7 @@ import type { Session } from 'next-auth';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import type { VisibilityType } from './visibility-selector';
 import { useRouter } from 'next/navigation';
+import { buildApplicationPrompt, getParticipantById } from '@/lib/data/participants';
 
 const PROGRAMS = [
   { id: 'wic', name: 'Apply 4 WIC Form', website: 'https://www.ruhealth.org/appointments/apply-4-wic-form' },
@@ -57,6 +58,7 @@ export function BenefitApplicationsLanding({
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<TabId>('select');
   const [clientId, setClientId] = useState('');
+  const [clientIdError, setClientIdError] = useState<string | null>(null);
   const [program, setProgram] = useState<(typeof PROGRAMS)[number] | null>(null);
   const [query, setQuery] = useState('');
   const [isComboOpen, setIsComboOpen] = useState(false);
@@ -94,8 +96,16 @@ export function BenefitApplicationsLanding({
 
   const handleStartAutoFilling = () => {
     if (!isLoggedIn || !clientId || (!program && !isUrl(query))) return;
+
+    const participant = getParticipantById(clientId);
+    if (!participant) {
+      setClientIdError(`No client record found for ID ${clientId}.`);
+      return;
+    }
+
+    setClientIdError(null);
     const target = program ? `${program.name} at ${program.website}` : query;
-    submitMessage(`Retrieve ID #${clientId} and apply for ${target}`);
+    submitMessage(buildApplicationPrompt({ participant, target }));
   };
 
   const loginAlert = (
@@ -169,16 +179,26 @@ export function BenefitApplicationsLanding({
               <div className="mb-12">
                 <p className="font-source-serif text-lg font-semibold text-foreground sm:text-xl">Client ID</p>
                 <p className="mt-1 font-source-serif text-sm text-muted-foreground sm:text-base">
-                  Enter the client&apos;s Apricot 360 ID.
+                  Enter the client&apos;s record ID.
                 </p>
                 <input
                   type="text"
                   placeholder="00000"
                   value={clientId}
-                  onChange={(e) => setClientId(e.target.value)}
+                  aria-label="Client ID"
+                  aria-invalid={clientIdError ? 'true' : 'false'}
+                  onChange={(e) => {
+                    setClientId(e.target.value);
+                    setClientIdError(null);
+                  }}
                   disabled={!isLoggedIn}
                   className="mt-3 h-[52px] w-[129px] rounded-[10px] border border-[#b5b5b5] px-4 font-inter text-base placeholder:text-[#b5b5b5] focus:border-primary focus:shadow-[0px_0px_8px_0px_rgba(177,64,146,0.25)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
                 />
+                {clientIdError && (
+                  <p role="alert" className="mt-2 font-inter text-sm text-destructive">
+                    {clientIdError}
+                  </p>
+                )}
               </div>
 
               {/* Application */}
@@ -277,7 +297,7 @@ export function BenefitApplicationsLanding({
                 Describe what you need
               </p>
               <p className="mt-1 font-source-serif text-sm text-muted-foreground sm:text-base">
-                Use this for programs not in the list. Include the client&apos;s Apricot 360 ID and the program URL.
+                Use this for programs not in the list. Include the client&apos;s details and the program URL.
               </p>
               <div className="mt-3 flex flex-1 flex-col">
                 <MultimodalInput
@@ -294,7 +314,7 @@ export function BenefitApplicationsLanding({
                   selectedVisibilityType={selectedVisibilityType}
                   showStopButton={false}
                   fullWidthSubmit
-                  placeholder="Apply [ID ####] for [Program URL]"
+                  placeholder="Apply for [Program URL] with [client details]"
                   session={session}
                 />
               </div>

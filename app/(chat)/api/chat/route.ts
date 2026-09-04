@@ -27,7 +27,6 @@ import {
 } from 'resumable-stream';
 import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
-import { apricotTools } from '@/lib/ai/tools/apricot';
 import { createBrowserTool } from '@/lib/ai/tools/browser';
 import { createCheckSubmitGateTool } from '@/lib/ai/tools/check-submit-gate';
 import { gapAnalysis } from '@/lib/ai/tools/gap-analysis';
@@ -205,7 +204,6 @@ export async function POST(request: Request) {
             ...initialModelMessages,
           ],
           tools: {
-            ...apricotTools,
             gapAnalysis,
             formSummary,
             actionLabel,

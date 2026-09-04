@@ -539,14 +539,7 @@ const PurePreviewMessage = ({
                   if (displayName === 'Executed JavaScript' || displayName.startsWith('Loaded ')) {
                     return;
                   }
-                  // Only use CollapsibleWrapper for get-participant-with-household
-                  if (displayName === 'GetApricotRecord') {
-                    return (
-                      <CollapsibleWrapper key={toolCallId} displayName={displayName} input={input} icon={Icon} />
-                    );
-                  }
-
-                  // For all other tools, show simple icon with text
+                  // Show a simple icon with text for every tool call
                   return (
                     <div key={toolCallId} className="flex items-center gap-2 p-3 border-0 rounded-md">
                       <div className="text-[10px] leading-[150%] font-ibm-plex-mono text-muted-foreground flex items-center gap-2">
@@ -567,23 +560,7 @@ const PurePreviewMessage = ({
                     return;
                   }
 
-                  // Only use CollapsibleWrapper for get-participant-with-household
-                  if (displayName === 'GetApricotRecord') {
-                    // Check for actual error value, not just presence of 'error' key
-                    const hasParticipantError = output && 'error' in output && output.error;
-                    return (
-                      <CollapsibleWrapper
-                        key={toolCallId}
-                        displayName={displayName}
-                        input={input}
-                        output={output}
-                        isError={hasParticipantError}
-                        icon={Icon}
-                      />
-                    );
-                  }
-
-                  // For all other tools, show simple icon with text
+                  // Show a simple icon with text for every tool call
                   // Check for actual error value, not just presence of 'error' key (some tools return { error: null } on success).
                   // Guard that output is a non-null object first: the `in` operator throws
                   // a TypeError on primitives, and some tools (e.g. Eve's load_skill) return

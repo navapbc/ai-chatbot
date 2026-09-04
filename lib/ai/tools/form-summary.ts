@@ -10,7 +10,7 @@ const fieldSchema = z.object({
   source: z
     .enum(['database', 'caseworker', 'inferred', 'missing'])
     .describe(
-      '"database" = pulled from Apricot records, "caseworker" = provided by the caseworker this session, "inferred" = agent reasoned from available data, "missing" = field could not be filled',
+      '"database" = taken from the participant record provided with the request, "caseworker" = provided by the caseworker this session, "inferred" = agent reasoned from available data, "missing" = field could not be filled',
     ),
   inputType: z
     .enum(['text', 'select', 'radio', 'checkbox'])

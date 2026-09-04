@@ -166,7 +166,7 @@ test('the timeline collector receives a window covering the command', async () =
 test('agent step events record tool names but never arguments', () => {
   logAgentStep({
     index: 3,
-    toolNames: ['browser', 'getApricotRecord'],
+    toolNames: ['browser', 'formSummary'],
     finishReason: 'tool-calls',
     inputTokens: 1200,
     outputTokens: 80,
@@ -178,7 +178,7 @@ test('agent step events record tool names but never arguments', () => {
     severity: 'INFO',
     event: 'agent.step.finish',
     step: 3,
-    tools: ['browser', 'getApricotRecord'],
+    tools: ['browser', 'formSummary'],
     finishReason: 'tool-calls',
     durationMs: 4500,
   });
