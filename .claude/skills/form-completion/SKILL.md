@@ -26,10 +26,41 @@ application with no playbook, a background scout agent surveys the site — the
 orchestrator stays with the user and does not survey a site itself. Each fill agent
 gets its own browser. Do not give one page to two writers.
 
+## Required run header
+
+Every run states, in one line, how it ran. Put it at the top of the final report:
+
+```
+run: playbook=demoqa.com.md (fresh) | agents=orchestrator:sonnet, fill:haiku | cmds=15 act / 79 verify
+```
+
+Use `playbook=none (cold start)` when there was no playbook, and `playbook=MISSED` if the
+listing was empty. This line exists because three separate defects — a silent playbook miss,
+a model parameter never passed, and verification quietly dominating a run — were all
+invisible for weeks and all would have been obvious from it. A run that cannot say how it
+ran cannot be measured.
+
 ## Phase 0 — Find the Playbook
 
-Look in the `playbooks/` directory of this skill for a file with the domain name of the
-target site. Example: `playbooks/forms.example.org.md`.
+List the skill's `playbooks/` directory and look for `<domain>.md` in the listing:
+
+```
+Glob(pattern="*.md", path="<skill-dir>/playbooks")
+```
+
+**Do not glob `playbooks/<domain>*.md` from the skill directory.** That pattern form
+returns "No files found" even when the file is present, and the miss is silent — the run
+then falls through to the cold-start branch below, re-surveys a site it already knows, and
+rewrites the playbook it already had. Confirmed 2026-09-02; it is not specific to where the
+skill is installed.
+
+Read the result of the listing before deciding:
+
+- **The listing is empty.** Stop and say so. The skill is installed wrong or the directory
+  is missing. This is not a cold start, and treating it as one hides the real problem.
+- **The listing has entries but none for this domain.** A genuine first visit. Use the
+  cold-start procedure.
+- **The listing has `<domain>.md`.** Read it, then follow the warm path.
 
 If the file is available:
 
