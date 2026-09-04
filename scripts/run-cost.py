@@ -12,6 +12,7 @@ as a hard failure, never as $0 or null — a missing rate must be loud.
 
 Usage:
   run-cost.py TRANSCRIPT.jsonl
+  run-cost.py PROJECT_DIR/          # sums main session + every subagent
   run-cost.py TRANSCRIPT.jsonl --since 2026-08-26T19:13:00Z --until 2026-08-26T19:45:00Z
   run-cost.py TRANSCRIPT.jsonl --timeline          # tool calls + timestamps, to pick a window
   run-cost.py TRANSCRIPT.jsonl --json
@@ -42,43 +43,80 @@ def parse_ts(s):
     try: return datetime.fromisoformat(s.replace("Z","+00:00"))
     except ValueError: return None
 
-def collect(path, since=None, until=None):
+def transcripts_for(path):
+    """Every transcript belonging to a run.
+
+    A run's cost is NOT one transcript. Subagents (scout, fill agent, scribe) each write
+    their own, at <project>/<session-id>/subagents/agent-*.jsonl. Pricing only the main
+    session understates the run, silently, which is the worst way to be wrong about a
+    number. It also hides the point of the architecture: the fill agent runs on a cheaper
+    model, so omitting subagents prices the expensive half and drops the cheap half.
+
+    A file -> that session plus its subagents.  A dir -> every session in it, likewise.
+    """
+    import os, glob
+    def with_subagents(f):
+        out = [f]
+        sub = os.path.join(os.path.dirname(f), os.path.basename(f)[:-6], "subagents")
+        if os.path.isdir(sub):
+            out += sorted(glob.glob(os.path.join(sub, "*.jsonl")))
+        return out
+    if os.path.isdir(path):
+        sessions = sorted(os.path.join(path, f) for f in os.listdir(path) if f.endswith(".jsonl"))
+        if not sessions: sys.exit(f"error: no .jsonl transcripts in {path}")
+        return [f for sess in sessions for f in with_subagents(sess)]
+    return with_subagents(path)
+
+def collect(paths, since=None, until=None):
+    if isinstance(paths, str): paths = [paths]
     per_model, skipped, first, last, msgs = {}, 0, None, None, 0
-    for line in open(path, encoding="utf-8"):
-        try: rec = json.loads(line)
-        except json.JSONDecodeError: continue
-        ts = parse_ts(rec.get("timestamp"))
-        if since and (ts is None or ts < since): continue
-        if until and (ts is None or ts > until): continue
-        m = rec.get("message")
-        if not isinstance(m, dict): continue
-        u = m.get("usage") or rec.get("usage")
-        if not u: continue
-        model = m.get("model") or "unknown"
-        if ts:
-            first = ts if first is None or ts < first else first
-            last  = ts if last  is None or ts > last  else last
-        msgs += 1
-        cc = u.get("cache_creation") or {}
-        b = per_model.setdefault(model, dict(msgs=0, inp=0, out=0, think=0, w5=0, w1h=0, read=0))
-        b["msgs"] += 1
-        b["inp"]  += u.get("input_tokens", 0) or 0
-        b["out"]  += u.get("output_tokens", 0) or 0
-        b["think"]+= ((u.get("output_tokens_details") or {}).get("thinking_tokens", 0)) or 0
-        b["read"] += u.get("cache_read_input_tokens", 0) or 0
-        w5  = cc.get("ephemeral_5m_input_tokens")
-        w1h = cc.get("ephemeral_1h_input_tokens")
-        if w5 is None and w1h is None:
-            # older records: only the aggregate is present; attribute to 5m (the cheaper
-            # assumption) and flag it so the number is never silently overstated
-            b["w5"] += u.get("cache_creation_input_tokens", 0) or 0
-        else:
-            b["w5"]  += w5 or 0
-            b["w1h"] += w1h or 0
+    for _p in paths:
+      for line in open(_p, encoding="utf-8"):
+          try: rec = json.loads(line)
+          except json.JSONDecodeError: continue
+          ts = parse_ts(rec.get("timestamp"))
+          if since and (ts is None or ts < since): continue
+          if until and (ts is None or ts > until): continue
+          m = rec.get("message")
+          if not isinstance(m, dict): continue
+          u = m.get("usage") or rec.get("usage")
+          if not u: continue
+          model = m.get("model") or "unknown"
+          if ts:
+              first = ts if first is None or ts < first else first
+              last  = ts if last  is None or ts > last  else last
+          msgs += 1
+          cc = u.get("cache_creation") or {}
+          b = per_model.setdefault(model, dict(msgs=0, inp=0, out=0, think=0, w5=0, w1h=0, read=0))
+          b["msgs"] += 1
+          b["inp"]  += u.get("input_tokens", 0) or 0
+          b["out"]  += u.get("output_tokens", 0) or 0
+          b["think"]+= ((u.get("output_tokens_details") or {}).get("thinking_tokens", 0)) or 0
+          b["read"] += u.get("cache_read_input_tokens", 0) or 0
+          w5  = cc.get("ephemeral_5m_input_tokens")
+          w1h = cc.get("ephemeral_1h_input_tokens")
+          if w5 is None and w1h is None:
+              # older records: only the aggregate is present; attribute to 5m (the cheaper
+              # assumption) and flag it so the number is never silently overstated
+              b["w5"] += u.get("cache_creation_input_tokens", 0) or 0
+          else:
+              b["w5"]  += w5 or 0
+              b["w1h"] += w1h or 0
     return per_model, first, last, msgs
 
+def base_model(model):
+    """Map a pinned model id to its rate key.
+
+    Transcripts can carry 'claude-haiku-4-5-20251001' where RATES holds
+    'claude-haiku-4-5'. Strip a trailing -YYYYMMDD only, and only when the result is a
+    known key, so a genuinely unknown model still fails loudly instead of being guessed.
+    """
+    import re
+    m = re.match(r"^(.*)-\d{8}$", model)
+    return m.group(1) if m and m.group(1) in RATES else model
+
 def cost(model, b):
-    r = RATES.get(model)
+    r = RATES.get(base_model(model))
     if not r: return None
     return (b["inp"]*r["in"] + b["read"]*r["in"]*CACHE_READ_MULT
             + b["w5"]*r["in"]*CACHE_WRITE_5M + b["w1h"]*r["in"]*CACHE_WRITE_1H
@@ -112,10 +150,11 @@ def main():
     if a.timeline:
         timeline(a.transcript, since, until); return
 
-    per_model, first, last, msgs = collect(a.transcript, since, until)
+    _paths = transcripts_for(a.transcript)
+    per_model, first, last, msgs = collect(_paths, since, until)
     if not per_model: sys.exit("error: no usage records in that window — check --since/--until")
 
-    unpriced = [m for m in per_model if m not in RATES]
+    unpriced = [m for m in per_model if base_model(m) not in RATES]
     total = 0.0
     rows = []
     for model, b in sorted(per_model.items()):
@@ -140,7 +179,14 @@ def main():
         mins = (last - first).total_seconds() / 60
         span = f"  ({mins:.0f} min wall clock)"
     print(f"\nWindow: {first} → {last}{span}")
-    print(f"Assistant messages: {msgs}\n")
+    print(f"Assistant messages: {msgs}")
+    if len(_paths) > 1:
+        import os
+        print(f"Transcripts priced: {len(_paths)} (sessions + subagents)")
+        for _f in _paths:
+            tag = "subagent" if f"{os.sep}subagents{os.sep}" in _f else "session "
+            print(f"  - [{tag}] {os.path.basename(_f)}")
+    print()
     hdr = f"{'model':<20}{'msgs':>6}{'input':>10}{'cache wr':>11}{'cache rd':>11}{'output':>10}{'(think)':>10}{'cost':>11}"
     print(hdr); print("-" * len(hdr))
     for model, b, c in rows:
