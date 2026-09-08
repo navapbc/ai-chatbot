@@ -66,7 +66,7 @@ There are two ways to begin:
 
 Once you describe the task, the AI assistant takes over the form-filling process:
 
-1. **Data retrieval** — The assistant connects to an API to access the client database and pulls participant information to pre-fill form fields.
+1. **Data retrieval** — The assistant uses the participant information available in the session to pre-fill form fields. If something it needs isn't available, it will ask you for it rather than guessing (see Gap Analysis below).
 
 2. **Browser automation** — A remote browser opens and navigates to the target website. You can watch the assistant interact with the form in real time through the live browser view.
 
