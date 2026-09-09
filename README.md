@@ -26,7 +26,7 @@ The [Form-Filling Assistant](https://www.navapbc.com/labs/caseworker-ai-tools/fo
 ## Features
 
 - **Agentic form-filling** — autonomously navigates benefit portals and populates application forms based on client information
-- **Database lookup** — searches within databases to surface relevant client information
+- **Participant data lookup** — looks up a participant's record by client ID (bundled demo data in this repo; see [Adding an External API Integration](#adding-an-external-api-integration) to wire in a real case-management system)
 - **Caseworker oversight** — all actions are reviewable and editable before submission; the caseworker approves every step
 - **Conversational interface** — chat-based UI built on [Next.js](https://nextjs.org) and [shadcn/ui](https://ui.shadcn.com) with accessible components from [Radix UI](https://radix-ui.com) styled with [Tailwind CSS](https://tailwindcss.com)
 - **Flexible AI model support** — works with multiple LLM providers via Vertex AI 
@@ -44,9 +44,9 @@ graph LR
         Routes --> Agent["AI Agent"]
     end
 
-    Agent --> LLMs["AI Providers<br/>Anthropic · OpenAI<br/>Vertex AI · xAI"]
+    Agent --> LLMs["AI Providers<br/>Anthropic (via Vertex AI) · OpenAI"]
     Agent --> Browser["Kernel.sh<br/>Remote Browser"]
-    Agent --> ExtAPI["External API"]
+    Agent --> Data["Participant Data<br/>(bundled demo records)"]
     Routes --> DB["Neon Postgres"]
     Routes --> Redis["Upstash Redis"]
     Browser -.->|live stream| UI
@@ -74,12 +74,12 @@ Copy the example env file and fill in your values:
 cp .env.example .env.local
 ```
 
-See the sections below for details on [database](#connecting-to-neon-database) and [API](#connecting-to-an-external-api) configuration.
+See the sections below for details on [database](#connecting-to-neon-database) and [API](#adding-an-external-api-integration) configuration.
 
 ### 3. Run database migrations
 
 ```bash
-pnpm drizzle-kit migrate
+pnpm db:migrate
 ```
 
 ### 4. Start the development server
@@ -115,7 +115,7 @@ Drizzle handles schema migrations. After setting your `DATABASE_URL`:
 pnpm drizzle-kit generate
 
 # Apply pending migrations
-pnpm drizzle-kit migrate
+pnpm db:migrate
 ```
 
 ### Database schema overview
@@ -133,9 +133,9 @@ The database stores the following entities:
 
 ---
 
-## Connecting to an External API
+## Adding an External API Integration
 
-The application supports integrating with external APIs to extend its capabilities (e.g., form services, document management systems, or other backend services). Below is the general pattern for adding a new API integration.
+Out of the box, participant data comes from a small bundled dataset (`lib/data/participants.ts`) rather than a live external system — there's no case-management API wired in by default. The application is structured to make adding one straightforward, though: below is the general pattern for integrating an external API (a case-management system, a document service, or any other backend).
 
 ### 1. Add environment variables
 
