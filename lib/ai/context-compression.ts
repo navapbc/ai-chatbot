@@ -30,6 +30,31 @@ const COMPACTION_SYSTEM_PROMPT =
 const log = (..._args: unknown[]) => {};
 
 /**
+ * `pruneMessages`'s `toolCalls` pruning rebuilds every message outside its
+ * keep-window with a new, shorter `content` array — it has no awareness of
+ * `reasoning` parts living in that same array. Anthropic ties a `thinking`/
+ * `redacted_thinking` block's validity to reproducing its entire assistant
+ * message byte-for-byte, so pruning a browser tool-call out of the message
+ * that also holds the most recent live thinking block invalidates it and
+ * the next request fails with AI_APICallError. Find how many trailing
+ * messages must stay fully untouched to include that message.
+ */
+function reasoningProtectedWindow(messages: ModelMessage[]): number {
+  const DEFAULT_WINDOW = 2;
+  let lastReasoningIndex = -1;
+  for (let i = 0; i < messages.length; i++) {
+    const { role, content } = messages[i];
+    if (role === 'assistant' && Array.isArray(content)) {
+      if ((content as any[]).some((part) => part?.type === 'reasoning' || part?.type === 'reasoning-file')) {
+        lastReasoningIndex = i;
+      }
+    }
+  }
+  if (lastReasoningIndex === -1) return DEFAULT_WINDOW;
+  return Math.max(DEFAULT_WINDOW, messages.length - lastReasoningIndex);
+}
+
+/**
  * Detect and extract a working memory message from the beginning of the
  * message list. The working memory message is always the first message and
  * starts with WORKING_MEMORY_PREFIX. It must be excluded from compaction
@@ -229,14 +254,20 @@ export function createMessageCompressor() {
 
     // Step 0: no prior inputTokens available. Prune browser tool content
     // from older messages to avoid exceeding the main model's context window
-    // on cross-request reloads with large message histories.
+    // on cross-request reloads with large message histories. The keep-window
+    // must extend back far enough to leave the message holding the most
+    // recent thinking block fully untouched — see reasoningProtectedWindow.
     if (lastInputTokens === undefined) {
+      const keepWindow = reasoningProtectedWindow(effectiveMessages);
       const pruned = pruneMessages({
         messages: effectiveMessages,
-        toolCalls: [{ type: 'before-last-2-messages', tools: ['browser'] }],
+        toolCalls: [{ type: `before-last-${keepWindow}-messages`, tools: ['browser'] }],
         emptyMessages: 'remove',
       });
-      log(`step 0 — pruned browser tools: ${effectiveMessages.length} → ${pruned.length} msgs`);
+      log(
+        `step 0 — pruned browser tools (keep window ${keepWindow}): ` +
+        `${effectiveMessages.length} → ${pruned.length} msgs`
+      );
       return { messages: prepend(pruned), compacted: false };
     }
 
