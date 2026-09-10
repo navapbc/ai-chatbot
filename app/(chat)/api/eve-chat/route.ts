@@ -55,6 +55,16 @@ function isBodyTimeout(err: unknown): boolean {
 }
 
 export async function POST(request: Request) {
+  // Defense-in-depth against a stale client whose `useEveAgent` routing
+  // decision didn't update (see components/chat.tsx): the client-side flag
+  // lives in localStorage, so the server has no independent view of it. This
+  // env-backed kill switch lets ops hard-disable the Eve path — e.g. during
+  // an incident — without depending on every browser tab picking up a
+  // client-side flag change.
+  if (process.env.EVE_AGENT_ENABLED === 'false') {
+    return new ChatSDKError('bad_request:chat').toResponse();
+  }
+
   const session = await auth();
   if (!session?.user?.id) {
     return new ChatSDKError('unauthorized:chat').toResponse();

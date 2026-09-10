@@ -11,7 +11,7 @@ import { useLocalStorage } from 'usehooks-ts';
 import { fetchWithErrorHandlers, generateUUID } from '@/lib/utils';
 import { isProductionEnvironment } from '@/lib/constants';
 import { DEFAULT_CHAT_MODEL } from '@/lib/ai/models';
-import { isFeatureEnabled } from '@/lib/feature-flags';
+import { useFeatureFlag } from '@/hooks/use-feature-flag';
 import { Artifact } from './artifact';
 import { MultimodalInput } from './multimodal-input';
 import { Messages } from './messages';
@@ -95,7 +95,10 @@ export function Chat({
   // on the next user-initiated send.
   const stoppedRef = useRef(false);
 
-  const [selectedModelId] = useLocalStorage<string>('selected-chat-model-id', '');
+  const [selectedModelId] = useLocalStorage<string>(
+    'selected-chat-model-id',
+    '',
+  );
   // useChat captures the transport (and its prepareSendMessagesRequest closure)
   // once at first render, so reading selectedModelId directly there would freeze
   // it at the initial value. Route reads through a ref updated every render so
@@ -103,8 +106,15 @@ export function Chat({
   const selectedModelIdRef = useRef(selectedModelId);
   selectedModelIdRef.current = selectedModelId;
 
-  const useEve = isFeatureEnabled('useEveAgent');
-  const eveApi = useEve ? '/api/eve-chat' : '/api/chat';
+  const useEve = useFeatureFlag('useEveAgent');
+  // useChat captures the transport and sendAutomaticallyWhen closures once at
+  // first render (see selectedModelIdRef above), so reading useEve directly
+  // there would freeze the routing decision at whichever value was live on
+  // mount. Route reads through a ref updated every render so each send picks
+  // up the current flag state instead of silently staying on Eve (or off it)
+  // for the lifetime of the mounted Chat instance.
+  const useEveRef = useRef(useEve);
+  useEveRef.current = useEve;
 
   const {
     messages,
@@ -125,15 +135,15 @@ export function Chat({
     // assistant's own reply and feed it back to Eve as a bogus user turn.
     // This predicate exists only for the legacy AI-SDK-managed client<->server
     // tool continuation flow, so it stays exactly as-is when Eve is off.
-    sendAutomaticallyWhen: useEve
-      ? () => false
-      : ({ messages }) =>
-          !stoppedRef.current &&
-          lastAssistantMessageIsCompleteWithToolCalls({ messages }),
+    sendAutomaticallyWhen: ({ messages }) =>
+      !useEveRef.current &&
+      !stoppedRef.current &&
+      lastAssistantMessageIsCompleteWithToolCalls({ messages }),
     transport: new DefaultChatTransport({
-      api: eveApi,
+      api: '/api/chat',
       fetch: fetchWithErrorHandlers,
       prepareSendMessagesRequest: ({ messages, id, body }) => ({
+        api: useEveRef.current ? '/api/eve-chat' : '/api/chat',
         body: {
           id,
           message: messages.at(-1),

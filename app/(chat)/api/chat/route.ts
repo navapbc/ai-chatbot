@@ -40,6 +40,7 @@ import { readReference } from '@/lib/ai/tools/read-reference';
 import { createMessageCompressor } from '@/lib/ai/context-compression';
 import { registerChatAbort, clearChatAbort } from '@/lib/chat-abort-registry';
 import { logAgentStep } from '@/lib/observability/browser-telemetry';
+import { getContinuity } from '@/lib/ai/eve/session-continuity';
 
 export const maxDuration = 300; // 5 minutes for web automation tasks
 
@@ -86,6 +87,16 @@ export async function POST(request: Request) {
     }
 
     const userType: UserType = session.user.type ?? 'regular';
+
+    // Defense-in-depth against a stale client whose `useEveAgent` routing
+    // decision didn't update (see components/chat.tsx): if this chat already
+    // has an active Eve session, it owns the conversation server-side. Running
+    // it through the legacy loop too would split-brain the chat — two agent
+    // loops independently reading/writing the same message history — so
+    // refuse rather than silently double-processing it.
+    if (getContinuity(session.user.id, id)) {
+      return new ChatSDKError('bad_request:chat').toResponse();
+    }
 
     const messageCount = await getMessageCountByUserId({
       id: session.user.id,
