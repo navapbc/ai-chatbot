@@ -101,12 +101,12 @@ jobs:
           TAG=${GITHUB_SHA:0:7}
           echo "chatbot_image=${ARTIFACT_REGISTRY}/ai-chatbot:${TAG}" >> $GITHUB_OUTPUT
 
-      - name: Get PostHog API key
-        id: posthog_key
-        run: |
-          POSTHOG_KEY=$(gcloud secrets versions access latest --secret=posthog-api-key)
-          echo "::add-mask::$POSTHOG_KEY"
-          echo "key=$POSTHOG_KEY" >> $GITHUB_OUTPUT
+      # - name: Get PostHog API key
+      #   id: posthog_key
+      #   run: |
+      #     POSTHOG_KEY=$(gcloud secrets versions access latest --secret=posthog-api-key)
+      #     echo "::add-mask::$POSTHOG_KEY"
+      #     echo "key=$POSTHOG_KEY" >> $GITHUB_OUTPUT
 
       - name: Get Kernel API key
         id: kernel_key
