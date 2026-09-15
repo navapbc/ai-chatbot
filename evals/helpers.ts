@@ -308,9 +308,10 @@ interface HasTotalUsage {
     inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
-    // AI SDK v7 moved cache-read tokens under inputTokenDetails.
+    // AI SDK v7 moved cache-read/cache-write tokens under inputTokenDetails.
     inputTokenDetails?: {
       cacheReadTokens?: number;
+      cacheWriteTokens?: number;
     };
   };
 }
@@ -322,6 +323,7 @@ export function emptyUsage(): UsageTotals {
     outputTokens: 0,
     totalTokens: 0,
     cachedInputTokens: 0,
+    cachedWriteTokens: 0,
   };
 }
 
@@ -337,6 +339,7 @@ export function addUsage(acc: UsageTotals, result: HasTotalUsage): UsageTotals {
   acc.totalTokens +=
     u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
   acc.cachedInputTokens += u.inputTokenDetails?.cacheReadTokens ?? 0;
+  acc.cachedWriteTokens += u.inputTokenDetails?.cacheWriteTokens ?? 0;
   return acc;
 }
 
@@ -357,6 +360,7 @@ export function logUsageAndCost(span: Span, usage: UsageTotals): void {
     prompt_tokens: usage.inputTokens,
     completion_tokens: usage.outputTokens,
     prompt_cached_tokens: usage.cachedInputTokens,
+    prompt_cache_write_tokens: usage.cachedWriteTokens,
   };
   // estimated_cost_usd is a custom metric (Braintrust's native cost needs its
   // own pricing table, which won't know these models). Omit the key entirely
