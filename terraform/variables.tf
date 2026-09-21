@@ -136,5 +136,5 @@ variable "braintrust_wif_enabled" {
 variable "jev_features" {
   description = "Comma-separated Jev features to enable in the agent loop (gap-triage, summary-check, field-value), or \"all\". Empty disables every Jev call. See lib/jev/client.ts."
   type        = string
-  default     = ""
+  default     = "all"
 }
