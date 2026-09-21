@@ -29,14 +29,16 @@ import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
 import { createBrowserTool } from '@/lib/ai/tools/browser';
 import { createCheckSubmitGateTool } from '@/lib/ai/tools/check-submit-gate';
-import { gapAnalysis } from '@/lib/ai/tools/gap-analysis';
-import { formSummary } from '@/lib/ai/tools/form-summary';
+import { createGapAnalysisTool } from '@/lib/ai/tools/gap-analysis';
+import { createFormSummaryTool } from '@/lib/ai/tools/form-summary';
+import { createResolveFieldValueTool } from '@/lib/ai/tools/resolve-field-value';
 import { actionLabel } from '@/lib/ai/tools/action-label';
 import {
   getWebAutomationSystemPrompt,
   getCurrentDateString,
 } from '@/lib/ai/prompts/web-automation';
 import { readReference } from '@/lib/ai/tools/read-reference';
+import { extractParticipant } from '@/lib/jev/participant';
 import { createMessageCompressor } from '@/lib/ai/context-compression';
 import { registerChatAbort, clearChatAbort } from '@/lib/chat-abort-registry';
 import { logAgentStep } from '@/lib/observability/browser-telemetry';
@@ -168,6 +170,12 @@ export async function POST(request: Request) {
       execute: async ({ writer: dataStream }) => {
         const initialModelMessages = await convertToModelMessages(uiMessages);
 
+        // The participant record is only ever present as JSON inside the
+        // caseworker's opening message (buildApplicationPrompt), so it has to
+        // be parsed back out to be handed to a tool. Null is normal — a chat
+        // with no record simply gets the pre-Jev behavior everywhere.
+        const participant = extractParticipant(initialModelMessages);
+
         // One compressor instance per request; its cache persists across all
         // prepareStep calls so generateText is not re-fired on every step.
         // Compaction triggers on step 1+ using SDK-reported inputTokens
@@ -204,8 +212,9 @@ export async function POST(request: Request) {
             ...initialModelMessages,
           ],
           tools: {
-            gapAnalysis,
-            formSummary,
+            gapAnalysis: createGapAnalysisTool(participant),
+            formSummary: createFormSummaryTool(participant),
+            resolveFieldValue: createResolveFieldValueTool(participant),
             actionLabel,
             browser: createBrowserTool(sessionId, session.user.id),
             checkSubmitGate: createCheckSubmitGateTool(

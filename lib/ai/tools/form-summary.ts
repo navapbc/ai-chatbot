@@ -1,12 +1,16 @@
 import { tool } from 'ai';
 import { z } from 'zod';
+import type { Participant } from '@/lib/data/participants';
+import { annotateSummaryFields } from '@/lib/jev/enrich';
 
 const fieldSchema = z.object({
   field: z.string().describe('Field label'),
   value: z
     .string()
     .optional()
-    .describe('Value that was filled in. Omit or leave empty for fields that could not be filled.'),
+    .describe(
+      'Value that was filled in. Omit or leave empty for fields that could not be filled.',
+    ),
   source: z
     .enum(['database', 'caseworker', 'inferred', 'missing'])
     .describe(
@@ -36,23 +40,37 @@ const fieldSchema = z.object({
     ),
 });
 
-export const formSummary = tool({
-  description:
-    'Display a form summary card showing what was filled in and where each value came from. Call this INSTEAD of writing a summary message at the end of form completion. List fields in the order they appear on the original form. NEVER include CAPTCHA, reCAPTCHA, Turnstile, "I\'m not a robot", or any bot-challenge widget — they are not form fields. Also exclude submit buttons, hidden inputs, and decorative text. The card already displays all information — do NOT write any text listing the fields before or after calling this tool. Just call the tool, then follow with one short sentence like "Please review and submit when ready."',
-  inputSchema: z.object({
-    formName: z
-      .string()
-      .optional()
-      .describe('Name of the form that was filled, e.g. "WIC Application"'),
-    clientName: z
-      .string()
-      .optional()
-      .describe('Full name of the participant the form was filled for'),
-    fields: z
-      .array(fieldSchema)
-      .describe(
-        'All form fields in the order they appear on the original form. Each field has a source indicating where the value came from.',
-      ),
-  }),
-  execute: async (input) => input,
-});
+/**
+ * `participant` lets Jev check each filled value against the record and check
+ * the `source` label the agent attached to it (lib/jev/enrich.ts). Pass null —
+ * or leave the `summary-check` feature off — and the agent's fields are
+ * returned untouched.
+ */
+export const createFormSummaryTool = (participant: Participant | null) =>
+  tool({
+    description:
+      'Display a form summary card showing what was filled in and where each value came from. Call this INSTEAD of writing a summary message at the end of form completion. List fields in the order they appear on the original form. NEVER include CAPTCHA, reCAPTCHA, Turnstile, "I\'m not a robot", or any bot-challenge widget — they are not form fields. Also exclude submit buttons, hidden inputs, and decorative text. The card already displays all information — do NOT write any text listing the fields before or after calling this tool. Just call the tool, then follow with one short sentence like "Please review and submit when ready."',
+    inputSchema: z.object({
+      formName: z
+        .string()
+        .optional()
+        .describe('Name of the form that was filled, e.g. "WIC Application"'),
+      clientName: z
+        .string()
+        .optional()
+        .describe('Full name of the participant the form was filled for'),
+      fields: z
+        .array(fieldSchema)
+        .describe(
+          'All form fields in the order they appear on the original form. Each field has a source indicating where the value came from.',
+        ),
+    }),
+    execute: async (input, { abortSignal }) => ({
+      ...input,
+      fields: await annotateSummaryFields({
+        participant,
+        fields: input.fields,
+        signal: abortSignal,
+      }),
+    }),
+  });

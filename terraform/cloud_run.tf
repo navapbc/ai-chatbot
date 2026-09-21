@@ -352,6 +352,27 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         }
       }
 
+      # TypeSafe (Jev) API key. Every Jev feature treats a missing key as
+      # "off", so an unset secret degrades to pre-Jev behavior rather than
+      # failing a form run.
+      env {
+        name = "TYPESAFE_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = "typesafe-api-key"
+            version = "latest"
+          }
+        }
+      }
+
+      # Which Jev features run in the agent loop (see lib/jev/client.ts).
+      # Empty means no Jev call is made. Note this gates the Next process only
+      # — the Eve sibling has no Jev integration yet.
+      env {
+        name  = "JEV_FEATURES"
+        value = var.jev_features
+      }
+
       # Braintrust API key. instrumentation.ts exports no traces without it, so
       # leaving it unset silently disables OpenTelemetry in the deployed app.
       env {
