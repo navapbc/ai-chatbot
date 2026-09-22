@@ -22,6 +22,7 @@
 import type { Participant } from '@/lib/data/participants';
 import { askJev, isJevEnabled } from './client';
 import { gapFieldQuestions, summaryFieldQuestions } from './questions';
+import { annotateVerdict, withJevBatchSpan } from './telemetry';
 
 /** Attached to a row when Jev answered; absent when it did not run. */
 export interface JevAnnotation {
@@ -77,23 +78,50 @@ export const annotateGapFields = async <T extends { field: string }>(args: {
   signal?: AbortSignal;
 }): Promise<(T & { jev?: GapFieldAnnotation })[]> => {
   const { participant, fields, signal } = args;
-  if (!participant || !isJevEnabled('gap-triage')) return fields;
+  const enabled = Boolean(participant) && isJevEnabled('gap-triage');
 
-  return mapCapped(fields, async (row) => {
-    const { state, questions } = gapFieldQuestions(participant, row.field);
-    const result = await askJev({ state, questions, signal });
-    if (!result.ok) return row;
-    const { verdict, sensitive } = result.answers;
-    return {
-      ...row,
-      jev: {
-        verdict: verdict.choice,
-        confidence: verdict.confidence,
-        probabilities: { ...verdict.probabilities },
-        sensitive: sensitive.noul,
-      },
-    };
-  });
+  // The batch span covers the disabled case too: "off" and "never reached
+  // this code" are otherwise identical in a trace.
+  return withJevBatchSpan(
+    {
+      feature: 'gap-triage',
+      enabled,
+      skipReason: !participant
+        ? 'no_participant'
+        : enabled
+          ? undefined
+          : 'flag_off',
+      rowsAttempted: fields.length,
+    },
+    async () => {
+      if (!enabled || !participant) return fields;
+
+      return mapCapped(fields, async (row) => {
+        const { state, questions } = gapFieldQuestions(participant, row.field);
+        const result = await askJev({
+          state,
+          questions,
+          feature: 'gap-triage',
+          field: row.field,
+          onAnswers: (a) =>
+            annotateVerdict(a.verdict.choice, a.verdict.confidence),
+          signal,
+        });
+        if (!result.ok) return row;
+        const { verdict, sensitive } = result.answers;
+        return {
+          ...row,
+          jev: {
+            verdict: verdict.choice,
+            confidence: verdict.confidence,
+            probabilities: { ...verdict.probabilities },
+            sensitive: sensitive.noul,
+          },
+        };
+      });
+    },
+    (row) => 'jev' in row && row.jev !== undefined,
+  );
 };
 
 /**
@@ -111,22 +139,54 @@ export const annotateSummaryFields = async <
   signal?: AbortSignal;
 }): Promise<(T & { jev?: SummaryFieldAnnotation })[]> => {
   const { participant, fields, signal } = args;
-  if (!participant || !isJevEnabled('summary-check')) return fields;
+  const enabled = Boolean(participant) && isJevEnabled('summary-check');
 
-  return mapCapped(fields, async (row) => {
-    if (row.source === 'missing' || !row.value) return row;
-    const { state, questions } = summaryFieldQuestions(participant, row);
-    const result = await askJev({ state, questions, signal });
-    if (!result.ok) return row;
-    const { verdict, source_accurate } = result.answers;
-    return {
-      ...row,
-      jev: {
-        verdict: verdict.choice,
-        confidence: verdict.confidence,
-        probabilities: { ...verdict.probabilities },
-        sourceAccurate: source_accurate.noul,
-      },
-    };
-  });
+  // rowsAttempted counts only the rows this function would actually ask
+  // about: a `missing` row is skipped by design, and counting it would make
+  // every healthy batch look partially failed.
+  const askable = fields.filter(
+    (row) => row.source !== 'missing' && Boolean(row.value),
+  ).length;
+
+  return withJevBatchSpan(
+    {
+      feature: 'summary-check',
+      enabled,
+      skipReason: !participant
+        ? 'no_participant'
+        : enabled
+          ? undefined
+          : 'flag_off',
+      rowsAttempted: askable,
+    },
+    async () => {
+      if (!enabled || !participant) return fields;
+
+      return mapCapped(fields, async (row) => {
+        if (row.source === 'missing' || !row.value) return row;
+        const { state, questions } = summaryFieldQuestions(participant, row);
+        const result = await askJev({
+          state,
+          questions,
+          feature: 'summary-check',
+          field: row.field,
+          onAnswers: (a) =>
+            annotateVerdict(a.verdict.choice, a.verdict.confidence),
+          signal,
+        });
+        if (!result.ok) return row;
+        const { verdict, source_accurate } = result.answers;
+        return {
+          ...row,
+          jev: {
+            verdict: verdict.choice,
+            confidence: verdict.confidence,
+            probabilities: { ...verdict.probabilities },
+            sourceAccurate: source_accurate.noul,
+          },
+        };
+      });
+    },
+    (row) => 'jev' in row && row.jev !== undefined,
+  );
 };

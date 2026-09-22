@@ -277,11 +277,19 @@ jobs:
           fi
 
           # Jev (TypeSafe) features: preview only while the integration is
-          # being evaluated. dev/prod keep the terraform default of "" (off),
-          # and promote.yml passes no value at all, so promoting a preview
-          # image to prod does not carry Jev with it.
-          # Requires the typesafe-api-key secret: lib/jev/client.ts treats a
-          # missing TYPESAFE_API_KEY as "off" regardless of this value.
+          # being evaluated. This job passes the value explicitly for every
+          # environment, so dev/prod get "" (off) from here rather than from a
+          # default. promote.yml passes no jev_features at all and so takes
+          # terraform's default, which is "" for the same reason — promoting a
+          # preview image to prod must not carry Jev with it. Keep both in
+          # step: if that default is ever made non-empty, promotions turn Jev
+          # on everywhere without a code change.
+          #
+          # The typesafe-api-key secret is mounted unconditionally in
+          # cloud_run.tf and every environment shares one GCP project, so the
+          # key is present regardless of environment and this variable is the
+          # only thing gating Jev. (lib/jev/client.ts still treats a missing
+          # TYPESAFE_API_KEY as "off", but do not rely on absence here.)
           JEV_FEATURES=""
           if [[ "${{ needs.setup.outputs.environment }}" == preview-pr-* ]]; then
             JEV_FEATURES="all"

@@ -366,8 +366,9 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
       }
 
       # Which Jev features run in the agent loop (see lib/jev/client.ts).
-      # Empty means no Jev call is made. Note this gates the Next process only
-      # — the Eve sibling has no Jev integration yet.
+      # Empty means no Jev call is made. This gates both processes: the Eve
+      # sibling is started as a plain child by scripts/start-container.sh and
+      # inherits this env, and its tools call the same lib/jev/ code.
       env {
         name  = "JEV_FEATURES"
         value = var.jev_features

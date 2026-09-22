@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Participant } from '@/lib/data/participants';
 import { askJev, isJevEnabled } from '@/lib/jev/client';
 import { fieldValueQuestions } from '@/lib/jev/questions';
+import { annotateVerdict } from '@/lib/jev/telemetry';
 import { flattenRecord } from '@/lib/jev/flatten';
 
 /**
@@ -49,7 +50,15 @@ export const createResolveFieldValueTool = (participant: Participant | null) =>
         field,
         candidates,
       );
-      const result = await askJev({ state, questions, signal: abortSignal });
+      const result = await askJev({
+        state,
+        questions,
+        feature: 'field-value',
+        field,
+        onAnswers: (a) =>
+          annotateVerdict(a.selection.choice, a.selection.confidence),
+        signal: abortSignal,
+      });
       if (!result.ok) {
         return { resolved: false as const, reason: result.reason };
       }

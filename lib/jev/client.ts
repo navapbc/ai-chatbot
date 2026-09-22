@@ -16,6 +16,7 @@ import {
   type Questions,
   type SystemOneResult,
 } from '@typesafe-ai/sdk';
+import { withJevCallSpan } from './telemetry';
 
 /** Feature keys accepted in `JEV_FEATURES`. */
 export type JevFeature = 'gap-triage' | 'summary-check' | 'field-value';
@@ -94,23 +95,57 @@ export type JevOutcome<Q extends Questions> =
 export async function askJev<const Q extends Questions>(args: {
   state: unknown;
   questions: Q;
+  /** Which feature is asking. Recorded on the span; see lib/jev/telemetry.ts. */
+  feature: JevFeature;
+  /** Form-field label this judgment is about, for the span. Never a value. */
+  field?: string;
+  /**
+   * Called with the answers while the span is still open, so `annotateVerdict`
+   * lands on it. Anything it throws is swallowed: this function is documented
+   * never to throw, and a telemetry hook must not be what breaks that — nor
+   * turn a good answer into a reported failure by falling into the catch below.
+   */
+  onAnswers?: (answers: SystemOneResult<Q>['answers']) => void;
   /** The tool's own `abortSignal`, so a cancelled chat cancels this too. */
   signal?: AbortSignal;
   /** Per-attempt timeout. Below the SDK's 10s default: these run inline in a turn. */
   timeoutMs?: number;
 }): Promise<JevOutcome<Q>> {
-  const { state, questions, signal, timeoutMs = 5000 } = args;
-  if (signal?.aborted) return { ok: false, reason: 'aborted' };
-  try {
-    const result = await getClient().systemOne(
-      { state: state as never, questions },
-      { signal, timeout: timeoutMs },
-    );
-    return { ok: true, answers: result.answers, model: result.model };
-  } catch (error: unknown) {
-    return {
-      ok: false,
-      reason: error instanceof Error ? error.message : String(error),
-    };
-  }
+  const {
+    state,
+    questions,
+    feature,
+    field,
+    onAnswers,
+    signal,
+    timeoutMs = 5000,
+  } = args;
+
+  // Every return path goes through the span, including the pre-flight abort:
+  // a cancelled chat that skipped the call should still be distinguishable
+  // from a feature that was never reached.
+  return withJevCallSpan({ feature, field }, async () => {
+    if (signal?.aborted) return { ok: false as const, reason: 'aborted' };
+    try {
+      const result = await getClient().systemOne(
+        { state: state as never, questions },
+        { signal, timeout: timeoutMs },
+      );
+      try {
+        onAnswers?.(result.answers);
+      } catch {
+        // Telemetry only; see onAnswers above.
+      }
+      return {
+        ok: true as const,
+        answers: result.answers,
+        model: result.model,
+      };
+    } catch (error: unknown) {
+      return {
+        ok: false as const,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
 }

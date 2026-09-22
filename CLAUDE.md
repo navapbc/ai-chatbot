@@ -72,6 +72,13 @@ Three call sites, all **annotate-only** — they add a `jev` field to rows the a
 
 **Both agent trees are wired**, sharing everything under `lib/jev/`. Eve needs one extra hop because its tools are module-level `defineTool` default exports with no construction step, and `ToolContext` exposes no message history — so the record cannot be passed in or looked up. Instead `agent/hooks/participant.ts` lifts it out of `message.received` into a `defineState` slot (`agent/lib/participant-state.ts`), and `agent/lib/jev.ts` reads it back. A subagent inherits no state, so `agent/subagents/form_review/tools/form_summary.ts` degrades to un-annotated rows rather than erroring. Eve counterparts: `agent/tools/gap_analysis.ts`, `agent/tools/form_summary.ts`, `agent/tools/resolve_field_value.ts`. `JEV_FEATURES` and `TYPESAFE_API_KEY` reach Eve without extra wiring: `scripts/start-container.sh` starts it as a plain child process, which inherits the container env.
 
+`lib/jev/telemetry.ts` traces every call: one `jev <feature> batch` span per card tool (carrying
+`rows_attempted` vs `rows_annotated`, and `enabled: false` when the flag is off) with one
+`jev <feature>` child per request. Both exporters run `filterAISpans: true`, so the tracer scope
+`labs-asp.jev` has to stay in the `KEEP_SCOPES` set in **both** `instrumentation.ts` and
+`agent/instrumentation.ts` or the spans are silently dropped in that process. The same module
+prints a JSON line per batch to stdout, which is the only signal where no exporter is configured.
+
 Braintrust also supports Jev as an online-eval judge — see `evals/README.md`.
 
 **Feature flags** — `lib/feature-flags.ts`. Env-aware defaults, overridable per-browser via `localStorage` (`ff:` prefix) through a dev-only menu. Current flags: `declutterToolCalls` (show only value-bearing tool calls in prod) and `useEveAgent` (route chat through the Eve adapter route instead of the legacy loop; defaults `false`).

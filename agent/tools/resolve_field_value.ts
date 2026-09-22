@@ -2,6 +2,7 @@ import { defineTool } from 'eve/tools';
 import { z } from 'zod';
 import { askJev, isJevEnabled } from '@/lib/jev/client';
 import { fieldValueQuestions } from '@/lib/jev/questions';
+import { annotateVerdict } from '@/lib/jev/telemetry';
 import { flattenRecord } from '@/lib/jev/flatten';
 import { currentParticipant } from '../lib/jev';
 
@@ -42,6 +43,10 @@ export default defineTool({
     const result = await askJev({
       state,
       questions,
+      feature: 'field-value',
+      field,
+      onAnswers: (a) =>
+        annotateVerdict(a.selection.choice, a.selection.confidence),
       signal: ctx?.abortSignal,
     });
     if (!result.ok) return { resolved: false as const, reason: result.reason };
