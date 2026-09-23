@@ -45,7 +45,7 @@ agent/
 
 The external-record-verification subagent and its two lookup tools have been
 archived out of this agent (Task 4 of the SP-A plan), and the data model is
-retargeted to caseworker messages + inference only. See
+retargeted to the participant record (source `record`) + caseworker messages + inference. See
 `docs/plans/2026-07-23-web-automation-prompt-to-eve.md` and the SDD task
 brief/report under `.superpowers/sdd/` for the before/after.
 
@@ -80,7 +80,7 @@ rather than a tool call.
 (Autofilled Field Detection, Filling Fields, No vs Unknown Distinction, Autonomous
 Progression, Review Screen, Gap Analysis Protocol, Form Completion Summary). Data
 Provenance now lives directly in this skill as **Data Provenance (No Fabrication)**,
-sourced to caseworker messages + inference only.
+sourced to the participant record, caseworker messages, or inference.
 Review Screen and Form Completion Summary are intentionally duplicated in the `form_review`
 subagent — a declared subagent inherits no skills, so anything it needs must be copied into
 its own `instructions.md`.

@@ -2,8 +2,16 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronLeft, ChevronRight, CircleHelp, TriangleAlert, WandSparkles, X } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  CircleHelp,
+  TriangleAlert,
+  WandSparkles,
+  X,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
+import type { FieldSource } from '@/lib/types/form-cards';
 import {
   Tooltip,
   TooltipContent,
@@ -86,7 +94,9 @@ export function SectionHeader({ title, eyebrow, onClose }: SectionHeaderProps) {
     <div className="px-5 pt-5 pb-3 border-b border-border flex items-start justify-between gap-4">
       <div className="min-w-0">
         {eyebrow && (
-          <div className="text-[12px] font-inter text-muted-foreground mb-1">{eyebrow}</div>
+          <div className="text-[12px] font-inter text-muted-foreground mb-1">
+            {eyebrow}
+          </div>
         )}
         {title && (
           <h3 className="font-source-serif text-[22px] font-semibold text-foreground">
@@ -133,15 +143,21 @@ export function ProgressDots({ ids, current }: ProgressDotsProps) {
 }
 
 type FieldSourceBadgeProps = {
-  source: 'database' | 'caseworker' | 'inferred' | 'missing';
+  source: FieldSource;
   required?: boolean;
   inferredFrom?: string;
 };
 
 // Maps the four-value source enum to a design pill variant + a tooltip
-// explaining what the source means. `database` covers values that came from
-// the participant record supplied with the request.
-export function FieldSourceBadge({ source, required, inferredFrom }: FieldSourceBadgeProps) {
+// explaining what the source means. `record` covers values that came from the
+// participant record supplied with the request; `adaptReviewSections` has
+// already normalised the legacy `database` spelling to it, so this only ever
+// sees `record`.
+export function FieldSourceBadge({
+  source,
+  required,
+  inferredFrom,
+}: FieldSourceBadgeProps) {
   const baseCls =
     'inline-flex items-center gap-1.5 text-[10px] font-medium uppercase font-mono leading-[1.5] px-1.5 py-1 rounded-[4px] border whitespace-nowrap cursor-default';
 
@@ -165,9 +181,11 @@ export function FieldSourceBadge({ source, required, inferredFrom }: FieldSource
   } else if (source === 'inferred') {
     label = 'Auto-filled';
     toneCls = 'bg-[#fff2fb] text-[#a11e83] border-[#f5e4f0]';
-    tooltip = inferredFrom ? `Filled by AI; based on ${inferredFrom}.` : 'Filled by AI.';
+    tooltip = inferredFrom
+      ? `Filled by AI; based on ${inferredFrom}.`
+      : 'Filled by AI.';
     Icon = WandSparkles;
-  } else if (source === 'database') {
+  } else if (source === 'record') {
     label = 'Client record';
     toneCls = 'bg-stone-50 text-stone-700 border-stone-200';
     tooltip = 'Filled in automatically from the client record.';
@@ -204,7 +222,14 @@ type SectionFooterProps = {
 // Sticky bottom bar inside the detail modal: Back | dots | Next/right slot.
 // `rightSlot` renders on the last section (typically a Submit or Done
 // button). On non-last sections, Next is shown automatically.
-export function SectionFooter({ current, sectionIds, onPrev, onNext, isLast, rightSlot }: SectionFooterProps) {
+export function SectionFooter({
+  current,
+  sectionIds,
+  onPrev,
+  onNext,
+  isLast,
+  rightSlot,
+}: SectionFooterProps) {
   return (
     <div className="px-5 py-4 border-t border-border grid grid-cols-3 items-center gap-3 bg-white sticky bottom-0">
       <button
@@ -235,7 +260,10 @@ export function SectionFooter({ current, sectionIds, onPrev, onNext, isLast, rig
 
 // Filled circle with a white check inside, matching the design mockup.
 // Used in success-state CTAs alongside primary-colored copy.
-export function CheckCircleFilled({ size = 16, className }: { size?: number; className?: string }) {
+export function CheckCircleFilled({
+  size = 16,
+  className,
+}: { size?: number; className?: string }) {
   return (
     <svg
       width={size}

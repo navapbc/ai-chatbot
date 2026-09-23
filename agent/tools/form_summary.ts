@@ -17,7 +17,11 @@ export default defineTool({
       z.object({
         field: z.string(),
         value: z.string().optional(),
-        source: z.enum(['caseworker', 'inferred', 'missing']),
+        source: z
+          .enum(['record', 'caseworker', 'inferred', 'missing'])
+          .describe(
+            '"record" = a labelled field from the participant JSON in the caseworker\'s opening message; "caseworker" = a value the caseworker typed later in this conversation, outside that record; "inferred" = you reasoned it from one of those; "missing" = could not be filled.',
+          ),
         inputType: z.enum(['select', 'radio', 'checkbox', 'text']).optional(),
         options: z.array(z.string()).optional(),
         required: z.boolean().optional(),

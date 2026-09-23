@@ -80,7 +80,20 @@ export const summaryFieldQuestions = (
       SUMMARY_VERDICTS,
     ),
     source_accurate: noul(
-      'The agent labelled this value\'s origin as `source_claimed_by_agent`, where "database" means it came from `participant_record`, "caseworker" means the caseworker supplied it in conversation, and "inferred" means the agent derived it. Is that label accurate?',
+      // The two trees spell the record-derived label differently — the Eve
+      // tools emit "record", the legacy tool still emits "database" (a name
+      // left over from the removed Apricot integration; there is no database,
+      // the record arrives inline in the caseworker's opening message). Both
+      // must be described here, or Jev judges one of them against the wrong
+      // definition.
+      //
+      // The "outside that record" clause is load-bearing. `participant_record`
+      // reaches the agent INSIDE the caseworker's first message, so without it
+      // Jev reads every record-derived value as "the caseworker supplied it"
+      // and rates an accurate label inaccurate. That was measured: across 25
+      // annotated fields, source_accurate never rose above 0.76, which is not
+      // a threshold anything can act on.
+      'The agent labelled this value\'s origin as `source_claimed_by_agent`, where "record" (also spelled "database") means it came from `participant_record` — the participant data handed to the agent in the caseworker\'s opening message — "caseworker" means the caseworker supplied it later in the conversation, outside that record, and "inferred" means the agent derived it from one of those. Is that label accurate?',
     ),
   },
 });
