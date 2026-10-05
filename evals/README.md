@@ -59,7 +59,18 @@ In the Braintrust dashboard, each experiment shows the mean across rows for ever
 | `claude-*` | `@ai-sdk/anthropic` (direct) | `ANTHROPIC_API_KEY` |
 | `gemini-*` | `@ai-sdk/google` | `GOOGLE_GENERATIVE_AI_API_KEY` |
 
-Default is `gpt-5-mini`. CI runs a 4-leg matrix in `.github/workflows/evals.yml` over `gpt-5.1` / `claude-opus-4-7` / `claude-opus-4-8` / `gemini-3-pro`. Each leg uploads to a distinct Braintrust experiment (the model id is suffixed via `evalExperimentName()` in `helpers.ts`).
+Default is `gpt-5-mini`. Each leg uploads to a distinct Braintrust experiment (the model id is suffixed via `evalExperimentName()` in `helpers.ts`).
+
+`.github/workflows/evals.yml` resolves its matrix at run time, so the set of models is not hardcoded in the job:
+
+| Trigger | Models |
+|---------|--------|
+| `pull_request` | `gpt-5.1` / `claude-opus-4-7` / `claude-opus-4-8` / `gemini-3-pro` — the per-PR regression set, kept small because every id is a full suite run |
+| `workflow_dispatch` | whatever you type in the **models** input (comma-separated). Defaults to the cost & quality sweep: `claude-opus-5-5,claude-sonnet-5-5,claude-opus-5,claude-sonnet-5,claude-haiku-4-5` |
+
+Run a sweep from the Actions tab → **Evals** → **Run workflow**. The provider for each leg is derived from the model-id prefix using the same rules as `getEvalModel()`, so adding a model to the input is all that is needed; an unrecognised id fails the matrix job rather than silently producing an empty run.
+
+A leg whose API key is missing **warns and skips on a `pull_request`** (fork PRs have no secrets, and failing them would be noise) but **fails on a `workflow_dispatch`** — a manual run exists to produce numbers, so a green check that produced none is worse than a red one. This means a green Evals check on a PR still does not by itself prove the evals ran; check the job log for `::warning::...skipping`.
 
 Production uses `claude-opus-4-7` via Vertex AI (see `lib/ai/providers.ts:17`). The CI matrix uses **direct Anthropic API** instead of Vertex for simpler secret management. Model behavior is identical between routes — only auth and rate-limit ceilings differ.
 
@@ -67,7 +78,9 @@ Production uses `claude-opus-4-7` via Vertex AI (see `lib/ai/providers.ts:17`). 
 
 Each suite logs the task agent's token usage (aggregated across all agent steps via `result.totalUsage`) to its Braintrust task span using the canonical metric names `prompt_tokens` / `completion_tokens` / `prompt_cached_tokens` — so they land in Braintrust's native token columns and `total_tokens` is auto-derived. A custom `estimated_cost_usd` metric is logged in the same `span.log` call (so it rides alongside the token metrics), computed from `evals/pricing.ts` for the active `EVAL_MODEL`. As a custom metric it does not appear in the CLI summary table — find it per-row in the experiment in the Braintrust UI. Only the system-under-test's usage is captured — LLM-as-judge scorer calls are excluded.
 
-The per-model rates in `evals/pricing.ts` are **estimates marked `TODO(verify)`** — confirm them against the provider pricing pages before trusting the dollar figures. For unpriced models the cost key is omitted (with `pricing_known: false` in metadata) so a missing price reads as "unknown", not "free". The helpers live in `helpers.ts` (`logResultUsage`, `logUsageAndCost`, `addUsage`).
+The per-model rates in `evals/pricing.ts` were verified against published provider pricing on 2026-09-15 and re-verified on 2026-10-05 (the OpenAI rows were not re-checked on the later pass — the pricing page returned HTTP 403 — so they still rest on the 2026-09-15 check). These are list prices and providers do change them, so re-check before putting a dollar figure in front of anyone. For unpriced models the cost key is omitted (with `pricing_known: false` in metadata) so a missing price reads as "unknown", not "free". The helpers live in `helpers.ts` (`logResultUsage`, `logUsageAndCost`, `addUsage`).
+
+Jev (TypeSafe) calls are costed separately. TypeSafe bills input tokens only — output tokens are free — so `jev-questions.eval.ts` logs `jev_estimated_cost_usd` / `jev_prompt_tokens` via `logJevUsageAndCost`, keyed off the model id Jev reports at runtime. It is kept out of `estimated_cost_usd` because Jev is never the `EVAL_MODEL`: pricing its tokens at the model-under-test's rate would overstate them several-fold.
 
 ## Registered scorers
 

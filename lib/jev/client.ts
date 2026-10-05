@@ -76,8 +76,25 @@ export const resetJevClientForTests = (): void => {
   client = undefined;
 };
 
+/** Token usage for one Jev request. TypeSafe bills input tokens only. */
+export type JevUsage = {
+  inputTokens: number;
+  outputTokens: number;
+};
+
 export type JevOutcome<Q extends Questions> =
-  | { ok: true; answers: SystemOneResult<Q>['answers']; model: string }
+  | {
+      ok: true;
+      answers: SystemOneResult<Q>['answers'];
+      model: string;
+      /**
+       * Token usage TypeSafe reported for this request. Only present on the
+       * success branch — a failed call bills nothing and has nothing to report,
+       * so callers that cost a run must handle its absence rather than
+       * defaulting to zero and silently under-counting a partial batch.
+       */
+      usage: JevUsage;
+    }
   | { ok: false; reason: string };
 
 /**
@@ -140,6 +157,10 @@ export async function askJev<const Q extends Questions>(args: {
         ok: true as const,
         answers: result.answers,
         model: result.model,
+        usage: {
+          inputTokens: result.usage.input_tokens,
+          outputTokens: result.usage.output_tokens,
+        },
       };
     } catch (error: unknown) {
       return {
