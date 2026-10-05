@@ -72,15 +72,6 @@ Run a sweep from the Actions tab → **Evals** → **Run workflow**. The provide
 
 A leg whose API key is missing **warns and skips on a `pull_request`** (fork PRs have no secrets, and failing them would be noise) but **fails on a `workflow_dispatch`** — a manual run exists to produce numbers, so a green check that produced none is worse than a red one. This means a green Evals check on a PR still does not by itself prove the evals ran; check the job log for `::warning::...skipping`.
 
-### The Jev suite in CI
-
-`jev-questions.eval.ts` needs `TYPESAFE_API_KEY` (a repo **secret**). `JEV_FEATURES` defaults to `all` in the workflow, so no repo variable is required — set one only to narrow which features run. Without the key the suite scores **null, not zero**, and the gate step says so explicitly; the other eleven suites are unaffected.
-
-Two things to know when reading the results:
-
-- **Jev is not model-dependent.** It always runs on its own model (`jev-1.13.0`), whatever `EVAL_MODEL` is. Its cost is reported separately as `jev_estimated_cost_usd`, never folded into `estimated_cost_usd`.
-- **It therefore runs once per matrix leg, producing one near-identical experiment per model** — `Jev Questions [claude-opus-5]`, `[claude-sonnet-5]`, `[claude-haiku-4-5]`. The model suffix comes from `evalExperimentName()` and does **not** mean Jev ran on that model; it only keeps concurrent legs from writing to the same experiment. Compare Jev results across *runs*, not across those three. Deduplicating this would mean running the suite in its own job outside the matrix.
-
 Production uses `claude-opus-4-7` via Vertex AI (see `lib/ai/providers.ts:17`). The CI matrix uses **direct Anthropic API** instead of Vertex for simpler secret management. Model behavior is identical between routes — only auth and rate-limit ceilings differ.
 
 ## Token usage & cost
