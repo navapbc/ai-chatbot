@@ -45,14 +45,18 @@ export const gapFieldQuestions = (participant: Participant, field: string) => ({
 });
 
 /** Verdicts for one row of the form-summary card. */
+// NOTE: these wordings changed when `caseworker_messages` was added to the
+// state. The keys are unchanged, but a distribution measured before that
+// change is NOT comparable with one measured after — `grounded` and
+// `caseworker_supplied` both became checkable rather than guessable.
 export const SUMMARY_VERDICTS = {
   grounded:
-    'The value appears in the participant record, or follows directly from it.',
+    "The value appears in the participant record, or follows BY INFERENCE from the record or from the caseworker's instructions (for example the applicant's age from their date of birth, or who the application is for when the caseworker said whom to apply for). A value the caseworker stated outright is `caseworker_supplied`, not this.",
   caseworker_supplied:
-    'The value is not in the record and reads as something the caseworker provided during the conversation.',
+    'The value is not in the record, and it appears in `caseworker_messages` — the caseworker actually supplied it.',
   contradicts_record: 'The record contains a different value for this field.',
   unsupported:
-    'The value is not in the record and does not follow from it — it appears to have been invented.',
+    'The value is in neither the record nor `caseworker_messages`, and does not follow from either — it appears to have been invented. A default answer still counts: an unticked box reported as "None", or a "No" nobody stated or implied, is invented unless something supports it.',
 } as const;
 
 /**
@@ -67,16 +71,22 @@ export const SUMMARY_VERDICTS = {
 export const summaryFieldQuestions = (
   participant: Participant,
   field: { field: string; value?: string; source: string },
+  // The caseworker's own turns, record JSON already stripped
+  // (lib/jev/participant.ts). Optional so a caller that cannot reach the
+  // conversation — the form_review subagent, which inherits no state — still
+  // gets the record-only judgment rather than an error.
+  caseworkerMessages: readonly string[] = [],
 ) => ({
   state: {
     form_field: field.field,
     value_entered: field.value ?? '',
     source_claimed_by_agent: field.source,
     participant_record: participant as unknown,
+    caseworker_messages: caseworkerMessages,
   },
   questions: {
     verdict: choice(
-      'The agent entered `value_entered` into `form_field`. Judge it against `participant_record`.',
+      'The agent entered `value_entered` into `form_field`. Judge it against `participant_record` and `caseworker_messages` together — the record is the data the caseworker handed over, and `caseworker_messages` is everything they said, including the task they set and any answers they gave later.',
       SUMMARY_VERDICTS,
     ),
     source_accurate: noul(
@@ -93,7 +103,7 @@ export const summaryFieldQuestions = (
       // and rates an accurate label inaccurate. That was measured: across 25
       // annotated fields, source_accurate never rose above 0.76, which is not
       // a threshold anything can act on.
-      'The agent labelled this value\'s origin as `source_claimed_by_agent`, where "record" (also spelled "database") means it came from `participant_record` — the participant data handed to the agent in the caseworker\'s opening message — "caseworker" means the caseworker supplied it later in the conversation, outside that record, and "inferred" means the agent derived it from one of those. Is that label accurate?',
+      'The agent labelled this value\'s origin as `source_claimed_by_agent`, where "record" (also spelled "database") means it came from `participant_record` — the participant data handed to the agent in the caseworker\'s opening message — "caseworker" means the caseworker stated it in `caseworker_messages` rather than in that record, and "inferred" means the agent derived it from one of those. Is that label accurate?',
     ),
   },
 });

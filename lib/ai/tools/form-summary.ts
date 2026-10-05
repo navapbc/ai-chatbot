@@ -45,8 +45,17 @@ const fieldSchema = z.object({
  * the `source` label the agent attached to it (lib/jev/enrich.ts). Pass null —
  * or leave the `summary-check` feature off — and the agent's fields are
  * returned untouched.
+ *
+ * `caseworkerMessages` is what the caseworker actually said, record JSON
+ * stripped. It is what lets Jev separate an inference drawn from the task
+ * ("apply for the participant below") from an invention, and verify a
+ * `caseworker` label instead of guessing at it. Omit it and the judgment
+ * falls back to record-only.
  */
-export const createFormSummaryTool = (participant: Participant | null) =>
+export const createFormSummaryTool = (
+  participant: Participant | null,
+  caseworkerMessages: readonly string[] = [],
+) =>
   tool({
     description:
       'Display a form summary card showing what was filled in and where each value came from. Call this INSTEAD of writing a summary message at the end of form completion. List fields in the order they appear on the original form. NEVER include CAPTCHA, reCAPTCHA, Turnstile, "I\'m not a robot", or any bot-challenge widget — they are not form fields. Also exclude submit buttons, hidden inputs, and decorative text. The card already displays all information — do NOT write any text listing the fields before or after calling this tool. Just call the tool, then follow with one short sentence like "Please review and submit when ready."',
@@ -69,6 +78,7 @@ export const createFormSummaryTool = (participant: Participant | null) =>
       ...input,
       fields: await annotateSummaryFields({
         participant,
+        caseworkerMessages,
         fields: input.fields,
         signal: abortSignal,
       }),

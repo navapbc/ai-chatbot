@@ -38,7 +38,10 @@ import {
   getCurrentDateString,
 } from '@/lib/ai/prompts/web-automation';
 import { readReference } from '@/lib/ai/tools/read-reference';
-import { extractParticipant } from '@/lib/jev/participant';
+import {
+  extractCaseworkerMessages,
+  extractParticipant,
+} from '@/lib/jev/participant';
 import { createMessageCompressor } from '@/lib/ai/context-compression';
 import { registerChatAbort, clearChatAbort } from '@/lib/chat-abort-registry';
 import { logAgentStep } from '@/lib/observability/browser-telemetry';
@@ -175,6 +178,11 @@ export async function POST(request: Request) {
         // be parsed back out to be handed to a tool. Null is normal — a chat
         // with no record simply gets the pre-Jev behavior everywhere.
         const participant = extractParticipant(initialModelMessages);
+        // What the caseworker actually said, record JSON stripped. Jev needs
+        // it to tell an inference drawn from the task apart from an invention
+        // — see lib/jev/participant.ts.
+        const caseworkerMessages =
+          extractCaseworkerMessages(initialModelMessages);
 
         // One compressor instance per request; its cache persists across all
         // prepareStep calls so generateText is not re-fired on every step.
@@ -213,7 +221,7 @@ export async function POST(request: Request) {
           ],
           tools: {
             gapAnalysis: createGapAnalysisTool(participant),
-            formSummary: createFormSummaryTool(participant),
+            formSummary: createFormSummaryTool(participant, caseworkerMessages),
             resolveFieldValue: createResolveFieldValueTool(participant),
             actionLabel,
             browser: createBrowserTool(sessionId, session.user.id),

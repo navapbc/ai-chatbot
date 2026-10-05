@@ -1,7 +1,7 @@
 import { defineTool } from 'eve/tools';
 import { z } from 'zod';
 import { annotateSummaryFields } from '@/lib/jev/enrich';
-import { currentParticipant } from '../lib/jev';
+import { currentCaseworkerMessages, currentParticipant } from '../lib/jev';
 
 // Returns validated structured data for the form-summary card. The interactive
 // card RENDER is wired to the chat UI in SP-B; standalone this tool's job is to
@@ -35,6 +35,7 @@ export default defineTool({
     // state (agent/hooks/participant.ts); absent it, nothing is annotated.
     const annotated = await annotateSummaryFields({
       participant: currentParticipant(),
+      caseworkerMessages: currentCaseworkerMessages(),
       fields,
       signal: ctx?.abortSignal,
     });

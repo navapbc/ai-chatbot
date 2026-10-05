@@ -54,9 +54,20 @@ const looksLikeParticipant = (value: unknown): value is Participant => {
  * trailing prose. Quote and escape state are tracked so a brace inside a
  * string value (an address, a note) does not end the scan early.
  */
-export const extractParticipantFromText = (
+export const extractParticipantFromText = (text: string): Participant | null =>
+  findParticipantSpan(text)?.participant ?? null;
+
+/**
+ * Same scan, but also reporting where the record sat in the text.
+ *
+ * The span is what lets `extractCaseworkerMessages` hand Jev the caseworker's
+ * own words WITHOUT a second copy of the record: the record already travels
+ * as `participant_record`, and repeating it inside the message text would
+ * both waste the request and let Jev double-count it as corroboration.
+ */
+export const findParticipantSpan = (
   text: string,
-): Participant | null => {
+): { participant: Participant; start: number; end: number } | null => {
   for (
     let start = text.indexOf('{');
     start !== -1;
@@ -80,7 +91,9 @@ export const extractParticipantFromText = (
         if (depth === 0) {
           try {
             const parsed = JSON.parse(text.slice(start, i + 1));
-            if (looksLikeParticipant(parsed)) return parsed;
+            if (looksLikeParticipant(parsed)) {
+              return { participant: parsed, start, end: i + 1 };
+            }
           } catch {
             // Not JSON, or not complete — try the next `{`.
           }
@@ -108,4 +121,61 @@ export const extractParticipant = (
     if (found) return found;
   }
   return null;
+};
+
+/**
+ * Total characters of caseworker text handed to Jev, newest-first.
+ *
+ * These messages ride on EVERY summary row's request (~25 per card), so an
+ * unbounded transcript multiplies cost and latency by the row count. The cap
+ * keeps the recent turns — the answers to a gap analysis, which is exactly
+ * what `caseworker_supplied` has to be checked against — and drops the oldest
+ * first.
+ */
+export const CASEWORKER_CONTEXT_CHAR_BUDGET = 8000;
+
+/** One caseworker turn, with the participant record stripped out. */
+export const stripParticipantRecord = (text: string): string => {
+  const span = findParticipantSpan(text);
+  if (!span) return text.trim();
+  return (text.slice(0, span.start) + text.slice(span.end))
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+};
+
+/**
+ * The caseworker's own words, in order, for Jev to check a value against.
+ *
+ * Why this exists: `summaryFieldQuestions` used to receive only
+ * `participant_record`, so Jev could neither validate an inference drawn from
+ * the caseworker's instructions nor verify that a `caseworker` label matched
+ * something actually said. Measured on run wrun_01M37CZX: of six values Jev
+ * called `unsupported`, two were sound inferences it had no way to see —
+ * "applying for yourself" (the task names the participant as the applicant)
+ * and "minor adopted child = No" (age 26, derivable from the record's DOB but
+ * only once you know the question is about the applicant).
+ *
+ * Assistant turns are deliberately excluded: the agent's own account of what
+ * it did is not evidence that the caseworker said it.
+ */
+export const extractCaseworkerMessages = (
+  messages: readonly ScannableMessage[] | undefined,
+  charBudget: number = CASEWORKER_CONTEXT_CHAR_BUDGET,
+): string[] => {
+  if (!messages) return [];
+  const all = messages
+    .filter((m) => m?.role === 'user')
+    .map((m) => stripParticipantRecord(textOf(m.content)))
+    .filter((t) => t.length > 0);
+
+  // Walk backwards so the cap drops the OLDEST turns, then restore order.
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = all.length - 1; i >= 0; i--) {
+    const next = used + all[i].length;
+    if (kept.length > 0 && next > charBudget) break;
+    kept.push(all[i]);
+    used = next;
+  }
+  return kept.reverse();
 };

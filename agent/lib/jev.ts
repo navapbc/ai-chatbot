@@ -7,6 +7,7 @@
 // a subagent simply gets un-annotated rows rather than an error.
 
 import type { Participant } from '@/lib/data/participants';
+import { caseworkerMessagesState } from './conversation-state';
 import { participantState } from './participant-state';
 
 export const currentParticipant = (): Participant | null => {
@@ -14,5 +15,20 @@ export const currentParticipant = (): Participant | null => {
     return participantState.get();
   } catch {
     return null;
+  }
+};
+
+/**
+ * The caseworker's own turns for this session, or [] when unavailable.
+ *
+ * Same try/catch contract as `currentParticipant`: a subagent inherits no
+ * state, and `annotateSummaryFields` treats an empty list as "judge against
+ * the record alone" rather than an error.
+ */
+export const currentCaseworkerMessages = (): string[] => {
+  try {
+    return caseworkerMessagesState.get().map((t) => t.text);
+  } catch {
+    return [];
   }
 };

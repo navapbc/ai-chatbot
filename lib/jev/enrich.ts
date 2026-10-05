@@ -136,9 +136,18 @@ export const annotateSummaryFields = async <
 >(args: {
   participant: Participant | null;
   fields: T[];
+  /**
+   * The caseworker's own turns, record JSON stripped. Without these Jev sees
+   * only the record, so it cannot tell an inference from the caseworker's
+   * instructions apart from an invention, and has to guess whether a
+   * `caseworker` label is true. Optional: a caller that cannot reach the
+   * conversation gets the record-only judgment, which is what the
+   * form_review subagent does (it inherits no session state).
+   */
+  caseworkerMessages?: readonly string[];
   signal?: AbortSignal;
 }): Promise<(T & { jev?: SummaryFieldAnnotation })[]> => {
-  const { participant, fields, signal } = args;
+  const { participant, fields, caseworkerMessages, signal } = args;
   const enabled = Boolean(participant) && isJevEnabled('summary-check');
 
   // rowsAttempted counts only the rows this function would actually ask
@@ -164,7 +173,11 @@ export const annotateSummaryFields = async <
 
       return mapCapped(fields, async (row) => {
         if (row.source === 'missing' || !row.value) return row;
-        const { state, questions } = summaryFieldQuestions(participant, row);
+        const { state, questions } = summaryFieldQuestions(
+          participant,
+          row,
+          caseworkerMessages,
+        );
         const result = await askJev({
           state,
           questions,
