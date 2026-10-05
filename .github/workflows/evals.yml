@@ -36,10 +36,17 @@ jobs:
         id: build
         env:
           # workflow_dispatch supplies `inputs.models`; a pull_request does not,
-          # so it falls through to the per-PR regression set. Keep that set
+          # so it falls through to the per-PR set below. Keep that set
           # deliberately small — every id here is a full suite run on every PR
           # that touches lib/ai/**, evals/** or the chat route.
-          MODELS: ${{ inputs.models || 'gpt-5.1,claude-opus-4-7,claude-opus-4-8,gemini-3-pro' }}
+          #
+          # These are the three models the ASP-1005 cost & quality comparison is
+          # being decided on, so they are what PRs should be measured against.
+          # Note the tradeoff: the previous set spanned three providers, and this
+          # one is Anthropic-only, so an OpenAI- or Google-specific regression
+          # will no longer show up on a PR. Run those from the Actions tab when
+          # that matters — `gpt-5.1,gemini-3-pro` in the models input.
+          MODELS: ${{ inputs.models || 'claude-opus-5,claude-sonnet-5,claude-haiku-4-5' }}
         run: |
           set -euo pipefail
           legs='[]'

@@ -65,7 +65,7 @@ Default is `gpt-5-mini`. Each leg uploads to a distinct Braintrust experiment (t
 
 | Trigger | Models |
 |---------|--------|
-| `pull_request` | `gpt-5.1` / `claude-opus-4-7` / `claude-opus-4-8` / `gemini-3-pro` — the per-PR regression set, kept small because every id is a full suite run |
+| `pull_request` | `claude-opus-5` / `claude-sonnet-5` / `claude-haiku-4-5` — the three models the ASP-1005 comparison is being decided on. Kept small because every id is a full suite run. Anthropic-only, so an OpenAI- or Google-specific regression will not surface on a PR; run `gpt-5.1,gemini-3-pro` from the Actions tab when that matters |
 | `workflow_dispatch` | whatever you type in the **models** input (comma-separated). Defaults to the cost & quality sweep: `claude-opus-5-5,claude-sonnet-5-5,claude-opus-5,claude-sonnet-5,claude-haiku-4-5` |
 
 Run a sweep from the Actions tab → **Evals** → **Run workflow**. The provider for each leg is derived from the model-id prefix using the same rules as `getEvalModel()`, so adding a model to the input is all that is needed; an unrecognised id fails the matrix job rather than silently producing an empty run.
