@@ -90,7 +90,10 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
       TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-      JEV_FEATURES: ${{ vars.JEV_FEATURES }}
+      # Default to `all` so the Jev suite runs without anyone having to create a
+      # repo variable first — TYPESAFE_API_KEY (a secret) is then the only
+      # prerequisite. Set a JEV_FEATURES repo variable to narrow it.
+      JEV_FEATURES: ${{ vars.JEV_FEATURES || 'all' }}
       EVAL_MODEL: ${{ matrix.model }}
       EVAL_PROVIDER: ${{ matrix.provider }}
       EVENT_NAME: ${{ github.event_name }}
@@ -120,6 +123,15 @@ jobs:
             anthropic) [ -n "${ANTHROPIC_API_KEY:-}" ] || miss ANTHROPIC_API_KEY ;;
             google)    [ -n "${GOOGLE_GENERATIVE_AI_API_KEY:-}" ] || miss GOOGLE_GENERATIVE_AI_API_KEY ;;
           esac
+          # Jev is one suite of twelve and is not model-dependent, so a missing
+          # key must not fail the leg — the other eleven are still valid. Say so
+          # here anyway: buried in the run log, "scores will be null" is easy to
+          # read as "Jev scored badly" instead of "Jev never ran".
+          if [ -z "${TYPESAFE_API_KEY:-}" ]; then
+            echo "::warning::TYPESAFE_API_KEY is not configured — the jev-questions suite will score null, not zero. Every other suite is unaffected."
+          else
+            echo "Jev enabled for this leg (JEV_FEATURES=$JEV_FEATURES)."
+          fi
           echo "run=true" >> "$GITHUB_OUTPUT"
 
       - uses: pnpm/action-setup@v4
