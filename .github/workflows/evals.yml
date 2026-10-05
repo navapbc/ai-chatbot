@@ -81,6 +81,17 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      # One leg at a time. Run in parallel, three eval legs hold three runners
+      # for 5-14 minutes each and starve the small jobs queued behind them: on
+      # run 37365986978 the `Validate Pull Request` job sat 37 minutes without
+      # ever being assigned a runner and was cancelled with zero steps executed,
+      # and `Validate YAML` waited 29 minutes to do 9 seconds of work.
+      #
+      # This trades eval wall-clock (~31 min instead of ~14) for not blocking
+      # every other check on the PR. `timeout-minutes: 30` above is per job, so
+      # serialising does not bring it into play. The real fix is more runner
+      # capacity; until then this keeps the repo's fast checks fast.
+      max-parallel: 1
       matrix:
         include: ${{ fromJSON(needs.resolve-matrix.outputs.legs) }}
     env:
