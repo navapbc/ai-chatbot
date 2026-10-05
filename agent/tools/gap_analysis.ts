@@ -1,5 +1,7 @@
 import { defineTool } from 'eve/tools';
 import { z } from 'zod';
+import { annotateGapFields } from '@/lib/jev/enrich';
+import { currentParticipant } from '../lib/jev';
 
 // Returns validated structured data for the gap-analysis card. The interactive
 // card RENDER is wired to the chat UI in SP-B; standalone this tool's job is to
@@ -23,8 +25,30 @@ export default defineTool({
       }),
     ),
   }),
-  async execute({ formName, missingFields }) {
+  async execute({ formName, missingFields }, ctx) {
     // Validates and surfaces the missing-field data; card render is SP-B.
-    return { rendered: true, formName, missingCount: missingFields.length };
+    //
+    // `jev` annotates each row with whether the record already answers it.
+    // Rows are never dropped — see lib/jev/enrich.ts for why. The participant
+    // comes from session state, populated by agent/hooks/participant.ts; when
+    // it is absent (no record in the conversation, or a subagent, which
+    // inherits no state) the rows come back unannotated and this behaves
+    // exactly as before.
+    const annotated = await annotateGapFields({
+      participant: currentParticipant(),
+      fields: missingFields,
+      signal: ctx?.abortSignal,
+    });
+    // Returns the rows, not just a count, so the annotation lands under
+    // `missingFields[].jev` — the same path the legacy route emits. Trace
+    // queries over verdict distributions then work across both trees, and an
+    // un-annotated row stays visible (no `jev` key) rather than vanishing
+    // from a filtered list.
+    return {
+      rendered: true,
+      formName,
+      missingCount: missingFields.length,
+      missingFields: annotated,
+    };
   },
 });

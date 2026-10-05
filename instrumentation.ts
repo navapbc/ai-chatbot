@@ -10,11 +10,25 @@ import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
 import { Compute } from 'google-auth-library';
 import {
   BatchSpanProcessor,
+  ConsoleSpanExporter,
+  SimpleSpanProcessor,
   type SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import { registerTelemetry } from 'ai';
 import { OpenTelemetry } from '@ai-sdk/otel';
 import { TRACER_NAME as BROWSER_TRACER } from '@/lib/observability/browser-telemetry';
+import { TRACER_NAME as JEV_TRACER } from '@/lib/jev/telemetry';
+
+/**
+ * Tracer scopes kept in addition to the AI spans.
+ *
+ * `filterAISpans: true` drops everything that is not an AI-SDK span, so a
+ * module that creates its own tracer has to be named here or its spans are
+ * silently discarded. Adding a tracer elsewhere in the codebase means adding
+ * it to this set — in this file AND in agent/instrumentation.ts, which runs in
+ * the separate Eve process.
+ */
+const KEEP_SCOPES = new Set([BROWSER_TRACER, JEV_TRACER]);
 
 /**
  * Cloud Trace over OTLP. Replaces the deprecated cloud-trace-exporter, which
@@ -61,16 +75,26 @@ export function register() {
     spanProcessors.push(
       new BatchSpanProcessor(
         new BraintrustExporter({
-          // Keep the AI spans and the browser tracer's spans. Drop the rest.
+          // Keep the AI spans, plus the scopes named in KEEP_SCOPES.
           filterAISpans: true,
           customFilter: (span) =>
-            span.instrumentationScope?.name === BROWSER_TRACER
+            KEEP_SCOPES.has(span.instrumentationScope?.name ?? '')
               ? true
               : undefined,
         }),
       ),
     );
     enabled.push('braintrust');
+  }
+
+  // Local development: print every span to the terminal instead of (or as
+  // well as) shipping it. Unlike the two exporters above this needs no key and
+  // no network, so it is the one way to see spans in an environment with
+  // neither. SimpleSpanProcessor, not Batch: the point is to see the span as
+  // soon as it ends. Noisy by design — leave it off unless you are reading it.
+  if (process.env.OTEL_CONSOLE_SPANS) {
+    spanProcessors.push(new SimpleSpanProcessor(new ConsoleSpanExporter()));
+    enabled.push('console');
   }
 
   // Gate on GOOGLE_CLOUD_PROJECT (set in terraform), not K_SERVICE — the
