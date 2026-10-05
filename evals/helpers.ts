@@ -4,7 +4,7 @@ import { google } from "@ai-sdk/google";
 import { openai } from "@ai-sdk/openai";
 import type { Span } from "braintrust";
 import { z } from "zod";
-import { browserInputSchema } from "@/lib/ai/tools/browser";
+import { browserInputSchema } from "@/lib/ai/tools/browser-schema";
 import { computeCostUsd, type UsageTotals } from "./pricing";
 
 /**

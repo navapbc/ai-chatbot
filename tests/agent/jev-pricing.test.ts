@@ -56,11 +56,34 @@ describe('current-generation Anthropic rows', () => {
     expect(sonnet55.cachedInput).toBe(0.2);
   });
 
-  // NOTE: logJevUsageAndCost's `::warning::` on an unpriced Jev model is not
-  // unit-tested here — evals/helpers.ts reaches `server-only` via
-  // lib/ai/tools/browser, so it cannot be imported in node mode (the same
-  // constraint CLAUDE.md describes for lib/jev/*). The condition that triggers
-  // the warning is what the test below pins.
+  // This test doubles as the regression guard for the `server-only` import
+  // chain: evals/helpers.ts used to reach it via lib/ai/tools/browser, which
+  // made every eval file fail to compile under `braintrust eval`. If anyone
+  // reintroduces that edge, this import throws and the test goes red here
+  // rather than in CI after a key is finally configured.
+  it('warns loudly when a Jev model has no pricing row', async () => {
+    const { logJevUsageAndCost } = await import('@/evals/helpers');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logged: Array<Record<string, unknown>> = [];
+    const span = {
+      log: (e: Record<string, unknown>) => logged.push(e),
+    } as unknown as Parameters<typeof logJevUsageAndCost>[0];
+
+    logJevUsageAndCost(span, 'jev-9.9.9', {
+      inputTokens: 100,
+      outputTokens: 5,
+    });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('jev-9.9.9'));
+    const metrics = logged[0].metrics as Record<string, number>;
+    expect(metrics).not.toHaveProperty('jev_estimated_cost_usd');
+    expect(metrics.jev_prompt_tokens).toBe(100);
+    expect(
+      (logged[0].metadata as Record<string, unknown>).jev_pricing_known,
+    ).toBe(false);
+    warn.mockRestore();
+  });
+
   it('still reports unknown models as unpriced rather than free', () => {
     const { costUsd, pricingKnown } = computeCostUsd(
       'not-a-model',
