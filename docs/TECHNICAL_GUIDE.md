@@ -218,8 +218,6 @@ Alongside the legacy `streamText` loop, this repo also defines a second agent us
 | `checkSubmitGate` | Checks whether the form's submit control is actually clickable (handles Turnstile-style gates) |
 | `readReference` | Reads a markdown reference file on demand |
 
-`lib/ai/tools/apricot/` and `lib/models/apricot-models.ts` are an earlier client-database integration that isn't wired into any route today (kept in place rather than deleted, in case a similar integration is needed again — see [Adding a New AI Tool](#adding-a-new-ai-tool) for the current pattern instead).
-
 **Eve path** (`agent/tools/`, `agent/subagents/*/tools/`) — separate implementations of most of the same capabilities, plus a `defineState`-based `update_working_memory` prototype tool. Not shared code with the legacy tools above; see [The Eve Agent (Opt-In)](#the-eve-agent-opt-in).
 
 Participant data itself isn't a tool call — `lib/data/participants.ts` is read directly and its data is folded into the caseworker's first chat message (`buildApplicationPrompt`), so the agent has it inline rather than fetching it mid-conversation.
