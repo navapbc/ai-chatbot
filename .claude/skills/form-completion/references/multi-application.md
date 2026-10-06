@@ -187,22 +187,9 @@ test), and two writers on one tab put text in each other's fields.
 
 ### 3. Dispatch (Orchestrator)
 
-**Select the model for each fill agent.** The Agent tool takes a `model` parameter.
-Without it, the agent inherits the orchestrator model, which costs approximately ten
-times more for each input token. The fill agents read the large DOM outputs, so the
-model choice controls most of the run cost.
-
-| Agent | Model parameter | Reason |
-|---|---|---|
-| Fill agent with a playbook (warm path) | `haiku` | The playbook gives the exact selectors and methods. The fill is checklist work. |
-| Fill agent with no playbook (cold start) | `sonnet` | Discovery needs judgment: label mapping, gate polarity. |
-| Scout | `sonnet` | It must find the real form behind menus and interstitial pages. |
-| Scribe | `sonnet` | It writes the knowledge files that later runs depend on. |
-
-A small-model fill agent stays safe because of the BLOCKED rule: when the playbook
-does not cover a situation, the agent returns BLOCKED and does not improvise. The
-orchestrator supplies the judgment. If a small-model agent returns wrong fills or
-invented values, record it and use `sonnet` for that path.
+**Select the model for each agent.** See *Model for each dispatched agent* in `SKILL.md`.
+That guidance applies to every run that dispatches an agent, not only to multi-application
+runs, so it lives in `SKILL.md` rather than here.
 
 Start all the ready fill agents in ONE message (parallel tool calls). Each fill
 agent prompt contains:
