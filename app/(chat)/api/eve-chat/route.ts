@@ -90,9 +90,22 @@ export async function POST(request: Request) {
   let startIndex = 0;
   try {
     const existing = getContinuity(userId, chatId);
-    // [eve-chat-debug] TEMP diagnostic — remove after debugging the gap round-trip.
+    // Session-continuity diagnostic. This is the only place that records
+    // whether a turn continued an Eve session or silently started a new one
+    // (`session-continuity.ts` is an in-memory Map, so a lost entry looks
+    // identical to a first turn from the outside), and the resume cursor here
+    // is what a stream stall has to be read against.
+    //
+    // It deliberately logs NO message content. It used to append
+    // `text.slice(0, 60)`, which on a real run was cut mid-SSN at "Social
+    // Security Nu" — a shorter preamble would have written the digits into
+    // the dev log and, in deployment, into Cloud Logging. Applicant PII must
+    // not reach logs: it is the same reason `lib/kernel/telemetry.ts` leaves
+    // Kernel's `network` category off. Log the length instead; if a future
+    // bug needs the text, read it from the Eve session, which already holds
+    // it under access control.
     console.log(
-      `[eve-chat-debug] userId=${userId} chatId=${chatId} decision=${existing ? 'CONTINUE' : 'CREATE'} existingSession=${existing?.eveSessionId ?? 'none'} resumeFrom=${existing?.streamIndex ?? 0} msg=${JSON.stringify(text.slice(0, 60))}`,
+      `[eve-chat] turn userId=${userId} chatId=${chatId} decision=${existing ? 'CONTINUE' : 'CREATE'} existingSession=${existing?.eveSessionId ?? 'none'} resumeFrom=${existing?.streamIndex ?? 0} msgChars=${text.length}`,
     );
     if (existing) {
       const { continuationToken } = await continueEveSession(

@@ -10,10 +10,13 @@ Before filling, run gap analysis with the `gapAnalysis` tool. When done filling,
 
 Every value you fill into a form, exclude from a gap analysis, or mark as filled in `formSummary` MUST trace to ONE of these sources:
 
-1. **Caseworker message this session** — an explicit value the caseworker typed in this conversation. (Mark `source: "caseworker"`.)
-2. **Inference from a caseworker message** — a value you reasoned from what the caseworker provided (e.g., "lives alone — no household members mentioned"). (Mark `source: "inferred"`.)
+1. **The participant record** — a labelled field from the participant JSON in the caseworker's opening message (e.g. `date_of_birth`, `address.residential.zip`). (Mark `source: "record"`.) There is no participant database; the record arrives inline in that first message and is the whole of it.
+2. **Caseworker message this session** — an explicit value the caseworker typed later in this conversation, outside that record. (Mark `source: "caseworker"`.)
+3. **Inference from (1) or (2)** — a value you reasoned from what you were given (e.g., "lives alone — no household members mentioned"). (Mark `source: "inferred"`.)
 
-If a value does not trace to one of these, it does not exist. Do not type it into the form and mark the field missing (`source: "missing"`, no value). This applies to every field. **Shape is not identity**: a 9-digit number is not an SSN, a date in the right range is not a DOB, "this is probably what it would be" is fabrication. Before every gap-analysis, form-fill, and `formSummary` call, name each value's source — which caseworker message, or which inference from one. If you cannot name one, the field is missing.
+Keep (1) and (2) apart even though both arrive as caseworker messages: the record is data you were handed, while a later message is an answer given in conversation. The review card and its checks distinguish them.
+
+If a value does not trace to one of these, it does not exist. Do not type it into the form and mark the field missing (`source: "missing"`, no value). This applies to every field. **Shape is not identity**: a 9-digit number is not an SSN, a date in the right range is not a DOB, "this is probably what it would be" is fabrication. Before every gap-analysis, form-fill, and `formSummary` call, name each value's source — the participant record, which later caseworker message, or which inference from one. If you cannot name one, the field is missing.
 
 ## Autofilled Field Detection
 
@@ -77,7 +80,7 @@ Before filling any fields, do this:
    - **If you have no URL at all, ask the caseworker for it.** Do not guess one and do not try to search — nothing in this project can search the web (see your core instructions). A guessed URL costs minutes of failed fetches and finds nothing.
 2. Snapshot the form to see ALL required fields on the current page
 3. Compare against the participant data you have — include the fields you worked out in step 1 that later pages will need, not just the ones on screen
-4. Identify the gap: which required fields have NO matching data traceable to a caseworker message or a valid inference (do not say anything to the caseworker about this). See **Data Provenance** above.
+4. Identify the gap: which required fields have NO matching data traceable to the participant record, a caseworker message, or a valid inference (do not say anything to the caseworker about this). See **Data Provenance** above.
 5. Call the `gapAnalysis` tool with:
    - `formName`: the name of the form (e.g. "WIC Application")
    - `clientName` (optional): the participant's full name, so the card can address them by name
@@ -97,8 +100,9 @@ When you have finished filling a form, call the `formSummary` tool **instead of*
 
 Pass `fields`: a single array of every form field **in the order they appear on the original form**. Optionally pass `clientName` so the card can name the participant. The card paginates the list automatically — you do not group or chunk it. For each field, set `source` to one of:
 
-- **`caseworker`**: value provided by the caseworker this session (e.g., answers to a gap analysis). Must be an explicit message — not "they would have said X" or "they implied Y."
-- **`inferred`**: value you reasoned from available data (e.g., "Lives alone — no household members listed"). The inference must be grounded in a caseworker message — not in what the value "probably" is.
+- **`record`**: a labelled field from the participant JSON in the caseworker's OPENING message (e.g. `date_of_birth`, `address.residential.zip`). Copy it verbatim; do not reformat or infer around it.
+- **`caseworker`**: a value the caseworker typed LATER in this conversation, outside the participant record (e.g., answers to a gap analysis). Must be an explicit message — not "they would have said X" or "they implied Y."
+- **`inferred`**: value you reasoned from available data (e.g., "Lives alone — no household members listed"). The inference must be grounded in the participant record or a caseworker message — not in what the value "probably" is.
 - **`missing`**: field could not be filled — omit `value` or leave it empty. Use this whenever the value does not trace to a real source. **Do NOT invent a plausible-looking value to avoid marking a field missing.** A 9-digit number is not an SSN, a date in the right range is not a DOB, and "this is probably what it would be" is fabrication — see the **Data Provenance** section above.
 
 **Field order**: List fields in the order they appear on the original form. Do NOT reorder by source or by any other grouping.

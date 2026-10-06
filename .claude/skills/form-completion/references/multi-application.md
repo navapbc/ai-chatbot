@@ -194,23 +194,42 @@ model choice controls most of the run cost.
 
 | Agent | Model parameter | Reason |
 |---|---|---|
-| Fill agent with a playbook (warm path) | `haiku` | The playbook gives the exact selectors and methods. The fill is checklist work. |
+| Fill agent with a playbook (warm path) | `sonnet` | The playbook gives the exact selectors and methods, but a `haiku` agent measured worse (see below). Use `haiku` only once the site's sequence is a script, not prose to interpret. |
 | Fill agent with no playbook (cold start) | `sonnet` | Discovery needs judgment: label mapping, gate polarity. |
 | Scout | `sonnet` | It must find the real form behind menus and interstitial pages. |
 | Scribe | `sonnet` | It writes the knowledge files that later runs depend on. |
 
-The BLOCKED rule is what is supposed to keep a small-model fill agent safe: when the
-playbook does not cover a situation, the agent returns BLOCKED and does not improvise.
+**Why the warm path defaults to `sonnet`, not `haiku`.** Measured on 2026-09-02, one
+warm fill with a `sonnet` orchestrator:
 
-**Measured 2026-09-02, that did not happen.** A `haiku` fill agent on a form whose playbook
-documented every field, including the awkward one, took 135 browser commands — 56 of them
-whole-page snapshots — re-opened the form 6 times, reported "Blocked Fields: None", and
-returned a site fact that was false. It never escalated. The rules above exist because the
-BLOCKED rule as written only covered a missing *value*; a documented method that would not
-work was not covered, so the agent explored instead of stopping.
+| Configuration | Cost |
+|---|---|
+| Single `sonnet` agent does the whole job | $1.54 |
+| `sonnet` orchestrator + `haiku` fill agent | $2.34 |
+
+The `haiku` fill agent issued 135 browser commands (126 of them verification, 56 of
+those whole-page snapshots) and re-opened the form 6 times. It read more DOM than the
+`sonnet` run, so the lower rate per token did not pay for it. The orchestrator's own
+cost barely moved ($1.24 against $1.54), because intake, the freshness probe,
+provenance, and supervision do not shrink when the filling is handed off.
+
+Caveats: n=1 for each configuration, and two identical cold runs cost $1.59 and
+$3.04, so treat the figures as order-of-magnitude. This design is for parallel
+multi-application runs. Applied to one form you pay for two contexts and get no
+parallelism. The figures do not show the design is wrong: its value is throughput and
+isolation, not unit cost.
+
+The BLOCKED rule (the agent returns BLOCKED when the playbook does not cover a
+situation, and does not improvise) is what is supposed to limit what a small-model agent
+can get wrong. In the same 2026-09-02 run it did not: the `haiku` agent reported "Blocked
+Fields: None", never escalated, and returned a site fact that was false. The rule as
+written only covered a missing *value*; a documented method that would not work was not
+covered, so the agent explored instead of stopping. The fill-agent rules below now cover
+that case, the re-opens and the command budget.
 
 If a small-model agent returns wrong fills, invented values, invented site facts, or blows
-the command budget, record it and use `sonnet` for that path.
+the command budget, record it and use `sonnet` for that path. Moving the warm path back to
+`haiku` depends on site scripts landing; if they do not, keep `sonnet`.
 
 Start all the ready fill agents in ONE message (parallel tool calls). Each fill
 agent prompt contains:

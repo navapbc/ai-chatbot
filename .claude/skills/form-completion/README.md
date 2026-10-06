@@ -29,7 +29,7 @@ Installs the skill and updates in place. Run these inside Claude Code:
 
 ### agent-browser
 
-The skill does not work without the agent-browser CLI, version 0.33 or later. It is a native Rust binary on npm.
+The skill does not work without the agent-browser CLI, version 0.33 or later. It is a native Rust binary on npm. Install it with Node 24 or later. On Node 20, `npm install -g agent-browser` silently resolves to 0.27.0, which is below the minimum, and prints no error. Check with `agent-browser --version`.
 
 ```bash
 npm install -g agent-browser

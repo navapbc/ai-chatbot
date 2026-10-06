@@ -166,6 +166,76 @@ destination project is read from `BRAINTRUST_PARENT` (format `project_name:labs-
 be produced at all, the `streamText` call in `app/(chat)/api/chat/route.ts` enables
 `experimental_telemetry`.
 
+The snippet above is the shape, not the current file: the real `register()` also attaches a Cloud
+Trace processor, and pairs `filterAISpans` with a `customFilter` that keeps a named set of tracer
+scopes. That set matters — a module with its own tracer is dropped unless it is listed.
+
+### Keeping a non-AI span
+
+`KEEP_SCOPES` in [`instrumentation.ts`](../instrumentation.ts) names the tracer scopes that survive
+`filterAISpans`. Two are listed today: `labs-asp.agent-browser` and `labs-asp.jev`. A new tracer
+has to be added **in both** that file and [`agent/instrumentation.ts`](../agent/instrumentation.ts),
+which runs in the separate Eve process — miss the second and the Next path works while the Eve path
+silently exports nothing.
+
+Span attributes arrive as `metadata.<key>` — observed 2026-09-22, not stated on the integration
+docs page, so re-check it if the mapping ever looks wrong. Braintrust's OpenTelemetry docs do state
+that the logs table lists only traces with a root span (empty `span_parents`), and that
+`braintrust.input` / `braintrust.output` are the attributes populating a span's input and output
+panes. The Jev spans set neither, by design: those payloads would be the participant record.
+
+### Jev spans
+
+[`lib/jev/telemetry.ts`](../lib/jev/telemetry.ts) emits two kinds of span under the
+`labs-asp.jev` scope:
+
+| Span | When | Key attributes |
+|------|------|----------------|
+| `jev <feature> batch` | once per `gapAnalysis` / `formSummary` tool call | `jev.enabled`, `jev.rows_attempted`, `jev.rows_annotated`, `jev.reason` when skipped |
+| `jev <feature>` | once per `askJev` request, as a child of the batch | `jev.ok`, `jev.model`, `jev.field`, `jev.verdict`, `jev.confidence`, `jev.reason` on failure |
+
+The batch span is the one to read first: `rows_annotated` below `rows_attempted` means Jev was
+called and did not answer, which is otherwise invisible — an un-annotated row looks exactly like a
+disabled feature. `jev.enabled: false` with `jev.reason: flag_off | no_participant` covers the case
+where no request was made at all.
+
+Participant data is deliberately absent. Field labels, verdicts and confidences are recorded;
+values, candidate lists and the record itself are not.
+
+Example — verdict distribution across recent runs:
+
+```sql
+select metadata->>'jev.verdict' as verdict, count(*)
+from project_logs
+where span_attributes.name like 'jev %'
+group by 1
+```
+
+### Seeing spans locally
+
+Three options, cheapest first.
+
+1. **Structured logs, no setup.** `lib/jev/telemetry.ts` prints a JSON line per batch
+   (`jev.batch.finish`) and per failed call (`jev.call.failed`) to stdout, so `pnpm dev` shows
+   whether Jev ran and how many rows it annotated even with no exporter configured at all:
+
+   ```
+   {"severity":"INFO","event":"jev.batch.finish","feature":"gap-triage","enabled":true,"rowsAttempted":2,"rowsAnnotated":2,"durationMs":416}
+   ```
+
+2. **Full span dump.** `OTEL_CONSOLE_SPANS=1 pnpm dev` adds a `ConsoleSpanExporter`, printing every
+   span with its attributes as it ends. Needs no key and no network. Noisy — for reading one run,
+   not for leaving on.
+
+3. **A separate Braintrust project.** Set `BRAINTRUST_PARENT=project_name:labs-asp-local` in
+   `.env.local` so local runs stay out of the shared `labs-asp` project. If local traces seem to be
+   missing, check which project this points at before assuming the exporter is broken.
+
+On a laptop, `GOOGLE_CLOUD_PROJECT` in `.env.local` also activates the Cloud Trace exporter, which
+cannot reach the GCE metadata server and logs `EHOSTUNREACH 169.254.169.254` on every export. That
+is local-only noise and does not affect the Braintrust exporter; unset the variable to silence it.
+`OTEL_DIAG=1` surfaces exporter errors that `BatchSpanProcessor` would otherwise swallow.
+
 `BRAINTRUST_API_KEY` is injected only in non-production environments — `terraform/cloud_run.tf` sets
 it for `dev` and `preview` but never for `prod`. Production sessions therefore never reach
 Braintrust; `register()` early-returns without the key.
