@@ -10,66 +10,126 @@ on:
       - 'package.json'
       - 'pnpm-lock.yaml'
       - '.github/workflows/evals.yml'
+  workflow_dispatch:
+    inputs:
+      models:
+        description: 'Comma-separated EVAL_MODEL ids to run. Leave as-is for the cost & quality sweep.'
+        required: false
+        type: string
+        default: 'claude-opus-5-5,claude-sonnet-5-5,claude-opus-5,claude-sonnet-5,claude-haiku-4-5'
 
 concurrency:
-  group: evals-${{ github.ref }}
+  # Keyed on the event too, so pushing to a PR branch cannot cancel a manual
+  # sweep running on the same ref — an on-demand run is usually someone waiting
+  # on numbers, not a regression check that can be re-triggered for free.
+  group: evals-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  resolve-matrix:
+    name: Resolve matrix
+    runs-on: ubuntu-22.04
+    outputs:
+      legs: ${{ steps.build.outputs.legs }}
+    steps:
+      - name: Build the model matrix
+        id: build
+        env:
+          # workflow_dispatch supplies `inputs.models`; a pull_request does not,
+          # so it falls through to the per-PR set below. Keep that set
+          # deliberately small — every id here is a full suite run on every PR
+          # that touches lib/ai/**, evals/** or the chat route.
+          #
+          # These are the three models the ASP-1005 cost & quality comparison is
+          # being decided on, so they are what PRs should be measured against.
+          # Note the tradeoff: the previous set spanned three providers, and this
+          # one is Anthropic-only, so an OpenAI- or Google-specific regression
+          # will no longer show up on a PR. Run those from the Actions tab when
+          # that matters — `gpt-5.1,gemini-3-pro` in the models input.
+          MODELS: ${{ inputs.models || 'claude-opus-5,claude-sonnet-5,claude-haiku-4-5' }}
+        run: |
+          set -euo pipefail
+          legs='[]'
+          IFS=',' read -ra ids <<< "$MODELS"
+          for raw in "${ids[@]}"; do
+            model="$(echo "$raw" | xargs)"   # trim surrounding whitespace
+            [ -z "$model" ] && continue
+            # Provider is derived from the id prefix rather than hand-listed, so
+            # this stays in lockstep with getEvalModel() in evals/helpers.ts.
+            case "$model" in
+              gpt-*|o1*|o3*) provider=openai ;;
+              claude-*)      provider=anthropic ;;
+              gemini-*)      provider=google ;;
+              *)
+                echo "::error::Unknown EVAL_MODEL id '$model' — expected gpt-*/o1*/o3*/claude-*/gemini-*."
+                exit 1 ;;
+            esac
+            legs="$(jq -cn --argjson acc "$legs" --arg m "$model" --arg p "$provider" \
+              '$acc + [{model: $m, provider: $p}]')"
+          done
+          if [ "$(jq -r 'length' <<< "$legs")" -eq 0 ]; then
+            echo "::error::No models resolved from '$MODELS'."
+            exit 1
+          fi
+          echo "Resolved legs: $legs"
+          echo "legs=$legs" >> "$GITHUB_OUTPUT"
+
   run-evals:
     name: ${{ matrix.model }}
+    needs: resolve-matrix
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      # One leg at a time. Run in parallel, three eval legs hold three runners
+      # for 5-14 minutes each and starve the small jobs queued behind them: on
+      # run 37365986978 the `Validate Pull Request` job sat 37 minutes without
+      # ever being assigned a runner and was cancelled with zero steps executed,
+      # and `Validate YAML` waited 29 minutes to do 9 seconds of work.
+      #
+      # This trades eval wall-clock (~31 min instead of ~14) for not blocking
+      # every other check on the PR. `timeout-minutes: 30` above is per job, so
+      # serialising does not bring it into play. The real fix is more runner
+      # capacity; until then this keeps the repo's fast checks fast.
+      max-parallel: 1
       matrix:
-        include:
-          - model: gpt-5.1
-            provider: openai
-          - model: claude-opus-4-7
-            provider: anthropic
-          - model: claude-opus-4-8
-            provider: anthropic
-          - model: gemini-3-pro
-            provider: google
+        include: ${{ fromJSON(needs.resolve-matrix.outputs.legs) }}
     env:
       BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
       BRAINTRUST_PARENT: project_name:labs-asp
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+      TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+      JEV_FEATURES: ${{ vars.JEV_FEATURES }}
       EVAL_MODEL: ${{ matrix.model }}
       EVAL_PROVIDER: ${{ matrix.provider }}
+      EVENT_NAME: ${{ github.event_name }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Determine whether this leg should run
         id: gate
         run: |
-          if [ -z "$BRAINTRUST_API_KEY" ]; then
-            echo "::warning::BRAINTRUST_API_KEY is not configured — skipping eval run."
+          set -euo pipefail
+          # A missing key is a warn-and-skip on a PR (a fork PR has no secrets,
+          # and failing every such PR would be noise), but a hard failure on a
+          # manual run: someone dispatched this to get numbers, and a green
+          # check that silently produced none is worse than a red one.
+          miss() {
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              echo "::error::$1 is not configured — cannot run the $EVAL_MODEL leg."
+              exit 1
+            fi
+            echo "::warning::$1 is not configured — skipping $EVAL_MODEL leg."
             echo "run=false" >> "$GITHUB_OUTPUT"
             exit 0
-          fi
+          }
+          [ -n "${BRAINTRUST_API_KEY:-}" ] || miss BRAINTRUST_API_KEY
           case "$EVAL_PROVIDER" in
-            openai)
-              if [ -z "$OPENAI_API_KEY" ]; then
-                echo "::warning::OPENAI_API_KEY not set — skipping $EVAL_MODEL leg."
-                echo "run=false" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi ;;
-            anthropic)
-              if [ -z "$ANTHROPIC_API_KEY" ]; then
-                echo "::warning::ANTHROPIC_API_KEY not set — skipping $EVAL_MODEL leg."
-                echo "run=false" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi ;;
-            google)
-              if [ -z "$GOOGLE_GENERATIVE_AI_API_KEY" ]; then
-                echo "::warning::GOOGLE_GENERATIVE_AI_API_KEY not set — skipping $EVAL_MODEL leg."
-                echo "run=false" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi ;;
+            openai)    [ -n "${OPENAI_API_KEY:-}" ] || miss OPENAI_API_KEY ;;
+            anthropic) [ -n "${ANTHROPIC_API_KEY:-}" ] || miss ANTHROPIC_API_KEY ;;
+            google)    [ -n "${GOOGLE_GENERATIVE_AI_API_KEY:-}" ] || miss GOOGLE_GENERATIVE_AI_API_KEY ;;
           esac
           echo "run=true" >> "$GITHUB_OUTPUT"
 

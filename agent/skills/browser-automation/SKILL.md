@@ -73,7 +73,38 @@ Snapshots return refs in this format:
 - **`fill`** = plain text only (name, address, city, email). Sets value programmatically.
 - **`type`, preceded by `press Control+a` when the field isn't already empty** = masked/formatted fields (SSN, date, phone, state, zip). Simulates keystrokes so JS formatters fire. `type` never clears existing content on its own — the `Control+a` select-all first is what makes the typed keystrokes replace rather than append.
 - **Respect `maxlength`**: Strip dashes/slashes/spaces. SSN → 9 digits, date → 8 digits, phone → 10 digits, state → 2 chars.
-- **Always verify**: After typing into masked fields, use `["get", "value", selector]` to confirm. If wrong, click → `press Control+a` → re-type.
+- **Always verify**: After typing into masked fields, use `["get", "value", selector]` to confirm.
+
+### When `type` does not take — bounded recovery
+
+Some masks reformat asynchronously and drop keys that arrive mid-reformat. `type`
+then writes nothing, or only the first character, and **re-typing fails the same
+way** — do not loop on it. Escalate once, then stop:
+
+**Attempt 1** — `type`, then verify.
+
+**Attempt 2** — one batched per-character sequence, with `wait 150` between keys
+so each keystroke lands after the previous reformat. This is ONE tool call:
+
+```json
+["batch", "--bail", "click @e20", "press Control+a", "press Delete",
+ "press 1", "wait 150", "press 2", "wait 150", "press 3", "wait 150",
+ "press 2", "wait 150", "press 3", "wait 150", "press 2", "wait 150",
+ "press 2", "wait 150", "press 3", "wait 150", "press 3",
+ "get value @e20"]
+```
+
+Read the LAST element of the returned array for the resulting value. If keys are
+still dropping, retry once with `wait 300`.
+
+**Then stop.** After two failed attempts, leave the field, record the value
+`get value` actually returned — not the value you intended — and report the
+field for caseworker review. A field whose characters are right but whose case
+differs (`ca` vs `CA`) is almost always the mask normalising input: report it,
+do not keep fighting it.
+
+Batching rules (quoting, per-element `success`, stale refs) are in the browser
+tool description and in `browser-commands.md`.
 
 ## Field Type Patterns
 

@@ -24,7 +24,7 @@ pnpm eval:ci
 
 Both `eval` and `eval:ci` run the suite files **one at a time** (a shell loop), not concurrently. Running all suites in parallel makes ~40 multi-step agents fire at once; with large cached system prompts each call requests ~10k tokens, which saturates a single model's tokens-per-minute (TPM) limit (e.g. OpenAI's 500k TPM for gpt-5.1) and fails cases with `429 rate_limit_exceeded`. Sequential execution keeps each leg well under the ceiling. The loop still exits non-zero if any suite fails.
 
-## The 10 suites
+## The 11 suites
 
 | Suite | What it measures | Heuristic scorers | LLM-as-judge |
 |-------|------------------|-------------------|--------------|
@@ -38,13 +38,14 @@ Both `eval` and `eval:ci` run the suite files **one at a time** (a shell loop), 
 | **verbosity** | Agent communicates concisely, no play-by-play, no technical jargon, no wall-of-text | responses-are-concise, does-not-narrate-every-action, no-technical-jargon, provides-updates, text-is-infrequent, no-play-by-play | **verbosity-judge** |
 | **regression-scenarios** | Cross-walked from [cwilkes-npbc/AI-Evaluations](https://github.com/cwilkes-npbc/AI-Evaluations) (Rosa 339688 × WIC/IHSS, Carolina 339702 × WIC/IHSS). Form-specific gap behaviors not exercised by the per-category suites. Scorers return `null` for non-applicable scenarios. | checked-wic-auth, selected-applying-for-self, mapped-gender-to-sex, asked-mother-eligibility, selected-blind-from-flag | — |
 | **session-carryover** | Multi-turn sessions — agent must persist the participant identity across sequential user messages (WIC → IHSS → BenefitsCal) and answer cross-context Q&A from existing context. | same-user-across-turns, did-not-reask-for-user, answered-age, answered-last-name | — |
+| **jev-questions** | The Jev questions themselves (`lib/jev/questions.ts`), not the agent. Fixed hand-adjudicated cases over one participant record + caseworker transcript. | verdict_correct, expected_verdict_probability, noul_direction_correct | — (Jev *is* the system under test) |
 
 ## Scoring
 
 Every scorer returns a value in `[0, 1]`.
 
 - **Heuristic scorers** — typically `0` (fail) or `1` (pass). A few return fractions for set-intersection style checks (e.g., `all_expected_tools_called` returns hits/expected).
-- **LLM-as-judge scorers** — choice scoring `A=1.0 / B=0.5 / C=0.0` with chain-of-thought. The judge picks one letter; the score is the mapped value. See each registered scorer file in `scorers/` for the rubric.
+- **LLM-as-judge scorers** — choice scoring `A=1.0 / B=0.5 / C=0.0` with chain-of-thought. The judge picks one letter; the score is the mapped value. See each registered scorer file in `scorers/` for the rubric. (This describes the offline judges in `scorers/`; Jev judges under `online/` use neither convention — see [Online Scoring](#online-scoring).)
 
 In the Braintrust dashboard, each experiment shows the mean across rows for every scorer. A regression is typically a multi-point drop on one or more scorers between two adjacent experiments.
 
@@ -58,7 +59,18 @@ In the Braintrust dashboard, each experiment shows the mean across rows for ever
 | `claude-*` | `@ai-sdk/anthropic` (direct) | `ANTHROPIC_API_KEY` |
 | `gemini-*` | `@ai-sdk/google` | `GOOGLE_GENERATIVE_AI_API_KEY` |
 
-Default is `gpt-5-mini`. CI runs a 4-leg matrix in `.github/workflows/evals.yml` over `gpt-5.1` / `claude-opus-4-7` / `claude-opus-4-8` / `gemini-3-pro`. Each leg uploads to a distinct Braintrust experiment (the model id is suffixed via `evalExperimentName()` in `helpers.ts`).
+Default is `gpt-5-mini`. Each leg uploads to a distinct Braintrust experiment (the model id is suffixed via `evalExperimentName()` in `helpers.ts`).
+
+`.github/workflows/evals.yml` resolves its matrix at run time, so the set of models is not hardcoded in the job:
+
+| Trigger | Models |
+|---------|--------|
+| `pull_request` | `claude-opus-5` / `claude-sonnet-5` / `claude-haiku-4-5` — the three models the ASP-1005 comparison is being decided on. Kept small because every id is a full suite run. Anthropic-only, so an OpenAI- or Google-specific regression will not surface on a PR; run `gpt-5.1,gemini-3-pro` from the Actions tab when that matters |
+| `workflow_dispatch` | whatever you type in the **models** input (comma-separated). Defaults to the cost & quality sweep: `claude-opus-5-5,claude-sonnet-5-5,claude-opus-5,claude-sonnet-5,claude-haiku-4-5` |
+
+Run a sweep from the Actions tab → **Evals** → **Run workflow**. Legs run **one at a time** (`max-parallel: 1`): in parallel they hold a runner each for 5–14 minutes and starve the small checks queued behind them — a PR-title job once sat 37 minutes without ever being assigned a runner. Expect a sweep to take roughly the sum of its legs, not the longest one. The provider for each leg is derived from the model-id prefix using the same rules as `getEvalModel()`, so adding a model to the input is all that is needed; an unrecognised id fails the matrix job rather than silently producing an empty run.
+
+A leg whose API key is missing **warns and skips on a `pull_request`** (fork PRs have no secrets, and failing them would be noise) but **fails on a `workflow_dispatch`** — a manual run exists to produce numbers, so a green check that produced none is worse than a red one. This means a green Evals check on a PR still does not by itself prove the evals ran; check the job log for `::warning::...skipping`.
 
 Production uses `claude-opus-4-7` via Vertex AI (see `lib/ai/providers.ts:17`). The CI matrix uses **direct Anthropic API** instead of Vertex for simpler secret management. Model behavior is identical between routes — only auth and rate-limit ceilings differ.
 
@@ -66,7 +78,9 @@ Production uses `claude-opus-4-7` via Vertex AI (see `lib/ai/providers.ts:17`). 
 
 Each suite logs the task agent's token usage (aggregated across all agent steps via `result.totalUsage`) to its Braintrust task span using the canonical metric names `prompt_tokens` / `completion_tokens` / `prompt_cached_tokens` — so they land in Braintrust's native token columns and `total_tokens` is auto-derived. A custom `estimated_cost_usd` metric is logged in the same `span.log` call (so it rides alongside the token metrics), computed from `evals/pricing.ts` for the active `EVAL_MODEL`. As a custom metric it does not appear in the CLI summary table — find it per-row in the experiment in the Braintrust UI. Only the system-under-test's usage is captured — LLM-as-judge scorer calls are excluded.
 
-The per-model rates in `evals/pricing.ts` are **estimates marked `TODO(verify)`** — confirm them against the provider pricing pages before trusting the dollar figures. For unpriced models the cost key is omitted (with `pricing_known: false` in metadata) so a missing price reads as "unknown", not "free". The helpers live in `helpers.ts` (`logResultUsage`, `logUsageAndCost`, `addUsage`).
+The per-model rates in `evals/pricing.ts` were verified against published provider pricing on 2026-09-15 and re-verified on 2026-10-05 (the OpenAI rows were not re-checked on the later pass — the pricing page returned HTTP 403 — so they still rest on the 2026-09-15 check). These are list prices and providers do change them, so re-check before putting a dollar figure in front of anyone. For unpriced models the cost key is omitted (with `pricing_known: false` in metadata) so a missing price reads as "unknown", not "free". The helpers live in `helpers.ts` (`logResultUsage`, `logUsageAndCost`, `addUsage`).
+
+Jev (TypeSafe) calls are costed separately. TypeSafe bills input tokens only — output tokens are free — so `jev-questions.eval.ts` logs `jev_estimated_cost_usd` / `jev_prompt_tokens` via `logJevUsageAndCost`, keyed off the model id Jev reports at runtime. It is kept out of `estimated_cost_usd` because Jev is never the `EVAL_MODEL`: pricing its tokens at the model-under-test's rate would overstate them several-fold.
 
 ## Registered scorers
 
@@ -155,8 +169,94 @@ Local development (`pnpm eval` reads `.env.local`):
 | `OPENAI_API_KEY` | `gpt-*` / `o1*` / `o3*` models, all `gpt-4o` LLM judges | |
 | `ANTHROPIC_API_KEY` | `claude-*` models | |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | `gemini-*` models | |
+| `JEV_ONLINE_SCORING` | Opt into the Jev online scorer | Off unless set to `true`. See Online Scoring below. |
 
 CI uses the same names as GitHub Actions secrets. The workflow soft-skips a matrix leg when its provider key is missing.
+
+## The jev-questions suite
+
+Every other suite runs the agent and scores its behaviour. This one runs
+`lib/jev/questions.ts` and scores Jev's answers. It exists because the repo's
+rule is that Jev questions are written in code precisely so they can be
+versioned and regression-scored — this is the scoring half. Reword a verdict in
+`SUMMARY_VERDICTS` and this suite tells you which judgments moved.
+
+Three things about it differ from the rest of the suite:
+
+- **Expectations are hand-adjudicated, not observed.** Each case in
+  `datasets/jev-questions.json` was checked against the participant record and
+  the caseworker's messages by hand. Three cases are expected to FAIL today and
+  document known gaps (see below). Do not "fix" them by changing the expectation.
+- **Two independent axes.** `expectVerdict` judges the VALUE; `expectSourceAccurate`
+  / `expectSensitive` judge the agent's own LABEL. A value that was badly inferred
+  but honestly labelled `inferred` is `verdict: unsupported` *and*
+  `sourceAccurate: high`. Conflating them is the mistake the first draft made.
+- **Each case repeats** (`JEV_EVAL_REPEATS`, default 3) because Jev is
+  probabilistic. `implied-not-living-alone` has been observed answering both
+  ways on byte-identical input, so a single run cannot tell a real regression
+  from boundary noise. Watch `expected_verdict_probability` rather than
+  `verdict_correct` when judging whether a reword helped — a 0.45 near-miss and
+  a 0.02 confident miss both score 0 on the binary.
+
+```bash
+pnpm eval:jev-questions
+```
+
+Requires `TYPESAFE_API_KEY` and `JEV_FEATURES` covering `summary-check` and
+`gap-triage`. Without them every score is `null` (not zero) and a
+`::warning::` is printed, so a skipped run cannot be mistaken for a failing one.
+
+### Known-failing cases (baseline at time of writing: 18-19 / 21)
+
+| Case | Expected | Jev says | Gap |
+|------|----------|----------|-----|
+| `both-sources-telephone` | `caseworker_supplied` | `grounded` (p(exp) ~0.28) | A value present in BOTH the record and a caseworker message has no precedence rule. |
+| `age-derived-adult` | `grounded` | `unsupported` (p(exp) ~0.4) | Age-from-DOB needs a reference date, and Jev's state carries no "today". |
+| `implied-not-living-alone` | `grounded` | flips | Boundary case; `marital_status: "Single parent household"` implies it, but the default-answer clause in `unsupported` pulls the other way. |
+
+## Online Scoring
+
+`evals/online/` is a separate suite from `evals/scorers/`: instead of running against a
+fixed dataset, it registers judges that Braintrust applies to live production traces.
+`evals/online/rules.ts` defines one rule per (scope, filter) and `pnpm eval:online:apply`
+pushes them. Rules upload **paused** unless you pass `--activate`.
+
+### The Jev scorer
+
+`scorers/hallucination-jev.ts` is a [Jev](https://docs.typesafe.ai) judge that runs
+*alongside* `scorers/hallucination.ts` on the same traces — it does not replace it. Both
+write their own `scores.<name>` key; the useful signal is where the two disagree.
+
+It is off by default. To include it:
+
+```bash
+JEV_ONLINE_SCORING=true pnpm eval:online:apply dev --dry-run
+```
+
+A scorer flagged off is not uploaded and not attached to its rule. That is deliberate and
+not the same as pausing: Braintrust pauses whole rules, not individual scorers, so a
+disabled judge has to be absent from the rule's `scorers` array entirely.
+
+Three ways a Jev judge differs from the Sonnet judges — all three break conventions
+described under [Scoring](#scoring), and copying an existing scorer wholesale gets them wrong:
+
+1. **No chain of thought** (`use_cot: false`). Jev returns a decision directly.
+2. **Text only.** Jev rejects tool message content, so its preprocessor returns a plain
+   string rather than the `{ role, content }[]` the other preprocessors build.
+3. **Descriptive choice labels** (`grounded` / `minor_inference` / `fabricated`) rather
+   than `A`/`B`/`C`, because Jev selects among the labels themselves — the label text is
+   part of the criteria. The numeric mapping is still 1 / 0.5 / 0, so scores stay
+   comparable to the Sonnet judge.
+
+### Before activating
+
+Two prerequisites, neither yet done:
+
+- An org Owner must enable Jev in Braintrust: **Settings → AI providers → Allow built-in
+  models**, then **Enable Jev**. Built-in Jev is free and needs no TypeSafe account.
+- `JEV_JUDGE_MODEL` in `scorers/shared.ts` is **unverified**. Braintrust documents picking
+  Jev by name in the Scorers UI but does not publish the identifier the REST API expects.
+  See the comment on that constant for how to confirm it.
 
 ## Common gotchas
 

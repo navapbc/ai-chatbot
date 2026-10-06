@@ -26,6 +26,12 @@ application with no playbook, a background scout agent surveys the site — the
 orchestrator stays with the user and does not survey a site itself. Each fill agent
 gets its own browser. Do not give one page to two writers.
 
+**Always pass a `model` parameter when you dispatch an agent.** Without it the agent
+inherits the orchestrator model, which costs approximately ten times more for each
+input token, and agents that read large DOM outputs drive most of the run cost. The
+scribe uses `sonnet` (`references/knowledge-scribe.md`). The full table for fill
+agents and scouts is in `references/multi-application.md`.
+
 ## Prefer a site script
 
 A playbook is prose: it tells an agent what the confirmed method is. A **site script**,

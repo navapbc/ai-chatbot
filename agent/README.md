@@ -1,12 +1,18 @@
 # Eve Agent — Structure Map
 
-This directory is a demonstrative Eve conversion of the caseworker-facing web-automation
-system prompt that otherwise lives in `lib/ai/prompts/`. It exists to prove out Eve's
+This directory started (SP-A) as a demonstrative Eve conversion of the caseworker-facing
+web-automation system prompt that otherwise lives in `lib/ai/prompts/`, proving out Eve's
 concepts (always-on instructions + dynamic instructions, skills, tools, subagents,
-sandbox, compaction) against real prompt content from this repo — not to replace the
-production Next.js agent loop in `app/(chat)/api/chat/route.ts`. The only file added
-outside `agent/` across this whole conversion is `lib/kernel/eve-browser.ts`; no
-*existing* file under `lib/` or `app/` was modified — see "Additive-only" below.
+sandbox, compaction) against real prompt content from this repo. **That framing is now
+historical, not current.** Subsequent work (SP-B, and the Cloud Run deployment work
+described later in this file) wired this agent into the real app as a second, opt-in
+transport (`useEveAgent` feature flag, default off) and into the production container
+(`next.config.ts`'s `withEve()`, `scripts/start-container.sh`, `terraform/cloud_run.tf`'s
+`WORKFLOW_POSTGRES_URL`) — see CLAUDE.md's Architecture section for the current two-path
+picture. It still does not *replace* `app/(chat)/api/chat/route.ts`, which stays the
+default, but it is no longer just a proof-of-concept sitting beside it. The "Additive-only"
+section below describes SP-A's own diff specifically, not the state of the repo today —
+see the note there.
 
 ## Tree
 
@@ -39,7 +45,7 @@ agent/
 
 The external-record-verification subagent and its two lookup tools have been
 archived out of this agent (Task 4 of the SP-A plan), and the data model is
-retargeted to caseworker messages + inference only. See
+retargeted to the participant record (source `record`) + caseworker messages + inference. See
 `docs/plans/2026-07-23-web-automation-prompt-to-eve.md` and the SDD task
 brief/report under `.superpowers/sdd/` for the before/after.
 
@@ -74,7 +80,7 @@ rather than a tool call.
 (Autofilled Field Detection, Filling Fields, No vs Unknown Distinction, Autonomous
 Progression, Review Screen, Gap Analysis Protocol, Form Completion Summary). Data
 Provenance now lives directly in this skill as **Data Provenance (No Fabrication)**,
-sourced to caseworker messages + inference only.
+sourced to the participant record, caseworker messages, or inference.
 Review Screen and Form Completion Summary are intentionally duplicated in the `form_review`
 subagent — a declared subagent inherits no skills, so anything it needs must be copied into
 its own `instructions.md`.
@@ -136,15 +142,21 @@ tied to any specific prompt file. `agent/channels/eve.ts` predates Tasks 1–5 �
 the minimal scaffold from the original spike (`eve dev` / TUI / Vercel OIDC wiring),
 not something converted from the prompt.
 
-## Additive-only
+## Additive-only (SP-A, historical)
 
-No *existing* file under `lib/`, `app/`, or `package.json` was modified across this
-whole conversion — the only change any of these three paths saw is one new file, added
-by SP-A: `lib/kernel/eve-browser.ts`. `git diff --stat d2bbaf0..HEAD -- app package.json`
-is empty; `git diff --stat d2bbaf0..HEAD -- lib` shows only that one addition. The
-converted agent otherwise lives entirely under `agent/`, alongside the unmodified
-production code it mirrors — see `lib/kernel/eve-browser.ts`'s own file-level comment
-for why it's a new file instead of a direct import of `lib/kernel/browser.ts`'s
+This section describes SP-A's own diff, not the repo as it stands today — SP-B and the
+Cloud Run deployment work (see "Using Eve from the app UI" and the sections after it)
+have since added real files under `app/` and `lib/` (`app/(chat)/api/eve-chat/route.ts`,
+`lib/ai/eve/*`, `lib/kernel/live-view-store.ts`, `scripts/start-container.sh`, and
+more). Kept for the record of what SP-A itself touched:
+
+No *existing* file under `lib/`, `app/`, or `package.json` was modified across the SP-A
+conversion — the only change any of these three paths saw at that point was one new
+file: `lib/kernel/eve-browser.ts`. `git diff --stat d2bbaf0..HEAD -- app package.json`
+was empty at the end of SP-A; `git diff --stat d2bbaf0..HEAD -- lib` showed only that
+one addition. The converted agent otherwise lived entirely under `agent/`, alongside the
+unmodified production code it mirrors — see `lib/kernel/eve-browser.ts`'s own file-level
+comment for why it's a new file instead of a direct import of `lib/kernel/browser.ts`'s
 `getOrCreateBrowser`.
 
 ## Cross-Reference Note
