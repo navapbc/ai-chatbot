@@ -6,6 +6,11 @@
  * Re-check before trusting `estimated_cost_usd` for anything long after that date —
  * these are list prices and providers do change them.
  *
+ * Re-verified 2026-10-05: every Anthropic row and the Google row confirmed
+ * unchanged; Opus 5.5 / Sonnet 5.5 and the Jev row added. The two OpenAI rows
+ * were NOT re-checked that day — openai.com/api/pricing returned HTTP 403 — so
+ * they still rest on the 2026-09-15 check.
+ *
  * `cachedInput` is the discounted rate for cache-read (cachedInputTokens).
  * `cacheWrite` is the premium rate for cache-write (cachedWriteTokens) — the
  * one-time cost of populating a new cache entry. Anthropic charges ~1.25x the
@@ -46,6 +51,16 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   "claude-opus-4-8": { input: 5, output: 25, cachedInput: 0.5, cacheWrite: 6.25 },
   "claude-opus-5": { input: 5, output: 25, cachedInput: 0.5, cacheWrite: 6.25 },
   "claude-sonnet-5": { input: 2, output: 10, cachedInput: 0.2, cacheWrite: 2.5 },
+  // Current generation (Opus 5.5 / Sonnet 5.5). Every figure below — including
+  // both cacheWrite rates — is read directly from Anthropic's published
+  // pricing table, not derived from a multiplier. Verified 2026-10-05.
+  //
+  // NOTE: Opus 5.5's cache read is a published $0.20 — that is 0.05x its $4
+  // input rate, NOT the 0.1x that every other Anthropic row here follows
+  // (Anthropic documents the 0.05x exception explicitly). Do not "correct" it
+  // to 0.40.
+  "claude-opus-5-5": { input: 4, output: 20, cachedInput: 0.2, cacheWrite: 5 },
+  "claude-sonnet-5-5": { input: 2, output: 10, cachedInput: 0.2, cacheWrite: 2.5 },
   // Not in the CI matrix or DEFAULT_EVAL_MODEL today, but selectable via
   // EVAL_MODEL=claude-haiku-4-5 (getEvalModel() accepts any claude-* id), and
   // it's the legacy route's prepareStepModel (lib/ai/providers.ts) — though
@@ -57,6 +72,13 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   // $0.40) for the whole request — not modeled here, so cost is under-counted
   // on any eval task with a very large prompt.
   "gemini-3-pro": { input: 2, output: 12, cachedInput: 0.2 },
+  // TypeSafe (Jev) — not an AI-SDK model and never an EVAL_MODEL; keyed by the
+  // model id `askJev` reports back at runtime (lib/jev/client.ts). TypeSafe
+  // bills INPUT TOKENS ONLY at $42/Btok = $0.042/Mtok; output tokens are free,
+  // so `output: 0` here is the real published rate, not a missing value.
+  // Jev exposes no cache tier (its Usage has only input_tokens/output_tokens),
+  // so the cache buckets are always 0 and the cache rates never apply.
+  "jev-1.13.0": { input: 0.042, output: 0 },
 };
 
 export interface CostResult {

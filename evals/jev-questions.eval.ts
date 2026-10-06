@@ -3,7 +3,7 @@ import { askJev, isJevEnabled } from '@/lib/jev/client';
 import { gapFieldQuestions, summaryFieldQuestions } from '@/lib/jev/questions';
 import { getParticipantById } from '@/lib/data/participants';
 import cases from './datasets/jev-questions.json';
-import { evalExperimentName } from './helpers';
+import { evalExperimentName, logJevUsageAndCost } from './helpers';
 
 /**
  * Regression set for the Jev questions in `lib/jev/questions.ts`.
@@ -87,7 +87,10 @@ Eval('labs-asp', {
       })),
     ),
 
-  task: async (input: AnyCase & { repeat: number }): Promise<Outcome> => {
+  task: async (
+    input: AnyCase & { repeat: number },
+    { span },
+  ): Promise<Outcome> => {
     if (!ENABLED) return { ran: false };
 
     const { state, questions } = isSummary(input)
@@ -105,6 +108,11 @@ Eval('labs-asp', {
       field: input.field,
     });
     if (!result.ok) return { ran: false };
+
+    // Jev is billed per input token (output is free), so this is the real cost
+    // of running this suite. Logged under its own metric names — Jev is not the
+    // EVAL_MODEL, so it must not be priced at that model's rate.
+    logJevUsageAndCost(span, result.model, result.usage);
 
     const answers = result.answers as {
       verdict: { choice: string; probabilities: Record<string, number> };

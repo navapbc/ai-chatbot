@@ -1,5 +1,5 @@
 import { tool } from 'ai';
-import { z } from 'zod';
+import { browserInputSchema } from './browser-schema';
 import { getOrCreateBrowser } from '@/lib/kernel/browser';
 import { runCommand } from '@/lib/kernel/cli';
 import { kernelTimelineCollector } from '@/lib/kernel/telemetry';
@@ -13,16 +13,7 @@ const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes
  * Exported so the eval harness drives the agent through the identical schema
  * rather than a hand-copied duplicate that can drift.
  */
-export const browserInputSchema = z
-  .object({
-    command: z
-      .array(z.string())
-      .min(1)
-      .describe(
-        'agent-browser CLI argv, e.g. ["click", "@e1"] or ["fill", "@e1", "John"]. One argument per array element; do not quote or escape values.',
-      ),
-  })
-  .describe('An agent-browser CLI command as an argv array');
+export { browserInputSchema };
 
 /**
  * Per-session mutex to serialize browser commands.
