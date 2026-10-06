@@ -68,3 +68,4 @@ docs/superpowers/
 **/tfplan
 terraform/*.tfvars
 terraform/*apply.log
+.neon
