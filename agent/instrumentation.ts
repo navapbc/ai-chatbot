@@ -2,6 +2,16 @@ import { BraintrustExporter } from '@braintrust/otel';
 import { registerOTel } from '@vercel/otel';
 import { defineInstrumentation } from 'eve/instrumentation';
 import { TRACER_NAME as BROWSER_TRACER } from '@/lib/observability/browser-telemetry';
+import { TRACER_NAME as JEV_TRACER } from '@/lib/jev/telemetry';
+
+/**
+ * Tracer scopes kept alongside the AI spans. Mirrors the set in the root
+ * `instrumentation.ts`; both processes need it because a tool span can be
+ * created in either. agent/tools/browser.ts reaches lib/kernel/cli.ts and
+ * agent/tools/*.ts reach lib/jev/*, so both scopes occur in this process too,
+ * and filterAISpans alone would discard them.
+ */
+const KEEP_SCOPES = new Set([BROWSER_TRACER, JEV_TRACER]);
 
 /**
  * Exports Eve's agent spans to Braintrust.
@@ -42,13 +52,12 @@ export default defineInstrumentation({
         // project anyone looks at. Unset, the exporter uses a project literally
         // named "default-otel-project".
         //
-        // Keep the AI spans and the browser tracer's spans. Drop the rest.
-        // agent/tools/browser.ts reaches lib/kernel/cli.ts, so the Kernel
-        // browser spans are emitted in this process too, and filterAISpans
-        // alone would discard them.
+        // Keep the AI spans, plus the scopes named in KEEP_SCOPES.
         filterAISpans: true,
         customFilter: (span) =>
-          span.instrumentationScope?.name === BROWSER_TRACER ? true : undefined,
+          KEEP_SCOPES.has(span.instrumentationScope?.name ?? '')
+            ? true
+            : undefined,
       }),
     });
   },

@@ -17,8 +17,9 @@ When you have finished filling a form, call the `formSummary` tool **instead of*
 
 Pass `fields`: a single array of every form field **in the order they appear on the original form**. Optionally pass `clientName` so the card can name the participant. The card paginates the list automatically — you do not group or chunk it. For each field, set `source` to one of:
 
-- **`caseworker`**: value provided by the caseworker this session (e.g., answers to a gap analysis). Must be an explicit message — not "they would have said X" or "they implied Y."
-- **`inferred`**: value you reasoned from available data (e.g., "Lives alone — no household members listed"). The inference must be grounded in a caseworker message — not in what the value "probably" is.
+- **`record`**: a labelled field from the participant JSON in the caseworker's OPENING message (e.g. `date_of_birth`, `address.residential.zip`). Copy it verbatim; do not reformat or infer around it.
+- **`caseworker`**: a value the caseworker typed LATER in this conversation, outside the participant record (e.g., answers to a gap analysis). Must be an explicit message — not "they would have said X" or "they implied Y."
+- **`inferred`**: value you reasoned from available data (e.g., "Lives alone — no household members listed"). The inference must be grounded in the participant record or a caseworker message — not in what the value "probably" is.
 - **`missing`**: field could not be filled — omit `value` or leave it empty. Use this whenever the value does not trace to a real source. **Do NOT invent a plausible-looking value to avoid marking a field missing.** A 9-digit number is not an SSN, a date in the right range is not a DOB, and "this is probably what it would be" is fabrication — see the **Data Provenance (No Fabrication)** section in the `benefits-application` skill.
 
 **Field order**: List fields in the order they appear on the original form. Do NOT reorder by source or by any other grouping.

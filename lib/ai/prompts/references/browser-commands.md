@@ -37,6 +37,7 @@ Complete reference for all agent-browser commands. Load this when you need detai
 | `fill <sel> "text"` | Clear field and fill (plain text only: name, address, city, email) |
 | `type <sel> "text"` | Type into element without clearing (use for masked/formatted fields) |
 | `press Enter` | Press key (Tab, Escape, ArrowDown, Control+a) |
+| `batch --bail "cmd1" "cmd2"` | Run several commands in one round trip; returns an array of per-command results |
 | `keyboard type "text"` | Type with real keystrokes at current focus (no selector) |
 | `keyboard inserttext "text"` | Insert text without key events (no selector) |
 | `keydown <key>` | Hold key down |
@@ -255,3 +256,20 @@ Use `-b`/`--base64` or `--stdin` for reliable execution with nested quotes or sp
 | `-p <provider>` | Cloud browser provider (--provider) |
 | `--proxy <url>` | Use proxy server |
 | `--ignore-https-errors` | Ignore SSL certificate errors |
+
+## Batching
+
+`batch` collapses a sequence into one round trip. Verified against agent-browser 0.33.2:
+
+- Each argument after `batch` is one whole command as a single space-separated
+  string: `["batch", "click @e1", "press 1"]`. A JSON array per argument appears
+  in the CLI's own docs but errors with "Unknown command".
+- Wrap any value containing a space or apostrophe in double quotes inside the
+  string: `fill @e3 "Ann O'Brien"`. Unquoted, a bare apostrophe is silently
+  dropped (`O'Brien` becomes `OBrien`).
+- Interleave `wait 150` between keystrokes; masks that reformat asynchronously
+  drop keys that arrive mid-reformat.
+- The result is an array of per-command results, and the tool reports overall
+  success even when steps failed — check each element, and prefer `--bail`.
+- No `@eN` step after a DOM-changing step in the same batch; refs go stale.
+- One 120s timeout covers the whole batch.

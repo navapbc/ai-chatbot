@@ -6,7 +6,15 @@
 // Project names mirror BRAINTRUST_PARENT in terraform/cloud_run.tf. Keep in
 // sync with terraform's `environments` map.
 
-import { RULES } from './rules';
+import { RULES, type OnlineRule, type OnlineScorer } from './rules';
+
+/**
+ * A scorer flagged off is not uploaded and not attached to its rule. It is
+ * not merely paused: Braintrust pauses whole rules, not individual scorers,
+ * so a disabled judge has to be absent from the array.
+ */
+const enabledScorers = (rule: OnlineRule): OnlineScorer[] =>
+  rule.scorers.filter((sc) => sc.enabled !== false);
 
 const ENVIRONMENTS = ['dev', 'preview', 'prod'] as const;
 type Environment = (typeof ENVIRONMENTS)[number];
@@ -78,7 +86,7 @@ const applyEnv = async (env: Environment) => {
       project_id: project.id,
       rules: RULES.map((r) => ({
         rule: r.name,
-        scorers: r.scorers.map((sc) => sc.slug),
+        scorers: enabledScorers(r).map((sc) => sc.slug),
         status: activate ? 'active' : 'paused',
       })),
     };
@@ -88,11 +96,14 @@ const applyEnv = async (env: Environment) => {
   for (const rule of RULES) {
     // Upsert each judge by slug, then point the rule at all of them.
     const scorerIds: string[] = [];
-    for (const scorer of rule.scorers) {
+    for (const scorer of enabledScorers(rule)) {
+      // `enabled` is our own flag, not part of the function schema — strip it
+      // so it is never sent to Braintrust.
+      const { enabled: _enabled, ...definition } = scorer;
       const fn = await request('PUT', '/v1/function', {
         project_id: project.id,
         function_type: 'scorer',
-        ...scorer,
+        ...definition,
       });
       scorerIds.push(fn.id);
     }
@@ -117,7 +128,7 @@ const applyEnv = async (env: Environment) => {
     applied.push({
       rule: rule.name,
       rule_id: saved.id,
-      scorers: rule.scorers.map((sc, i) => ({
+      scorers: enabledScorers(rule).map((sc, i) => ({
         slug: sc.slug,
         id: scorerIds[i],
       })),

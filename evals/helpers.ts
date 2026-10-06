@@ -4,7 +4,7 @@ import { google } from "@ai-sdk/google";
 import { openai } from "@ai-sdk/openai";
 import type { Span } from "braintrust";
 import { z } from "zod";
-import { browserInputSchema } from "@/lib/ai/tools/browser";
+import { browserInputSchema } from "@/lib/ai/tools/browser-schema";
 import { computeCostUsd, type UsageTotals } from "./pricing";
 
 /**
@@ -308,9 +308,10 @@ interface HasTotalUsage {
     inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
-    // AI SDK v7 moved cache-read tokens under inputTokenDetails.
+    // AI SDK v7 moved cache-read/cache-write tokens under inputTokenDetails.
     inputTokenDetails?: {
       cacheReadTokens?: number;
+      cacheWriteTokens?: number;
     };
   };
 }
@@ -322,6 +323,7 @@ export function emptyUsage(): UsageTotals {
     outputTokens: 0,
     totalTokens: 0,
     cachedInputTokens: 0,
+    cachedWriteTokens: 0,
   };
 }
 
@@ -337,6 +339,7 @@ export function addUsage(acc: UsageTotals, result: HasTotalUsage): UsageTotals {
   acc.totalTokens +=
     u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
   acc.cachedInputTokens += u.inputTokenDetails?.cacheReadTokens ?? 0;
+  acc.cachedWriteTokens += u.inputTokenDetails?.cacheWriteTokens ?? 0;
   return acc;
 }
 
@@ -357,6 +360,7 @@ export function logUsageAndCost(span: Span, usage: UsageTotals): void {
     prompt_tokens: usage.inputTokens,
     completion_tokens: usage.outputTokens,
     prompt_cached_tokens: usage.cachedInputTokens,
+    prompt_cache_write_tokens: usage.cachedWriteTokens,
   };
   // estimated_cost_usd is a custom metric (Braintrust's native cost needs its
   // own pricing table, which won't know these models). Omit the key entirely
@@ -378,4 +382,61 @@ export function logUsageAndCost(span: Span, usage: UsageTotals): void {
 /** Convenience: log usage/cost for a single generateText result. */
 export function logResultUsage(span: Span, result: HasTotalUsage): void {
   logUsageAndCost(span, addUsage(emptyUsage(), result));
+}
+
+/**
+ * Log token usage and estimated cost for a Jev (TypeSafe) call.
+ *
+ * Deliberately separate from logUsageAndCost, which hardcodes the model id to
+ * getEvalModelId(). Jev is never the EVAL_MODEL — it is a second provider
+ * called *alongside* whichever model is under test — so routing its tokens
+ * through that helper would price them at EVAL_MODEL's rate (gpt-5-mini by
+ * default, ~6x Jev's input rate) and quietly inflate the figure.
+ *
+ * The metrics are namespaced `jev_*` rather than folded into
+ * `estimated_cost_usd` so the agent's inference cost and Jev's annotation cost
+ * stay separable in Braintrust; summing them is the reader's choice.
+ */
+export function logJevUsageAndCost(
+  span: Span,
+  modelId: string,
+  usage: { inputTokens: number; outputTokens: number },
+): void {
+  const totals: UsageTotals = {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.inputTokens + usage.outputTokens,
+    // Jev exposes no cache tier, so these are structurally zero rather than
+    // unknown — computeCostUsd prices every input token at the plain rate.
+    cachedInputTokens: 0,
+    cachedWriteTokens: 0,
+  };
+  const { costUsd, pricingKnown } = computeCostUsd(modelId, totals);
+  const metrics: Record<string, number> = {
+    jev_prompt_tokens: usage.inputTokens,
+    jev_completion_tokens: usage.outputTokens,
+  };
+  // Same contract as logUsageAndCost: omit the key rather than log a null, and
+  // flag the gap in metadata. A new Jev release ships a new model id, so an
+  // unpriced Jev model is an expected state, not a broken one.
+  if (costUsd != null) {
+    metrics.jev_estimated_cost_usd = costUsd;
+  } else {
+    // Loud on purpose. The SDK sends `jev-latest` by default and the service
+    // resolves it to a concrete version, so a Jev release ships a model id this
+    // table has never seen. Silently omitting the cost there would recreate the
+    // exact "costUsd disappears and nobody notices" gap this work set out to
+    // close, so say which id is missing and make it greppable in CI logs.
+    console.warn(
+      `::warning::no pricing row for Jev model "${modelId}" — jev_estimated_cost_usd omitted. Add it to evals/pricing.ts.`,
+    );
+  }
+  span.log({
+    metrics,
+    metadata: {
+      jev_model: modelId,
+      jev_pricing_known: pricingKnown,
+      jev_token_usage: usage,
+    },
+  });
 }

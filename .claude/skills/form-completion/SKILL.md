@@ -26,12 +26,18 @@ application with no playbook, a background scout agent surveys the site — the
 orchestrator stays with the user and does not survey a site itself. Each fill agent
 gets its own browser. Do not give one page to two writers.
 
+**Always pass a `model` parameter when you dispatch an agent.** Without it the agent
+inherits the orchestrator model, which costs approximately ten times more for each
+input token, and agents that read large DOM outputs drive most of the run cost. The
+scribe uses `sonnet` (`references/knowledge-scribe.md`). The full table for fill
+agents and scouts is in `references/multi-application.md`.
+
 ## Required run header
 
 Every run states, in one line, how it ran. Put it at the top of the final report:
 
 ```
-run: playbook=demoqa.com.md (fresh) | agents=orchestrator:sonnet, fill:haiku | cmds=15 act / 79 verify
+run: playbook=demoqa.com.md (fresh) | agents=orchestrator:sonnet, fill:sonnet | cmds=15 act / 79 verify
 ```
 
 Use `playbook=none (cold start)` when there was no playbook, and `playbook=MISSED` if the

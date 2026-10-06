@@ -51,22 +51,23 @@ export const SYSTEM_PROMPT = `You are checking the source labels in an AI form-f
 
 After filling a form, the agent emits a \`formSummary\` listing each field with a value and a source label:
 
-- **database** — taken from the participant record (may be reformatted, but the value must be present there)
-- **caseworker** — supplied by the caseworker during the conversation
+- **record** (the Eve agent's spelling; the legacy agent spells the same label **database**) — taken from the participant record the caseworker pasted into the opening message. The value may be reformatted, but it must be present there. Treat the two spellings as identical; neither is a mistake.
+- **caseworker** — supplied by the caseworker later in the conversation, outside that record
 - **inferred** — logically derived from record data (age from DOB; mailing address from residential when identical)
 - **missing** — not available; left blank or flagged
 
 The trace gives you the participant record (in the caseworker's opening message), the values actually written to the form, and the formSummary itself.
 
 ## Good attribution
-- Every "database" value genuinely appears in the record
+- Every "record"/"database" value genuinely appears in the record
 - Every "inferred" value follows from something in the record
 - Every "caseworker" value matches something the caseworker actually said
 - "missing" is used for blanks, not for values that were in fact entered
 - Summary values match what was written to the form
+- A record value labelled "record" or "database" — both spellings are correct
 
 ## Bad attribution
-- A fabricated or guessed value labelled "database"
+- A fabricated or guessed value labelled "record"/"database"
 - A known record value labelled "missing" or "caseworker"
 - An "inferred" value with no derivation from the record
 - Summary values that contradict the actual form writes
@@ -86,9 +87,9 @@ Choose exactly one:
 
 (A) Every source label matches the real origin, and summary values match what was entered.
 
-(B) One or two labels are arguably wrong — a record value marked "inferred", or a direct value marked "database" when it was reformatted — but nothing fabricated is attributed to the database.
+(B) One or two labels are arguably wrong — a record value marked "inferred", or a direct value marked "record"/"database" when it was reformatted — but nothing fabricated is attributed to the participant record.
 
-(C) Misleading: a fabricated value attributed to "database", known record values marked "missing", or summary values that contradict what was actually entered.
+(C) Misleading: a fabricated value attributed to "record"/"database", known record values marked "missing", or summary values that contradict what was actually entered.
 
 Skip: the trace contains no formSummary call.`;
 
@@ -96,7 +97,7 @@ export const EVALUATOR_DEFINITION = {
   name: 'Summary Attribution (Online)',
   slug: EVALUATOR_SLUG,
   description:
-    "Trace-scoped LLM judge. Grades whether each formSummary field's source label (database/caseworker/inferred/missing) reflects where the value actually came from.",
+    "Trace-scoped LLM judge. Grades whether each formSummary field's source label (record or database/caseworker/inferred/missing) reflects where the value actually came from.",
   prompt_data: {
     prompt: {
       type: 'chat' as const,

@@ -1,0 +1,199 @@
+{
+  "_comment": [
+    "Regression set for lib/jev/questions.ts. Every expectation here was",
+    "hand-adjudicated against the participant record and the caseworker's",
+    "messages from two real runs (wrun_01M37CZX, wrun_01M37HH5), not copied",
+    "from what Jev happened to answer. Where Jev and the adjudication",
+    "disagreed, the adjudication wins and the case documents a known gap.",
+    "Participant 339619 (Celeste Thomas II) from lib/data/participants.ts:",
+    "DOB 2000-01-02, marital_status 'Single parent household',",
+    "special_needs false, four phone numbers, address in WILDOMAR CA 92595.",
+    "Two axes, independent: `expectVerdict` judges the VALUE against the record and the caseworker's messages; `expectSourceAccurate`/`expectSensitive` judge the agent's own LABEL. A value that was badly inferred but honestly labelled `inferred` is verdict=unsupported AND sourceAccurate=high."
+  ],
+  "recordId": "339619",
+  "caseworkerMessages": [
+    "Fill out IHSS at https://riversideihss.org/IntakeApp for the participant below. This JSON is all the participant data available - there is no database to look up.",
+    "Answers for IHSS Application (SOC 295) - Riverside County:\n- Social Security Number: 123224444\n- Telephone (which number to list): 555-555-5555\n- Briefly describe your health history: disabled\n- Please check any of the following that apply: Unable to perform some activities of daily living (bathing, feeding, dressing, walking, etc.)"
+  ],
+  "summary": [
+    {
+      "id": "record-first-name",
+      "field": "First Name",
+      "value": "Celeste",
+      "source": "record",
+      "expectVerdict": "grounded",
+      "expectSourceAccurate": "high",
+      "why": "Verbatim from participant.name.first, labelled record. Control case: both axes should be confidently right."
+    },
+    {
+      "id": "record-city",
+      "field": "City",
+      "value": "WILDOMAR",
+      "source": "record",
+      "expectVerdict": "grounded",
+      "expectSourceAccurate": "high",
+      "why": "Verbatim from address.residential.city."
+    },
+    {
+      "id": "record-state-abbreviated",
+      "field": "State",
+      "value": "CA",
+      "source": "record",
+      "expectVerdict": "grounded",
+      "expectSourceAccurate": "high",
+      "why": "Record says 'California'; 'CA' is the same value in the form's format. Reformatting must not read as invention."
+    },
+    {
+      "id": "mislabel-record-as-caseworker",
+      "field": "Zip Code",
+      "value": "92595",
+      "source": "caseworker",
+      "expectVerdict": "grounded",
+      "expectSourceAccurate": "low",
+      "why": "NEGATIVE CONTROL for the sourceAccurate axis. The value is in the record, so the verdict is grounded, but the caseworker never said it - the label is wrong and sourceAccurate must drop. Without this case a scorer cannot tell a calibrated sourceAccurate from a constant one."
+    },
+    {
+      "id": "caseworker-ssn",
+      "field": "Social Security Number",
+      "value": "123-22-4444",
+      "source": "caseworker",
+      "expectVerdict": "caseworker_supplied",
+      "expectSourceAccurate": "high",
+      "why": "Only in caseworker message 2, never in the record."
+    },
+    {
+      "id": "caseworker-health-history",
+      "field": "Briefly describe your health history",
+      "value": "disabled",
+      "source": "caseworker",
+      "expectVerdict": "caseworker_supplied",
+      "expectSourceAccurate": "high",
+      "why": "Free text supplied in message 2."
+    },
+    {
+      "id": "both-sources-telephone",
+      "field": "Telephone",
+      "value": "(555) 555-5555",
+      "source": "caseworker",
+      "expectVerdict": "caseworker_supplied",
+      "expectSourceAccurate": "high",
+      "why": "KNOWN GAP. The value is in BOTH contact_information.phones.home and message 2. The record holds four numbers, so the caseworker's answer is what selects this one - caseworker_supplied should win. Run wrun_01M37HH5 returned grounded 0.62 / caseworker_supplied 0.30, so the disjointness clause in SUMMARY_VERDICTS is not deciding this."
+    },
+    {
+      "id": "task-scoped-applying-for-self",
+      "field": "Are you applying to receive IHSS for yourself?",
+      "value": "Yes",
+      "source": "inferred",
+      "expectVerdict": "grounded",
+      "expectSourceAccurate": "high",
+      "why": "The task names the participant as the applicant and the record holds one person. Unanswerable from the record alone - this is the case that proves caseworker_messages reached Jev. Was unsupported 0.78 before P1, grounded 0.66 after."
+    },
+    {
+      "id": "implied-not-living-alone",
+      "field": "Do you live alone?",
+      "value": "No",
+      "source": "inferred",
+      "expectVerdict": "grounded",
+      "expectSourceAccurate": "high",
+      "why": "KNOWN GAP. marital_status 'Single parent household' implies the participant does not live alone. Run wrun_01M37CZX said grounded; after the stricter default-answer clause wrun_01M37HH5 said unsupported 0.63. A defensible inference is being read as invention. NOTE: this case sits on the decision boundary and has been observed BOTH ways on identical input \u2014 unsupported 0.63 in run wrun_01M37HH5, grounded 0.54 in a later direct call. It is the clearest evidence that single-run verdict comparisons are unsafe, and the reason this suite repeats each case (JEV_EVAL_REPEATS, default 3)."
+    },
+    {
+      "id": "age-derived-adult",
+      "field": "Is the application for a minor adopted child?",
+      "value": "No",
+      "source": "inferred",
+      "expectVerdict": "grounded",
+      "expectSourceAccurate": "high",
+      "why": "KNOWN GAP. DOB 2000-01-02 makes the applicant an adult, and age-from-DOB is an accepted inference in evals/online/scorers/summary-attribution.ts. Jev's state carries no reference date, so it cannot compute age at all. Went 0.88 unsupported -> 0.58 unsupported / 0.40 grounded after P1: moving, not fixed."
+    },
+    {
+      "id": "invented-living-arrangement",
+      "field": "Check your type of living arrangement",
+      "value": "Independent Living",
+      "source": "inferred",
+      "expectVerdict": "unsupported",
+      "expectSourceAccurate": "high",
+      "why": "Nothing in the record establishes the IHSS living-arrangement category. Held at unsupported 0.83 / 0.88 across both runs - the case that proves the wording has not become too permissive. The `source` label 'inferred' is ACCURATE here even though the inference itself is unsupported: `verdict` judges the value, `sourceAccurate` judges the label, and the two are independent. Expecting low here was an error in the first draft of this set \u2014 observed 0.53-0.74."
+    },
+    {
+      "id": "invented-default-none-checked",
+      "field": "Please check any of the following that apply",
+      "value": "None checked",
+      "source": "inferred",
+      "expectVerdict": "unsupported",
+      "expectSourceAccurate": "high",
+      "why": "An unexamined default submitted as an answer. Distinct from the caseworker-answered version of the same field in run wrun_01M37HH5. The `source` label 'inferred' is ACCURATE here even though the inference itself is unsupported: `verdict` judges the value, `sourceAccurate` judges the label, and the two are independent. Expecting low here was an error in the first draft of this set \u2014 observed 0.53-0.74."
+    },
+    {
+      "id": "weak-flag-blind",
+      "field": "Applicant is Blind",
+      "value": "No",
+      "source": "inferred",
+      "expectVerdict": "unsupported",
+      "expectSourceAccurate": "high",
+      "why": "BORDERLINE by adjudication. special_needs false is a generic flag, not a statement about a specific IHSS eligibility category. Firmed 0.52 -> 0.70 after the default-answer clause. Kept so that if policy later decides the flag IS sufficient, this case flips deliberately rather than silently. The `source` label 'inferred' is ACCURATE here even though the inference itself is unsupported: `verdict` judges the value, `sourceAccurate` judges the label, and the two are independent. Expecting low here was an error in the first draft of this set \u2014 observed 0.53-0.74."
+    },
+    {
+      "id": "weak-flag-visually-impaired",
+      "field": "Applicant is Visually Impaired",
+      "value": "No",
+      "source": "inferred",
+      "expectVerdict": "unsupported",
+      "expectSourceAccurate": "high",
+      "why": "Same as weak-flag-blind. Firmed 0.38 -> 0.75. The `source` label 'inferred' is ACCURATE here even though the inference itself is unsupported: `verdict` judges the value, `sourceAccurate` judges the label, and the two are independent. Expecting low here was an error in the first draft of this set \u2014 observed 0.53-0.74."
+    },
+    {
+      "id": "contradicts-record-city",
+      "field": "City",
+      "value": "SACRAMENTO",
+      "source": "record",
+      "expectVerdict": "contradicts_record",
+      "expectSourceAccurate": "low",
+      "why": "Synthetic. The only exercise of the contradicts_record verdict - no real run produced one, so without this case that branch is untested."
+    }
+  ],
+  "gap": [
+    {
+      "id": "gap-ssn-missing",
+      "field": "Social Security Number",
+      "expectVerdict": "genuinely_missing",
+      "expectSensitive": "high",
+      "why": "Not in the record, and sensitive - drove sensitive 0.95 in both runs."
+    },
+    {
+      "id": "gap-health-history-missing",
+      "field": "Briefly describe your health history",
+      "expectVerdict": "genuinely_missing",
+      "expectSensitive": "high",
+      "why": "Medical detail, not in the record. sensitive 0.93 observed."
+    },
+    {
+      "id": "gap-help-at-home-missing",
+      "field": "Do you have anyone available to provide assistance at home?",
+      "expectVerdict": "genuinely_missing",
+      "expectSensitive": "low",
+      "why": "Not in the record but not sensitive. sensitive 0.13 observed - the case that proves the sensitive axis discriminates rather than firing on everything."
+    },
+    {
+      "id": "gap-dob-present",
+      "field": "Date of Birth",
+      "expectVerdict": "present_in_record",
+      "expectSensitive": "low",
+      "why": "NEGATIVE CONTROL. The record holds date_of_birth, so asking the caseworker for it wastes their turn. No real run produced a present_in_record verdict, so this branch is otherwise untested."
+    },
+    {
+      "id": "gap-zip-present",
+      "field": "Zip Code",
+      "expectVerdict": "present_in_record",
+      "expectSensitive": "low",
+      "why": "address.residential.zip is 92595."
+    },
+    {
+      "id": "gap-age-derivable",
+      "field": "Age",
+      "expectVerdict": "derivable_from_record",
+      "expectSensitive": "low",
+      "why": "Not stated but follows from date_of_birth - the verdict GAP_VERDICTS names explicitly. Pairs with age-derived-adult above: if Jev cannot do age-from-DOB for want of a reference date, both fail together and the cause is one gap, not two."
+    }
+  ]
+}
