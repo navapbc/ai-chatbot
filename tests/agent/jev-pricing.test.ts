@@ -53,7 +53,15 @@ describe('current-generation Anthropic rows', () => {
     const sonnet55 = MODEL_PRICING['claude-sonnet-5-5'];
     expect(sonnet55.input).toBe(2);
     expect(sonnet55.output).toBe(10);
-    expect(sonnet55.cachedInput).toBe(0.2);
+    expect(sonnet55.cachedInput).toBe(0.1);
+  });
+
+  it('prices Haiku 5.5 at the published ≤100k-prompt tier', () => {
+    const haiku55 = MODEL_PRICING['claude-haiku-5-5'];
+    expect(haiku55.input).toBe(0.1);
+    expect(haiku55.output).toBe(0.5);
+    expect(haiku55.cachedInput).toBe(0.01);
+    expect(haiku55.cacheWrite).toBe(0.125);
   });
 
   // This test doubles as the regression guard for the `server-only` import

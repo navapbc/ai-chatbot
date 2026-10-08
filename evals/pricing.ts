@@ -60,7 +60,14 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   // (Anthropic documents the 0.05x exception explicitly). Do not "correct" it
   // to 0.40.
   "claude-opus-5-5": { input: 4, output: 20, cachedInput: 0.2, cacheWrite: 5 },
-  "claude-sonnet-5-5": { input: 2, output: 10, cachedInput: 0.2, cacheWrite: 2.5 },
+  "claude-sonnet-5-5": { input: 2, output: 10, cachedInput: 0.1, cacheWrite: 2.5 },
+  // Haiku 5.5 is tiered by prompt size: the row below is the ≤100k-token tier
+  // ($0.10 in / $0.50 out, 5m write $0.125, read $0.01). Prompts over 100k are
+  // re-rated to $0.50 / $2.50 (write $0.625, read $0.05) — not modeled here, so
+  // cost is under-counted on any eval task with a very large prompt. Read from
+  // platform.claude.com/docs/en/about-claude/pricing on 2026-10-08, the same
+  // day Sonnet 5.5's cache read was corrected from $0.20 to the published $0.10.
+  "claude-haiku-5-5": { input: 0.1, output: 0.5, cachedInput: 0.01, cacheWrite: 0.125 },
   // Not in the CI matrix or DEFAULT_EVAL_MODEL today, but selectable via
   // EVAL_MODEL=claude-haiku-4-5 (getEvalModel() accepts any claude-* id), and
   // it's the legacy route's prepareStepModel (lib/ai/providers.ts) — though
