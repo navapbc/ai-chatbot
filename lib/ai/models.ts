@@ -54,6 +54,11 @@ const devOnlyChatModels: Array<ChatModel> = [
     description: 'Highest-cost OpenAI model',
   },
   {
+    id: 'claude-haiku-5-5',
+    name: 'Claude Haiku 5.5',
+    description: 'Newest Haiku; fast and cheap',
+  },
+  {
     id: 'claude-haiku-4-5',
     name: 'Claude Haiku 4.5',
     description: 'Cheapest Claude; fast, weaker at long tool loops',
@@ -62,6 +67,11 @@ const devOnlyChatModels: Array<ChatModel> = [
     id: 'claude-sonnet-4-6',
     name: 'Claude Sonnet 4.6',
     description: "Balanced Claude; Eve's default when no override is sent",
+  },
+  {
+    id: 'claude-sonnet-5-5',
+    name: 'Claude Sonnet 5.5',
+    description: 'Newest Sonnet; enabled on Vertex',
   },
   {
     id: 'claude-sonnet-5',
@@ -77,6 +87,11 @@ const devOnlyChatModels: Array<ChatModel> = [
     id: 'claude-opus-4-8',
     name: 'Claude Opus 4.8',
     description: 'Previous-generation Opus',
+  },
+  {
+    id: 'claude-opus-5-5',
+    name: 'Claude Opus 5.5',
+    description: 'Newest Opus; enabled on Vertex',
   },
   {
     id: 'claude-opus-5',

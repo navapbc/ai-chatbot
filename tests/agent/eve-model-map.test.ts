@@ -10,6 +10,9 @@ import {
 
 describe('toVertexModelId', () => {
   it('maps Claude picker ids to Vertex model ids', () => {
+    expect(toVertexModelId('claude-opus-5-5')).toBe('claude-opus-5-5');
+    expect(toVertexModelId('claude-sonnet-5-5')).toBe('claude-sonnet-5-5');
+    expect(toVertexModelId('claude-haiku-5-5')).toBe('claude-haiku-5-5');
     expect(toVertexModelId('claude-opus-5')).toBe('claude-opus-5');
     expect(toVertexModelId('claude-sonnet-5')).toBe('claude-sonnet-5');
     expect(toVertexModelId('claude-opus-4-8')).toBe('claude-opus-4-8');
