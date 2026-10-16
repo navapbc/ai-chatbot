@@ -116,6 +116,25 @@ The script skips it without a wake. Your read on the next wake covers those byte
   stable ids for the freshness probe. Follow the playbook structure in SKILL.md
   Phase 0. Write in ASD-STE100 Simplified Technical English.
 - REUSABLE SHELL PATTERNS -> <skill-dir>/scripts/
+- SITE SCRIPT -> <skill-dir>/scripts/<domain>.sh
+
+**Write the site script, not only the playbook.** Whenever the transcript establishes a
+working method for a whole form, emit `scripts/<domain>.sh` alongside the playbook. The
+playbook records *why* — the confirmed failures, what not to try, what is still
+UNCONFIRMED. The script carries the *how*, so a later agent executes it rather than
+interpreting the prose and getting lost in it. Follow `scripts/demoqa.com.sh` for the shape:
+
+1. A `<domain>_probe` function — the freshness ids, non-zero if the site changed.
+2. One function per awkward field, each returning non-zero on any failure it can detect.
+3. A `<domain>_fill` function taking the field values as arguments, probe first.
+4. A `<domain>_readback` function printing one `field=value` line per field, covering every
+   field type on the form — values, checked states, and widgets that exist only as rendered
+   text.
+5. No submit, ever. Submission belongs to the orchestrator with a person approving.
+
+Same rules as the playbook: no participant data in the file — arguments only, never a real
+value baked in. If the transcript only established a partial method, write the functions it
+did establish and mark the rest UNCONFIRMED in the playbook rather than guessing in code.
   If the main agent improvises the same shell pattern two or more times, write it as
   a helper function with STE comments. Check the syntax with `bash -n`. Do not add a
   helper for a pattern seen one time on one site.
