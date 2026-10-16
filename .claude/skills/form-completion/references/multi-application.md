@@ -220,11 +220,16 @@ parallelism. The figures do not show the design is wrong: its value is throughpu
 isolation, not unit cost.
 
 The BLOCKED rule (the agent returns BLOCKED when the playbook does not cover a
-situation, and does not improvise) limits what a small-model agent can get wrong. The
-measurement shows it does not limit what the agent costs. If a `haiku` agent returns
-wrong fills or invented values, record it and use `sonnet` for that path. Moving the
-warm path back to `haiku` depends on site scripts landing; if they do not, keep
-`sonnet`.
+situation, and does not improvise) is what is supposed to limit what a small-model agent
+can get wrong. In the same 2026-09-02 run it did not: the `haiku` agent reported "Blocked
+Fields: None", never escalated, and returned a site fact that was false. The rule as
+written only covered a missing *value*; a documented method that would not work was not
+covered, so the agent explored instead of stopping. The fill-agent rules below now cover
+that case, the re-opens and the command budget.
+
+If a small-model agent returns wrong fills, invented values, invented site facts, or blows
+the command budget, record it and use `sonnet` for that path. Moving the warm path back to
+`haiku` depends on site scripts landing; if they do not, keep `sonnet`.
 
 Start all the ready fill agents in ONE message (parallel tool calls). Each fill
 agent prompt contains:
@@ -255,8 +260,28 @@ Rules:
 - Phase 2 is complete. Do not ask questions. If you find a NEW gap during the fill,
   leave the field empty, mark the application BLOCKED on that field, and continue
   with the other fields.
+- **A method that does not work is also BLOCKED.** The rule above covers a missing
+  value. This one covers a missing mechanism: if a documented method fails **twice** on
+  one field, stop working that field, mark it BLOCKED with the exact commands you ran
+  and their output, and continue with the other fields. Do not explore for an
+  alternative. Discovery is the scout's job and judgment is the orchestrator's.
+- **Never re-open or reload the form during a fill.** A re-open discards every value
+  already entered, so the run starts over without saying so. If you believe the page is
+  in a bad state, that is BLOCKED — report it and stop. Re-opening to "start clean" is
+  the single most expensive thing a fill agent can do.
+- **Budget: stop at three times the field count.** If your command count passes roughly
+  three commands for each field on the form, stop and return BLOCKED with what you have.
+  Exceeding it means you are searching rather than filling, and searching here is a
+  defect rather than diligence.
 - Do not guess a value. A field with no value in the table above stays empty and goes
   in the report as EMPTY. This includes a Yes/No pair: leave both boxes clear.
+- **Do not guess a SITE FACT either.** Report only what a command output actually showed,
+  and include the command and its output for each fact you report. A fact you infer from
+  a page looking a certain way is not a fact. This matters more than a wrong fill: a wrong
+  fill is caught by the readback, whereas a wrong site fact goes into the playbook and
+  misleads every later run. Observed 2026-09-02 — a fill agent reported that pressing
+  Enter in a typeahead "risks auto-submitting the form"; the orchestrator checked, the
+  page was not submitted, and the claim would otherwise have been written down as true.
 - Verify every write (Phase 4). Do not submit (Phase 6 approval happens in the main
   session).
 - Batch the writes: many write commands in ONE Bash call, then ONE readback pass. Do
