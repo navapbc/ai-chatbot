@@ -69,3 +69,6 @@ docs/superpowers/
 terraform/*.tfvars
 terraform/*apply.log
 .neon
+
+# Browser bridge extension build output
+extension/dist/

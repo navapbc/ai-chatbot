@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Bridge Form</title>
+<h1>Benefit Application</h1>
+<form id="f" onsubmit="return false">
+  <label for="first">First name</label> <input id="first" name="first"><br>
+  <label for="last">Last name</label> <input id="last" name="last"><br>
+  <label for="state">State</label>
+  <select id="state" name="state"><option value="">--</option><option>CA</option><option>NY</option></select><br>
+  <label><input type="checkbox" id="agree"> I agree</label><br>
+</form>
+<iframe id="child" title="child" srcdoc="<label for=c>Child field</label><input id=c name=c>"></iframe>
+<iframe id="xo" title="cross" src="{{FRAME_ORIGIN}}/oopif.html"></iframe>
+<p><a id="away" href="{{FRAME_ORIGIN}}/away.html">Leave this site</a></p>
+</html>

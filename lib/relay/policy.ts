@@ -48,3 +48,43 @@ export function checkCommand(
   }
   return { ok: true };
 }
+
+// Network events the agent may see. agent-browser needs them for load and
+// idle waits; everything else in the Network domain is dropped.
+const FORWARDED_NETWORK_EVENTS = new Set([
+  'Network.requestWillBeSent',
+  'Network.responseReceived',
+  'Network.loadingFinished',
+  'Network.loadingFailed',
+  'Network.requestServedFromCache',
+]);
+
+// Any key naming headers, cookies or request bodies: headers, requestHeaders,
+// headersText, requestHeadersText, associatedCookies, blockedCookies,
+// cookiePartitionKey, postData, hasPostData, postDataEntries.
+const SENSITIVE_KEY = /header|cookie|postdata/i;
+
+function stripSensitive(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripSensitive);
+  if (typeof value !== 'object' || value === null) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (SENSITIVE_KEY.test(key)) continue;
+    out[key] = stripSensitive(child);
+  }
+  return out;
+}
+
+/**
+ * Applied by the extension to every CDP event before it leaves the browser.
+ * Returns null to drop the event. Network events lose all header, cookie and
+ * post-data fields; other domains pass through unchanged.
+ */
+export function filterEvent(
+  method: string,
+  params: unknown,
+): { method: string; params: unknown } | null {
+  if (!method.startsWith('Network.')) return { method, params };
+  if (!FORWARDED_NETWORK_EVENTS.has(method)) return null;
+  return { method, params: stripSensitive(params) };
+}
