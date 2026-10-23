@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { checkCommand, normalizeOrigin } from '../lib/relay/policy';
+import {
+  checkCommand,
+  isMethodAllowed,
+  normalizeOrigin,
+} from '../lib/relay/policy';
 import type { RelayToExtension } from '../lib/relay/protocol';
 import { type Bus, channelFor, type Direction } from './bus';
 import {
@@ -56,7 +60,6 @@ interface AgentSide {
   extState: 'unknown' | 'up' | 'away';
   pending: Map<string, Pending>;
   queue: Waiter[];
-  holdTimer?: ReturnType<typeof setTimeout>;
   seenTargets: Set<string>;
   ready: Promise<unknown>;
   unsubscribes: Array<Promise<() => Promise<void>>>;
@@ -72,6 +75,8 @@ interface ExtSide {
 interface Run {
   agent?: AgentSide;
   ext?: ExtSide;
+  /** Set while the extension is away; fires at the end of the resume window. */
+  holdTimer?: ReturnType<typeof setTimeout>;
 }
 
 const DISCONNECTED = 'tab or extension disconnected';
@@ -143,11 +148,7 @@ export class RunHub {
     });
     socket.on('close', () => {
       if (side.closed) return;
-      this.dropExtension(side);
-      if (run.ext === side) run.ext = undefined;
-      this.forgetIfEmpty(runId, run);
-      this.log({ event: 'extension-detached', runId, role: 'extension' });
-      this.publish(runId, 'to-agent', { t: 'ext-down' });
+      this.extensionGone(runId, side);
     });
 
     side.unsubscribe = this.bus.subscribe(channelFor(runId, 'to-ext'), (raw) =>
@@ -157,12 +158,14 @@ export class RunHub {
       () => {
         // Announce only once commands can reach this socket, and only if it
         // is still the run's extension.
-        if (side.closed || this.runs.get(runId)?.ext !== side) return;
+        const current = this.runs.get(runId);
+        if (side.closed || current?.ext !== side) return;
         this.publish(runId, 'to-ext', {
           t: 'ext-attached',
           by: this.instanceId,
         });
         this.publish(runId, 'to-agent', { t: 'ext-up' });
+        this.clearHold(runId, current);
       },
       () => this.closeExtensionSocket(runId, side, 'relay bus unavailable'),
     );
@@ -179,7 +182,8 @@ export class RunHub {
       socket,
       origin,
       closed: false,
-      extState: run.ext ? 'up' : 'unknown',
+      // An agent that connects inside the resume window waits like the last.
+      extState: run.ext ? 'up' : run.holdTimer ? 'away' : 'unknown',
       pending: new Map(),
       queue: [],
       seenTargets: new Set(),
@@ -309,12 +313,38 @@ export class RunHub {
     } catch {
       // Already gone; treat as closed below.
     }
-    if (!side.closed) {
-      this.dropExtension(side);
-      const run = this.runs.get(runId);
-      if (run?.ext === side) run.ext = undefined;
-      this.publish(runId, 'to-agent', { t: 'ext-down' });
-    }
+    if (!side.closed) this.extensionGone(runId, side);
+  }
+
+  /** The run's extension socket went away: hold the run for its window. */
+  private extensionGone(runId: string, side: ExtSide) {
+    this.dropExtension(side);
+    this.log({ event: 'extension-detached', runId, role: 'extension' });
+    const run = this.runs.get(runId);
+    if (run?.ext !== side) return;
+    run.ext = undefined;
+    this.startHold(runId, run);
+    this.publish(runId, 'to-agent', { t: 'ext-down' });
+  }
+
+  private startHold(runId: string, run: Run) {
+    if (run.holdTimer) return;
+    this.log({ event: 'run-held', runId });
+    run.holdTimer = setTimeout(() => {
+      run.holdTimer = undefined;
+      if (this.runs.get(runId) !== run) return;
+      this.log({ event: 'run-expired', runId });
+      // Local only: the extension may already be back on another hub, which
+      // tells its own agent hub with ext-up.
+      this.closeLocal(runId, NOT_RETURNED);
+    }, this.resumeWindowMs);
+  }
+
+  private clearHold(runId: string, run: Run) {
+    if (!run.holdTimer) return;
+    clearTimeout(run.holdTimer);
+    run.holdTimer = undefined;
+    this.log({ event: 'run-resumed', runId });
   }
 
   /** Marks an extension side closed, unsubscribes and optionally closes it. */
@@ -370,6 +400,11 @@ export class RunHub {
     try {
       let result: unknown;
       if (sessionId !== undefined) {
+        // checkCommand exempts Target.createTarget for the browser-level shim;
+        // on a session it must still pass the allowlist.
+        if (!isMethodAllowed(method)) {
+          return denied(`method not allowed: ${method}`);
+        }
         const check = checkCommand(
           { method, params },
           { origin: agent.origin },
@@ -502,23 +537,13 @@ export class RunHub {
   private onToAgent(runId: string, agent: AgentSide, raw: string) {
     const frame = parseObject(raw) as ToAgentFrame | null;
     if (!frame || agent.closed) return;
+    const run = this.runs.get(runId);
     if (frame.t === 'ext-down') {
       this.rejectPending(agent, DISCONNECTED);
       agent.extState = 'away';
-      if (!agent.holdTimer) {
-        this.log({ event: 'run-held', runId, role: 'agent' });
-        agent.holdTimer = setTimeout(() => {
-          agent.holdTimer = undefined;
-          this.log({ event: 'run-expired', runId, role: 'agent' });
-          this.closeRun(runId, NOT_RETURNED);
-        }, this.resumeWindowMs);
-      }
+      if (run?.agent === agent) this.startHold(runId, run);
     } else if (frame.t === 'ext-up') {
-      if (agent.holdTimer) {
-        clearTimeout(agent.holdTimer);
-        agent.holdTimer = undefined;
-        this.log({ event: 'run-resumed', runId, role: 'agent' });
-      }
+      if (run?.agent === agent) this.clearHold(runId, run);
       agent.extState = 'up';
       for (const waiter of agent.queue.splice(0)) {
         this.dispatch(runId, agent, waiter);
@@ -539,8 +564,6 @@ export class RunHub {
   /** Fails every outstanding command and unsubscribes; optionally closes. */
   private closeAgent(agent: AgentSide, reason: string, closeSocket = true) {
     agent.closed = true;
-    clearTimeout(agent.holdTimer);
-    agent.holdTimer = undefined;
     this.rejectPending(agent, reason);
     for (const waiter of agent.queue.splice(0)) {
       waiter.reject(new Error(reason));
@@ -563,6 +586,8 @@ export class RunHub {
     const run = this.runs.get(runId);
     if (!run) return;
     this.runs.delete(runId);
+    clearTimeout(run.holdTimer);
+    run.holdTimer = undefined;
     if (run.agent && !run.agent.closed) this.closeAgent(run.agent, reason);
     if (run.ext && !run.ext.closed) {
       this.dropExtension(run.ext, NORMAL_CLOSE, reason);
@@ -580,7 +605,13 @@ export class RunHub {
   }
 
   private forgetIfEmpty(runId: string, run: Run) {
-    if (!run.agent && !run.ext && this.runs.get(runId) === run) {
+    // A held run is kept until its window ends so a returning agent waits.
+    if (
+      !run.agent &&
+      !run.ext &&
+      !run.holdTimer &&
+      this.runs.get(runId) === run
+    ) {
       this.runs.delete(runId);
     }
   }

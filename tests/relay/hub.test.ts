@@ -147,6 +147,25 @@ describe('RunHub', () => {
     expect(ext.sent).toHaveLength(0);
   });
 
+  it('refuses a session-scoped Target.createTarget even with an in-scope url', async () => {
+    const { hub } = makeHub();
+    const ext = new FakeSocket();
+    const agent = new FakeSocket();
+    hub.attachExtension(RUN, ORIGIN, ext);
+    hub.attachAgent(RUN, ORIGIN, agent);
+
+    agent.receive({
+      id: 19,
+      sessionId: 'tab-7',
+      method: 'Target.createTarget',
+      params: { url: `${ORIGIN}/next` },
+    });
+    await vi.waitFor(() =>
+      expect(lastReply(agent, 19)?.error).toMatchObject({ code: -32000 }),
+    );
+    expect(ext.sent).toHaveLength(0);
+  });
+
   it('returns only the targets the extension listed for Target.getTargets', async () => {
     const { hub } = makeHub();
     const ext = new FakeSocket();
@@ -395,6 +414,38 @@ describe('RunHub', () => {
     );
   });
 
+  it('makes an agent that connects inside the resume window wait too', async () => {
+    const { hub } = makeHub({ resumeWindowMs: 60_000 });
+    const ext = new FakeSocket();
+    hub.attachExtension(RUN, ORIGIN, ext);
+    const first = new FakeSocket();
+    hub.attachAgent(RUN, ORIGIN, first);
+    ext.close();
+    first.close();
+
+    const agent = new FakeSocket();
+    expect(hub.attachAgent(RUN, ORIGIN, agent)).toBe('ok');
+    agent.receive({ id: 20, sessionId: 'tab-7', method: 'Page.enable' });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(lastReply(agent, 20)).toBeUndefined();
+
+    const returned = new FakeSocket();
+    hub.attachExtension(RUN, ORIGIN, returned);
+    await vi.waitFor(() => expect(returned.sent).toHaveLength(1));
+    returned.receive({
+      type: 'reply',
+      id: returned.messages()[0].id,
+      result: {},
+    });
+    await vi.waitFor(() =>
+      expect(lastReply(agent, 20)).toEqual({
+        id: 20,
+        sessionId: 'tab-7',
+        result: {},
+      }),
+    );
+  });
+
   it('closes the earlier extension socket when a new one attaches', async () => {
     const { hub } = makeHub();
     const first = new FakeSocket();
@@ -432,6 +483,7 @@ describe('RunHub', () => {
       origin: 'https://evil.example.com',
     });
     expect(wrongOrigin.closed).not.toBeNull();
+    hub.closeRun(RUN, 'test over');
   });
 
   it('closes both sockets on closeRun and on tabClosed', async () => {
