@@ -41,11 +41,10 @@ const targetInfo = (t) => ({
   canAccessOpener: false,
 });
 
-// When TAB_ORIGIN is set, only tabs on that exact origin are ever exposed.
+// Only tabs on TAB_ORIGIN's exact origin are ever exposed.
+// Fails closed: with no TAB_ORIGIN configured, nothing is in scope.
 const inScope = (url) =>
-  self.TAB_ORIGIN
-    ? new URL(url, 'http://x').origin === self.TAB_ORIGIN
-    : /^(https?:|about:blank)/.test(url);
+  Boolean(self.TAB_ORIGIN) && new URL(url, 'http://x').origin === self.TAB_ORIGIN;
 
 const pages = async () =>
   (await chrome.debugger.getTargets()).filter(

@@ -29,7 +29,7 @@ const TOKEN = process.env.SPIKE_TOKEN ?? crypto.randomBytes(32).toString('hex');
 if (process.env.WRITE_CONFIG !== '0')
 fs.writeFileSync(
   path.join(import.meta.dirname, 'extension/config.js'),
-  `self.RELAY_TOKEN = '${TOKEN}';\nself.RELAY_URL = '${EXT_URL}';\n`,
+  `self.RELAY_TOKEN = '${TOKEN}';\nself.RELAY_URL = '${EXT_URL}';\nself.TAB_ORIGIN = '${process.env.TAB_ORIGIN ?? `http://127.0.0.1:${PORT}`}';\n`,
 );
 let ext = null;
 let client = null;
