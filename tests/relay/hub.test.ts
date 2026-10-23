@@ -128,7 +128,7 @@ describe('RunHub', () => {
   });
 
   it('answers a denied command with a CDP error and never forwards it', async () => {
-    const { hub } = makeHub();
+    const { hub, logs } = makeHub();
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
@@ -159,6 +159,17 @@ describe('RunHub', () => {
     }
     expect(lastReply(agent, 2)?.sessionId).toBe('tab-7');
     expect(ext.sent).toHaveLength(0);
+
+    // The log names the method and a fixed reason code, never request text.
+    const denials = logs.filter((l) => l.event === 'command-denied');
+    expect(
+      denials.map(({ method, level, reason }) => ({ method, level, reason })),
+    ).toEqual([
+      { method: 'Network.getAllCookies', level: 'session', reason: 'method' },
+      { method: 'Page.navigate', level: 'session', reason: 'scope' },
+      { method: 'Target.createTarget', level: 'browser', reason: 'scope' },
+    ]);
+    expect(JSON.stringify(denials)).not.toContain('evil.example.com');
   });
 
   it('refuses a session-scoped Target.createTarget even with an in-scope url', async () => {

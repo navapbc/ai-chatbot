@@ -495,9 +495,20 @@ export class RunHub {
     }
 
     const started = Date.now();
-    const denied = (reason: string) => {
-      this.log({ event: 'command-denied', runId, role: 'agent', method });
-      fail(reason);
+    // Fixed vocabulary only: never request text. `level` tells a session
+    // command from a browser-level one; `reason` a method that is not listed
+    // from one refused for its url.
+    const level = sessionId === undefined ? 'browser' : 'session';
+    const denied = (reason: 'method' | 'scope', message: string) => {
+      this.log({
+        event: 'command-denied',
+        runId,
+        role: 'agent',
+        method,
+        level,
+        reason,
+      });
+      fail(message);
     };
     try {
       let result: unknown;
@@ -505,13 +516,14 @@ export class RunHub {
         // checkCommand exempts Target.createTarget for the browser-level shim;
         // on a session it must still pass the allowlist.
         if (!isMethodAllowed(method)) {
-          return denied(`method not allowed: ${method}`);
+          return denied('method', `method not allowed: ${method}`);
         }
         const check = checkCommand(
           { method, params },
           { origin: agent.origin },
         );
-        if (!check.ok) return denied(check.reason);
+        // The method passed the allowlist above, so a refusal is the scope.
+        if (!check.ok) return denied('scope', check.reason);
         result = await this.extensionCall(
           runId,
           agent,
@@ -527,7 +539,7 @@ export class RunHub {
             { method, params },
             { origin: agent.origin },
           );
-          if (!check.ok) return denied(check.reason);
+          if (!check.ok) return denied('scope', check.reason);
         }
         result = await handleBrowserLevel(
           method,
@@ -551,6 +563,7 @@ export class RunHub {
         runId,
         role: 'agent',
         method,
+        level,
         durationMs: Date.now() - started,
       });
     } catch (error) {
@@ -560,6 +573,7 @@ export class RunHub {
         runId,
         role: 'agent',
         method,
+        level,
         durationMs: Date.now() - started,
       });
     }
