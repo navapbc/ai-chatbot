@@ -218,7 +218,16 @@ export function mintRunTokens(secret: string, origin: string) {
   };
 }
 
-export const cdpUrl = (relay: Relay, agentToken: string) =>
+/** A relay running elsewhere (e.g. a container), known only by URL and secret. */
+export type ExternalRelay = Pick<Relay, 'url' | 'secret'>;
+
+/** Points the harness at an already-running relay; http(s) becomes ws(s). */
+export const externalRelay = (url: string, secret: string): ExternalRelay => ({
+  url: url.replace(/^http/, 'ws').replace(/\/+$/, ''),
+  secret,
+});
+
+export const cdpUrl = (relay: Pick<Relay, 'url'>, agentToken: string) =>
   `${relay.url}/cdp?token=${agentToken}`;
 
 // --- browser -----------------------------------------------------------------

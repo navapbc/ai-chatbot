@@ -30,6 +30,12 @@ output "chatbot_public_url" {
   value       = google_cloud_run_v2_service.ai_chatbot.uri
 }
 
+# Browser relay outputs (null when relay_image_url is empty)
+output "relay_service_url" {
+  description = "URL of the browser relay Cloud Run service"
+  value       = one(google_cloud_run_v2_service.relay[*].uri)
+}
+
 # Service account outputs
 output "cloud_run_service_account" {
   description = "Service account email for Cloud Run services"

@@ -78,6 +78,7 @@ jobs:
 
     outputs:
       chatbot_image: ${{ steps.images.outputs.chatbot_image }}
+      relay_image: ${{ steps.images.outputs.relay_image }}
 
     steps:
       - name: Checkout code
@@ -100,6 +101,7 @@ jobs:
         run: |
           TAG=${GITHUB_SHA:0:7}
           echo "chatbot_image=${ARTIFACT_REGISTRY}/ai-chatbot:${TAG}" >> $GITHUB_OUTPUT
+          echo "relay_image=${ARTIFACT_REGISTRY}/labs-asp-relay:${TAG}" >> $GITHUB_OUTPUT
 
       # - name: Get PostHog API key
       #   id: posthog_key
@@ -133,6 +135,18 @@ jobs:
             -t ${{ steps.images.outputs.chatbot_image }} \
             .
           docker push ${{ steps.images.outputs.chatbot_image }}
+
+      # Browser relay (relay/Dockerfile). Same registry and tag as the chatbot
+      # image: promote.yml derives both names from the commit SHA. Needs no
+      # build args or secrets; RELAY_TOKEN_SECRET comes from Secret Manager at
+      # runtime (terraform/relay.tf).
+      - name: Build and push relay image
+        run: |
+          docker build \
+            -f relay/Dockerfile \
+            -t ${{ steps.images.outputs.relay_image }} \
+            .
+          docker push ${{ steps.images.outputs.relay_image }}
 
   # Deploy infrastructure with Terraform
   terraform:
@@ -298,6 +312,7 @@ jobs:
           terraform plan \
             -var="environment=${{ needs.setup.outputs.environment }}" \
             -var="chatbot_image_url=${{ needs.build.outputs.chatbot_image }}" \
+            -var="relay_image_url=${{ needs.build.outputs.relay_image }}" \
             -var="enable_custom_domain=${ENABLE_DOMAIN}" \
             -var="use_guest_login=${USE_GUEST}" \
             -var="jev_features=${JEV_FEATURES}" \
