@@ -4,8 +4,11 @@ Living tracker for the Chrome extension work. Compiled on 2026-10-23 from the re
 
 ## Before Plan 1 Merges
 
-- [ ] Find the 2 failing tests in `pnpm exec vitest run --project node` (1 file; 40 passed). Decide whether they are flaky, environmental, or caused by this branch.
-- [ ] Get a verdict from the app's browser project: `pnpm exec vitest run` printed only its banner and exited 0 with no results.
+- [x] Node project (`pnpm exec vitest run --project node`): one earlier run showed 2 failures in 1 file (40 passed, 42 s) and could not be reproduced. Six later runs passed 42 of 42 in about 2 to 4 s, including right after the relay suite and while it ran. The slow file is `tests/client/browser-commands.node.test.ts` (it launches its own Chromium; this branch did not touch it). Cause of the one-off is unidentified, probably transient load.
+- [x] Browser project: run it with `CI=true pnpm exec vitest run --project browser`. Without `CI` it exits 0 with no output in this environment, on the untouched baseline too. Result: 115 tests, 112 pass, 3 fail (`form-summary-card.test.tsx` two tests, `gap-analysis-card.test.tsx` one test). The same 3 fail on a clean `browser-extension` checkout (`fa60e367`), so they are pre-existing and not caused by this branch.
+- [ ] Decide who fixes the 3 pre-existing browser-project failures; the existing `test` job in `.github/workflows/test.yml` runs this project, so check CI history for whether it is already red.
+- [ ] Use Node 24 for local commands: a fresh shell here defaulted to Node v20.15.1 and `pnpm` 11 failed with `ERR_UNKNOWN_BUILTIN_MODULE` (`nvm use 24`).
+- [ ] The relay e2e suite leaves an `agent-browser` daemon process running after it finishes; stop daemons in the harness teardown.
 - [ ] Watch the first GitHub run of the new `relay-e2e` job (headless Chromium with an extension has only been run locally).
 - [ ] Choose how `feat/browser-bridge` lands: merge locally, push and open a PR into `browser-extension`, or keep. PR 324 (the plan) is still open and its commit is inside this branch.
 - [ ] Confirm the decisions in "Rulings To Confirm" below.

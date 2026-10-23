@@ -31,4 +31,4 @@ pnpm exec vitest run --config vitest.config.node.mjs tests/agent
 terraform -chdir=terraform init -backend=false && terraform -chdir=terraform validate
 ```
 
-The relay suite includes browser tests (Playwright Chromium, `openssl`, and the `agent-browser` binary from `node_modules`). The app's own `pnpm exec vitest run --project node` had two failing tests that were not investigated when this was written.
+The relay suite includes browser tests (Playwright Chromium, `openssl`, and the `agent-browser` binary from `node_modules`). Use Node 24. The app's node project passes (`pnpm exec vitest run --project node`, 42 tests). The browser project (`CI=true pnpm exec vitest run --project browser`) has 3 failing tests in `form-summary-card` and `gap-analysis-card` that fail identically on the untouched `browser-extension` baseline.
