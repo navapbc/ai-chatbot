@@ -75,6 +75,19 @@ Security controls the spike proved out:
 - The production token model: this spike uses one shared token per run.
   Production needs a short-lived per-session token tied to the caseworker login.
 
+## Known Gaps (do not copy into production)
+
+- **CDP method allowlist is missing.** The extension forwards any CDP method
+  once a tab is in scope. A token holder could read cookies for the whole
+  profile (`Network.getAllCookies`), navigate through `Runtime.evaluate`, or use
+  `Fetch.*`, `Storage.*` and `Target.*`. The origin lock only checks the tab's
+  current URL, not what a command does. Production needs an explicit allowlist
+  derived from the methods agent-browser actually sends, with these families
+  denied by default. Child (iframe) sessions need the same check against their
+  own target URL, not just the owning tab's.
+- One shared token per run, no per-session identity.
+- No audit log of which commands ran on which origin.
+
 ## Running locally
 
 ```bash
