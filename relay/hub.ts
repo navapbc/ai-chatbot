@@ -26,6 +26,8 @@ export interface RunHubOptions {
   bus: Bus;
   commandTimeoutMs?: number;
   resumeWindowMs?: number;
+  /** How long a new extension socket may take to send `register`. */
+  registerTimeoutMs?: number;
   log: (line: Record<string, unknown>) => void;
 }
 
@@ -34,10 +36,10 @@ export interface RunHubOptions {
 // `to-ext` and `to-agent`, which no socket can publish to directly.
 type ToExtFrame =
   | { t: 'cmd'; cmd: RelayToExtension }
-  | { t: 'ext-attached'; by: string }
+  | { t: 'ext-attached'; by: string; origin: string }
   | { t: 'close'; reason: string };
 type ToAgentFrame =
-  | { t: 'ext-up' }
+  | { t: 'ext-up'; origin: string }
   | { t: 'ext-down' }
   | { t: 'close'; reason: string };
 
@@ -69,12 +71,19 @@ interface ExtSide {
   socket: PeerSocket;
   origin: string;
   closed: boolean;
+  /** False until a matching `register`; a pending socket receives nothing. */
+  registered: boolean;
+  registerTimer?: ReturnType<typeof setTimeout>;
   unsubscribe?: Promise<() => Promise<void>>;
 }
 
 interface Run {
+  /** Bound by the first attach; every later attach must match it. */
+  origin: string;
   agent?: AgentSide;
   ext?: ExtSide;
+  /** Extension sockets that have not sent a matching `register` yet. */
+  pendingExts: Set<ExtSide>;
   /** Set while the extension is away; fires at the end of the resume window. */
   holdTimer?: ReturnType<typeof setTimeout>;
 }
@@ -108,6 +117,7 @@ export class RunHub {
   private readonly bus: Bus;
   private readonly commandTimeoutMs: number;
   private readonly resumeWindowMs: number;
+  private readonly registerTimeoutMs: number;
   private readonly log: (line: Record<string, unknown>) => void;
   private readonly instanceId = randomUUID();
   private counter = 0;
@@ -117,6 +127,7 @@ export class RunHub {
     this.bus = opts.bus;
     this.commandTimeoutMs = opts.commandTimeoutMs ?? 30_000;
     this.resumeWindowMs = opts.resumeWindowMs ?? 300_000;
+    this.registerTimeoutMs = opts.registerTimeoutMs ?? 10_000;
     this.log = (line) => {
       try {
         opts.log(line);
@@ -127,16 +138,22 @@ export class RunHub {
   }
 
   attachExtension(runId: string, origin: string, socket: PeerSocket): void {
-    const run = this.run(runId);
-    const previous = run.ext;
-    if (previous) {
-      this.dropExtension(previous, NORMAL_CLOSE, 'replaced');
-      run.ext = undefined;
-      // Commands sent to the old socket will never be answered.
-      this.publish(runId, 'to-agent', { t: 'ext-down' });
+    const refusal = this.originRefusal(runId, origin);
+    if (refusal) {
+      this.log({ event: 'attach-refused', runId, role: 'extension' });
+      this.refuse(socket, refusal);
+      return;
     }
-    const side: ExtSide = { socket, origin, closed: false };
-    run.ext = side;
+    const run = this.run(runId, origin);
+    // Held apart until it registers, so it cannot displace the current
+    // extension or receive commands on the strength of its token alone.
+    const side: ExtSide = { socket, origin, closed: false, registered: false };
+    run.pendingExts.add(side);
+    side.registerTimer = setTimeout(() => {
+      if (side.registered || side.closed) return;
+      this.log({ event: 'register-timeout', runId, role: 'extension' });
+      this.refusePending(runId, side, 'register timeout');
+    }, this.registerTimeoutMs);
     this.log({ event: 'extension-attached', runId, role: 'extension' });
 
     socket.on('message', (data) => {
@@ -148,35 +165,23 @@ export class RunHub {
     });
     socket.on('close', () => {
       if (side.closed) return;
-      this.extensionGone(runId, side);
+      if (side.registered) this.extensionGone(runId, side);
+      else this.refusePending(runId, side);
     });
-
-    side.unsubscribe = this.bus.subscribe(channelFor(runId, 'to-ext'), (raw) =>
-      this.onToExt(runId, side, raw),
-    );
-    side.unsubscribe.then(
-      () => {
-        // Announce only once commands can reach this socket, and only if it
-        // is still the run's extension.
-        const current = this.runs.get(runId);
-        if (side.closed || current?.ext !== side) return;
-        this.publish(runId, 'to-ext', {
-          t: 'ext-attached',
-          by: this.instanceId,
-        });
-        this.publish(runId, 'to-agent', { t: 'ext-up' });
-        this.clearHold(runId, current);
-      },
-      () => this.closeExtensionSocket(runId, side, 'relay bus unavailable'),
-    );
   }
 
   attachAgent(
     runId: string,
     origin: string,
     socket: PeerSocket,
-  ): 'ok' | 'busy' {
-    const run = this.run(runId);
+  ): 'ok' | 'busy' | 'origin-mismatch' {
+    const refusal = this.originRefusal(runId, origin);
+    if (refusal) {
+      this.log({ event: 'attach-refused', runId, role: 'agent' });
+      this.refuse(socket, refusal);
+      return 'origin-mismatch';
+    }
+    const run = this.run(runId, origin);
     if (run.agent) return 'busy';
     const agent: AgentSide = {
       socket,
@@ -241,21 +246,31 @@ export class RunHub {
       this.log({ event: 'malformed', runId, role: 'extension' });
       return;
     }
-    switch (msg.type) {
-      case 'register': {
-        const ok =
-          msg.runId === runId &&
-          typeof msg.tabId === 'number' &&
-          typeof msg.origin === 'string' &&
-          normalizeOrigin(msg.origin) === side.origin;
-        if (!ok) {
-          this.log({ event: 'register-refused', runId, role: 'extension' });
+    if (msg.type === 'register') {
+      const ok =
+        msg.runId === runId &&
+        typeof msg.tabId === 'number' &&
+        typeof msg.origin === 'string' &&
+        normalizeOrigin(msg.origin) === side.origin;
+      if (!ok) {
+        this.log({ event: 'register-refused', runId, role: 'extension' });
+        if (side.registered) {
           this.closeExtensionSocket(runId, side, 'registration mismatch');
-          return;
+        } else {
+          this.refusePending(runId, side, 'registration mismatch');
         }
-        this.log({ event: 'registered', runId, role: 'extension' });
         return;
       }
+      this.log({ event: 'registered', runId, role: 'extension' });
+      if (!side.registered) this.promote(runId, side);
+      return;
+    }
+    if (!side.registered) {
+      // Nothing but `register` is accepted before registration.
+      this.log({ event: 'unregistered-message', runId, role: 'extension' });
+      return;
+    }
+    switch (msg.type) {
       case 'reply': {
         if (typeof msg.id !== 'string') break;
         if (msg.error !== undefined && typeof msg.error !== 'string') break;
@@ -297,6 +312,10 @@ export class RunHub {
     } else if (frame.t === 'ext-attached') {
       // A newer extension socket for this run attached on another hub.
       if (frame.by === this.instanceId) return;
+      if (frame.origin !== side.origin) {
+        this.log({ event: 'origin-mismatch', runId, role: 'extension' });
+        return;
+      }
       const run = this.runs.get(runId);
       this.dropExtension(side, NORMAL_CLOSE, 'replaced');
       if (run?.ext === side) run.ext = undefined;
@@ -304,6 +323,52 @@ export class RunHub {
     } else if (frame.t === 'close' && typeof frame.reason === 'string') {
       this.closeLocal(runId, frame.reason);
     }
+  }
+
+  /** A pending extension sent a matching `register`: make it the run's. */
+  private promote(runId: string, side: ExtSide) {
+    const run = this.runs.get(runId);
+    if (!run || side.closed || !run.pendingExts.has(side)) return;
+    clearTimeout(side.registerTimer);
+    side.registered = true;
+    run.pendingExts.delete(side);
+    const previous = run.ext;
+    if (previous) {
+      this.dropExtension(previous, NORMAL_CLOSE, 'replaced');
+      // Commands sent to the old socket will never be answered.
+      this.publish(runId, 'to-agent', { t: 'ext-down' });
+    }
+    run.ext = side;
+
+    side.unsubscribe = this.bus.subscribe(channelFor(runId, 'to-ext'), (raw) =>
+      this.onToExt(runId, side, raw),
+    );
+    side.unsubscribe.then(
+      () => {
+        // Announce only once commands can reach this socket, and only if it
+        // is still the run's extension.
+        const current = this.runs.get(runId);
+        if (side.closed || current?.ext !== side) return;
+        this.publish(runId, 'to-ext', {
+          t: 'ext-attached',
+          by: this.instanceId,
+          origin: side.origin,
+        });
+        this.publish(runId, 'to-agent', { t: 'ext-up', origin: side.origin });
+        this.clearHold(runId, current);
+      },
+      () => this.closeExtensionSocket(runId, side, 'relay bus unavailable'),
+    );
+  }
+
+  /** Closes an unregistered extension socket without touching the run's. */
+  private refusePending(runId: string, side: ExtSide, reason?: string) {
+    side.closed = true;
+    clearTimeout(side.registerTimer);
+    const run = this.runs.get(runId);
+    run?.pendingExts.delete(side);
+    if (reason !== undefined) this.refuse(side.socket, reason);
+    if (run) this.forgetIfEmpty(runId, run);
   }
 
   private closeExtensionSocket(runId: string, side: ExtSide, reason: string) {
@@ -543,6 +608,16 @@ export class RunHub {
       agent.extState = 'away';
       if (run?.agent === agent) this.startHold(runId, run);
     } else if (frame.t === 'ext-up') {
+      if (frame.origin !== agent.origin) {
+        // An extension for another origin claimed this run on another hub.
+        this.log({ event: 'origin-mismatch', runId, role: 'agent' });
+        this.closeAgent(agent, 'origin mismatch');
+        if (run?.agent === agent) {
+          run.agent = undefined;
+          this.forgetIfEmpty(runId, run);
+        }
+        return;
+      }
       if (run?.agent === agent) this.clearHold(runId, run);
       agent.extState = 'up';
       for (const waiter of agent.queue.splice(0)) {
@@ -592,16 +667,40 @@ export class RunHub {
     if (run.ext && !run.ext.closed) {
       this.dropExtension(run.ext, NORMAL_CLOSE, reason);
     }
+    for (const side of run.pendingExts) {
+      side.closed = true;
+      clearTimeout(side.registerTimer);
+      this.refuse(side.socket, reason, NORMAL_CLOSE);
+    }
+    run.pendingExts.clear();
     this.log({ event: 'run-closed', runId });
   }
 
-  private run(runId: string): Run {
+  private run(runId: string, origin: string): Run {
     let run = this.runs.get(runId);
     if (!run) {
-      run = {};
+      run = { origin, pendingExts: new Set() };
       this.runs.set(runId, run);
     }
     return run;
+  }
+
+  /** Why an attach for this origin must be refused, or null if it may proceed. */
+  private originRefusal(runId: string, origin: string): string | null {
+    if (typeof origin !== 'string' || normalizeOrigin(origin) !== origin) {
+      return 'invalid origin';
+    }
+    const run = this.runs.get(runId);
+    if (run && run.origin !== origin) return 'origin mismatch';
+    return null;
+  }
+
+  private refuse(socket: PeerSocket, reason: string, code = POLICY_CLOSE) {
+    try {
+      socket.close(code, reason);
+    } catch {
+      // Already closed.
+    }
   }
 
   private forgetIfEmpty(runId: string, run: Run) {
@@ -609,6 +708,7 @@ export class RunHub {
     if (
       !run.agent &&
       !run.ext &&
+      run.pendingExts.size === 0 &&
       !run.holdTimer &&
       this.runs.get(runId) === run
     ) {
