@@ -29,6 +29,12 @@ export interface CliResponse {
 export interface CliOptions {
   /** Kernel CDP endpoint to drive. Omit to use the configured provider. */
   cdpUrl?: string;
+  /**
+   * Hand `cdpUrl` to the CLI through the AGENT_BROWSER_CDP environment
+   * variable instead of `--cdp`. For URLs that carry a bearer token: argv is
+   * readable by every local user via the process list, the environment is not.
+   */
+  cdpViaEnv?: boolean;
   /** Isolates daemon state; one per browser session. */
   session: string;
   timeoutMs?: number;
@@ -59,7 +65,7 @@ export const DEFAULT_TIMEOUT_MS = 120_000;
  */
 export function buildArgs(
   command: readonly string[],
-  options: Pick<CliOptions, 'cdpUrl' | 'session'>,
+  options: Pick<CliOptions, 'cdpUrl' | 'cdpViaEnv' | 'session'>,
 ): string[] {
   if (command.length === 0) {
     throw new Error('[agent-browser] command must not be empty');
@@ -67,7 +73,7 @@ export function buildArgs(
   return [
     '--session',
     options.session,
-    ...(options.cdpUrl ? ['--cdp', options.cdpUrl] : []),
+    ...(options.cdpUrl && !options.cdpViaEnv ? ['--cdp', options.cdpUrl] : []),
     '--json',
     ...command,
   ];
@@ -85,12 +91,14 @@ export function buildArgs(
  * Exported for tests.
  */
 export function cliEnv(
-  options: Pick<CliOptions, 'cdpUrl'>,
+  options: Pick<CliOptions, 'cdpUrl' | 'cdpViaEnv'>,
   base: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   if (!options.cdpUrl) return base;
   const { AGENT_BROWSER_PROVIDER: _dropped, ...rest } = base;
-  return rest;
+  return options.cdpViaEnv
+    ? { ...rest, AGENT_BROWSER_CDP: options.cdpUrl }
+    : rest;
 }
 
 /**

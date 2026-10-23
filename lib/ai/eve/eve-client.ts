@@ -1,3 +1,5 @@
+import type { RelayCredentials } from '@/lib/relay/eve-relay-browser';
+
 // Eve is mounted on this app's own origin: next.config.ts wraps the config in
 // `withEve()`, which rewrites /eve/v1/** to the Eve runtime. So the default
 // target is our own loopback address, and the rewrite does the rest.
@@ -35,11 +37,23 @@ async function postJson(
   return { sessionId, continuationToken: json.continuationToken ?? '' };
 }
 
-export async function createEveSession(message: string, model?: string) {
+export async function createEveSession(
+  message: string,
+  model?: string,
+  relay?: RelayCredentials,
+) {
+  // Credentials travel in headers only (never the body or message text); the
+  // channel auth turns them into session attributes for the browser tool.
+  const headers: Record<string, string> = {};
+  if (model) headers['x-eve-model'] = model;
+  if (relay) {
+    headers['x-eve-relay-url'] = relay.url;
+    headers['x-eve-relay-token'] = relay.token;
+  }
   const { sessionId, continuationToken } = await postJson(
     '/eve/v1/session',
     { message },
-    model ? { 'x-eve-model': model } : undefined,
+    Object.keys(headers).length > 0 ? headers : undefined,
   );
   return { sessionId, continuationToken };
 }
