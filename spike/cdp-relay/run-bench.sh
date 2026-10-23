@@ -1,7 +1,8 @@
 #!/bin/bash
 # Throwaway spike orchestrator. Usage: run-bench.sh
 cd "$(dirname "$0")/../.."
-export SPIKE_TOKEN=spiketoken
+export SPIKE_TOKEN=$(openssl rand -hex 32)
+export TAB_ORIGIN=http://127.0.0.1:9333   # every relay writes the same scope
 CDP="ws://127.0.0.1:9333/cdp?token=$SPIKE_TOKEN"
 LOG=/private/tmp/claude-502/bench
 mkdir -p $LOG
