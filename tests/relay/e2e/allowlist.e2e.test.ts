@@ -1,3 +1,4 @@
+import type { Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ALLOWED_CDP_METHODS } from '../../../lib/relay/allowed-cdp-methods';
 import {
@@ -49,8 +50,9 @@ const KEPT_FOR_RELAY: Record<string, string> = {};
 /**
  * Session-level methods agent-browser 0.33.2 sent natively (no relay) to a
  * Chromium started with --site-per-process, for a cross-site iframe: `open`,
- * `snapshot -i`, then `fill`, `get value`, `click` and `type` on the iframe's
- * ref from the top-level snapshot, then `frame @ref` + `snapshot -i`. Captured
+ * `snapshot -i`, then `fill`, `get value`, `click` and `type` on the iframe
+ * field's ref, then `frame @ref` + `snapshot -i`. (The ref listing needs a
+ * prior `open`; the commands were traced for method names only.) Captured
  * through a logging CDP proxy (method names and the browser/session split
  * only). The relay's e2e run below cannot trace the frame path itself, since
  * `frame <selector>` fails for cross-site iframes (see EXPECTED_FAILURES).
@@ -86,6 +88,10 @@ let relay: Relay;
 let browser: ExtensionBrowser;
 let cdp: string;
 let failures: string[] = [];
+let crossValueRead: string | undefined;
+let crossValueInFrame: string | undefined;
+let frameSnapshot = '';
+let page: Page;
 
 const run = async (args: string[]): Promise<AgentResult> => {
   const result = await agentBrowser(args, cdp);
@@ -118,7 +124,7 @@ beforeAll(async () => {
   fixtures = await serveFixtures();
   relay = await startRelay();
   browser = await launchExtensionBrowser();
-  const page = await browser.context.newPage();
+  page = await browser.context.newPage();
   // Playwright dismisses dialogs nobody listens for; leave them to the agent.
   page.on('dialog', () => {});
   await page.goto(fixtures.formUrl);
@@ -213,15 +219,26 @@ async function driveDocumentedCommands() {
   await run(['frame', '#xo']);
   await run(['frame', 'main']);
 
-  // The cross-site iframe's field, by ref from the top-level snapshot.
-  const cross = refFor(
-    await run(['snapshot', '-i']),
-    'textbox',
-    'Cross-origin field',
-  );
+  // The cross-site iframe's field, by ref from the top-level snapshot (taken
+  // after `open`: agent-browser lists an out-of-process iframe's field only
+  // once it has auto-attached, which its own navigation arranges).
+  const crossSnap = await run(['snapshot', '-i']);
+  const cross = refFor(crossSnap, 'textbox', 'Cross-origin field');
   await run(['fill', cross, 'Hopper']);
-  await run(['get', 'value', cross]);
+  const read = await run(['get', 'value', cross]);
+  crossValueRead = (read.data as { value?: string } | undefined)?.value;
+  const crossFrame = page
+    .frames()
+    .find((f) => f.url() === `${fixtures.frameOrigin}/oopif.html`);
+  crossValueInFrame = await crossFrame?.inputValue('#x');
   await run(['click', cross]);
+
+  // The documented workaround for frames: `frame @<iframe ref>`, snapshot.
+  const iframeRef = refFor(crossSnap, 'Iframe', 'cross');
+  await run(['frame', iframeRef]);
+  const inFrame = await run(['snapshot', '-i']);
+  frameSnapshot = JSON.stringify(inFrame.data ?? inFrame.error);
+  await run(['frame', 'main']);
 
   // History: navigate in scope, then go back and forward.
   await run(['open', `${fixtures.origin}/page2.html`]);
@@ -254,7 +271,9 @@ const EXPECTED_FAILURES = [
   // the same "Frame not found" occurs natively on a --site-per-process
   // Chromium, where it sends only session-level Page.getFrameTree and
   // Runtime.evaluate (no Target.* call, so not the relay's browser shim or the
-  // allowlist). `frame @ref` and acting on the iframe's ref both work.
+  // allowlist). Through the relay, `frame @ref` and acting on the iframe field's
+  // ref both work (asserted below); the field is listed only once agent-browser
+  // has auto-attached before the iframe loads, e.g. after its own `open`.
   /^frame #xo /,
 ];
 
@@ -275,6 +294,14 @@ describe('CDP allowlist', { timeout: 90_000 }, () => {
   it('matches what agent-browser sends for the documented commands', async () => {
     failures = [];
     await driveDocumentedCommands();
+
+    // The fill must land: read back through agent-browser AND inside the frame.
+    expect(crossValueRead).toBe('Hopper');
+    expect(crossValueInFrame).toBe('Hopper');
+    // `frame @<iframe ref>` then `snapshot -i` lists the field with its value.
+    expect(frameSnapshot).toContain(
+      'textbox \\"Cross-origin field\\" [ref=e1]: Hopper',
+    );
 
     type Line = {
       event?: string;
