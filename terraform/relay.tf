@@ -3,6 +3,17 @@
 #
 # Skipped entirely when relay_image_url is empty, and the app container's relay
 # env vars in cloud_run.tf follow the same switch.
+#
+# Owner checklist before the first apply with the relay enabled:
+# - Secret Manager secrets relay-token-secret-<base_environment> (>= 32 chars)
+#   and eve-internal-secret-<base_environment>, each with a version.
+# - roles/logging.configWriter for the deploy service account
+#   (github-actions-deploy), which needs logging.exclusions.create for the
+#   request-log exclusion below; its current roles (iam.tf) do not include it.
+#   Or set relay_exclude_request_logs = false knowingly, which leaves
+#   token-bearing request URLs in Cloud Logging. The relay service depends on
+#   the exclusion, so a missing permission fails the apply before the relay
+#   exists, never with a live relay logging tokens.
 
 locals {
   relay_enabled = var.relay_image_url != ""
@@ -142,6 +153,10 @@ resource "google_cloud_run_v2_service" "relay" {
     google_project_service.required_apis,
     # The revision resolves RELAY_TOKEN_SECRET as this account at deploy time.
     google_secret_manager_secret_iam_member.relay_token_access,
+    # Created before the relay serves anything (a failed exclusion stops the
+    # apply before token URLs can reach request logs) and destroyed only after
+    # the relay is gone. Zero instances when relay_exclude_request_logs = false.
+    google_logging_project_exclusion.relay_request_logs,
   ]
 }
 
@@ -165,9 +180,14 @@ resource "google_cloud_run_v2_service_iam_member" "relay_public_access" {
 # platform request logs (run.googleapis.com/requests); the relay's own
 # application logs on stdout are unaffected and never contain tokens.
 #
+# Exclusions apply to the _Default sink only: any user-defined log sink in the
+# project would still receive relay request URLs containing tokens.
+#
 # This is a project-level logging resource (one per environment, named
-# uniquely) that the owner applies; set relay_exclude_request_logs = false to
-# keep request logs, accepting the exposure above.
+# uniquely) that the owner applies; the deploy identity needs
+# roles/logging.configWriter (see the checklist at the top). Set
+# relay_exclude_request_logs = false to keep request logs, accepting the
+# exposure above.
 resource "google_logging_project_exclusion" "relay_request_logs" {
   count = local.relay_enabled && var.relay_exclude_request_logs ? 1 : 0
 

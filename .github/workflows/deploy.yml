@@ -147,9 +147,17 @@ jobs:
       # Terraform gets relay_image_url="" and plans exactly as before the relay
       # existed (no relay service, no relay secrets referenced). To turn it on:
       # create the Secret Manager secrets relay-token-secret-{dev,preview,prod}
-      # (>= 32 chars) and eve-internal-secret-{dev,preview,prod}, then set the
-      # repository variable RELAY_ENABLED=true. promote.yml reads the same
-      # variable.
+      # (>= 32 chars) and eve-internal-secret-{dev,preview,prod}, grant
+      # roles/logging.configWriter to github-actions-deploy (the relay's
+      # request-log exclusion needs logging.exclusions.create; without it the
+      # apply fails before the relay exists. Alternatively set
+      # relay_exclude_request_logs = false knowingly, which leaves token-bearing
+      # request URLs in Cloud Logging), then set the repository variable
+      # RELAY_ENABLED=true. promote.yml reads the same variable.
+      # Turning it OFF: unsetting RELAY_ENABLED plans a destroy of the relay; on
+      # dev and prod deletion_protection makes that apply fail, so do it
+      # deliberately (drop deletion_protection on the relay service first, or
+      # `terraform state rm` it).
       - name: Build and push relay image
         if: vars.RELAY_ENABLED == 'true'
         run: |
