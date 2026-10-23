@@ -38,10 +38,43 @@ const NEVER_ALLOWED: ReadonlyArray<string | RegExp> = [
   'Target.sendMessageToTarget',
 ];
 
-/** Allowed for the relay's own needs rather than agent-browser's traffic. */
-const KEPT_FOR_RELAY: Record<string, string> = {
-  'Runtime.callFunctionOn': 'ruling R6: kept for ref actions on resolved nodes',
-};
+/**
+ * Allowed for the relay's own needs rather than agent-browser's traffic, with
+ * a one-line reason each. An entry that agent-browser DOES send fails the
+ * test: it belongs in the measured set, not here. Empty today: every allowed
+ * method is measured (Runtime.evaluate and Runtime.callFunctionOn included).
+ */
+const KEPT_FOR_RELAY: Record<string, string> = {};
+
+/**
+ * Session-level methods agent-browser 0.33.2 sent natively (no relay) to a
+ * Chromium started with --site-per-process, for a cross-site iframe: `open`,
+ * `snapshot -i`, then `fill`, `get value`, `click` and `type` on the iframe's
+ * ref from the top-level snapshot, then `frame @ref` + `snapshot -i`. Captured
+ * through a logging CDP proxy (method names and the browser/session split
+ * only). The relay's e2e run below cannot trace the frame path itself, since
+ * `frame <selector>` fails for cross-site iframes (see EXPECTED_FAILURES).
+ */
+const NATIVE_FRAME_PATH_SESSION_METHODS = [
+  'Accessibility.enable',
+  'Accessibility.getFullAXTree',
+  'DOM.describeNode',
+  'DOM.enable',
+  'DOM.getBoxModel',
+  'DOM.resolveNode',
+  'DOM.scrollIntoViewIfNeeded',
+  'Input.dispatchMouseEvent',
+  'Input.insertText',
+  'Network.enable',
+  'Page.enable',
+  'Page.getFrameTree',
+  'Page.navigate',
+  'Runtime.callFunctionOn',
+  'Runtime.enable',
+  'Runtime.evaluate',
+  'Runtime.runIfWaitingForDebugger',
+  'Target.setAutoAttach',
+];
 
 const neverAllowed = (method: string) =>
   NEVER_ALLOWED.some((n) =>
@@ -178,8 +211,17 @@ async function driveDocumentedCommands() {
   await run(['snapshot', '-i']);
   await run(['frame', 'main']);
   await run(['frame', '#xo']);
-  await run(['snapshot', '-i']);
   await run(['frame', 'main']);
+
+  // The cross-site iframe's field, by ref from the top-level snapshot.
+  const cross = refFor(
+    await run(['snapshot', '-i']),
+    'textbox',
+    'Cross-origin field',
+  );
+  await run(['fill', cross, 'Hopper']);
+  await run(['get', 'value', cross]);
+  await run(['click', cross]);
 
   // History: navigate in scope, then go back and forward.
   await run(['open', `${fixtures.origin}/page2.html`]);
@@ -203,13 +245,33 @@ const EXPECTED_FAILURES = [
   /^tab close /,
   // Refused for scope: the url is not the run origin.
   /^tab new /,
-  // agent-browser 0.33.2 times out on `wait @ref` even against plain Chrome.
+  // `wait @ref` times out in agent-browser 0.33.2 without the relay too:
+  // checked by running `snapshot -i` then `wait @<button ref>` on this same
+  // https fixture against a Chromium reached through a logging CDP proxy, which
+  // gave "Wait timed out" there as well. `wait '#plain'` works and is covered.
   /^wait @e\d+ /,
-  // Resolving a cross-site iframe by selector fails through the relay.
+  // `frame <selector>` for a cross-site iframe fails in agent-browser itself:
+  // the same "Frame not found" occurs natively on a --site-per-process
+  // Chromium, where it sends only session-level Page.getFrameTree and
+  // Runtime.evaluate (no Target.* call, so not the relay's browser shim or the
+  // allowlist). `frame @ref` and acting on the iframe's ref both work.
   /^frame #xo /,
 ];
 
 describe('CDP allowlist', { timeout: 90_000 }, () => {
+  it('lists no method the spec denies, whatever agent-browser sends', () => {
+    const listed = [...ALLOWED_CDP_METHODS].filter(neverAllowed);
+    expect(listed).toEqual([]);
+  });
+
+  it('covers the methods agent-browser sends on the cross-site frame path', () => {
+    const missing = NATIVE_FRAME_PATH_SESSION_METHODS.filter(
+      (m) => !ALLOWED_CDP_METHODS.has(m),
+    );
+    expect(missing).toEqual([]);
+    expect(NATIVE_FRAME_PATH_SESSION_METHODS.filter(neverAllowed)).toEqual([]);
+  });
+
   it('matches what agent-browser sends for the documented commands', async () => {
     failures = [];
     await driveDocumentedCommands();
@@ -283,6 +345,10 @@ describe('CDP allowlist', { timeout: 90_000 }, () => {
       'in ALLOWED_CDP_METHODS but neither measured nor in KEPT_FOR_RELAY',
     ).toEqual([]);
     for (const kept of Object.keys(KEPT_FOR_RELAY)) {
+      expect(
+        attempted.has(kept),
+        `${kept} is measured; drop it from KEPT`,
+      ).toBe(false);
       expect(ALLOWED_CDP_METHODS.has(kept), `${kept} is not allowed`).toBe(
         true,
       );
