@@ -395,6 +395,62 @@ Sensitive-value mechanics (also settled here, subject to Open Item 6):
   highlights it for the caseworker. Agent-browser `@eN` refs are not used,
   because they live in the CLI's own daemon.
 
+## Managed Chrome Requirements
+
+What IT has to set, or confirm is not set. Sources are listed at the end of the
+section. **None of the banner suppression below has been tested** in this
+project; the test needs a managed Chrome, and the first build task is to try it
+on a pilot machine.
+
+### Chrome 155 policy restrictions (can block the extension entirely)
+
+Starting with Chrome 155 (beta September 16, 2026; stable rollout October 6,
+2026), `chrome.debugger.attach()` is rejected on enterprise-managed browsers in
+these cases:
+
+- `ExtensionSettings` sets a **non-empty `runtime_blocked_hosts`** for the
+  extension. Attach fails on all targets, even if `runtime_allowed_hosts` lists
+  origins. Error: "Host access is restricted by policy."
+- The **`DisableScreenshots`** policy is on, or a **Data Loss Prevention rule**
+  disables screenshot capture. Error: "Screenshot capture is restricted by
+  policy."
+
+Because this extension works on any site, IT must confirm none of these apply to
+its users. A temporary browser-wide workaround, launching Chrome with
+`--disable-features=ExtensionDebuggerStrictPolicyRestrictions`, restores
+pre-155 behavior and is reported to be removed in Chrome 160, so it is not a
+plan. Unmanaged profiles are unaffected. The extension must show a plain-language
+message for these two errors.
+
+### The debugging banner
+
+Owner decision: try to hide it. What is known:
+
+- Reported by third parties (UiPath documentation and a user issue on a similar
+  extension): installing the extension by policy with `ExtensionInstallForcelist`
+  does not show the banner, and launching Chrome with
+  `--silent-debugger-extension-api` silences it.
+- Chrome's own `chrome.debugger` reference mentions
+  `--silent-debugger-extension-api` only in the context of attaching to extension
+  background pages, and does not describe it as hiding the banner for tabs.
+- A 2017 Chromium review discussed a policy preference that hides the banner for
+  policy-installed extensions. Whether it shipped, and its name, is unconfirmed.
+- No documented, supported policy that hides the banner for a named extension
+  was found.
+
+Therefore: the panel always explains the banner in one plain sentence on the
+Ready screen, so the design does not depend on suppression working. The launch
+flag needs IT to control how Chrome is started, which may not be possible for
+every caseworker's browser.
+
+Sources: Chrome Developers, "Stricter enterprise policy enforcement for
+chrome.debugger in Chrome 155"
+(https://developer.chrome.com/blog/debugger-enterprise-policy-restrictions);
+Chrome Developers, chrome.debugger reference
+(https://developer.chrome.com/docs/extensions/reference/api/debugger); UiPath,
+"debugging banner notification after extension upgrade to manifest v3"
+(https://docs.uipath.com/studio-web/automation-cloud/latest/user-guide/debugging-banner-notification-after-extension-upgrade-to-manifest-v3).
+
 ## Constraints
 
 - pnpm, Biome, TypeScript, Tailwind. Ask before adding dependencies (repo rule).
@@ -434,5 +490,10 @@ Sensitive-value mechanics (also settled here, subject to Open Item 6):
 6. Resolved: hard guarantee, implemented as Sensitive Value Redaction. The owner
    asked for relay-side redaction; it is implemented in the extension instead
    because the relay is server-side and must never see the value.
-7. Whether Chrome's "is debugging this browser" banner is acceptable.
-   (Pending owner answer.)
+7. Decided: try to hide the banner, with an explanation in the panel as the
+   fallback. See Managed Chrome Requirements.
+8. Whether IT's managed Chrome policies set `runtime_blocked_hosts` for this
+   extension, `DisableScreenshots`, or DLP rules that disable screenshots. Any
+   of these breaks the extension on Chrome 155 and later.
+9. Whether IT can set a Chrome launch flag for caseworkers' browsers, and how
+   users start Chrome today.
