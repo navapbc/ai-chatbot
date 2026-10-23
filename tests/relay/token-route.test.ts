@@ -24,6 +24,7 @@ describe('POST /api/relay/token', () => {
   let logged: string[];
 
   beforeEach(() => {
+    process.env.RELAY_TOKEN_ENDPOINT_ENABLED = '1';
     process.env.RELAY_TOKEN_SECRET = SECRET;
     process.env.RELAY_PUBLIC_URL = PUBLIC_URL;
     authMock.mockResolvedValue({ user: { id: 'u1' } });
@@ -37,8 +38,41 @@ describe('POST /api/relay/token', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.RELAY_TOKEN_ENDPOINT_ENABLED;
     delete process.env.RELAY_TOKEN_SECRET;
     delete process.env.RELAY_PUBLIC_URL;
+  });
+
+  it.each([undefined, '0', 'true', ''])(
+    'returns 404 and does nothing when the flag is %j',
+    async (flag) => {
+      if (flag === undefined) delete process.env.RELAY_TOKEN_ENDPOINT_ENABLED;
+      else process.env.RELAY_TOKEN_ENDPOINT_ENABLED = flag;
+      authMock.mockClear();
+      const response = await post(good);
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe('');
+      expect(authMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['https://user:pw@relay.example.com', null],
+    ['https://relay.example.com?x=1', null],
+    ['https://relay.example.com#f', null],
+    ['https://relay.example.com/', 'wss://relay.example.com'],
+    ['https://relay.example.com/base/', 'wss://relay.example.com/base'],
+    ['wss://relay.example.com', 'wss://relay.example.com'],
+    ['ws://relay.example.com', null],
+    ['http://relay.example.com', null],
+  ])('relayUrl for %s', async (value, expected) => {
+    process.env.RELAY_PUBLIC_URL = value;
+    const response = await post(good);
+    if (expected === null) {
+      expect(response.status).toBe(500);
+    } else {
+      expect((await response.json()).relayUrl).toBe(expected);
+    }
   });
 
   it('exports only POST', () => {

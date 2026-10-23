@@ -22,6 +22,7 @@ function toRelayUrl(value: string | undefined): string | null {
   if (!value) return null;
   try {
     const url = new URL(value);
+    if (url.username || url.password || url.search || url.hash) return null;
     const loopback = LOOPBACK_HOSTS.has(url.hostname);
     if (url.protocol === 'https:' || url.protocol === 'wss:') {
       url.protocol = 'wss:';
@@ -33,14 +34,22 @@ function toRelayUrl(value: string | undefined): string | null {
     } else {
       return null;
     }
-    const isBare = url.pathname === '/' && !url.search && !url.hash;
-    return isBare ? url.href.slice(0, -1) : url.href;
+    const path = url.pathname.replace(/\/+$/, '');
+    return `${url.protocol === 'wss:' ? 'wss' : 'ws'}://${url.host}${path}`;
   } catch {
     return null;
   }
 }
 
 export async function POST(request: Request) {
+  // Disabled by default: this mints tokens for any runId without an ownership
+  // check. It stays disabled until plan 4 binds runs to users (server-created
+  // runs, a `sub` claim and a hub peer check) and must not be enabled in
+  // deployment config before then. Checked first, before auth and parsing.
+  if (process.env.RELAY_TOKEN_ENDPOINT_ENABLED !== '1') {
+    return new Response(null, { status: 404 });
+  }
+
   const session = await auth();
   if (!session?.user) {
     return new ChatSDKError('unauthorized:chat').toResponse();
@@ -60,7 +69,6 @@ export async function POST(request: Request) {
     return new ChatSDKError('internal_server_error:api').toResponse();
   }
 
-  // Run ownership is not checked here: plan 4 binds runs to users.
   // One clock read so both tokens share the same exp.
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + RELAY_TOKEN_TTL_SECONDS;
