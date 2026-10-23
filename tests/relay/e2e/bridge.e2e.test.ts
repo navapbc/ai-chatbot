@@ -695,6 +695,84 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     await closeAgentSessions();
   });
 
+  describe('in-origin page activity keeps the run alive', () => {
+    let cdp: string;
+    let runId: string;
+
+    beforeAll(async () => {
+      ({ cdp, runId } = await startRun());
+      expect(
+        (await agentBrowser(['snapshot', '-i'], cdp, 'alive')).success,
+      ).toBe(true);
+    });
+
+    afterAll(async () => {
+      await closeAgentSessions();
+      if (page.url() !== fixtures.formUrl) await page.goto(fixtures.formUrl);
+    });
+
+    /** The run was not stopped and the agent can still run a command. */
+    const expectAlive = async (title: string) => {
+      const result = await agentBrowser(['get', 'title'], cdp, 'alive');
+      expect(result.success, JSON.stringify(result)).toBe(true);
+      expect(JSON.stringify(result.data)).toContain(title);
+      expect(
+        relay.logs.some((l) => l.event === 'run-stopped' && l.runId === runId),
+      ).toBe(false);
+      expect(await extensionAttached(tabId)).toBe(true);
+    };
+
+    it('javascript: links and assignments', async () => {
+      await page.click('#js-void');
+      await page.click('#js-set');
+      await page.waitForFunction(
+        () => (window as unknown as { __x?: number }).__x === 1,
+      );
+      await page.evaluate(() => {
+        location.href = 'javascript:window.__y=2';
+      });
+      await page.waitForFunction(
+        () => (window as unknown as { __y?: number }).__y === 2,
+      );
+      await expectAlive('Bridge Form');
+    });
+
+    it('history.pushState, replaceState and a hash change', async () => {
+      await page.evaluate(() => {
+        history.pushState({}, '', '/form.html?step=2');
+        history.replaceState({}, '', '/form.html?step=3');
+        location.hash = '#part-2';
+      });
+      await page.waitForURL(`${fixtures.formUrl}?step=3#part-2`);
+      await expectAlive('Bridge Form');
+    });
+
+    it('a reload', async () => {
+      await page.reload();
+      await expectAlive('Bridge Form');
+    });
+
+    it('a same-origin link to another page', async () => {
+      await page.click('#next');
+      await page.waitForURL(`${fixtures.origin}/page2.html`);
+      await expectAlive('Second Page');
+      await page.goto(fixtures.formUrl);
+      await expectAlive('Bridge Form');
+    });
+
+    it('a same-origin form POST', async () => {
+      // Submitted by page script, as the caseworker's page would; no submit
+      // control is clicked.
+      await page.evaluate(() =>
+        (document.getElementById('post') as HTMLFormElement).submit(),
+      );
+      await page.waitForURL(`${fixtures.origin}/submitted`);
+      await expectAlive('Submitted');
+      await page.goto(fixtures.formUrl);
+      await expectAlive('Bridge Form');
+    });
+  });
+
   it('stopRun closes the agent at once and detaches', async () => {
     const { cdp } = await startRun();
     expect((await agentBrowser(['snapshot', '-i'], cdp, 'stop')).success).toBe(

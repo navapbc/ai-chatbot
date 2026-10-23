@@ -88,3 +88,18 @@ export function filterEvent(
   if (!FORWARDED_NETWORK_EVENTS.has(method)) return null;
   return { method, params: stripSensitive(params) };
 }
+
+/**
+ * True only for a URL a browser parses as `javascript:` (case-insensitive,
+ * after the leading whitespace and control characters, and inner tabs and
+ * newlines, that the URL parser strips). Such a navigation runs script in the
+ * current document and never commits a new one. Anything else, including a
+ * malformed string, is false, so callers fail closed.
+ */
+export function isJavascriptUrl(url: string): boolean {
+  try {
+    return new URL(url).protocol === 'javascript:';
+  } catch {
+    return false;
+  }
+}

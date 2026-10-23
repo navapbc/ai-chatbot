@@ -3,6 +3,7 @@ import {
   checkCommand,
   filterEvent,
   inScope,
+  isJavascriptUrl,
   isMethodAllowed,
   normalizeOrigin,
 } from '../../lib/relay/policy';
@@ -79,6 +80,13 @@ const LIFECYCLE_EVENTS = new Set([
   'Target.attachedToTarget',
   'Target.detachedFromTarget',
   'Target.targetInfoChanged',
+]);
+// Navigation signals sent before anything commits.
+const PRE_COMMIT_EVENTS = new Set([
+  'Page.frameRequestedNavigation',
+  'Page.frameStartedNavigating',
+  'Page.frameScheduledNavigation',
+  'Network.requestWillBeSent',
 ]);
 // Main-frame navigation signals, from the first request to the commit.
 const NAVIGATION_EVENTS = new Set([
@@ -243,6 +251,8 @@ export async function stopRun(
 ): Promise<BridgeResponse> {
   const current = run;
   run = undefined;
+  // Before any detach await, so a slow stop cannot remove a newer run's config.
+  const forgotten = chrome.storage.session.remove(STORAGE_KEY);
   if (current) {
     current.stopped = true;
     current.blocked = true;
@@ -263,7 +273,7 @@ export async function stopRun(
       // Not attached.
     }
   }
-  await chrome.storage.session.remove(STORAGE_KEY);
+  await forgotten;
   return { ok: true };
 }
 
@@ -569,12 +579,19 @@ function mainFrameNavigationUrl(
     return typeof frame.url === 'string' ? frame.url : '';
   }
   if (params.frameId !== current.mainFrameId) return undefined;
+  let url: string;
   if (method === 'Network.requestWillBeSent') {
     if (params.type !== 'Document') return undefined;
     const request = isObject(params.request) ? params.request : undefined;
-    return typeof request?.url === 'string' ? request.url : '';
+    url = typeof request?.url === 'string' ? request.url : '';
+  } else {
+    url = typeof params.url === 'string' ? params.url : '';
   }
-  return typeof params.url === 'string' ? params.url : '';
+  // A pre-commit signal for `javascript:` (an ASP.NET __doPostBack link, a
+  // void(0) button) runs script in this document and never commits a new
+  // one, so it is not leaving. Committed navigations are checked above.
+  if (PRE_COMMIT_EVENTS.has(method) && isJavascriptUrl(url)) return undefined;
+  return url;
 }
 
 /** The child session a lifecycle event is about, if any. */

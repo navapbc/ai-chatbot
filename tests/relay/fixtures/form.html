@@ -13,4 +13,8 @@
 <iframe id="child" title="child" srcdoc="<label for=c>Child field</label><input id=c name=c>"></iframe>
 <iframe id="xo" title="cross" src="{{FRAME_ORIGIN}}/oopif.html"></iframe>
 <p><a id="away" href="{{FRAME_ORIGIN}}/away.html">Leave this site</a></p>
+<p><a id="js-void" href="javascript:void(0)">Do nothing</a>
+<a id="js-set" href="javascript:window.__x=1">Set a flag</a>
+<a id="next" href="/page2.html">Next page</a></p>
+<form id="post" method="post" action="/submitted"><input type="hidden" name="step" value="1"></form>
 </html>

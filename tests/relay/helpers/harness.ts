@@ -104,6 +104,19 @@ export async function serveFixtures(): Promise<Fixtures> {
           'content-type': 'application/json',
         })
         .end('{}');
+    } else if (url.pathname === '/page2.html') {
+      sendHtml(
+        res,
+        '<!doctype html><html lang="en"><title>Second Page</title><p>Second</p></html>',
+      );
+    } else if (url.pathname === '/submitted' && req.method === 'POST') {
+      req.resume();
+      req.on('end', () =>
+        sendHtml(
+          res,
+          '<!doctype html><html lang="en"><title>Submitted</title><p>Done</p></html>',
+        ),
+      );
     } else if (url.pathname === '/api') {
       res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
     } else {

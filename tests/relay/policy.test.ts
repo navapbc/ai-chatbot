@@ -3,6 +3,7 @@ import {
   checkCommand,
   filterEvent,
   inScope,
+  isJavascriptUrl,
   isMethodAllowed,
   normalizeOrigin,
 } from '@/lib/relay/policy';
@@ -301,6 +302,40 @@ describe('filterEvent', () => {
       expect(() =>
         filterEvent('Network.requestWillBeSent', params),
       ).not.toThrow();
+    }
+  });
+});
+
+describe('isJavascriptUrl', () => {
+  it('recognizes javascript: URLs the way a browser parses them', () => {
+    for (const url of [
+      'javascript:void(0)',
+      'JavaScript:void(0)',
+      'JAVASCRIPT:x',
+      'javascript:',
+      '\tjavascript:x',
+      '\n javascript:x',
+      ' javascript:__doPostBack("a","")',
+      'java\tscript:x',
+    ]) {
+      expect(isJavascriptUrl(url), JSON.stringify(url)).toBe(true);
+    }
+  });
+
+  it('treats every other or malformed URL as not ignorable', () => {
+    for (const url of [
+      'about:blank',
+      'data:text/html,x',
+      'blob:https://a.gov/1',
+      'https://a.gov/',
+      'http://a.gov/',
+      'javascript',
+      'xjavascript:x',
+      '',
+      '::not a url',
+      'http://[bad',
+    ]) {
+      expect(isJavascriptUrl(url), JSON.stringify(url)).toBe(false);
     }
   });
 });
