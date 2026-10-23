@@ -47,4 +47,19 @@ describe('checkRelayEnv', () => {
       if (!result.ok) expect(result.message).not.toContain('abcdefg');
     }
   });
+
+  it('refuses empty entries in the host lists', () => {
+    for (const name of ['RELAY_ALLOWED_HOST_SUFFIXES', 'RELAY_ALLOWED_HOSTS']) {
+      for (const value of ['a.test,', ',a.test', 'a.test,,b.test']) {
+        const result = checkRelayEnv({
+          RELAY_TOKEN_SECRET: SECRET,
+          [name]: value,
+        });
+        expect(result.ok).toBe(false);
+      }
+      expect(
+        checkRelayEnv({ RELAY_TOKEN_SECRET: SECRET, [name]: 'a.test,b.test' }),
+      ).toEqual({ ok: true });
+    }
+  });
 });

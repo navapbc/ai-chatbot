@@ -26,8 +26,23 @@ const FORWARDED_METHOD_EVENTS = new Set(['command', 'command-failed']);
 
 const ignore = () => {};
 
-const hostnameOf = (req: IncomingMessage): string =>
-  (req.headers.host ?? '').replace(/:\d+$/, '').toLowerCase();
+const HOST_PATTERN = /^([a-z0-9.-]+|\[[0-9a-f:.]+\])(:\d+)?$/;
+
+/** Strictly parsed hostname, or null when the Host header is malformed. */
+const hostnameOf = (req: IncomingMessage): string | null => {
+  const match = HOST_PATTERN.exec((req.headers.host ?? '').toLowerCase());
+  if (!match) return null;
+  const hostname = match[1];
+  if (hostname.endsWith('.') || hostname.startsWith('.')) return null;
+  return hostname;
+};
+
+// Request paths are attacker-controlled and may carry a token, so logs only
+// ever see one of these fixed values.
+const classifyPath = (path: string): string =>
+  path === '/extension' || path === '/cdp' || path === '/healthz'
+    ? path
+    : 'other';
 
 const rawToString = (data: RawData): string => {
   if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
@@ -54,7 +69,9 @@ function toPeer(ws: WebSocket): PeerSocket {
 }
 
 export function createRelayServer(opts: RelayServerOptions): Server {
-  const suffixes = opts.allowedHostSuffixes.map((s) => s.toLowerCase());
+  const suffixes = opts.allowedHostSuffixes.map((s) =>
+    s.toLowerCase().replace(/^\./, ''),
+  );
   const hosts = new Set(opts.allowedHosts.map((h) => h.toLowerCase()));
 
   // Nothing here may be handed a URL, header or token value.
@@ -88,8 +105,11 @@ export function createRelayServer(opts: RelayServerOptions): Server {
 
   const hostOk = (req: IncomingMessage): boolean => {
     const host = hostnameOf(req);
-    if (host === '') return false;
-    return hosts.has(host) || suffixes.some((s) => host.endsWith(s));
+    if (host === null) return false;
+    return (
+      hosts.has(host) ||
+      suffixes.some((s) => host === s || host.endsWith(`.${s}`))
+    );
   };
 
   const originOk = (path: string, origin: string | undefined): boolean => {
@@ -117,7 +137,7 @@ export function createRelayServer(opts: RelayServerOptions): Server {
   });
 
   const reject = (socket: Duplex, path: string, reason: string) => {
-    log({ event: 'upgrade-rejected', path, reason });
+    log({ event: 'upgrade-rejected', path: classifyPath(path), reason });
     socket.destroy();
   };
 

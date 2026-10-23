@@ -285,4 +285,100 @@ describe('relay server', () => {
     }
     expect(output).not.toContain('token=');
   });
+
+  describe('token in the path', () => {
+    it.each([
+      (t: string) => `/cdp%3Ftoken=${t}`,
+      (t: string) => `/cdp&token=${t}`,
+      (t: string) => `/cdp;token=${t}`,
+      (t: string) => `/cdp/${t}`,
+      (t: string) => `/extension/${t}`,
+    ])('is rejected as path and never logged (%#)', async (make) => {
+      await start();
+      const t = token('agent');
+      await rejected(`ws://127.0.0.1:${port}${make(t)}`);
+      await new Promise((r) => setTimeout(r, 20));
+      const output = JSON.stringify(logs);
+      expect(logs).toContainEqual({
+        event: 'upgrade-rejected',
+        path: 'other',
+        reason: 'path',
+      });
+      for (let i = 0; i + 8 <= t.length; i += 1) {
+        expect(output).not.toContain(t.slice(i, i + 8));
+      }
+    });
+  });
+
+  it('logs the reason for each kind of rejection', async () => {
+    await start();
+    const reasonOf = async (
+      target: string,
+      headers: Record<string, string> = {},
+    ) => {
+      logs.length = 0;
+      await rejected(target, headers);
+      await new Promise((r) => setTimeout(r, 20));
+      return logs.find((l) => l.event === 'upgrade-rejected')?.reason;
+    };
+    expect(await reasonOf(url('/cdp'))).toBe('no-token');
+    expect(await reasonOf(url('/cdp', 'garbage'))).toBe('token');
+    expect(await reasonOf(url('/cdp', token('extension')))).toBe('role');
+    expect(
+      await reasonOf(url('/cdp', token('agent')), { host: 'evil.test' }),
+    ).toBe('host');
+    expect(
+      await reasonOf(url('/cdp', token('agent')), { origin: ORIGIN }),
+    ).toBe('origin');
+    expect(await reasonOf(url('/nope', token('agent')))).toBe('path');
+  });
+
+  describe('Host allowlist', () => {
+    const hostStatus = async (host: string | undefined) => {
+      const { request } = await import('node:http');
+      return new Promise<number>((resolve, reject) => {
+        const req = request(
+          {
+            host: '127.0.0.1',
+            port,
+            path: '/healthz',
+            headers: host === undefined ? {} : { host },
+            setHost: false,
+          },
+          (r) => {
+            r.resume();
+            resolve(r.statusCode ?? 0);
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      });
+    };
+
+    it.each(['run.app', '.run.app'])(
+      'matches suffix %s on a label boundary',
+      async (suffix) => {
+        await start({ allowedHostSuffixes: [suffix], allowedHosts: [] });
+        for (const ok of ['x.run.app', 'run.app', 'X.Run.App:8080']) {
+          expect(await hostStatus(ok)).toBe(200);
+        }
+        for (const bad of [
+          'evilrun.app',
+          'x.run.app.evil.com',
+          'x.run.app@evil.com',
+          'x.run.app:80@evil.com',
+          'x.run.app evil',
+          'x.run.app.',
+        ]) {
+          expect(await hostStatus(bad)).toBe(421);
+        }
+      },
+    );
+
+    it('rejects a missing Host', async () => {
+      await start({ allowedHostSuffixes: ['run.app'], allowedHosts: [] });
+      // Node answers 400 itself for HTTP/1.1 without Host; never 200.
+      expect([400, 421]).toContain(await hostStatus(undefined));
+    });
+  });
 });

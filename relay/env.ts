@@ -14,6 +14,16 @@ export function checkRelayEnv(
     };
   }
 
+  for (const name of [
+    'RELAY_ALLOWED_HOST_SUFFIXES',
+    'RELAY_ALLOWED_HOSTS',
+  ] as const) {
+    const value = env[name];
+    if (value?.trim() && value.split(',').some((entry) => !entry.trim())) {
+      return { ok: false, message: `relay: ${name} has an empty entry` };
+    }
+  }
+
   // Known gaps when more than one relay instance shares a Redis bus
   // (ledgered; the supported deployment is a single instance without Redis):
   // - origin binding is per hub, so a wrong-origin extension on another hub
