@@ -46,3 +46,57 @@ jobs:
       - name: Run tests
         run: pnpm test -- run
         continue-on-error: true
+
+  # Node-only relay, hub, token and Eve-tool tests. No browser needed.
+  relay-unit:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install
+      - name: Run relay unit tests
+        run: pnpm exec vitest run --config vitest.config.node.mjs tests/relay --exclude 'tests/relay/e2e/**'
+
+  # Drives the built extension in Chromium against a real relay and the
+  # agent-browser binary (installed by agent-browser's postinstall, which also
+  # marks it executable). Needs openssl, which the runner image provides.
+  relay-e2e:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install
+      - name: Resolve Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browser
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+      - name: Install Playwright Chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Install Playwright system dependencies
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
+      - name: Build the extension
+        run: pnpm extension:build
+      - name: Run relay e2e tests
+        run: pnpm exec vitest run --config vitest.config.node.mjs tests/relay/e2e
