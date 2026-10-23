@@ -67,7 +67,9 @@ jobs:
         run: |
           echo "Verifying images exist in Artifact Registry..."
           gcloud artifacts docker images describe ${{ steps.images.outputs.chatbot_image }} || echo "Warning: chatbot image not found"
-          gcloud artifacts docker images describe ${{ steps.images.outputs.relay_image }} || echo "Warning: relay image not found (expected for tags that predate the relay)"
+          if [[ "${{ vars.RELAY_ENABLED }}" == "true" ]]; then
+            gcloud artifacts docker images describe ${{ steps.images.outputs.relay_image }} || echo "Warning: relay image not found (expected for tags that predate the relay)"
+          fi
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -82,7 +84,9 @@ jobs:
 
       # relay_image_url defaults to "" (no relay), so leaving it out would plan
       # to DESTROY an already-deployed relay. Pass the relay image deploy.yml
-      # built for this same commit instead. It goes through TF_VAR_ rather than
+      # built for this same commit instead, but only when the repository
+      # variable RELAY_ENABLED is 'true' (same opt-in as deploy.yml); otherwise
+      # "" keeps the relay and its secrets out of the plan entirely. It goes through TF_VAR_ rather than
       # -var because this workflow runs from the default branch against
       # Terraform checked out at the tag: a tag that predates the relay does
       # not declare the variable, and Terraform rejects an undeclared -var but
@@ -90,7 +94,7 @@ jobs:
       - name: Terraform Plan
         working-directory: ./terraform
         env:
-          TF_VAR_relay_image_url: ${{ steps.images.outputs.relay_image }}
+          TF_VAR_relay_image_url: ${{ vars.RELAY_ENABLED == 'true' && steps.images.outputs.relay_image || '' }}
         run: |
           terraform plan \
             -var="environment=${{ github.event.inputs.environment }}" \

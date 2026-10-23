@@ -78,7 +78,8 @@ jobs:
 
     outputs:
       chatbot_image: ${{ steps.images.outputs.chatbot_image }}
-      relay_image: ${{ steps.images.outputs.relay_image }}
+      # Empty unless vars.RELAY_ENABLED == 'true' (see the relay build step).
+      relay_image: ${{ vars.RELAY_ENABLED == 'true' && steps.images.outputs.relay_image || '' }}
 
     steps:
       - name: Checkout code
@@ -140,7 +141,17 @@ jobs:
       # image: promote.yml derives both names from the commit SHA. Needs no
       # build args or secrets; RELAY_TOKEN_SECRET comes from Secret Manager at
       # runtime (terraform/relay.tf).
+      #
+      # Opt-in per repository. The relay is built and deployed only when the
+      # GitHub Actions repository variable RELAY_ENABLED is 'true'; otherwise
+      # Terraform gets relay_image_url="" and plans exactly as before the relay
+      # existed (no relay service, no relay secrets referenced). To turn it on:
+      # create the Secret Manager secrets relay-token-secret-{dev,preview,prod}
+      # (>= 32 chars) and eve-internal-secret-{dev,preview,prod}, then set the
+      # repository variable RELAY_ENABLED=true. promote.yml reads the same
+      # variable.
       - name: Build and push relay image
+        if: vars.RELAY_ENABLED == 'true'
         run: |
           docker build \
             -f relay/Dockerfile \

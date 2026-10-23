@@ -149,7 +149,9 @@ variable "relay_image_url" {
   type        = string
   # Empty so callers that pass nothing still plan. A caller that passes nothing
   # against a state that already holds the relay would plan to destroy it, so
-  # both deploy.yml and promote.yml pass the image built for the same commit.
+  # both deploy.yml and promote.yml pass the image built for the same commit
+  # whenever the repository variable RELAY_ENABLED is 'true' (and "" otherwise,
+  # which keeps every relay resource and secret reference out of the plan).
   default = ""
 }
 
@@ -164,4 +166,10 @@ variable "relay_max_instances" {
     condition     = var.relay_max_instances == 1
     error_message = "relay_max_instances must be 1: more instances need REDIS_URL and RELAY_MULTI_INSTANCE_ACKNOWLEDGED=1, which relay.tf does not configure."
   }
+}
+
+variable "relay_exclude_request_logs" {
+  description = "Exclude the relay service's Cloud Run request logs, whose URLs carry run tokens (see relay.tf)"
+  type        = bool
+  default     = true
 }
