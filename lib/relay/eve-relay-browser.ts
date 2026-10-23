@@ -1,5 +1,6 @@
 import type { ToolContext } from 'eve/tools';
 import { runCommand } from '@/lib/kernel/cli';
+import { redactText, redactionTargets } from '@/lib/kernel/redact';
 import { browserIdentity } from '@/lib/kernel/session-identity';
 import { cliSessionName } from '@/lib/kernel/session-store';
 
@@ -30,21 +31,34 @@ const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost']);
 const asString = (value: unknown): string | null =>
   typeof value === 'string' && value.length > 0 ? value : null;
 
+export type RelayCredentialState =
+  | { kind: 'none' }
+  | { kind: 'complete'; credentials: RelayCredentials }
+  | { kind: 'partial' };
+
 /**
- * Reads the relay credentials off the session's auth attributes, initiator
- * first (it is pinned to the session creator, see `browserIdentity`), then the
- * current caller. A principal counts only when it carries both values.
+ * Classifies the session's relay credentials. The first principal carrying
+ * either attribute decides (initiator first, it is pinned to the session
+ * creator, see `browserIdentity`; then the current caller). Exactly one of the
+ * two is `partial`, which callers must treat as a failure, never as "no relay".
  */
-export function relayCredentialsFrom(
-  ctx: ToolContext,
-): RelayCredentials | null {
+export function relayCredentialState(ctx: ToolContext): RelayCredentialState {
   const { initiator, current } = ctx.session.auth;
   for (const principal of [initiator, current]) {
     const url = asString(principal?.attributes?.relayUrl);
     const token = asString(principal?.attributes?.relayToken);
-    if (url && token) return { url, token };
+    if (url && token) return { kind: 'complete', credentials: { url, token } };
+    if (url || token) return { kind: 'partial' };
   }
-  return null;
+  return { kind: 'none' };
+}
+
+/** The credentials when complete, otherwise null. */
+export function relayCredentialsFrom(
+  ctx: ToolContext,
+): RelayCredentials | null {
+  const state = relayCredentialState(ctx);
+  return state.kind === 'complete' ? state.credentials : null;
 }
 
 type CdpUrl = { ok: true; value: string } | { ok: false; error: string };
@@ -59,6 +73,20 @@ function buildCdpUrl({ url, token }: RelayCredentials): CdpUrl {
   }
   const secure = parsed.protocol === 'wss:';
   const local = parsed.protocol === 'ws:' && LOCAL_HOSTS.has(parsed.hostname);
+  // When the deployment names its relay, that is the only one a session may
+  // point at: the URL arrives as session data, so it is not trusted on its own.
+  const publicUrl = process.env.RELAY_PUBLIC_URL;
+  if (publicUrl) {
+    let allowed: string;
+    try {
+      allowed = new URL(publicUrl).origin;
+    } catch {
+      return { ok: false, error: 'The relay is not configured correctly.' };
+    }
+    if (parsed.origin !== allowed) {
+      return { ok: false, error: 'The relay URL is not the configured relay.' };
+    }
+  }
   if (!secure && !local) {
     return {
       ok: false,
@@ -69,15 +97,6 @@ function buildCdpUrl({ url, token }: RelayCredentials): CdpUrl {
     ok: true,
     value: `${parsed.origin}/cdp?token=${encodeURIComponent(token)}`,
   };
-}
-
-/** Removes the token (raw and URL-encoded) from text we are about to return. */
-function scrub(text: string, token: string): string {
-  return text
-    .split(token)
-    .join('[redacted]')
-    .split(encodeURIComponent(token))
-    .join('[redacted]');
 }
 
 // Per-session serialization, same discipline as the Kernel path: a snapshot's
@@ -122,22 +141,23 @@ export async function runRelayCommand(
         cdpUrl: cdp.value,
         // The URL carries the token; keep it out of the process list.
         cdpViaEnv: true,
+        redact: [credentials.token, cdp.value],
         timeoutMs: COMMAND_TIMEOUT_MS,
       });
       return {
         success: response.success,
         data: response.data,
-        error:
-          response.error == null
-            ? response.error
-            : scrub(response.error, credentials.token),
+        error: response.error,
         liveViewUrl: null,
       };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        error: scrub(message, credentials.token),
+        error: redactText(
+          message,
+          redactionTargets([credentials.token, cdp.value]),
+        ),
         liveViewUrl: null,
       };
     }

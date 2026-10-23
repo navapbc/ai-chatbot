@@ -3,6 +3,7 @@ import type { ToolContext } from 'eve/tools';
 import type { Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
+  relayCredentialState,
   relayCredentialsFrom,
   runRelayCommand,
 } from '@/lib/relay/eve-relay-browser';
@@ -84,6 +85,60 @@ describe('relayCredentialsFrom', () => {
   });
 });
 
+describe('relayCredentialState', () => {
+  it('distinguishes none, complete and partial', () => {
+    expect(relayCredentialState(ctxWith(null)).kind).toBe('none');
+    expect(
+      relayCredentialState(
+        ctxWith(principal({ relayUrl: 'wss://a.example', relayToken: 't' })),
+      ).kind,
+    ).toBe('complete');
+    expect(
+      relayCredentialState(ctxWith(principal({ relayToken: 't' }))).kind,
+    ).toBe('partial');
+    expect(
+      relayCredentialState(ctxWith(principal({ relayUrl: 'wss://a.example' })))
+        .kind,
+    ).toBe('partial');
+  });
+});
+
+describe('relay URL allowlist', () => {
+  const run = (url: string) =>
+    runRelayCommand(
+      ctxWith(principal({ relayUrl: url, relayToken: FAKE_TOKEN })),
+      ['get', 'url'],
+    );
+
+  it('refuses another origin when RELAY_PUBLIC_URL is set', async () => {
+    vi.stubEnv('RELAY_PUBLIC_URL', 'wss://relay.example');
+    const result = await run('wss://evil.example');
+    expect(result).toMatchObject({
+      success: false,
+      error: 'The relay URL is not the configured relay.',
+    });
+    expect(result.error).not.toContain(FAKE_TOKEN);
+    vi.unstubAllEnvs();
+  });
+
+  it('accepts the configured origin (fails later, at connect, not at policy)', async () => {
+    vi.stubEnv('RELAY_PUBLIC_URL', 'wss://relay.invalid.example/path');
+    const result = await run('wss://relay.invalid.example');
+    expect(result.error).not.toBe('The relay URL is not the configured relay.');
+    expect(result.error ?? '').not.toContain(FAKE_TOKEN);
+    vi.unstubAllEnvs();
+  });
+
+  it('accepts only loopback ws: when it is unset', async () => {
+    vi.stubEnv('RELAY_PUBLIC_URL', '');
+    expect((await run('ws://relay.example')).error).toMatch(/must use wss/);
+    expect((await run('ws://127.0.0.1:9')).error ?? '').not.toMatch(
+      /must use wss/,
+    );
+    vi.unstubAllEnvs();
+  });
+});
+
 describe('runRelayCommand failures', () => {
   const cases: Array<[string, string]> = [
     ['an insecure remote ws: url', 'ws://relay.example.com'],
@@ -107,6 +162,28 @@ describe('runRelayCommand failures', () => {
 });
 
 describe('browser tool routing', () => {
+  it('fails closed on partial credentials without touching the Kernel path', async () => {
+    vi.resetModules();
+    const runBrowserCommand = vi.fn();
+    vi.doMock('@/lib/kernel/eve-browser', () => ({ runBrowserCommand }));
+    const { default: tool } = await import('@/agent/tools/browser');
+    const result = await (
+      tool as unknown as {
+        execute: (i: unknown, c: ToolContext) => Promise<unknown>;
+      }
+    ).execute(
+      { command: ['snapshot'] },
+      ctxWith(principal({ relayToken: FAKE_TOKEN })),
+    );
+    expect(result).toMatchObject({
+      success: false,
+      error: 'relay credentials incomplete',
+    });
+    expect(JSON.stringify(result)).not.toContain(FAKE_TOKEN);
+    expect(runBrowserCommand).not.toHaveBeenCalled();
+    vi.doUnmock('@/lib/kernel/eve-browser');
+  });
+
   it('uses the Kernel path when no relay credentials are present', async () => {
     vi.resetModules();
     const runBrowserCommand = vi.fn().mockResolvedValue({

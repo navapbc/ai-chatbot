@@ -47,6 +47,11 @@ export async function createEveSession(
   const headers: Record<string, string> = {};
   if (model) headers['x-eve-model'] = model;
   if (relay) {
+    // Without the shared secret the channel would ignore the credentials, so
+    // fail here rather than send them anyway.
+    const secret = process.env.EVE_INTERNAL_SECRET;
+    if (!secret) throw new Error('relay sessions require EVE_INTERNAL_SECRET');
+    headers['x-eve-internal-secret'] = secret;
     headers['x-eve-relay-url'] = relay.url;
     headers['x-eve-relay-token'] = relay.token;
   }

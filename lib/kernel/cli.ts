@@ -14,6 +14,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { redactDeep, redactText, redactionTargets } from '@/lib/kernel/redact';
 import {
   startCommandTelemetry,
   type TimelineCollector,
@@ -35,6 +36,12 @@ export interface CliOptions {
    * readable by every local user via the process list, the environment is not.
    */
   cdpViaEnv?: boolean;
+  /**
+   * Secrets (and the credentialed CDP URL) to strip, raw and URL-encoded,
+   * from everything this function reports: error messages, `data`, and the
+   * telemetry `error`. Omit for no redaction.
+   */
+  redact?: readonly string[];
   /** Isolates daemon state; one per browser session. */
   session: string;
   timeoutMs?: number;
@@ -151,6 +158,21 @@ export async function runCommand(
   const args = buildArgs(command, options);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const env = cliEnv(options);
+  const targets = redactionTargets(options.redact ?? []);
+  const scrub = (text: string) =>
+    targets.length === 0 ? text : redactText(text, targets);
+  const scrubResponse = (response: CliResponse): CliResponse =>
+    targets.length === 0
+      ? response
+      : {
+          ...response,
+          ...(response.data !== undefined
+            ? { data: redactDeep(response.data, targets) }
+            : {}),
+          ...(typeof response.error === 'string'
+            ? { error: scrub(response.error) }
+            : {}),
+        };
 
   const telemetry = startCommandTelemetry(command, {
     session: options.session,
@@ -172,7 +194,9 @@ export async function runCommand(
       },
       (error, stdout, stderr) => {
         if (error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-          const message = `[agent-browser] binary not found (${CLI_BIN}). It ships with the npm package; the Docker image symlinks it onto PATH.`;
+          const message = scrub(
+            `[agent-browser] binary not found (${CLI_BIN}). It ships with the npm package; the Docker image symlinks it onto PATH.`,
+          );
           telemetry.end({ outcome: 'spawn_error', error: message });
           reject(new Error(message));
           return;
@@ -180,9 +204,11 @@ export async function runCommand(
         // Timeout/abort kill the process, leaving no usable stdout.
         if (error && 'killed' in error && error.killed) {
           const aborted = Boolean(options.signal?.aborted);
-          const message = aborted
-            ? 'Browser command stopped by user'
-            : `Command timed out after ${timeoutMs}ms`;
+          const message = scrub(
+            aborted
+              ? 'Browser command stopped by user'
+              : `Command timed out after ${timeoutMs}ms`,
+          );
           telemetry.end({
             outcome: aborted ? 'aborted' : 'timeout',
             error: message,
@@ -191,7 +217,7 @@ export async function runCommand(
           return;
         }
 
-        const response = parseResponse(stdout, stderr);
+        const response = scrubResponse(parseResponse(stdout, stderr));
         telemetry.end({
           outcome: response.success ? 'success' : 'command_error',
           error: response.error,
