@@ -37,7 +37,8 @@ export function mintRelayToken(
 
 const isHttpsOrigin = (value: string): boolean => {
   try {
-    return new URL(value).protocol === 'https:';
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.origin === value;
   } catch {
     return false;
   }

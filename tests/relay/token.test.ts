@@ -86,4 +86,25 @@ describe('relay token', () => {
     const token = mintRelayToken(bad as never, SECRET, { now: NOW });
     expect(verifyRelayToken(token, SECRET, { now: NOW })).toBeNull();
   });
+  it.each([
+    'https://a.gov/path',
+    'https://a.gov?x=1',
+    'https://user:pw@a.gov',
+    'https://a.gov/',
+    'https://a.gov:443',
+    'https://A.gov',
+  ])('rejects non-exact origin %s', (origin) => {
+    const token = mintRelayToken({ ...claims, origin }, SECRET, { now: NOW });
+    expect(verifyRelayToken(token, SECRET, { now: NOW })).toBeNull();
+  });
+
+  it.each(['https://a.gov', 'https://a.gov:8443'])(
+    'accepts exact origin %s',
+    (origin) => {
+      const token = mintRelayToken({ ...claims, origin }, SECRET, { now: NOW });
+      expect(verifyRelayToken(token, SECRET, { now: NOW })?.origin).toBe(
+        origin,
+      );
+    },
+  );
 });
