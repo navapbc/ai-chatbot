@@ -1,0 +1,27 @@
+// Seed set: methods agent-browser was observed sending in the relay spike.
+// Replaced by a measured set in the allowlist-measurement task. Cookie,
+// storage, Fetch and download-behavior methods must stay out.
+export const ALLOWED_CDP_METHODS: ReadonlySet<string> = new Set([
+  'Runtime.evaluate',
+  'Runtime.enable',
+  'Runtime.callFunctionOn',
+  'Runtime.runIfWaitingForDebugger',
+  'Page.enable',
+  'Page.navigate',
+  'Page.captureScreenshot',
+  'Page.handleJavaScriptDialog',
+  'Page.getFrameTree',
+  'Page.bringToFront',
+  'Network.enable',
+  'Target.setAutoAttach',
+  'DOM.enable',
+  'DOM.describeNode',
+  'DOM.resolveNode',
+  'DOM.getBoxModel',
+  'DOM.scrollIntoViewIfNeeded',
+  'Accessibility.enable',
+  'Accessibility.getFullAXTree',
+  'Input.insertText',
+  'Input.dispatchKeyEvent',
+  'Input.dispatchMouseEvent',
+]);
