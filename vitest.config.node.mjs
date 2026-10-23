@@ -10,6 +10,6 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
-    include: ['tests/agent/**/*.test.ts'],
+    include: ['tests/agent/**/*.test.ts', 'tests/relay/**/*.test.ts'],
   },
 });
