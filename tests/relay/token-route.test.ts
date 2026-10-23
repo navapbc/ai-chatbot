@@ -24,9 +24,9 @@ describe('POST /api/relay/token', () => {
   let logged: string[];
 
   beforeEach(() => {
-    process.env.RELAY_TOKEN_ENDPOINT_ENABLED = '1';
-    process.env.RELAY_TOKEN_SECRET = SECRET;
-    process.env.RELAY_PUBLIC_URL = PUBLIC_URL;
+    vi.stubEnv('RELAY_TOKEN_ENDPOINT_ENABLED', '1');
+    vi.stubEnv('RELAY_TOKEN_SECRET', SECRET);
+    vi.stubEnv('RELAY_PUBLIC_URL', PUBLIC_URL);
     authMock.mockResolvedValue({ user: { id: 'u1' } });
     logged = [];
     for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) {
@@ -38,16 +38,14 @@ describe('POST /api/relay/token', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    delete process.env.RELAY_TOKEN_ENDPOINT_ENABLED;
-    delete process.env.RELAY_TOKEN_SECRET;
-    delete process.env.RELAY_PUBLIC_URL;
+    vi.unstubAllEnvs();
   });
 
   it.each([undefined, '0', 'true', ''])(
     'returns 404 and does nothing when the flag is %j',
     async (flag) => {
-      if (flag === undefined) delete process.env.RELAY_TOKEN_ENDPOINT_ENABLED;
-      else process.env.RELAY_TOKEN_ENDPOINT_ENABLED = flag;
+      // `undefined` removes the variable for the test.
+      vi.stubEnv('RELAY_TOKEN_ENDPOINT_ENABLED', flag);
       authMock.mockClear();
       const response = await post(good);
       expect(response.status).toBe(404);
@@ -66,7 +64,7 @@ describe('POST /api/relay/token', () => {
     ['ws://relay.example.com', null],
     ['http://relay.example.com', null],
   ])('relayUrl for %s', async (value, expected) => {
-    process.env.RELAY_PUBLIC_URL = value;
+    vi.stubEnv('RELAY_PUBLIC_URL', value);
     const response = await post(good);
     if (expected === null) {
       expect(response.status).toBe(500);
@@ -127,7 +125,7 @@ describe('POST /api/relay/token', () => {
   });
 
   it('uses ws for a loopback http dev URL', async () => {
-    process.env.RELAY_PUBLIC_URL = 'http://localhost:8787';
+    vi.stubEnv('RELAY_PUBLIC_URL', 'http://localhost:8787');
     const body = await (await post(good)).json();
     expect(body.relayUrl).toBe('ws://localhost:8787');
   });
@@ -139,8 +137,7 @@ describe('POST /api/relay/token', () => {
     ['public url not a url', 'RELAY_PUBLIC_URL', 'not a url'],
     ['public url plain http, non-loopback', 'RELAY_PUBLIC_URL', 'http://a.gov'],
   ])('returns 500 without echoing env when %s', async (_n, name, value) => {
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
+    vi.stubEnv(name, value);
 
     const response = await post(good);
     expect(response.status).toBe(500);

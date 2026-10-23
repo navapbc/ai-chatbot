@@ -25,13 +25,13 @@ const fake = (body: string) => {
 
 beforeAll(async () => {
   dir = mkdtempSync(path.join(tmpdir(), 'cli-redact-'));
-  process.env.AGENT_BROWSER_BIN = path.join(dir, 'fake-ab');
+  vi.stubEnv('AGENT_BROWSER_BIN', path.join(dir, 'fake-ab'));
   fake(':');
   ({ runCommand } = await import('@/lib/kernel/cli'));
 });
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
-  delete process.env.AGENT_BROWSER_BIN;
+  vi.unstubAllEnvs();
 });
 
 const leaky = `{"success":false,"error":"connect failed for ${CDP} token ${TOKEN}","data":{"nested":["see ${CDP}","raw ${TOKEN}"],"n":1}}`;
