@@ -123,9 +123,53 @@ describe('relay URL allowlist', () => {
 
   it('accepts the configured origin (fails later, at connect, not at policy)', async () => {
     vi.stubEnv('RELAY_PUBLIC_URL', 'wss://relay.invalid.example/path');
-    const result = await run('wss://relay.invalid.example');
+    const result = await run('wss://relay.invalid.example/path');
     expect(result.error).not.toBe('The relay URL is not the configured relay.');
     expect(result.error ?? '').not.toContain(FAKE_TOKEN);
+    vi.unstubAllEnvs();
+  });
+
+  it('accepts the https spelling of the configured relay, as deployed', async () => {
+    // Terraform sets RELAY_PUBLIC_URL to the https service uri; sessions carry
+    // the wss form the token route derives from it.
+    vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example');
+    const result = await run('wss://relay.example');
+    expect(result.error ?? '').not.toBe(
+      'The relay URL is not the configured relay.',
+    );
+    expect(result.error ?? '').not.toContain(FAKE_TOKEN);
+    vi.unstubAllEnvs();
+  });
+
+  it('accepts a wss spelling of RELAY_PUBLIC_URL too', async () => {
+    vi.stubEnv('RELAY_PUBLIC_URL', 'wss://relay.example');
+    const result = await run('wss://relay.example');
+    expect(result.error ?? '').not.toBe(
+      'The relay URL is not the configured relay.',
+    );
+    vi.unstubAllEnvs();
+  });
+
+  it('refuses a different host or a different path', async () => {
+    vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example');
+    for (const url of ['wss://evil.example', 'wss://relay.example/other']) {
+      const result = await run(url);
+      expect(result).toMatchObject({
+        success: false,
+        error: 'The relay URL is not the configured relay.',
+      });
+      expect(result.error).not.toContain(FAKE_TOKEN);
+    }
+    vi.unstubAllEnvs();
+  });
+
+  it('refuses when RELAY_PUBLIC_URL itself is unusable', async () => {
+    vi.stubEnv('RELAY_PUBLIC_URL', 'http://relay.example');
+    const result = await run('wss://relay.example');
+    expect(result).toMatchObject({
+      success: false,
+      error: 'The relay is not configured correctly.',
+    });
     vi.unstubAllEnvs();
   });
 

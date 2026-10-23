@@ -3,6 +3,7 @@ import { runCommand } from '@/lib/kernel/cli';
 import { redactText, redactionTargets } from '@/lib/kernel/redact';
 import { browserIdentity } from '@/lib/kernel/session-identity';
 import { cliSessionName } from '@/lib/kernel/session-store';
+import { LOOPBACK_HOSTS, toRelayWsUrl } from '@/lib/relay/url';
 
 // Drives the caseworker's own browser tab through the relay. This module
 // deliberately does not import `lib/kernel/eve-browser.ts`: that file builds a
@@ -26,7 +27,6 @@ export interface RelayCommandResult {
 }
 
 const COMMAND_TIMEOUT_MS = 120_000;
-const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost']);
 
 const asString = (value: unknown): string | null =>
   typeof value === 'string' && value.length > 0 ? value : null;
@@ -72,18 +72,17 @@ function buildCdpUrl({ url, token }: RelayCredentials): CdpUrl {
     return { ok: false, error: 'The relay URL is not a valid URL.' };
   }
   const secure = parsed.protocol === 'wss:';
-  const local = parsed.protocol === 'ws:' && LOCAL_HOSTS.has(parsed.hostname);
+  const local =
+    parsed.protocol === 'ws:' && LOOPBACK_HOSTS.has(parsed.hostname);
   // When the deployment names its relay, that is the only one a session may
   // point at: the URL arrives as session data, so it is not trusted on its own.
   const publicUrl = process.env.RELAY_PUBLIC_URL;
   if (publicUrl) {
-    let allowed: string;
-    try {
-      allowed = new URL(publicUrl).origin;
-    } catch {
+    const allowed = toRelayWsUrl(publicUrl);
+    if (!allowed) {
       return { ok: false, error: 'The relay is not configured correctly.' };
     }
-    if (parsed.origin !== allowed) {
+    if (toRelayWsUrl(url) !== allowed) {
       return { ok: false, error: 'The relay URL is not the configured relay.' };
     }
   }

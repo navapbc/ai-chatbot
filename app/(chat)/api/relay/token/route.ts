@@ -3,43 +3,15 @@ import { auth } from '@/app/(auth)/auth';
 import { ChatSDKError } from '@/lib/errors';
 import { normalizeOrigin } from '@/lib/relay/policy';
 import { mintRelayToken, RELAY_TOKEN_TTL_SECONDS } from '@/lib/relay/token';
+import { toRelayWsUrl } from '@/lib/relay/url';
 
 const MIN_SECRET_LENGTH = 32;
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 const bodySchema = z.object({
   runId: z.string().uuid(),
   // Exact https origin only: no path, query, default port or trailing slash.
   origin: z.string().refine((value) => normalizeOrigin(value) === value),
 });
-
-/**
- * Turns RELAY_PUBLIC_URL into the websocket URL handed to clients: https
- * becomes wss; http is accepted for loopback dev only and becomes ws.
- * Returns null for anything else so the route fails closed.
- */
-function toRelayUrl(value: string | undefined): string | null {
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    if (url.username || url.password || url.search || url.hash) return null;
-    const loopback = LOOPBACK_HOSTS.has(url.hostname);
-    if (url.protocol === 'https:' || url.protocol === 'wss:') {
-      url.protocol = 'wss:';
-    } else if (
-      (url.protocol === 'http:' || url.protocol === 'ws:') &&
-      loopback
-    ) {
-      url.protocol = 'ws:';
-    } else {
-      return null;
-    }
-    const path = url.pathname.replace(/\/+$/, '');
-    return `${url.protocol === 'wss:' ? 'wss' : 'ws'}://${url.host}${path}`;
-  } catch {
-    return null;
-  }
-}
 
 export async function POST(request: Request) {
   // Disabled by default: this mints tokens for any runId without an ownership
@@ -63,7 +35,9 @@ export async function POST(request: Request) {
   }
 
   const secret = process.env.RELAY_TOKEN_SECRET;
-  const relayUrl = toRelayUrl(process.env.RELAY_PUBLIC_URL);
+  // RELAY_PUBLIC_URL (https) becomes the wss URL handed to clients.
+  const publicUrl = process.env.RELAY_PUBLIC_URL;
+  const relayUrl = publicUrl ? toRelayWsUrl(publicUrl) : null;
   if (!secret || secret.length < MIN_SECRET_LENGTH || !relayUrl) {
     // Deliberately no cause: the body must not hint at env values.
     return new ChatSDKError('internal_server_error:api').toResponse();
