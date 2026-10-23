@@ -249,6 +249,53 @@ describe('browser tool routing', () => {
   });
 });
 
+describe('check_submit_gate routing', () => {
+  const load = async () => {
+    vi.resetModules();
+    const runBrowserCommand = vi.fn().mockResolvedValue({
+      success: false,
+      error: 'kernel path ran',
+      liveViewUrl: null,
+    });
+    vi.doMock('@/lib/kernel/eve-browser', () => ({ runBrowserCommand }));
+    const { default: tool } = await import('@/agent/tools/check_submit_gate');
+    const execute = (c: ToolContext) =>
+      (
+        tool as unknown as {
+          execute: (i: unknown, c: ToolContext) => Promise<unknown>;
+        }
+      ).execute({ forceEnable: true }, c);
+    return { runBrowserCommand, execute };
+  };
+
+  it.each([
+    ['complete', { relayUrl: 'wss://relay.example', relayToken: FAKE_TOKEN }],
+    ['partial', { relayToken: FAKE_TOKEN }],
+  ])('refuses on %s relay credentials without a browser', async (_n, attrs) => {
+    const { runBrowserCommand, execute } = await load();
+    const result = await execute(ctxWith(principal(attrs)));
+    expect(result).toEqual({
+      success: false,
+      error: 'check_submit_gate is not available in extension runs',
+      state: null,
+      action: null,
+    });
+    expect(JSON.stringify(result)).not.toContain(FAKE_TOKEN);
+    expect(runBrowserCommand).not.toHaveBeenCalled();
+    vi.doUnmock('@/lib/kernel/eve-browser');
+  });
+
+  it('still runs the Kernel path without relay credentials', async () => {
+    const { runBrowserCommand, execute } = await load();
+    const ctx = ctxWith(principal({}));
+    const result = await execute(ctx);
+    expect(runBrowserCommand).toHaveBeenCalledTimes(1);
+    expect(runBrowserCommand.mock.calls[0][0]).toBe(ctx);
+    expect(result).toMatchObject({ success: false, error: 'kernel path ran' });
+    vi.doUnmock('@/lib/kernel/eve-browser');
+  });
+});
+
 describe('runRelayCommand end to end', { timeout: 60_000 }, () => {
   let fixtures: Fixtures;
   let relay: Relay;
