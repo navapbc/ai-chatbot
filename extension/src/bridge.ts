@@ -9,6 +9,7 @@ import {
 import type {
   ExtensionToRelay,
   RelayToExtension,
+  StopReason,
 } from '../../lib/relay/protocol';
 
 // Forwards CDP between the relay and chrome.debugger for exactly one tab.
@@ -47,10 +48,19 @@ interface Run extends RunConfig {
   socketUrl: string;
   ws?: WebSocket;
   stopped: boolean;
+  /** True while the extension holds chrome.debugger on the tab. */
   attached: boolean;
+  /**
+   * Set synchronously the moment the tab leaves scope, before any await, so
+   * no command or event gets through while the run is being torn down.
+   */
+  blocked: boolean;
+  /** The tab's main frame id (its target id), known once attached. */
+  mainFrameId?: string;
   /** Child (iframe, worker) sessions of the tab, keyed by CDP sessionId. */
   children: Map<string, Child>;
   reconnectTimer?: ReturnType<typeof setTimeout>;
+  expiryTimer?: ReturnType<typeof setTimeout>;
   reconnectDelayMs: number;
 }
 
@@ -63,6 +73,22 @@ const MAX_RECONNECT_MS = 30_000;
 // Relay close codes that end the run: normal (run closed, replaced) and
 // policy (refused). Anything else is a dropped connection.
 const FINAL_CLOSE_CODES = new Set([1000, 1008]);
+// Target lifecycle events forwarded even for a disallowed child, so the agent
+// can keep its session bookkeeping; their target URL and title are blanked.
+const LIFECYCLE_EVENTS = new Set([
+  'Target.attachedToTarget',
+  'Target.detachedFromTarget',
+  'Target.targetInfoChanged',
+]);
+// Main-frame navigation signals, from the first request to the commit.
+const NAVIGATION_EVENTS = new Set([
+  'Page.frameRequestedNavigation',
+  'Page.frameStartedNavigating',
+  'Page.frameScheduledNavigation',
+  'Page.navigatedWithinDocument',
+  'Page.frameNavigated',
+  'Network.requestWillBeSent',
+]);
 
 let run: Run | undefined;
 
@@ -160,8 +186,8 @@ const targetInfo = (t: chrome.debugger.TargetInfo) => ({
   canAccessOpener: false,
 });
 
-function send(message: ExtensionToRelay) {
-  const ws = run?.ws;
+function send(current: Run, message: ExtensionToRelay) {
+  const ws = current.ws;
   if (ws?.readyState !== WebSocket.OPEN) return;
   try {
     ws.send(JSON.stringify(message));
@@ -196,7 +222,7 @@ export async function startRun(
   if (url === null) return { ok: false, error: 'tab not found' };
   if (!inScope(url, claims.origin)) return { ok: false, error: OUT_OF_SCOPE };
 
-  await stopRun();
+  await stopRun('replaced');
   const config: RunConfig = {
     relayUrl: msg.relayUrl,
     token: msg.token,
@@ -208,28 +234,48 @@ export async function startRun(
   return { ok: true };
 }
 
-export async function stopRun(): Promise<BridgeResponse> {
+/**
+ * Ends the run: tells the relay to close it (so the agent is cut off at once
+ * rather than held for the resume window), closes the socket, detaches.
+ */
+export async function stopRun(
+  reason: StopReason = 'user',
+): Promise<BridgeResponse> {
   const current = run;
   run = undefined;
-  await chrome.storage.session.remove(STORAGE_KEY);
-  if (!current) return { ok: true };
-  current.stopped = true;
-  clearTimeout(current.reconnectTimer);
-  try {
-    current.ws?.close(1000, 'run stopped');
-  } catch {
-    // Already closed.
-  }
-  if (current.attached) {
+  if (current) {
+    current.stopped = true;
+    current.blocked = true;
+    clearTimeout(current.reconnectTimer);
+    clearTimeout(current.expiryTimer);
+    send(current, { type: 'stop', reason });
+    try {
+      current.ws?.close(1000, 'run stopped');
+    } catch {
+      // Already closed.
+    }
+    current.children.clear();
     current.attached = false;
+    // Always let go: a blocked run has already cleared `attached`.
     try {
       await chrome.debugger.detach({ tabId: current.tabId });
     } catch {
       // Not attached.
     }
   }
-  current.children.clear();
+  await chrome.storage.session.remove(STORAGE_KEY);
   return { ok: true };
+}
+
+/**
+ * The tab left the run origin. Terminal in plan 1: block synchronously, then
+ * stop the run; a later relay `attach` finds no run and the tab is never
+ * re-attached, even if it comes back.
+ */
+function leaveOrigin(current: Run) {
+  if (current.blocked) return;
+  current.blocked = true;
+  if (run === current) void stopRun('left-origin');
 }
 
 /** Picks up a run persisted before a service worker restart. */
@@ -253,22 +299,30 @@ function begin(
   socketUrl: string,
   claims: { runId: string; origin: string; exp: number },
 ) {
-  run = {
+  const current: Run = {
     ...config,
     ...claims,
     socketUrl,
     stopped: false,
     attached: false,
+    blocked: false,
     children: new Map(),
     reconnectDelayMs: FIRST_RECONNECT_MS,
   };
-  connect(run);
+  run = current;
+  current.expiryTimer = setTimeout(
+    () => {
+      if (run === current) void stopRun('token-expired');
+    },
+    Math.max(0, current.exp * 1000 - Date.now()),
+  );
+  connect(current);
 }
 
 function connect(current: Run) {
   if (current.stopped || run !== current) return;
   if (current.exp <= nowSeconds()) {
-    void stopRun();
+    void stopRun('token-expired');
     return;
   }
   const url = new URL(current.socketUrl);
@@ -289,13 +343,13 @@ function connect(current: Run) {
       void stopRun();
       return;
     }
-    // Register only from an in-scope tab; otherwise drop and try again later.
+    // The tab left the origin while the socket was down: the run is over.
     if (!inScope(tab, current.origin)) {
-      ws.close(4000, 'tab out of scope');
+      leaveOrigin(current);
       return;
     }
     current.reconnectDelayMs = FIRST_RECONNECT_MS;
-    send({
+    send(current, {
       type: 'register',
       runId: current.runId,
       tabId: current.tabId,
@@ -314,9 +368,9 @@ function connect(current: Run) {
     if (!isObject(msg) || typeof msg.id !== 'string') return;
     try {
       const result = await handleCommand(current, msg);
-      send({ type: 'reply', id: msg.id, result });
+      send(current, { type: 'reply', id: msg.id, result });
     } catch (error) {
-      send({
+      send(current, {
         type: 'reply',
         id: msg.id,
         error: error instanceof Error ? error.message : 'command failed',
@@ -346,35 +400,20 @@ function scheduleReconnect(current: Run) {
 
 // --- commands ----------------------------------------------------------------
 
-async function detachTab(current: Run, reason: string) {
-  const wasAttached = current.attached;
-  current.attached = false;
-  current.children.clear();
-  try {
-    await chrome.debugger.detach({ tabId: current.tabId });
-  } catch {
-    // Not attached.
-  }
-  // Our own detach does not fire chrome.debugger.onDetach.
-  if (wasAttached) {
-    send({
-      type: 'event',
-      method: 'Target.detachedFromTarget',
-      params: { sessionId: tabSessionId(current.tabId), reason },
-    });
-  }
-}
-
-/** Fails with the out-of-scope error (and detaches) unless the tab is in scope. */
+/** Fails (and ends the run) unless the tab is still in scope. */
 async function requireTabInScope(current: Run) {
+  if (current.blocked) throw new Error(OUT_OF_SCOPE);
   const url = await tabUrl(current.tabId);
   if (url === null) throw new Error('tab closed');
-  if (!inScope(url, current.origin)) {
-    await detachTab(current, 'out of scope');
+  if (current.blocked || !inScope(url, current.origin)) {
+    leaveOrigin(current);
     throw new Error(OUT_OF_SCOPE);
   }
 }
 
+// Known gap (R17): this checks out-of-process child sessions only. A
+// cross-origin but same-site iframe shares the tab's renderer and session, so
+// commands reaching it through the tab session are not frame-checked.
 const frameAllowed = (current: Run, url: string) =>
   inScope(url, current.origin) ||
   current.allowedFrameOrigins.some((origin) => inScope(url, origin));
@@ -383,12 +422,10 @@ async function handleCommand(
   current: Run,
   msg: RelayToExtension,
 ): Promise<unknown> {
+  if (current.stopped) throw new Error('run stopped');
   switch (msg.type) {
     case 'listTargets': {
-      const url = await tabUrl(current.tabId);
-      if (url === null || !inScope(url, current.origin)) {
-        return { targetInfos: [] };
-      }
+      await requireTabInScope(current);
       const target = await tabTarget(current.tabId);
       return { targetInfos: target ? [targetInfo(target)] : [] };
     }
@@ -407,8 +444,15 @@ async function handleCommand(
       } catch {
         // Not attached.
       }
+      if (current.blocked || current.stopped) throw new Error(OUT_OF_SCOPE);
       await chrome.debugger.attach({ tabId: current.tabId }, '1.3');
+      if (current.blocked || current.stopped) {
+        // The run ended while attaching; let go again.
+        await chrome.debugger.detach({ tabId: current.tabId }).catch(() => {});
+        throw new Error(OUT_OF_SCOPE);
+      }
       current.attached = true;
+      current.mainFrameId = target.id;
       return {
         sessionId: tabSessionId(current.tabId),
         targetInfo: targetInfo({ ...target, attached: true }),
@@ -512,6 +556,51 @@ function resumeIfPaused(current: Run, method: string, params: unknown) {
     });
 }
 
+/** The URL a main-frame navigation event is heading to, if it is one. */
+function mainFrameNavigationUrl(
+  current: Run,
+  method: string,
+  params: unknown,
+): string | undefined {
+  if (!NAVIGATION_EVENTS.has(method) || !isObject(params)) return undefined;
+  if (method === 'Page.frameNavigated') {
+    const frame = isObject(params.frame) ? params.frame : undefined;
+    if (!frame || frame.parentId !== undefined) return undefined;
+    return typeof frame.url === 'string' ? frame.url : '';
+  }
+  if (params.frameId !== current.mainFrameId) return undefined;
+  if (method === 'Network.requestWillBeSent') {
+    if (params.type !== 'Document') return undefined;
+    const request = isObject(params.request) ? params.request : undefined;
+    return typeof request?.url === 'string' ? request.url : '';
+  }
+  return typeof params.url === 'string' ? params.url : '';
+}
+
+/** The child session a lifecycle event is about, if any. */
+function lifecycleSubject(current: Run, params: unknown): Child | undefined {
+  if (!isObject(params)) return undefined;
+  if (typeof params.sessionId === 'string') {
+    const child = current.children.get(params.sessionId);
+    if (child) return child;
+  }
+  const info = isObject(params.targetInfo) ? params.targetInfo : undefined;
+  if (typeof info?.targetId !== 'string') return undefined;
+  for (const child of current.children.values()) {
+    if (child.targetId === info.targetId) return child;
+  }
+  return undefined;
+}
+
+/** Blanks the URL and title (which carries the URL for frames). */
+function withoutTargetUrl(params: unknown): unknown {
+  if (!isObject(params) || !isObject(params.targetInfo)) return params;
+  return {
+    ...params,
+    targetInfo: { ...params.targetInfo, url: '', title: '' },
+  };
+}
+
 export function onDebuggerEvent(
   source: chrome.debugger.DebuggerSession,
   method: string,
@@ -519,11 +608,39 @@ export function onDebuggerEvent(
 ) {
   const current = run;
   if (!current || source.tabId !== current.tabId) return;
+  // Nothing leaves the browser unless we hold the tab and it is in scope.
+  if (!current.attached || current.blocked) return;
+
+  if (source.sessionId === undefined) {
+    const navUrl = mainFrameNavigationUrl(current, method, params);
+    if (navUrl !== undefined && !inScope(navUrl, current.origin)) {
+      // Drop the event that would reveal the new document, then stop.
+      leaveOrigin(current);
+      return;
+    }
+  }
+
   trackChildren(current, method, params);
   resumeIfPaused(current, method, params);
-  const filtered = filterEvent(method, params);
+
+  const lifecycle = LIFECYCLE_EVENTS.has(method);
+  let forwarded: unknown = params;
+  if (source.sessionId !== undefined) {
+    // An event from a child session: only allowed frames speak.
+    const from = current.children.get(source.sessionId);
+    const fromAllowed = from !== undefined && frameAllowed(current, from.url);
+    if (!fromAllowed && !lifecycle) return;
+  }
+  if (lifecycle) {
+    const subject = lifecycleSubject(current, params);
+    if (subject && !frameAllowed(current, subject.url)) {
+      forwarded = withoutTargetUrl(params);
+    }
+  }
+
+  const filtered = filterEvent(method, forwarded);
   if (!filtered) return;
-  send({
+  send(current, {
     type: 'event',
     sessionId: source.sessionId ?? tabSessionId(current.tabId),
     method: filtered.method,
@@ -537,27 +654,32 @@ export function onDebuggerDetach(
 ) {
   const current = run;
   if (!current || source.tabId !== current.tabId) return;
+  // The caseworker dismissed Chrome's debugging infobar: the run is over.
+  if (reason === 'canceled_by_user') {
+    current.blocked = true;
+    void stopRun('debugger-canceled');
+    return;
+  }
   current.attached = false;
   current.children.clear();
-  send({
+  send(current, {
     type: 'event',
     method: 'Target.detachedFromTarget',
     params: { sessionId: tabSessionId(current.tabId), reason },
   });
 }
 
-/** Drops the debugger the moment the tab commits a URL outside scope. */
+/** Ends the run the moment the tab commits a URL outside scope. */
 export function onTabUpdated(tabId: number, info: { url?: string }) {
   const current = run;
   if (!current || tabId !== current.tabId || info.url === undefined) return;
-  if (inScope(info.url, current.origin)) return;
-  if (current.attached) void detachTab(current, 'out of scope');
+  if (!inScope(info.url, current.origin)) leaveOrigin(current);
 }
 
 export function onTabRemoved(tabId: number) {
   const current = run;
   if (!current || tabId !== current.tabId) return;
-  send({ type: 'tabClosed' });
+  send(current, { type: 'tabClosed' });
   void stopRun();
 }
 
@@ -568,6 +690,6 @@ export async function handleMessage(message: unknown): Promise<BridgeResponse> {
   if (message.type === 'startRun') {
     return startRun(message as Extract<BridgeMessage, { type: 'startRun' }>);
   }
-  if (message.type === 'stopRun') return stopRun();
+  if (message.type === 'stopRun') return stopRun('user');
   return { ok: false, error: 'unknown message type' };
 }

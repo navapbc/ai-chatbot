@@ -4,7 +4,7 @@ import {
   isMethodAllowed,
   normalizeOrigin,
 } from '../lib/relay/policy';
-import type { RelayToExtension } from '../lib/relay/protocol';
+import { type RelayToExtension, STOP_REASONS } from '../lib/relay/protocol';
 import { RELAY_TOKEN_TTL_SECONDS } from '../lib/relay/token';
 import { type Bus, channelFor, type Direction } from './bus';
 import {
@@ -326,6 +326,16 @@ export class RunHub {
         this.log({ event: 'tab-closed', runId, role: 'extension' });
         this.closeRun(runId, 'tab closed');
         return;
+      case 'stop': {
+        // Only a fixed reason is ever logged; anything else counts as 'user'.
+        const reason =
+          typeof msg.reason === 'string' && STOP_REASONS.has(msg.reason)
+            ? msg.reason
+            : 'user';
+        this.log({ event: 'run-stopped', runId, role: 'extension', reason });
+        this.closeRun(runId, 'run stopped');
+        return;
+      }
     }
     this.log({ event: 'malformed', runId, role: 'extension' });
   }

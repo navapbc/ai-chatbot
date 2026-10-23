@@ -112,6 +112,31 @@ async function lateFrameLoads(p: Page) {
   await p.evaluate(() => document.getElementById('late')?.remove());
 }
 
+/** Whether the extension still holds chrome.debugger on a tab. */
+const extensionAttached = (id: number) =>
+  browser.sw.evaluate(async (tab) => {
+    // getTargets' `attached` also counts Playwright's own session.
+    try {
+      await chrome.debugger.sendCommand({ tabId: tab }, 'Runtime.evaluate', {
+        expression: '1',
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }, id);
+
+/**
+ * Makes a child session emit events by enabling Runtime on it straight
+ * through chrome.debugger, bypassing the bridge's command checks.
+ */
+const stirChild = (child: string) =>
+  browser.sw.evaluate(
+    ({ tab, sessionId }) =>
+      chrome.debugger.sendCommand({ tabId: tab, sessionId }, 'Runtime.enable'),
+    { tab: tabId, sessionId: child },
+  );
+
 interface CdpMessage {
   id?: number;
   sessionId?: string;
@@ -188,20 +213,37 @@ async function rawAgent(url: string) {
       { autoAttach: true, flatten: true, waitForDebuggerOnStart: false },
       sessionId,
     );
+    // Matched by type: a disallowed child's URL is blanked.
     const event = await waitFor(
       (m) =>
         m.method === 'Target.attachedToTarget' &&
-        (m.params?.targetInfo as { url?: string })?.url ===
-          `${fixtures.frameOrigin}/oopif.html`,
+        (m.params?.targetInfo as { type?: string })?.type === 'iframe',
     );
-    return event.params?.sessionId as string;
+    return {
+      child: event.params?.sessionId as string,
+      targetInfo: event.params?.targetInfo as { url: string; title: string },
+    };
   };
+  const closed = new Promise<{ code: number; reason: string }>((resolve) =>
+    ws.once('close', (code, reason) =>
+      resolve({ code, reason: reason.toString() }),
+    ),
+  );
   const close = async () => {
     if (ws.readyState === WebSocket.CLOSED) return;
     ws.close();
     await once(ws, 'close');
   };
-  return { call, waitFor, attach, childSession, frames, events, close };
+  return {
+    call,
+    waitFor,
+    attach,
+    childSession,
+    frames,
+    events,
+    closed,
+    close,
+  };
 }
 
 beforeAll(async () => {
@@ -433,7 +475,10 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       const { cdp } = await startRun({ allowedFrameOrigins: [] });
       const agent = await rawAgent(cdp);
       const session = await agent.attach();
-      const child = await agent.childSession(session);
+      const { child, targetInfo } = await agent.childSession(session);
+      // Lifecycle bookkeeping arrives, without the frame's URL.
+      expect(targetInfo.url).toBe('');
+      expect(targetInfo.title).toBe('');
 
       const fill = await agent.call(
         'Runtime.evaluate',
@@ -442,6 +487,9 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       );
       expect(fill.error?.message).toBe(FRAME_OUT_OF_SCOPE);
       expect(await crossValue(page)).toBe('');
+
+      // Events the child emits never reach the agent.
+      await stirChild(child);
 
       // The top-level document is still driven normally.
       const top = await agent.call(
@@ -452,6 +500,14 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       expect((top.result?.result as { value: string }).value).toBe(
         'Bridge Form',
       );
+      expect(
+        agent.events.filter(
+          (e) => e.sessionId === child && !e.method?.startsWith('Target.'),
+        ),
+      ).toEqual([]);
+      expect(
+        agent.frames.some((f) => f.includes(`${fixtures.frameOrigin}/oopif`)),
+      ).toBe(false);
       await agent.close();
     });
 
@@ -470,7 +526,17 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       });
       const agent = await rawAgent(cdp);
       const session = await agent.attach();
-      const child = await agent.childSession(session);
+      const { child, targetInfo } = await agent.childSession(session);
+      expect(targetInfo.url).toBe(`${fixtures.frameOrigin}/oopif.html`);
+
+      // Positive control for the disallowed case: an allowed child's events
+      // are forwarded.
+      await stirChild(child);
+      await agent.waitFor(
+        (m) =>
+          m.sessionId === child &&
+          m.method === 'Runtime.executionContextCreated',
+      );
 
       const fill = await agent.call(
         'Runtime.evaluate',
@@ -594,34 +660,89 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     await closeAgentSessions();
   });
 
-  it('a page-initiated move to another origin cuts the agent off', async () => {
+  it('a page-initiated move to another origin stops the run', async () => {
+    const { cdp, runId } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    for (const domain of ['Page', 'Runtime', 'Network', 'DOM']) {
+      await agent.call(`${domain}.enable`, {}, session);
+    }
+    const away = `${fixtures.frameOrigin}/away.html`;
+
+    const started = Date.now();
+    await page.click('#away');
+    expect(await agent.closed).toEqual({ code: 1000, reason: 'run stopped' });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    await page.waitForURL(away);
+
+    expect(
+      relay.logs.some(
+        (l) =>
+          l.event === 'run-stopped' &&
+          l.runId === runId &&
+          l.reason === 'left-origin',
+      ),
+    ).toBe(true);
+    expect(await extensionAttached(tabId)).toBe(false);
+    // Nothing from (or about) the off-origin document reached the agent.
+    expect(agent.frames.filter((f) => f.includes(away))).toEqual([]);
+
+    // Coming back to the origin does not revive the run.
+    await page.goto(fixtures.formUrl);
+    const again = await agentBrowser(['get', 'title'], cdp, 'returned');
+    expect(again.success).toBe(false);
+    expect(await extensionAttached(tabId)).toBe(false);
+    await closeAgentSessions();
+  });
+
+  it('stopRun closes the agent at once and detaches', async () => {
     const { cdp } = await startRun();
-    expect((await agentBrowser(['snapshot', '-i'], cdp, 'away')).success).toBe(
+    expect((await agentBrowser(['snapshot', '-i'], cdp, 'stop')).success).toBe(
       true,
     );
-
-    await page.click('#away');
-    await page.waitForURL(`${fixtures.frameOrigin}/away.html`);
-
-    const next = await agentBrowser(['get', 'title'], cdp, 'away');
+    expect(await extensionAttached(tabId)).toBe(true);
+    const started = Date.now();
+    expect(await bridgeMessage(browser.sw, { type: 'stopRun' })).toEqual({
+      ok: true,
+    });
+    const next = await agentBrowser(['get', 'title'], cdp, 'stop');
     expect(next.success).toBe(false);
-    expect(next.error).toContain(OUT_OF_SCOPE);
-    // getTargets' `attached` also counts Playwright's own session, so ask
-    // chrome.debugger whether the extension still holds the tab.
-    const extensionAttached = await browser.sw.evaluate(async (id) => {
-      try {
-        await chrome.debugger.sendCommand({ tabId: id }, 'Runtime.evaluate', {
-          expression: '1',
-        });
-        return true;
-      } catch {
-        return false;
-      }
-    }, tabId);
-    expect(extensionAttached).toBe(false);
-
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(await extensionAttached(tabId)).toBe(false);
     await closeAgentSessions();
-    await page.goto(fixtures.formUrl);
+  });
+
+  it('dismissing the debugging infobar ends the run for good', async () => {
+    const { cdp, runId } = await startRun();
+    expect(
+      (await agentBrowser(['snapshot', '-i'], cdp, 'infobar')).success,
+    ).toBe(true);
+    // Headless Chromium has no infobar to click; deliver the detach event the
+    // extension gets when the user cancels debugging.
+    await browser.sw.evaluate(
+      (id) =>
+        (
+          globalThis as unknown as {
+            bridgeOnDebuggerDetach: (s: { tabId: number }, r: string) => void;
+          }
+        ).bridgeOnDebuggerDetach({ tabId: id }, 'canceled_by_user'),
+      tabId,
+    );
+    await until(() =>
+      relay.logs.some(
+        (l) =>
+          l.event === 'run-stopped' &&
+          l.runId === runId &&
+          l.reason === 'debugger-canceled',
+      ),
+    );
+    // The relay cannot re-attach: a fresh agent session is refused.
+    const started = Date.now();
+    const again = await agentBrowser(['snapshot', '-i'], cdp, 'infobar-2');
+    expect(again.success).toBe(false);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(await extensionAttached(tabId)).toBe(false);
+    await closeAgentSessions();
   });
 
   it('closing the tab fails in-flight and later commands quickly', async () => {

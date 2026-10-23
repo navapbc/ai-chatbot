@@ -25,10 +25,13 @@ chrome.tabs.onUpdated.addListener(onTabUpdated);
 chrome.tabs.onRemoved.addListener(onTabRemoved);
 
 // The worker cannot message itself, so tests (via Playwright's worker handle)
-// and future extension pages in this context call the handler directly. Only
-// code running inside the extension can reach this global.
-(
-  globalThis as { bridgeHandleMessage?: typeof handleMessage }
-).bridgeHandleMessage = handleMessage;
+// and future extension pages in this context call the handler directly. The
+// detach hook lets tests simulate the user dismissing Chrome's debugging
+// infobar, which cannot be clicked in headless Chromium. Only code running
+// inside the extension can reach these globals.
+Object.assign(globalThis, {
+  bridgeHandleMessage: handleMessage,
+  bridgeOnDebuggerDetach: onDebuggerDetach,
+});
 
 void resumeRun();

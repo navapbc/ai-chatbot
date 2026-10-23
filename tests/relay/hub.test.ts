@@ -640,6 +640,61 @@ describe('RunHub', () => {
     expect(ext2.closed).not.toBeNull();
   });
 
+  it('closes the run at once when the registered extension sends stop', async () => {
+    const { hub, logs } = makeHub();
+    const ext = new FakeSocket();
+    const agent = new FakeSocket();
+    attachExt(hub, ext);
+    hub.attachAgent(RUN, ORIGIN, agent);
+    ext.receive({ type: 'stop', reason: 'left-origin' });
+    await vi.waitFor(() =>
+      expect(agent.closed).toEqual({ code: 1000, reason: 'run stopped' }),
+    );
+    expect(ext.closed).not.toBeNull();
+    expect(logs).toContainEqual({
+      event: 'run-stopped',
+      runId: RUN,
+      role: 'extension',
+      reason: 'left-origin',
+    });
+    // Tombstoned: a re-dialing agent is refused with the same reason.
+    const again = new FakeSocket();
+    expect(hub.attachAgent(RUN, ORIGIN, again)).toBe('closed');
+    expect(again.closed?.reason).toBe('run stopped');
+  });
+
+  it('ignores stop from an extension socket that has not registered', () => {
+    const { hub } = makeHub();
+    const ext = new FakeSocket();
+    attachExt(hub, ext);
+    const agent = new FakeSocket();
+    hub.attachAgent(RUN, ORIGIN, agent);
+    const pending = new FakeSocket();
+    hub.attachExtension(RUN, ORIGIN, pending);
+    pending.receive({ type: 'stop', reason: 'user' });
+    expect(agent.closed).toBeNull();
+    expect(ext.closed).toBeNull();
+    expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('busy');
+    hub.closeRun(RUN, 'test over');
+  });
+
+  it('logs an unknown stop reason as user and never echoes it', async () => {
+    const { hub, logs } = makeHub();
+    const ext = new FakeSocket();
+    const agent = new FakeSocket();
+    attachExt(hub, ext);
+    hub.attachAgent(RUN, ORIGIN, agent);
+    ext.receive({ type: 'stop', reason: 'secret-token-value' });
+    await vi.waitFor(() => expect(agent.closed?.reason).toBe('run stopped'));
+    expect(JSON.stringify(logs)).not.toContain('secret-token-value');
+    expect(logs).toContainEqual({
+      event: 'run-stopped',
+      runId: RUN,
+      role: 'extension',
+      reason: 'user',
+    });
+  });
+
   it('refuses new sockets for a closed run with the reason it closed', async () => {
     const { hub } = makeHub();
     const ext = new FakeSocket();
