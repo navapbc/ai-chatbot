@@ -5,6 +5,7 @@ import {
   normalizeOrigin,
 } from '../lib/relay/policy';
 import type { RelayToExtension } from '../lib/relay/protocol';
+import { RELAY_TOKEN_TTL_SECONDS } from '../lib/relay/token';
 import { type Bus, channelFor, type Direction } from './bus';
 import {
   type DistributiveOmit,
@@ -28,6 +29,8 @@ export interface RunHubOptions {
   resumeWindowMs?: number;
   /** How long a new extension socket may take to send `register`. */
   registerTimeoutMs?: number;
+  /** How long a closed run refuses new sockets. Defaults to the token TTL. */
+  closedRunTtlMs?: number;
   log: (line: Record<string, unknown>) => void;
 }
 
@@ -118,16 +121,28 @@ export class RunHub {
   private readonly commandTimeoutMs: number;
   private readonly resumeWindowMs: number;
   private readonly registerTimeoutMs: number;
+  private readonly closedRunTtlMs: number;
   private readonly log: (line: Record<string, unknown>) => void;
   private readonly instanceId = randomUUID();
   private counter = 0;
   private readonly runs = new Map<string, Run>();
+  /**
+   * Runs closed on this hub, with the close reason and when to forget them.
+   * A socket that re-dials a finished run (an agent-browser daemon after the
+   * tab closed) is refused at once instead of waiting on a fresh empty run.
+   * Local to this hub, like the rest of run state (single instance, R10).
+   */
+  private readonly closedRuns = new Map<
+    string,
+    { reason: string; until: number }
+  >();
 
   constructor(opts: RunHubOptions) {
     this.bus = opts.bus;
     this.commandTimeoutMs = opts.commandTimeoutMs ?? 30_000;
     this.resumeWindowMs = opts.resumeWindowMs ?? 300_000;
     this.registerTimeoutMs = opts.registerTimeoutMs ?? 10_000;
+    this.closedRunTtlMs = opts.closedRunTtlMs ?? RELAY_TOKEN_TTL_SECONDS * 1000;
     this.log = (line) => {
       try {
         opts.log(line);
@@ -138,6 +153,12 @@ export class RunHub {
   }
 
   attachExtension(runId: string, origin: string, socket: PeerSocket): void {
+    const closed = this.closedReason(runId);
+    if (closed !== null) {
+      this.log({ event: 'attach-refused', runId, role: 'extension' });
+      this.refuse(socket, closed);
+      return;
+    }
     const refusal = this.originRefusal(runId, origin);
     if (refusal) {
       this.log({ event: 'attach-refused', runId, role: 'extension' });
@@ -174,7 +195,13 @@ export class RunHub {
     runId: string,
     origin: string,
     socket: PeerSocket,
-  ): 'ok' | 'busy' | 'origin-mismatch' {
+  ): 'ok' | 'busy' | 'origin-mismatch' | 'closed' {
+    const closed = this.closedReason(runId);
+    if (closed !== null) {
+      this.log({ event: 'attach-refused', runId, role: 'agent' });
+      this.refuse(socket, closed);
+      return 'closed';
+    }
     const refusal = this.originRefusal(runId, origin);
     if (refusal) {
       this.log({ event: 'attach-refused', runId, role: 'agent' });
@@ -661,6 +688,7 @@ export class RunHub {
     const run = this.runs.get(runId);
     if (!run) return;
     this.runs.delete(runId);
+    this.rememberClosed(runId, reason);
     clearTimeout(run.holdTimer);
     run.holdTimer = undefined;
     if (run.agent && !run.agent.closed) this.closeAgent(run.agent, reason);
@@ -683,6 +711,23 @@ export class RunHub {
       this.runs.set(runId, run);
     }
     return run;
+  }
+
+  private rememberClosed(runId: string, reason: string) {
+    const now = Date.now();
+    for (const [id, entry] of this.closedRuns) {
+      if (entry.until <= now) this.closedRuns.delete(id);
+    }
+    this.closedRuns.set(runId, { reason, until: now + this.closedRunTtlMs });
+  }
+
+  /** The reason a run closed, or null if it is not (or no longer) closed. */
+  private closedReason(runId: string): string | null {
+    const entry = this.closedRuns.get(runId);
+    if (!entry) return null;
+    if (entry.until > Date.now()) return entry.reason;
+    this.closedRuns.delete(runId);
+    return null;
   }
 
   /** Why an attach for this origin must be refused, or null if it may proceed. */

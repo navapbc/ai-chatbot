@@ -51,6 +51,7 @@ function makeHub(
     commandTimeoutMs?: number;
     resumeWindowMs?: number;
     registerTimeoutMs?: number;
+    closedRunTtlMs?: number;
   } = {},
 ) {
   const bus = opts.bus ?? createLocalBus();
@@ -61,6 +62,7 @@ function makeHub(
     commandTimeoutMs: opts.commandTimeoutMs,
     resumeWindowMs: opts.resumeWindowMs,
     registerTimeoutMs: opts.registerTimeoutMs,
+    closedRunTtlMs: opts.closedRunTtlMs,
     log: (line) => logs.push(line),
   });
   return { hub, bus, logs };
@@ -636,6 +638,51 @@ describe('RunHub', () => {
     ext2.receive({ type: 'tabClosed' });
     await vi.waitFor(() => expect(agent2.closed?.reason).toBe('tab closed'));
     expect(ext2.closed).not.toBeNull();
+  });
+
+  it('refuses new sockets for a closed run with the reason it closed', async () => {
+    const { hub } = makeHub();
+    const ext = new FakeSocket();
+    attachExt(hub, ext);
+    hub.attachAgent(RUN, ORIGIN, new FakeSocket());
+    ext.receive({ type: 'tabClosed' });
+
+    // A daemon that re-dials must fail at once, not wait for an extension.
+    const agent = new FakeSocket();
+    expect(hub.attachAgent(RUN, ORIGIN, agent)).toBe('closed');
+    expect(agent.closed).toEqual({ code: 1008, reason: 'tab closed' });
+    const ext2 = new FakeSocket();
+    hub.attachExtension(RUN, ORIGIN, ext2);
+    expect(ext2.closed).toEqual({ code: 1008, reason: 'tab closed' });
+
+    // Other runs are unaffected.
+    expect(hub.attachAgent('run-2', ORIGIN, new FakeSocket())).toBe('ok');
+    hub.closeRun('run-2', 'test over');
+  });
+
+  it('forgets a closed run once its tokens have expired', () => {
+    vi.useFakeTimers();
+    try {
+      const { hub } = makeHub({ closedRunTtlMs: 1000 });
+      hub.attachAgent(RUN, ORIGIN, new FakeSocket());
+      hub.closeRun(RUN, 'run finished');
+      expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('closed');
+      vi.advanceTimersByTime(1001);
+      expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('ok');
+      hub.closeRun(RUN, 'test over');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lets an agent re-attach to a live run after its socket closed', () => {
+    const { hub } = makeHub();
+    attachExt(hub, new FakeSocket());
+    const first = new FakeSocket();
+    hub.attachAgent(RUN, ORIGIN, first);
+    first.close();
+    expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('ok');
+    hub.closeRun(RUN, 'test over');
   });
 
   it('ignores malformed messages from either socket without throwing', async () => {
