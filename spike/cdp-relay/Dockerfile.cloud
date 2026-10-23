@@ -1,0 +1,10 @@
+FROM node:22-slim
+ENV HOME=/tmp NODE_ENV=production HOST=0.0.0.0 WRITE_CONFIG=0 AB_BIN=/usr/local/bin/agent-browser
+WORKDIR /app
+RUN npm install --no-audit --no-fund --no-save ws@8.18.3
+COPY relay.mjs bench.mjs form.html oopif.html ./
+COPY bin/ /tmp/bin/
+RUN case "$(uname -m)" in x86_64) b=x64;; aarch64) b=arm64;; esac \
+ && cp /tmp/bin/agent-browser-linux-$b /usr/local/bin/agent-browser \
+ && chmod +x /usr/local/bin/agent-browser && rm -rf /tmp/bin
+CMD ["node", "relay.mjs"]

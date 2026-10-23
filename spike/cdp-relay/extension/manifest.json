@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "CDP Relay Spike",
+  "version": "0.0.1",
+  "permissions": [
+    "debugger",
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "sw.js"
+  },
+  "action": {
+    "default_title": "CDP Relay Spike (no UI; badge shows relay status)"
+  }
+}
