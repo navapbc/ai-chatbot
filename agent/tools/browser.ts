@@ -1,9 +1,13 @@
 import { defineTool } from 'eve/tools';
 import { z } from 'zod';
 import { runBrowserCommand } from '@/lib/kernel/eve-browser';
+import {
+  relayCredentialState,
+  runRelayCommand,
+} from '@/lib/relay/eve-relay-browser';
 
 export default defineTool({
-  description: `Execute an agent-browser command on a remote Kernel browser.
+  description: `Execute an agent-browser command on the browser.
 
 Pass the command as an argv array, exactly as the agent-browser CLI takes it — the first element is the command, the rest are its arguments and flags. Values are passed through as-is, so never quote or shell-escape them. See the browser-automation skill for snapshot discipline, selector strategy, and workflow rules. Snapshot before interacting; re-snapshot after every DOM change. NEVER navigate away from the target application domain and NEVER click the final submit button.
 
@@ -53,7 +57,23 @@ NEVER navigate away from the target application domain. Do NOT click social medi
     .describe('An agent-browser CLI command as an argv array'),
   async execute({ command }, ctx) {
     try {
-      const response = await runBrowserCommand(ctx, command);
+      // A session started with relay credentials drives the caseworker's own
+      // tab; anything else keeps the Kernel browser.
+      // Exactly one of the two credentials fails closed: never fall back to a
+      // Kernel browser the caseworker did not choose.
+      const relay = relayCredentialState(ctx);
+      if (relay.kind === 'partial') {
+        return {
+          success: false,
+          output: null,
+          error: 'relay credentials incomplete',
+          liveViewUrl: null,
+        };
+      }
+      const response =
+        relay.kind === 'complete'
+          ? await runRelayCommand(ctx, command)
+          : await runBrowserCommand(ctx, command);
       // `liveViewUrl` is carried for the chat UI's live browser panel, not for
       // the model: `eve dev` is a separate process from the Next app, so the
       // tool result is how the URL crosses over. The Next stream reader caches

@@ -366,6 +366,50 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         value = "project_name:labs-asp-${local.base_environment}"
       }
 
+      # Browser relay (relay.tf). Present only when the relay is deployed, so an
+      # environment without it (relay_image_url empty, e.g. a promote of a
+      # pre-relay tag) neither references the relay service nor needs the
+      # owner-created secrets below to exist.
+      #
+      # RELAY_TOKEN_ENDPOINT_ENABLED is deliberately NOT set (ruling R25): the
+      # /api/relay/token route stays disabled until plan 4 turns it on.
+      dynamic "env" {
+        for_each = local.relay_enabled ? [1] : []
+        content {
+          name = "RELAY_TOKEN_SECRET"
+          value_source {
+            secret_key_ref {
+              secret  = local.relay_token_secret_name
+              version = "latest"
+            }
+          }
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.relay_enabled ? [1] : []
+        content {
+          name  = "RELAY_PUBLIC_URL"
+          value = one(google_cloud_run_v2_service.relay[*].uri)
+        }
+      }
+
+      # Shared by Next and the Eve sibling (same container env): Eve grants
+      # relay credentials from loopback headers only with this secret
+      # (agent/channels/eve.ts).
+      dynamic "env" {
+        for_each = local.relay_enabled ? [1] : []
+        content {
+          name = "EVE_INTERNAL_SECRET"
+          value_source {
+            secret_key_ref {
+              secret  = local.eve_internal_secret_name
+              version = "latest"
+            }
+          }
+        }
+      }
+
       # Runtime configuration
       env {
         name  = "NODE_ENV"

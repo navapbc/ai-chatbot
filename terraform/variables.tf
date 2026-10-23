@@ -142,3 +142,34 @@ variable "jev_features" {
   # opts in through the explicit -var in deploy.yml.
   default = ""
 }
+
+# Browser relay (relay.tf)
+variable "relay_image_url" {
+  description = "Container image URL for the browser relay service. Empty skips the relay service and the app's relay env vars."
+  type        = string
+  # Empty so callers that pass nothing still plan. A caller that passes nothing
+  # against a state that already holds the relay would plan to destroy it, so
+  # both deploy.yml and promote.yml pass the image built for the same commit
+  # whenever the repository variable RELAY_ENABLED is 'true' (and "" otherwise,
+  # which keeps every relay resource and secret reference out of the plan).
+  default = ""
+}
+
+variable "relay_max_instances" {
+  description = "Maximum instances for the browser relay service"
+  type        = number
+  default     = 1
+  # Runs live in one process's memory. More than one instance needs a shared
+  # REDIS_URL plus RELAY_MULTI_INSTANCE_ACKNOWLEDGED=1 (see relay/env.ts for the
+  # known cross-instance gaps), and relay.tf sets neither.
+  validation {
+    condition     = var.relay_max_instances == 1
+    error_message = "relay_max_instances must be 1: more instances need REDIS_URL and RELAY_MULTI_INSTANCE_ACKNOWLEDGED=1, which relay.tf does not configure."
+  }
+}
+
+variable "relay_exclude_request_logs" {
+  description = "Exclude the relay service's Cloud Run request logs, whose URLs carry run tokens (see relay.tf)"
+  type        = bool
+  default     = true
+}

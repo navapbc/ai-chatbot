@@ -78,6 +78,8 @@ jobs:
 
     outputs:
       chatbot_image: ${{ steps.images.outputs.chatbot_image }}
+      # Empty unless vars.RELAY_ENABLED == 'true' (see the relay build step).
+      relay_image: ${{ vars.RELAY_ENABLED == 'true' && steps.images.outputs.relay_image || '' }}
 
     steps:
       - name: Checkout code
@@ -100,6 +102,7 @@ jobs:
         run: |
           TAG=${GITHUB_SHA:0:7}
           echo "chatbot_image=${ARTIFACT_REGISTRY}/ai-chatbot:${TAG}" >> $GITHUB_OUTPUT
+          echo "relay_image=${ARTIFACT_REGISTRY}/labs-asp-relay:${TAG}" >> $GITHUB_OUTPUT
 
       # - name: Get PostHog API key
       #   id: posthog_key
@@ -133,6 +136,36 @@ jobs:
             -t ${{ steps.images.outputs.chatbot_image }} \
             .
           docker push ${{ steps.images.outputs.chatbot_image }}
+
+      # Browser relay (relay/Dockerfile). Same registry and tag as the chatbot
+      # image: promote.yml derives both names from the commit SHA. Needs no
+      # build args or secrets; RELAY_TOKEN_SECRET comes from Secret Manager at
+      # runtime (terraform/relay.tf).
+      #
+      # Opt-in per repository. The relay is built and deployed only when the
+      # GitHub Actions repository variable RELAY_ENABLED is 'true'; otherwise
+      # Terraform gets relay_image_url="" and plans exactly as before the relay
+      # existed (no relay service, no relay secrets referenced). To turn it on:
+      # create the Secret Manager secrets relay-token-secret-{dev,preview,prod}
+      # (>= 32 chars) and eve-internal-secret-{dev,preview,prod}, grant
+      # roles/logging.configWriter to github-actions-deploy (the relay's
+      # request-log exclusion needs logging.exclusions.create; without it the
+      # apply fails before the relay exists. Alternatively set
+      # relay_exclude_request_logs = false knowingly, which leaves token-bearing
+      # request URLs in Cloud Logging), then set the repository variable
+      # RELAY_ENABLED=true. promote.yml reads the same variable.
+      # Turning it OFF: unsetting RELAY_ENABLED plans a destroy of the relay; on
+      # dev and prod deletion_protection makes that apply fail, so do it
+      # deliberately (drop deletion_protection on the relay service first, or
+      # `terraform state rm` it).
+      - name: Build and push relay image
+        if: vars.RELAY_ENABLED == 'true'
+        run: |
+          docker build \
+            -f relay/Dockerfile \
+            -t ${{ steps.images.outputs.relay_image }} \
+            .
+          docker push ${{ steps.images.outputs.relay_image }}
 
   # Deploy infrastructure with Terraform
   terraform:
@@ -298,6 +331,7 @@ jobs:
           terraform plan \
             -var="environment=${{ needs.setup.outputs.environment }}" \
             -var="chatbot_image_url=${{ needs.build.outputs.chatbot_image }}" \
+            -var="relay_image_url=${{ needs.build.outputs.relay_image }}" \
             -var="enable_custom_domain=${ENABLE_DOMAIN}" \
             -var="use_guest_login=${USE_GUEST}" \
             -var="jev_features=${JEV_FEATURES}" \
