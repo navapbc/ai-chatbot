@@ -438,6 +438,46 @@ describe('RunHub', () => {
     );
   });
 
+  it('treats an extension drop and re-attach inside the window as no close, then closes once the window lapses', async () => {
+    const { hub } = makeHub({ resumeWindowMs: 200 });
+    const ext = new FakeSocket();
+    const agent = new FakeSocket();
+    attachExt(hub, ext);
+    hub.attachAgent(RUN, ORIGIN, agent);
+    ext.close();
+
+    const returned = new FakeSocket();
+    attachExt(hub, returned);
+    expect(returned.closed).toBeNull();
+    agent.receive({ id: 21, sessionId: 'tab-7', method: 'Page.enable' });
+    await vi.waitFor(() => expect(returned.sent).toHaveLength(1));
+    const cmd = returned.messages()[0];
+    returned.receive({ type: 'reply', id: cmd.id, result: {} });
+    await vi.waitFor(() =>
+      expect(lastReply(agent, 21)).toEqual({
+        id: 21,
+        sessionId: 'tab-7',
+        result: {},
+      }),
+    );
+
+    // Not tombstoned: the agent socket stays open and the run is still live
+    // (a second agent is refused as busy, not as a closed run).
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(agent.closed).toBeNull();
+    const other = new FakeSocket();
+    expect(hub.attachAgent(RUN, ORIGIN, other)).toBe('busy');
+
+    // Now the extension leaves for good: the window lapses and the run closes.
+    returned.close();
+    await vi.waitFor(() =>
+      expect(agent.closed?.reason).toBe('extension did not return'),
+    );
+    const later = new FakeSocket();
+    expect(hub.attachAgent(RUN, ORIGIN, later)).toBe('closed');
+    expect(later.closed).toMatchObject({ code: 1008 });
+  });
+
   it('makes an agent that connects inside the resume window wait too', async () => {
     const { hub } = makeHub({ resumeWindowMs: 60_000 });
     const ext = new FakeSocket();
