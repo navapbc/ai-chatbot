@@ -110,7 +110,7 @@ export const SAFE_SPAN_ATTRIBUTES: ReadonlySet<string> = new Set([
   'error.type',
 ]);
 
-/** Resource attributes kept beyond the span allowlist. */
+/** The only resource attributes kept (the span allowlist is not reused). */
 const SAFE_RESOURCE_ATTRIBUTES: ReadonlySet<string> = new Set([
   'service.name',
   'service.version',
@@ -123,6 +123,13 @@ const MAX_NAME_TOKEN = 40;
 const SCRUBBED_NAME = 'scrubbed';
 
 const NAME_PATTERN = /^[A-Za-z0-9_. :/-]{1,120}$/;
+// Span names are operation names. Only these families are kept; the rest is
+// replaced, since an unknown span could be named after a value.
+const NAME_PREFIX =
+  /^(chat|execute_tool|invoke_agent|step|jev|agent_browser|agent|ai|kernel)\b/;
+const TOOL_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
+const EXECUTE_TOOL_PREFIX = 'execute_tool ';
+const ERROR_TYPE = /^[A-Za-z0-9_.:-]{1,64}$/;
 // Value shapes that must never ride in a span name.
 const SSN_SHAPE = /\b\d{3}-?\d{2}-?\d{4}\b/;
 const LONG_DIGITS = /\d{6,}/;
@@ -131,6 +138,13 @@ const DATE_SHAPE = /\b\d{1,4}[-/]\d{1,2}[-/]\d{1,4}\b/;
 function safeName(name: unknown): string {
   if (typeof name !== 'string') return SCRUBBED_NAME;
   if (name.length > MAX_NAME_LENGTH || !NAME_PATTERN.test(name)) {
+    return SCRUBBED_NAME;
+  }
+  if (!NAME_PREFIX.test(name)) return SCRUBBED_NAME;
+  if (
+    name.startsWith(EXECUTE_TOOL_PREFIX) &&
+    !TOOL_NAME.test(name.slice(EXECUTE_TOOL_PREFIX.length))
+  ) {
     return SCRUBBED_NAME;
   }
   if (SSN_SHAPE.test(name) || LONG_DIGITS.test(name) || DATE_SHAPE.test(name)) {
@@ -159,7 +173,14 @@ function filterAttributes(
   for (const key of Object.keys(attributes ?? {})) {
     if (!allowed(key)) continue;
     const value = (attributes as Attributes)[key];
-    if (isSafeValue(value)) out[key] = value;
+    if (!isSafeValue(value)) continue;
+    if (
+      key === 'error.type' &&
+      !(typeof value === 'string' && ERROR_TYPE.test(value))
+    ) {
+      continue;
+    }
+    out[key] = value;
   }
   return out;
 }
@@ -179,7 +200,7 @@ function filterAttributes(
 export function scrubSpan(span: ReadableSpan): ReadableSpan {
   const resourceAttributes = filterAttributes(
     span.resource?.attributes,
-    (key) => SAFE_SPAN_ATTRIBUTES.has(key) || SAFE_RESOURCE_ATTRIBUTES.has(key),
+    (key) => SAFE_RESOURCE_ATTRIBUTES.has(key),
   );
   const resource = {
     attributes: resourceAttributes,

@@ -186,6 +186,53 @@ describe('scrubSpan', () => {
     expect(scrubSpan(makeSpan({ name })).name).toBe(name);
   });
 
+  it.each([['page said: 123 Main St'], ['x'.repeat(65)], ['']])(
+    'drops an error.type that is not a type token (%#)',
+    (value) => {
+      const out = scrubSpan(makeSpan({ attributes: { 'error.type': value } }));
+      expect(out.attributes).toEqual({});
+    },
+  );
+
+  it('keeps a type-token error.type', () => {
+    const out = scrubSpan(
+      makeSpan({ attributes: { 'error.type': 'jev_call_failed' } }),
+    );
+    expect(out.attributes).toEqual({ 'error.type': 'jev_call_failed' });
+  });
+
+  it.each([['unknown thing'], ['Jane Doe form'], ['execute_tool has space!x']])(
+    'replaces a span name outside the operation prefixes (%s)',
+    (name) => {
+      expect(scrubSpan(makeSpan({ name })).name).toBe('scrubbed');
+    },
+  );
+
+  it('replaces an execute_tool name whose tool part is not a tool token', () => {
+    expect(scrubSpan(makeSpan({ name: 'execute_tool Jane Doe' })).name).toBe(
+      'scrubbed',
+    );
+    expect(scrubSpan(makeSpan({ name: 'execute_tool browser' })).name).toBe(
+      'execute_tool browser',
+    );
+  });
+
+  it('does not reuse the span allowlist for resource attributes', () => {
+    const out = scrubSpan(
+      makeSpan({
+        resource: {
+          attributes: {
+            'service.version': '1',
+            'gen_ai.request.model': 'm',
+            'agent.name': 'a',
+          },
+          asyncAttributesPending: false,
+        },
+      }),
+    );
+    expect(out.resource.attributes).toEqual({ 'service.version': '1' });
+  });
+
   it('drops an allowlisted attribute whose value is an overlong string', () => {
     const out = scrubSpan(
       makeSpan({ attributes: { 'ai.toolCall.name': 'x'.repeat(500) } }),
