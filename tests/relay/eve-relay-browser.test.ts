@@ -343,3 +343,295 @@ describe('check_submit_gate routing', () => {
     vi.doUnmock('@/lib/kernel/eve-browser');
   });
 });
+
+describe('recovery after an extension restart', () => {
+  const RESTORED =
+    'The browser connection was restored. Take a new snapshot before continuing.';
+  const CLOSED = 'CDP response channel closed';
+
+  let seq = 0;
+  const load = async (
+    answer: (command: readonly string[], session: string) => unknown,
+  ) => {
+    vi.resetModules();
+    const calls: Array<{ command: string[]; session: string; cdp?: string }> =
+      [];
+    const runCommand = vi.fn(
+      async (
+        command: readonly string[],
+        options: { session: string; cdpUrl?: string },
+      ) => {
+        calls.push({
+          command: [...command],
+          session: options.session,
+          cdp: options.cdpUrl,
+        });
+        return answer(command, options.session);
+      },
+    );
+    vi.doMock('@/lib/kernel/cli', () => ({ runCommand }));
+    const mod = await import('@/lib/relay/eve-relay-browser');
+    const { cliSessionName } = await import('@/lib/kernel/session-store');
+    seq += 1;
+    const ctx = ctxWith(
+      principal({ relayUrl: 'ws://127.0.0.1:9', relayRunId: `${RUN}-${seq}` }),
+      null,
+      `wrun_restart_${seq}`,
+    );
+    const base = cliSessionName('s', `wrun_restart_${seq}`);
+    // Calls that ran a browser command, not the old session's close.
+    const ran = () => calls.filter((c) => c.command[0] !== 'close');
+    return { run: mod.runRelayCommand, ctx, base, calls, ran };
+  };
+  afterEach(() => {
+    vi.doUnmock('@/lib/kernel/cli');
+  });
+
+  const ok = (data: unknown = 'snap') => ({ success: true, data, error: null });
+  const fail = (error: string) => ({ success: false, data: null, error });
+
+  it('does not retry a ref command and tells the agent to snapshot again', async () => {
+    const { run, ctx, base, ran } = await load(() => fail(CLOSED));
+    const result = await run(ctx, ['click', '@e3']);
+    expect(result).toEqual({
+      success: false,
+      error: RESTORED,
+      liveViewUrl: null,
+    });
+    expect(ran()).toEqual([
+      { command: ['click', '@e3'], session: base, cdp: expect.any(String) },
+    ]);
+  });
+
+  it('retries a ref-free command once on the next session name', async () => {
+    let first = true;
+    const { run, ctx, base, ran, calls } = await load((command) => {
+      if (command[0] === 'close') return ok();
+      if (first) {
+        first = false;
+        return fail('CDP error (DOM.enable): not attached');
+      }
+      return ok('fresh snapshot');
+    });
+    const result = await run(ctx, ['snapshot', '-i']);
+    expect(result).toEqual({
+      success: true,
+      data: 'fresh snapshot',
+      error: null,
+      liveViewUrl: null,
+    });
+    expect(ran().map((c) => c.session)).toEqual([base, `${base}-r1`]);
+    // The old daemon session is closed before the retry runs.
+    expect(calls.map((c) => [c.command[0], c.session])).toEqual([
+      ['snapshot', base],
+      ['close', base],
+      ['snapshot', `${base}-r1`],
+    ]);
+  });
+
+  it('retries only once', async () => {
+    const { run, ctx, ran } = await load((command) =>
+      command[0] === 'close' ? ok() : fail(CLOSED),
+    );
+    const result = await run(ctx, ['snapshot', '-i']);
+    expect(result).toMatchObject({ success: false, error: CLOSED });
+    expect(ran()).toHaveLength(2);
+  });
+
+  it('does not retry a failure that is not a lost connection', async () => {
+    const { run, ctx, base, ran } = await load(() =>
+      fail('Unknown ref: e1 (element not found)'),
+    );
+    const result = await run(ctx, ['snapshot', '-i']);
+    expect(result).toMatchObject({ success: false });
+    await run(ctx, ['get', 'url']);
+    expect(ran().map((c) => c.session)).toEqual([base, base]);
+  });
+
+  it('treats a ref inside a batch step or a frame command as a ref command', async () => {
+    const { run, ctx, ran } = await load((command) =>
+      command[0] === 'close' ? ok() : fail(CLOSED),
+    );
+    expect(
+      (await run(ctx, ['batch', '--bail', 'fill @e2 Ada', 'press Tab'])).error,
+    ).toBe(RESTORED);
+    expect((await run(ctx, ['frame', '@e7'])).error).toBe(RESTORED);
+    // The batch failed and rotated; the frame command never ran.
+    expect(ran()).toHaveLength(1);
+  });
+
+  it('advances the session name once per restart', async () => {
+    let down = true;
+    const { run, ctx, base, ran } = await load((command, session) => {
+      if (command[0] === 'close') return ok();
+      if (down) {
+        down = false;
+        return fail(CLOSED);
+      }
+      return ok(session);
+    });
+    await run(ctx, ['snapshot', '-i']);
+    await run(ctx, ['get', 'url']);
+    down = true;
+    await run(ctx, ['snapshot', '-i']);
+    expect(ran().map((c) => c.session)).toEqual([
+      base,
+      `${base}-r1`,
+      `${base}-r1`,
+      `${base}-r1`,
+      `${base}-r2`,
+    ]);
+  });
+
+  it('rotates once when two commands are in flight and refuses the queued ref command', async () => {
+    let down = true;
+    const { run, ctx, base, ran } = await load((command) => {
+      if (command[0] === 'close') return ok();
+      if (down) {
+        down = false;
+        return fail('CDP error (Page.enable): tab or extension disconnected');
+      }
+      return ok();
+    });
+    const [snap, click, url] = await Promise.all([
+      run(ctx, ['snapshot', '-i']),
+      run(ctx, ['click', '@e5']),
+      run(ctx, ['get', 'url']),
+    ]);
+    expect(snap.success).toBe(true);
+    expect(click).toEqual({
+      success: false,
+      error: RESTORED,
+      liveViewUrl: null,
+    });
+    expect(url.success).toBe(true);
+    expect(ran().map((c) => [c.command[0], c.session])).toEqual([
+      ['snapshot', base],
+      ['snapshot', `${base}-r1`],
+      ['get', `${base}-r1`],
+    ]);
+  });
+
+  it('refuses ref commands after a rotation until a snapshot succeeds', async () => {
+    let down = true;
+    const { run, ctx, base, ran } = await load((command) => {
+      if (command[0] === 'close') return ok();
+      if (down) {
+        down = false;
+        return fail(CLOSED);
+      }
+      return ok();
+    });
+    // A read-only command detects the restart and is retried on -r1.
+    expect((await run(ctx, ['get', 'url'])).success).toBe(true);
+    // Its refs came from the old daemon: refused without running.
+    expect((await run(ctx, ['fill', '@e3', 'Ada'])).error).toBe(RESTORED);
+    expect((await run(ctx, ['get', 'url'])).success).toBe(true);
+    expect((await run(ctx, ['click', '@e3'])).error).toBe(RESTORED);
+    expect((await run(ctx, ['snapshot', '-i'])).success).toBe(true);
+    expect((await run(ctx, ['fill', '@e3', 'Ada'])).success).toBe(true);
+    expect(ran().map((c) => [c.command[0], c.session])).toEqual([
+      ['get', base],
+      ['get', `${base}-r1`],
+      ['get', `${base}-r1`],
+      ['snapshot', `${base}-r1`],
+      ['fill', `${base}-r1`],
+    ]);
+  });
+
+  it.each([
+    [['press', 'Enter']],
+    [['open', 'https://benefits.example.gov/next']],
+    [['click', '#submit']],
+    [['eval', 'document.title']],
+    [['get', 'cdp-url']],
+    [['tab', 'new']],
+    [['unknown-command']],
+    [['snapshot', '-s', '@e3']],
+  ])('does not run %j again after a lost connection', async (command) => {
+    const { run, ctx, base, ran } = await load((argv) =>
+      argv[0] === 'close' ? ok() : fail(CLOSED),
+    );
+    expect(await run(ctx, command)).toEqual({
+      success: false,
+      error: RESTORED,
+      liveViewUrl: null,
+    });
+    expect(ran()).toEqual([
+      { command, session: base, cdp: expect.any(String) },
+    ]);
+  });
+
+  it.each([
+    [['snapshot', '-i']],
+    [['screenshot']],
+    [['get', 'title']],
+    [['get', 'text', '#status']],
+    [['tab']],
+    [['tab', 'list']],
+  ])('retries the read-only %j once', async (command) => {
+    let first = true;
+    const { run, ctx, base, ran } = await load((argv) => {
+      if (argv[0] === 'close') return ok();
+      if (first) {
+        first = false;
+        return fail(CLOSED);
+      }
+      return ok();
+    });
+    expect((await run(ctx, command)).success).toBe(true);
+    expect(ran().map((c) => c.session)).toEqual([base, `${base}-r1`]);
+  });
+
+  it.each([
+    'CDP error (Runtime.evaluate): Error: the dialog was closed',
+    'Element is not attached to the DOM',
+    'CDP error (DOM.focus): Node is detached, socket closed',
+    'Navigation failed: net::ERR_CONNECTION_CLOSED',
+    'page said: ECONNRESET',
+  ])(
+    'does not treat the page-style error %j as a lost connection',
+    async (error) => {
+      const { run, ctx, base, ran } = await load(() => fail(error));
+      expect(await run(ctx, ['snapshot', '-i'])).toMatchObject({
+        success: false,
+        error,
+      });
+      await run(ctx, ['get', 'url']);
+      expect(ran().map((c) => c.session)).toEqual([base, base]);
+    },
+  );
+
+  it.each([
+    'CDP response channel closed',
+    'CDP error (DOM.enable): not attached',
+    'CDP error (Page.enable): tab or extension disconnected',
+    'CDP error (Runtime.evaluate): extension restarted',
+    'ECONNRESET: socket hang up',
+    'EPIPE',
+  ])('treats the transport error %j as a lost connection', async (error) => {
+    let first = true;
+    const { run, ctx, base, ran } = await load((argv) => {
+      if (argv[0] === 'close') return ok();
+      if (first) {
+        first = false;
+        return fail(error);
+      }
+      return ok();
+    });
+    expect((await run(ctx, ['snapshot', '-i'])).success).toBe(true);
+    expect(ran().map((c) => c.session)).toEqual([base, `${base}-r1`]);
+  });
+
+  it('keeps the token out of the result when recovery fails', async () => {
+    const { run, ctx } = await load((command) =>
+      command[0] === 'close'
+        ? fail(`closed ${FAKE_TOKEN}`)
+        : fail(`ECONNRESET at ws://127.0.0.1:9/cdp?token=${FAKE_TOKEN}`),
+    );
+    for (const command of [['snapshot'], ['click', '@e1']]) {
+      const result = await run(ctx, command);
+      expect(JSON.stringify(result)).not.toContain(FAKE_TOKEN);
+    }
+  });
+});

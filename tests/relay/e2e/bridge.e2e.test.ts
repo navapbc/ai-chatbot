@@ -928,4 +928,86 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     expect(following.success).toBe(false);
     expect(Date.now() - started).toBeLessThan(5_000);
   });
+
+  // Review Focus 6. Kept last: Playwright reports no handle for the restarted
+  // worker, so `browser.sw` is dead afterwards.
+  it('recovers a run after the service worker restarts, with a fresh agent session', async () => {
+    await page.goto(fixtures.formUrl);
+    tabId = await tabIdFor(fixtures.formUrl);
+    const { cdp, runId } = await startRun();
+
+    // The first agent connection fills a field.
+    const first = await rawAgent(cdp);
+    const session = await first.attach();
+    await first.call(
+      'Runtime.evaluate',
+      { expression: "document.getElementById('first').focus()" },
+      session,
+    );
+    expect(
+      (await first.call('Input.insertText', { text: 'Grace' }, session)).error,
+    ).toBeUndefined();
+    await expect(page.locator('#first').inputValue()).resolves.toBe('Grace');
+
+    // Stop the worker for real, then wake it with a tab event. Only a fresh
+    // worker sends `resumed`: it comes from the run rebuilt out of storage.
+    const devtools = await browser.context.newCDPSession(page);
+    await devtools.send('ServiceWorker.enable');
+    await devtools.send('ServiceWorker.stopAllWorkers');
+    await until(() =>
+      relay.logs.some(
+        (l) => l.event === 'extension-detached' && l.runId === runId,
+      ),
+    );
+    const waker = await browser.context.newPage();
+    await waker.goto('about:blank');
+    await until(() =>
+      relay.logs.some(
+        (l) => l.event === 'extension-restarted' && l.runId === runId,
+      ),
+    );
+
+    // The old connection is cut, not the run.
+    expect(await first.closed).toEqual({
+      code: 1000,
+      reason: 'extension restarted',
+    });
+    expect(
+      relay.logs.some((l) => l.event === 'run-closed' && l.runId === runId),
+    ).toBe(false);
+
+    // A new agent session snapshots and fills a second field.
+    const snap = await agentBrowser(['snapshot', '-i'], cdp, 'restarted');
+    expect(snap.success).toBe(true);
+    const last = refFor(snap, 'textbox', 'Last name');
+    expect(
+      (await agentBrowser(['fill', last, 'Hopper'], cdp, 'restarted')).success,
+    ).toBe(true);
+    await expect(page.locator('#last').inputValue()).resolves.toBe('Hopper');
+    await expect(page.locator('#first').inputValue()).resolves.toBe('Grace');
+
+    // Restart again: a ref from the snapshot taken before it is not reused.
+    // The daemon re-dials on its next command but has dropped its refs.
+    const firstRef = refFor(snap, 'textbox', 'First name');
+    await devtools.send('ServiceWorker.stopAllWorkers');
+    const restarts = () =>
+      relay.logs.filter(
+        (l) => l.event === 'extension-restarted' && l.runId === runId,
+      ).length;
+    const waker2 = await browser.context.newPage();
+    await waker2.goto('about:blank');
+    await until(() => restarts() === 2);
+    const stale = await agentBrowser(
+      ['fill', firstRef, 'Stale'],
+      cdp,
+      'restarted',
+    );
+    expect(stale.success).toBe(false);
+    await expect(page.locator('#first').inputValue()).resolves.toBe('Grace');
+    await waker2.close();
+
+    await closeAgentSessions();
+    await devtools.detach();
+    await waker.close();
+  });
 });

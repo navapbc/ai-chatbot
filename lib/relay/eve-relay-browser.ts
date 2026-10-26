@@ -129,6 +129,69 @@ function withSessionQueue<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
+// --- recovery after an extension restart ---------------------------------
+//
+// When the extension's service worker restarts, the relay drops the agent
+// connection (reason `extension restarted`) and the extension loses its
+// debugger session, so every `@eN` ref the agent-browser daemon holds is void.
+// A command that fails on a lost connection moves the run to a fresh daemon
+// session name. Only a read-only command is run again; anything else, and any
+// command naming a ref until a new snapshot succeeds, gets CONNECTION_RESTORED
+// without running, so nothing with effects on the page is ever replayed.
+
+/**
+ * Transport-level failures only, anchored at the start of the error text so
+ * page-originated text cannot trigger a retry. Shapes, as agent-browser
+ * 0.33.2 reports them:
+ * - `CDP response channel closed`: agent-browser's own, when the relay
+ *   socket closed under a pending command.
+ * - `CDP error (<Domain.method>): <message>` where the whole message is a
+ *   relay or extension transport error: `not attached` (extension,
+ *   bridge.ts), `tab or extension disconnected` and `extension restarted`
+ *   (relay/hub.ts).
+ * - `ECONNRESET` / `EPIPE` leading the text (socket-level errors).
+ */
+const CONNECTION_LOST =
+  /^(?:CDP response channel closed$|CDP error \([\w.]+\): (?:not attached|tab or extension disconnected|extension restarted)$|(?:ECONNRESET|EPIPE)\b)/;
+const ELEMENT_REF = /@e\d+/;
+const CLOSE_TIMEOUT_MS = 5_000;
+export const CONNECTION_RESTORED =
+  'The browser connection was restored. Take a new snapshot before continuing.';
+
+/**
+ * The only commands retried after a lost connection: reads that cannot change
+ * page state. Key is the command, value the allowed first arguments (null:
+ * any arguments). Everything else, unknown commands included, is not retried.
+ */
+const RETRY_SAFE: Readonly<Record<string, readonly string[] | null>> = {
+  snapshot: null,
+  screenshot: null,
+  get: ['url', 'title', 'text'],
+  tab: ['list'],
+};
+
+/** Restarts seen per run id, in this process only. */
+const restarts = new Map<string, number>();
+/** Runs whose refs are void: set on rotation, cleared by a snapshot. */
+const needsSnapshot = new Set<string>();
+
+const sessionName = (base: string, generation: number) =>
+  generation === 0 ? base : `${base}-r${generation}`;
+
+const namesRef = (command: readonly string[]) =>
+  command.some((arg) => ELEMENT_REF.test(arg));
+
+const retrySafe = (command: readonly string[]) => {
+  const [name, sub, ...rest] = command;
+  if (!Object.hasOwn(RETRY_SAFE, name) || namesRef(command)) return false;
+  const subs = RETRY_SAFE[name];
+  if (subs === null) return true;
+  // `tab` alone lists tabs, like `tab list`.
+  if (name === 'tab')
+    return sub === undefined || (sub === 'list' && !rest.length);
+  return sub !== undefined && subs.includes(sub);
+};
+
 /** Never throws. Failures come back as `{ success: false, error }`. */
 export async function runRelayCommand(
   ctx: ToolContext,
@@ -157,29 +220,76 @@ export async function runRelayCommand(
   }
 
   const { sessionId, userId } = browserIdentity(ctx);
-  return withSessionQueue(sessionId, async () => {
+  const base = cliSessionName(userId, sessionId);
+  const secrets = [token, cdp.value];
+  const scrub = (text: string) => redactText(text, redactionTargets(secrets));
+  const generationAtCall = restarts.get(ref.runId) ?? 0;
+
+  const execute = async (
+    argv: readonly string[],
+    session: string,
+    timeoutMs = COMMAND_TIMEOUT_MS,
+  ): Promise<RelayCommandResult> => {
     try {
-      const response = await runCommand(command, {
-        session: cliSessionName(userId, sessionId),
+      const response = await runCommand(argv, {
+        session,
         cdpUrl: cdp.value,
         // The URL carries the token; keep it out of the process list.
         cdpViaEnv: true,
-        redact: [token, cdp.value],
-        timeoutMs: COMMAND_TIMEOUT_MS,
+        redact: secrets,
+        timeoutMs,
       });
       return {
         success: response.success,
         data: response.data,
-        error: response.error,
+        error:
+          typeof response.error === 'string'
+            ? scrub(response.error)
+            : response.error,
         liveViewUrl: null,
       };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      return {
-        success: false,
-        error: redactText(message, redactionTargets([token, cdp.value])),
-        liveViewUrl: null,
-      };
+      return { success: false, error: scrub(message), liveViewUrl: null };
     }
+  };
+  const restored = (): RelayCommandResult => ({
+    success: false,
+    error: CONNECTION_RESTORED,
+    liveViewUrl: null,
+  });
+
+  // Inside the queue: the commands of one session see and advance the
+  // generation one at a time, so one restart rotates the name once.
+  return withSessionQueue(sessionId, async () => {
+    const generation = restarts.get(ref.runId) ?? 0;
+    // A restart happened while this command waited, or no snapshot has run
+    // since one: its refs describe a page the new daemon never saw.
+    if (
+      namesRef(command) &&
+      (generation !== generationAtCall || needsSnapshot.has(ref.runId))
+    ) {
+      return restored();
+    }
+    const settle = (result: RelayCommandResult) => {
+      if (result.success && command[0] === 'snapshot') {
+        needsSnapshot.delete(ref.runId);
+      }
+      return result;
+    };
+    const result = await execute(command, sessionName(base, generation));
+    if (result.success || !CONNECTION_LOST.test(result.error ?? '')) {
+      return settle(result);
+    }
+
+    // Another session of the same run may have moved on already; never go back.
+    const next = Math.max(generation + 1, restarts.get(ref.runId) ?? 0);
+    restarts.set(ref.runId, next);
+    needsSnapshot.add(ref.runId);
+    // Shut the old daemon down so it cannot re-dial the run and hold the
+    // relay's single agent slot. Best effort, bounded, result ignored.
+    await execute(['close'], sessionName(base, generation), CLOSE_TIMEOUT_MS);
+    if (!retrySafe(command)) return restored();
+    return settle(await execute(command, sessionName(base, next)));
   });
 }

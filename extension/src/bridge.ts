@@ -65,6 +65,11 @@ interface Run extends RunConfig {
   reconnectTimer?: ReturnType<typeof setTimeout>;
   expiryTimer?: ReturnType<typeof setTimeout>;
   reconnectDelayMs: number;
+  /**
+   * Set on a run rebuilt from storage after a service worker restart, until
+   * its first `register` is followed by `resumed`.
+   */
+  announceResume: boolean;
 }
 
 const STORAGE_KEY = 'run';
@@ -303,13 +308,16 @@ export async function resumeRun(): Promise<void> {
     if (!run) await chrome.storage.session.remove(STORAGE_KEY);
     return;
   }
-  begin({ ...config, allowedFrameOrigins: frames }, socket.url, claims);
+  // The restart dropped chrome.debugger and every child session, so the
+  // agent's element refs and sessions are void: tell the relay once.
+  begin({ ...config, allowedFrameOrigins: frames }, socket.url, claims, true);
 }
 
 function begin(
   config: RunConfig,
   socketUrl: string,
   claims: { runId: string; origin: string; exp: number },
+  resumed = false,
 ) {
   const current: Run = {
     ...config,
@@ -320,6 +328,7 @@ function begin(
     blocked: false,
     children: new Map(),
     reconnectDelayMs: FIRST_RECONNECT_MS,
+    announceResume: resumed,
   };
   run = current;
   current.expiryTimer = setTimeout(
@@ -367,6 +376,10 @@ function connect(current: Run) {
       tabId: current.tabId,
       origin: current.origin,
     });
+    if (current.announceResume) {
+      current.announceResume = false;
+      send(current, { type: 'resumed' });
+    }
   };
 
   ws.onmessage = async (event) => {
