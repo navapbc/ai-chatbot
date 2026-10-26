@@ -1,12 +1,16 @@
 import { eveChannel } from "eve/channels/eve";
 import {
   type AuthFn,
+  ForbiddenError,
   isLoopbackRequest,
   localDev,
   placeholderAuth,
   vercelOidc,
 } from "eve/channels/auth";
-import { attributesFromHeaders } from "@/lib/ai/eve/loopback-attributes";
+import {
+  attributesFromHeaders,
+  relayHeaderGrant,
+} from "@/lib/ai/eve/loopback-attributes";
 
 // Exposes adapter headers as session auth attributes (logic and rules in
 // lib/ai/eve/loopback-attributes.ts):
@@ -23,13 +27,21 @@ import { attributesFromHeaders } from "@/lib/ai/eve/loopback-attributes";
 //
 // The relay pair is granted only on loopback AND with a matching
 // `x-eve-internal-secret` (env EVE_INTERNAL_SECRET), because withEve() makes
-// requests from the public origin look loopback. Returns null when nothing
-// is granted, so the rest of the auth walk is unchanged.
+// requests from the public origin look loopback. A request that sends either
+// relay header without that grant (wrong or missing secret, not loopback, a
+// malformed run id, one header alone) is rejected with a 403: dropping the
+// reference would start a session that silently drives a Kernel browser.
+// Otherwise returns null when nothing is granted, so the rest of the auth
+// walk is unchanged for requests with no relay headers.
 const loopbackAttributeAuth: AuthFn<Request> = (request) => {
-  const attributes = attributesFromHeaders(
-    request.headers,
-    isLoopbackRequest(request),
-  );
+  const loopback = isLoopbackRequest(request);
+  if (relayHeaderGrant(request.headers, loopback) === "refused") {
+    throw new ForbiddenError({
+      code: "relay_refused",
+      message: "The relay run reference was refused.",
+    });
+  }
+  const attributes = attributesFromHeaders(request.headers, loopback);
   if (!attributes) return null;
   return {
     attributes,

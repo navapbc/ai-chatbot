@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { attributesFromHeaders } from '@/lib/ai/eve/loopback-attributes';
+import {
+  attributesFromHeaders,
+  relayHeaderGrant,
+} from '@/lib/ai/eve/loopback-attributes';
 
 const SECRET = 'internal-secret-for-tests';
 const RUN = '0b6f7c4e-5d1a-4c55-9a53-3f7d2f0c9a11';
@@ -127,5 +130,91 @@ describe('attributesFromHeaders', () => {
         SECRET,
       ),
     ).toEqual({ eveModel: 'claude-x' });
+  });
+});
+
+describe('relayHeaderGrant', () => {
+  it('is absent when neither relay header is sent', () => {
+    expect(relayHeaderGrant(h({}), true, SECRET)).toBe('absent');
+    expect(relayHeaderGrant(h({ 'x-eve-model': 'm' }), false, SECRET)).toBe(
+      'absent',
+    );
+    expect(
+      relayHeaderGrant(h({ 'x-eve-internal-secret': SECRET }), true, SECRET),
+    ).toBe('absent');
+  });
+
+  it('is absent for the retired token header alone (ignored, not refused)', () => {
+    expect(
+      relayHeaderGrant(h({ 'x-eve-relay-token': 'legacy' }), true, SECRET),
+    ).toBe('absent');
+    expect(
+      relayHeaderGrant(h({ 'x-eve-relay-token': 'legacy' }), false, SECRET),
+    ).toBe('absent');
+  });
+
+  it('is granted with both headers, loopback, a UUID and the secret', () => {
+    expect(
+      relayHeaderGrant(
+        h({ ...relay, 'x-eve-internal-secret': SECRET }),
+        true,
+        SECRET,
+      ),
+    ).toBe('granted');
+  });
+
+  it.each([
+    ['a wrong secret', { ...relay, 'x-eve-internal-secret': 'nope' }, true],
+    ['no secret header', relay, true],
+    [
+      'a non-loopback request',
+      { ...relay, 'x-eve-internal-secret': SECRET },
+      false,
+    ],
+    [
+      'a run header that is not a UUID',
+      {
+        ...relay,
+        'x-eve-relay-run': 'not-a-uuid',
+        'x-eve-internal-secret': SECRET,
+      },
+      true,
+    ],
+    [
+      'a lone relay URL',
+      {
+        'x-eve-relay-url': 'wss://relay.example',
+        'x-eve-internal-secret': SECRET,
+      },
+      true,
+    ],
+    [
+      'a lone run id',
+      { 'x-eve-relay-run': RUN, 'x-eve-internal-secret': SECRET },
+      true,
+    ],
+    [
+      'a relay URL with the retired token header and no run',
+      {
+        'x-eve-relay-url': 'wss://relay.example',
+        'x-eve-relay-token': 'legacy',
+        'x-eve-internal-secret': SECRET,
+      },
+      true,
+    ],
+  ])('is refused for %s', (_n, headers, loopback) => {
+    expect(
+      relayHeaderGrant(h(headers as Record<string, string>), loopback, SECRET),
+    ).toBe('refused');
+  });
+
+  it.each([undefined, ''])('is refused when the env secret is %j', (env) => {
+    expect(
+      relayHeaderGrant(
+        h({ ...relay, 'x-eve-internal-secret': env ?? '' }),
+        true,
+        env,
+      ),
+    ).toBe('refused');
   });
 });
