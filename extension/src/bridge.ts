@@ -611,12 +611,16 @@ function tracked<T>(child: Child | undefined, run: () => Promise<T>) {
 
 // --- screenshots -------------------------------------------------------------
 
-// Every mask step (one CDP call) and the capture itself are bounded, so a
-// hung page or a child that never answers ends in a refusal or a capture
-// error well inside the relay's command timeout. The page restores itself
-// after SELF_RESTORE_MS (25s) if the worker never gets to.
+// Every mask step (one CDP call) and the capture are bounded, and all the
+// applies together share one budget, so a hung page or a child that never
+// answers ends in a refusal or a capture error inside the relay's 30s
+// command timeout: at most 10s of applies, 3s to settle, 8s to capture, 3s
+// to verify and 3s to restore (sessions settle, verify and restore in
+// parallel). The page restores itself after SELF_RESTORE_MS (25s) if the
+// worker never gets to; verify refuses a capture that outlived it.
 const MASK_STEP_MS = 3_000;
-const CAPTURE_MS = 10_000;
+const MASK_APPLY_BUDGET_MS = 10_000;
+const CAPTURE_MS = 8_000;
 // Child targets with no document to mask (and nothing painted on screen).
 const WORKER_TYPES = new Set([
   'worker',
@@ -637,8 +641,9 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, what: string) =>
  * Captures a screenshot with every sensitive field hidden. The bridge masks
  * the tab session and every attached frame session (an out-of-process
  * iframe paints into the tab's screenshot) straight through chrome.debugger,
- * never through the agent's allowlist, captures, checks that every mask is
- * still in place in the same documents, then restores. Any failure is a
+ * never through the agent's allowlist, waits for each to render a frame,
+ * captures, checks that every mask is still in place in the same documents,
+ * then restores. Any failure is a
  * refusal with a fixed message; the raw image is only returned when every
  * session was masked and verified.
  *
@@ -672,7 +677,7 @@ async function captureMasked(
         MASK_STEP_MS,
         'screenshot mask',
       );
-  const sessions = [
+  const masks = [
     createMaskSession({
       send: maskSend({ tabId: current.tabId }),
       objectGroup,
@@ -686,10 +691,19 @@ async function captureMasked(
       }),
     ),
   ];
+  // An apply that outlives the shared budget is refused; its session's
+  // restore then stops it before its next step.
+  const applyBy = Date.now() + MASK_APPLY_BUDGET_MS;
+  const sessions = masks.map((mask) => ({
+    apply: () =>
+      withTimeout(mask.apply(), Math.max(0, applyBy - Date.now()), 'masking'),
+    restore: () => mask.restore(),
+  }));
   const known = new Set(current.children.keys());
   return withScreenshotMask(sessions, async () => {
+    await Promise.all(masks.map((mask) => mask.settle()));
     const shot = await withTimeout(capture(), CAPTURE_MS, 'screenshot');
-    for (const session of sessions) await session.verify();
+    await Promise.all(masks.map((mask) => mask.verify()));
     // A frame that attached during the window was never masked.
     for (const [sessionId, child] of current.children) {
       if (!known.has(sessionId) && !WORKER_TYPES.has(child.type ?? '')) {

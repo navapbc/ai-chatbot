@@ -299,6 +299,8 @@ async function addScreenshotFields() {
       <span id="cardlbl">Card number</span>
       <div id="cardce" contenteditable aria-labelledby="cardlbl" style="display: inline-block; width: 10em">4111 1111</div>
       <textarea id="pinnote" aria-label="PIN" rows="1">8642</textarea>
+      <style>#faded { transition: all 2s; }</style>
+      <input id="faded" aria-label="Routing number" value="011000015">
       <iframe id="so" title="same origin" style="height: 40px" srcdoc="<label for=sp>PIN</label> <input id=sp value=5555> <label for=sq>Pet</label> <input id=sq value=Rex>"></iframe>`;
     document.body.append(box);
   }, STYLED);
@@ -354,6 +356,7 @@ const SENSITIVE_IN_SHOT = [
   'main#sid',
   'main#cardce',
   'main#pinnote',
+  'main#faded',
   'srcdoc#sp',
   'xo#cc',
 ];
@@ -381,6 +384,7 @@ async function fieldRects(): Promise<Record<string, Rect>> {
     'main#sid': page.locator('#sid'),
     'main#cardce': page.locator('#cardce'),
     'main#pinnote': page.locator('#pinnote'),
+    'main#faded': page.locator('#faded'),
     'srcdoc#sp': page.frameLocator('#so').locator('#sp'),
     'srcdoc#sq': page.frameLocator('#so').locator('#sq'),
     'xo#cc': page.frameLocator('#xo').locator('#cc'),
@@ -417,9 +421,9 @@ const rawCapture = async () =>
 
 /**
  * Decodes a PNG (in the extension worker: createImageBitmap + OffscreenCanvas)
- * and summarizes each region: `ink` counts pixels darker than 200 in every
- * channel's minimum (text, bullets, placeholder grey), `hash` fingerprints
- * the region's exact pixels.
+ * and summarizes each region: `ink` counts pixels whose darkest channel is
+ * under 200 (text, bullets, placeholder grey), `dark` those under 120 (text,
+ * but not a selection highlight), `hash` fingerprints the exact pixels.
  */
 const regions = (data: string, rects: Rect[]) =>
   browser.sw.evaluate(
@@ -435,9 +439,12 @@ const regions = (data: string, rects: Rect[]) =>
       return rects.map((r) => {
         const px = ctx.getImageData(r.x, r.y, r.width, r.height).data;
         let ink = 0;
+        let dark = 0;
         let hash = 0;
         for (let i = 0; i < px.length; i += 4) {
-          if (Math.min(px[i], px[i + 1], px[i + 2]) < 200) ink += 1;
+          const min = Math.min(px[i], px[i + 1], px[i + 2]);
+          if (min < 200) ink += 1;
+          if (min < 120) dark += 1;
           hash =
             (Math.imul(hash, 31) +
               px[i] * 65536 +
@@ -445,7 +452,7 @@ const regions = (data: string, rects: Rect[]) =>
               px[i + 2]) >>>
             0;
         }
-        return { ink, hash };
+        return { ink, dark, hash };
       });
     },
     { data, rects },
@@ -952,6 +959,55 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     }
     const again = await agent.call('Page.captureScreenshot', {}, session);
     expect(again.error).toBeUndefined();
+    await agent.close();
+  });
+
+  it('a selected sensitive field (focused, text selected, as click + Control+a leaves it) is hidden', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.childSession(session);
+    await blurAll();
+    await page.evaluate(() => {
+      const ssn = document.getElementById('ssn') as HTMLInputElement;
+      ssn.focus();
+      ssn.select();
+    });
+    try {
+      const box = await page.locator('#ssn').boundingBox();
+      if (!box) throw new Error('no box for #ssn');
+      const rect = {
+        x: Math.ceil(box.x + 3),
+        y: Math.ceil(box.y + 3),
+        width: Math.floor(box.width - 6),
+        height: Math.floor(box.height - 6),
+      };
+      const control = await rawCapture();
+      const shot = await agent.call('Page.captureScreenshot', {}, session);
+      expect(shot.error).toBeUndefined();
+      const [u] = await regions(control, [rect]);
+      const [m] = await regions(shot.result?.data as string, [rect]);
+      expect(u.dark).toBeGreaterThan(0);
+      expect(m.dark).toBe(0);
+    } finally {
+      await blurAll();
+    }
+    await agent.close();
+  });
+
+  it('a screenshot sent on a child session is masked the same way and leaves no style behind', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    const child = await agent.childSession(session);
+    const before = await styleAttributes();
+    const shot = await agent.call('Page.captureScreenshot', {}, child);
+    // Chromium may not capture from an iframe target; either way the bridge
+    // masked and restored every session around the attempt.
+    expect(shot.error === undefined || shot.error.message !== REFUSED).toBe(
+      true,
+    );
+    expect(await styleAttributes()).toEqual(before);
     await agent.close();
   });
 

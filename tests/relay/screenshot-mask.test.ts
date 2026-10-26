@@ -384,6 +384,7 @@ describe('page side', { timeout: 30_000 }, () => {
       .locator('#p')
       .evaluate((el) => getComputedStyle(el).webkitTextFillColor);
     expect(inFrame).toBe('rgba(0, 0, 0, 0)');
+    await session.settle();
     await session.verify();
     await session.restore();
     expect(await styles()).toEqual(before);
@@ -533,6 +534,38 @@ describe('createMaskSession with a stub send', () => {
     });
     await session.restore();
     await expect(session.verify()).rejects.toBeInstanceOf(ScreenshotMaskError);
+    await expect(session.settle()).rejects.toBeInstanceOf(ScreenshotMaskError);
     expect(stub).not.toHaveBeenCalled();
+  });
+
+  it('an apply the bridge gave up on stops before masking once restore runs', async () => {
+    const methods: string[] = [];
+    let releaseReport = () => {};
+    const send = async (method: string, params?: Record<string, unknown>) => {
+      methods.push(
+        method === 'Runtime.callFunctionOn'
+          ? String(params?.functionDeclaration)
+          : method,
+      );
+      if (method === 'Runtime.evaluate') return { result: { objectId: 'h' } };
+      if (String(params?.functionDeclaration).includes('report')) {
+        await new Promise<void>((resolve) => {
+          releaseReport = resolve;
+        });
+        return { result: { value: { fields: [{}], opaque: 0 } } };
+      }
+      return { result: { value: true } };
+    };
+    const session = createMaskSession({
+      send,
+      objectGroup: 'g',
+      isCoveredFrame: () => true,
+    });
+    const applying = session.apply();
+    await new Promise((r) => setTimeout(r, 10));
+    await session.restore();
+    releaseReport();
+    await expect(applying).rejects.toThrow();
+    expect(methods.some((m) => m.includes('mask('))).toBe(false);
   });
 });

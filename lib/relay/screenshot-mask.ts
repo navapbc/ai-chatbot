@@ -170,7 +170,8 @@ export function isSensitiveParts(parts: unknown): boolean {
 /**
  * How long the page waits before restoring itself if the worker never does
  * (the service worker died or the debugger detached mid-capture). Longer
- * than the bridge's whole capture budget, so a live capture never sees it.
+ * than a normal capture by far; if a slow capture outlives it, `verify`
+ * finds the masks gone and the screenshot is refused, never sent unmasked.
  */
 export const SELF_RESTORE_MS = 25_000;
 
@@ -184,6 +185,9 @@ export const SELF_RESTORE_MS = 25_000;
  *   report()      -> { fields: FieldParts[], opaque: number }
  *   frame(i)      -> the i-th uninspectable frame element
  *   mask(indices) -> number of fields masked
+ *   settle()      -> resolves after the next rendered frame (two animation
+ *                    frames, or 150ms when the page renders none), so an
+ *                    out-of-process frame has painted its mask
  *   verify()      -> true when every mask is still in place and no inspected
  *                    frame has changed document
  *   restore()     -> puts every touched style attribute back exactly
@@ -198,6 +202,9 @@ export const PAGE_SOURCE = `(() => {
     ['-webkit-text-security', 'disc'],
     ['text-shadow', 'none'],
     ['caret-color', 'transparent'],
+    // Chromium does not transition -webkit-text-fill-color today; this
+    // keeps a page's transition from fading the mask in if it ever does.
+    ['transition-property', 'none'],
   ];
   const SKIP_TYPES = new Set(['hidden', 'checkbox', 'radio', 'button', 'submit',
     'reset', 'image', 'file', 'range', 'color']);
@@ -330,6 +337,15 @@ export const PAGE_SOURCE = `(() => {
       } catch (e) {}
       return records.length;
     },
+    settle() {
+      return new Promise((resolve) => {
+        const done = () => resolve(true);
+        try {
+          requestAnimationFrame(() => requestAnimationFrame(done));
+        } catch (e) {}
+        setTimeout(done, 150);
+      });
+    },
     verify() {
       for (const [frame, doc] of frames) {
         if (frame.isConnected && docOf(frame) !== doc) return false;
@@ -375,6 +391,13 @@ export interface VerifiableMaskSession extends MaskSession {
    * dropped the style, or a lost session means the image may be unmasked).
    */
   verify(): Promise<void>;
+  /**
+   * After every session's apply, before the capture: waits until this
+   * session's page has rendered a frame with the mask (an out-of-process
+   * iframe paints into the tab's screenshot from its own renderer).
+   * Rejects with ScreenshotMaskError on any failure.
+   */
+  settle(): Promise<void>;
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
@@ -398,12 +421,19 @@ export function createMaskSession(
 ): VerifiableMaskSession {
   const { send, objectGroup, isCoveredFrame } = options;
   let holder: string | undefined;
+  // Set by restore. An apply still running then (the bridge gave up on it)
+  // stops before its next step, so it cannot mask after the restore.
+  let closed = false;
+  const open = () => {
+    if (closed) throw new Error('mask session closed');
+  };
 
   const call = async (
     objectId: string,
     body: string,
     args: unknown[] = [],
     returnByValue = true,
+    awaitPromise = false,
   ) =>
     remoteResult(
       await send('Runtime.callFunctionOn', {
@@ -411,6 +441,7 @@ export function createMaskSession(
         functionDeclaration: body,
         arguments: args.map((value) => ({ value })),
         returnByValue,
+        awaitPromise,
         silent: true,
         objectGroup,
       }),
@@ -431,6 +462,7 @@ export function createMaskSession(
         throw new Error('mask step failed');
       }
       const objectId = evaluated.objectId;
+      open();
       holder = objectId;
 
       const report = (
@@ -452,6 +484,7 @@ export function createMaskSession(
           [i],
           false,
         );
+        open();
         const described = await send('DOM.describeNode', {
           objectId: frame.objectId,
         });
@@ -464,6 +497,7 @@ export function createMaskSession(
       const indices = report.fields.flatMap((parts, i) =>
         isSensitiveParts(parts) ? [i] : [],
       );
+      open();
       const masked = (
         await call(
           objectId,
@@ -472,6 +506,21 @@ export function createMaskSession(
         )
       ).value;
       if (typeof masked !== 'number') throw new Error('mask step failed');
+    },
+
+    async settle() {
+      if (holder === undefined) throw new ScreenshotMaskError();
+      try {
+        await call(
+          holder,
+          'function () { return this.settle(); }',
+          [],
+          true,
+          true,
+        );
+      } catch {
+        throw new ScreenshotMaskError();
+      }
     },
 
     async verify() {
@@ -487,6 +536,7 @@ export function createMaskSession(
     },
 
     async restore() {
+      closed = true;
       const objectId = holder;
       holder = undefined;
       if (objectId === undefined) return;
