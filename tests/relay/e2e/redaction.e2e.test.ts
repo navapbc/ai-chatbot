@@ -491,7 +491,8 @@ const patchSendCommand = (
     | 'failChildEvaluate'
     | 'reloadBeforeCapture'
     | 'slowCapture'
-    | 'detachAfterMask',
+    | 'detachAfterMask'
+    | 'logDelayMask',
 ) =>
   browser.sw.evaluate((mode) => {
     const dbg = chrome.debugger as unknown as {
@@ -536,6 +537,30 @@ const patchSendCommand = (
         (params as { functionDeclaration?: string } | undefined)
           ?.functionDeclaration ?? '',
       );
+      if (mode === 'logDelayMask') {
+        // Logs every command (mask steps by name, the agent's evaluates by
+        // expression) and when it settles; holds the mask step 600ms.
+        const store = globalThis as unknown as { sendLog?: string[] };
+        if (!store.sendLog) store.sendLog = [];
+        const log = store.sendLog;
+        const expr = (params as { expression?: string } | undefined)
+          ?.expression;
+        const label = fn
+          ? (/this\.(\w+)\(/.exec(fn)?.[1] ?? 'fn')
+          : method === 'Runtime.evaluate' && expr && !expr.startsWith('(()')
+            ? expr.replace(/^"|"$/g, '').slice(0, 11)
+            : method.replace(/^\w+\./, '');
+        log.push(`send ${label}`);
+        if (fn.includes('this.mask(')) {
+          await new Promise((r) => setTimeout(r, 600));
+        }
+        try {
+          return await original.apply(dbg, args);
+        } finally {
+          log.push(`done ${label}`);
+          log.push(label);
+        }
+      }
       if (mode === 'detachAfterMask' && armed && fn.includes('this.mask(')) {
         armed = false;
         // The page's self-restore, shortened from 25s for the test.
@@ -629,9 +654,18 @@ async function hiddenIn(
   );
 }
 
+/** The command log of the 'logDelayMask' patch, as one string. */
+const sendLog = () =>
+  browser.sw.evaluate(() =>
+    ((globalThis as unknown as { sendLog?: string[] }).sendLog ?? []).join(
+      '\n',
+    ),
+  ) as Promise<string>;
+
 const unpatchSendCommand = () =>
   browser.sw.evaluate(() => {
     const g = globalThis as unknown as { originalSendCommand?: unknown };
+    (globalThis as unknown as { sendLog?: string[] }).sendLog = [];
     if (g.originalSendCommand) {
       (chrome.debugger as unknown as { sendCommand: unknown }).sendCommand =
         g.originalSendCommand;
@@ -1185,22 +1219,50 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     }
   });
 
+  /**
+   * Installs a page watcher that runs `body` (with `el`, the element) every
+   * time the mask lands on #ssn, i.e. inside every mask window; `once` stops
+   * after the first.
+   */
+  const disruptOnMask = (body: string, once: boolean) =>
+    page.evaluate(
+      ([code, onlyOnce]) => {
+        const run = new Function('el', code as string);
+        const watcher = new MutationObserver((records) => {
+          for (const r of records) {
+            const el = r.target as HTMLElement;
+            if (el.id !== 'ssn') continue;
+            if (!(el.getAttribute('style') ?? '').includes('text-fill-color')) {
+              continue;
+            }
+            if (onlyOnce) watcher.disconnect();
+            run(el);
+            return;
+          }
+        });
+        watcher.observe(document.body, {
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['style'],
+        });
+      },
+      [body, once] as const,
+    );
+
   for (const [name, script] of [
     [
       'a React-style re-render that replaces the masked input (P1)',
-      `const old = document.getElementById('ssn');
-       const fresh = document.createElement('input');
-       fresh.id = 'ssn'; fresh.value = old.value;
-       old.replaceWith(fresh);`,
+      `const fresh = document.createElement('input');
+       fresh.id = 'ssn'; fresh.value = el.value;
+       el.replaceWith(fresh);`,
     ],
     [
       'a clone swapped in for the capture and swapped back (P1b)',
-      `const old = document.getElementById('ssn');
-       const clone = old.cloneNode(true);
+      `const clone = el.cloneNode(true);
        clone.removeAttribute('style');
        for (const a of clone.getAttributeNames()) if (a.startsWith('data-labs-mask')) clone.removeAttribute(a);
-       old.replaceWith(clone);
-       setTimeout(() => clone.replaceWith(old), 1500);`,
+       el.replaceWith(clone);
+       setTimeout(() => clone.replaceWith(el), 300);`,
     ],
     [
       'a srcdoc iframe with an SSN field appended during the window',
@@ -1209,19 +1271,8 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
        document.body.append(f);`,
     ],
   ] as const) {
-    it(`refuses ${name}`, async () => {
-      // Runs when the mask lands on #ssn, i.e. inside the mask window.
-      await page.evaluate((body) => {
-        const target = document.getElementById('ssn') as HTMLElement;
-        const watcher = new MutationObserver(() => {
-          watcher.disconnect();
-          new Function(body)();
-        });
-        watcher.observe(target, {
-          attributes: true,
-          attributeFilter: ['style'],
-        });
-      }, script);
+    it(`refuses ${name}, on every retry`, async () => {
+      await disruptOnMask(script, false);
       try {
         const { cdp } = await startRun();
         const agent = await rawAgent(cdp);
@@ -1237,6 +1288,249 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
       }
     });
   }
+
+  it('a one-off re-render during the window is retried, and the retry masks the new input', async () => {
+    await disruptOnMask(
+      `const fresh = document.createElement('input');
+       fresh.id = 'ssn'; fresh.value = el.value;
+       el.replaceWith(fresh);`,
+      true,
+    );
+    try {
+      const { cdp } = await startRun();
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.childSession(session);
+      await blurAll();
+      const rect = await insetBox(page.locator('#ssn'));
+      const shot = await agent.call('Page.captureScreenshot', {}, session);
+      expect(shot.error).toBeUndefined();
+      const control = await rawCapture();
+      const [u] = await regions(control, [rect]);
+      const [m] = await regions(shot.result?.data as string, [rect]);
+      expect(u.nonBg).toBeGreaterThan(0);
+      expect(m.nonBg).toBe(0);
+      await agent.close();
+      expect(await leftovers()).toBe(0);
+    } finally {
+      await reloadFixture();
+    }
+  });
+
+  it('text churn during the window does not refuse; a toast with a known value is masked or refused (I-B)', async () => {
+    // A clock ticking every 20ms: text changes, no known value.
+    await page.evaluate(() => {
+      const clock = document.createElement('p');
+      clock.id = 'clock';
+      document.body.append(clock);
+      (window as unknown as { tick: number }).tick = window.setInterval(() => {
+        clock.textContent = new Date().toISOString();
+      }, 20);
+    });
+    try {
+      const { cdp } = await startRun();
+      expect(await addKnownValue(KNOWN)).toEqual({ ok: true });
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.childSession(session);
+      const shot = await agent.call('Page.captureScreenshot', {}, session);
+      expect(shot.error).toBeUndefined();
+
+      // A toast saying the known value appears once, inside the window: the
+      // first attempt refuses, the retry finds it in the AX tree and masks it.
+      await page.evaluate((v) => {
+        const target = document.getElementById('ssn') as HTMLElement;
+        const watcher = new MutationObserver(() => {
+          watcher.disconnect();
+          const toast = document.createElement('p');
+          toast.id = 'toast';
+          toast.textContent = `Saved ${v}`;
+          document.body.prepend(toast);
+        });
+        watcher.observe(target, {
+          attributes: true,
+          attributeFilter: ['style'],
+        });
+      }, KNOWN);
+      const second = await agent.call('Page.captureScreenshot', {}, session);
+      if (second.error) {
+        expect(second.error.message).toBe(REFUSED);
+      } else {
+        const rect = await insetBox(page.locator('#toast'), 0);
+        const [u] = await regions(await rawCapture(), [rect]);
+        const [m] = await regions(second.result?.data as string, [rect]);
+        expect(u.nonBg).toBeGreaterThan(0);
+        expect(m.nonBg).toBe(0);
+      }
+      await agent.close();
+    } finally {
+      await reloadFixture();
+    }
+  });
+
+  it('a known value split by markup in page text is hidden (I-B)', async () => {
+    await page.evaluate(() => {
+      const p = document.createElement('p');
+      p.id = 'split';
+      p.innerHTML = 'Reference <span>900</span>-77-4321 confirmed';
+      document.body.prepend(p);
+    });
+    try {
+      const { cdp } = await startRun();
+      expect(await addKnownValue(KNOWN)).toEqual({ ok: true });
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.childSession(session);
+      expect(
+        await hiddenIn(agent, session, {
+          split: await insetBox(page.locator('#split'), 0),
+        }),
+      ).toEqual({ split: 'hidden' });
+      await agent.close();
+    } finally {
+      await page.evaluate(() => document.getElementById('split')?.remove());
+    }
+  });
+
+  it('a command issued during the mask window runs only after the restore (I-A)', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.childSession(session);
+    await patchSendCommand('logDelayMask');
+    try {
+      const shot = agent.call('Page.captureScreenshot', {}, session);
+      // Sent at once, and again from inside the (delayed) mask window.
+      const early = agent.call(
+        'Runtime.evaluate',
+        { expression: '"probe-early"', returnByValue: true },
+        session,
+      );
+      await new Promise((r) => setTimeout(r, 300));
+      const late = agent.call(
+        'Runtime.evaluate',
+        { expression: '"probe-late"', returnByValue: true },
+        session,
+      );
+      await Promise.all([shot, early, late]);
+      const log = await sendLog();
+      const firstMask = log.indexOf('createIsolatedWorld');
+      const lastRestore = log.lastIndexOf('restore');
+      expect(firstMask).toBeGreaterThanOrEqual(0);
+      for (const probe of ['probe-early', 'probe-late']) {
+        const sent = log.indexOf(`send ${probe}`);
+        const done = log.indexOf(`done ${probe}`);
+        // Wholly before the mask window, or after it.
+        expect(done < firstMask || sent > lastRestore).toBe(true);
+      }
+      expect(log.indexOf('send probe-late')).toBeGreaterThan(lastRestore);
+    } finally {
+      await unpatchSendCommand();
+    }
+    await agent.close();
+  });
+
+  it('a command in flight when a screenshot starts is drained first (I-A)', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.childSession(session);
+    await patchSendCommand('logDelayMask');
+    try {
+      const slow = agent.call(
+        'Runtime.evaluate',
+        {
+          expression:
+            'new Promise((r) => setTimeout(() => r("probe-slow"), 800))',
+          awaitPromise: true,
+          returnByValue: true,
+        },
+        session,
+      );
+      // The command has reached chrome.debugger (it is in flight).
+      await until(async () => (await sendLog()).includes('send new Promise'));
+      const shot = await agent.call('Page.captureScreenshot', {}, session);
+      expect(shot.error).toBeUndefined();
+      await slow;
+      const log = await sendLog();
+      expect(log.indexOf('done new Promise')).toBeGreaterThanOrEqual(0);
+      expect(log.indexOf('done new Promise')).toBeLessThan(
+        log.indexOf('createIsolatedWorld'),
+      );
+    } finally {
+      await unpatchSendCommand();
+    }
+    await agent.close();
+  });
+
+  it('a stop while a screenshot drains ends promptly and applies no mask (I-A)', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.childSession(session);
+    await patchSendCommand('logDelayMask');
+    try {
+      void agent.call(
+        'Runtime.evaluate',
+        {
+          expression: 'new Promise((r) => setTimeout(() => r(1), 3000))',
+          awaitPromise: true,
+        },
+        session,
+      );
+      // The command has reached chrome.debugger (it is in flight).
+      await until(async () => (await sendLog()).includes('send new Promise'));
+      void agent.call('Page.captureScreenshot', {}, session);
+      await new Promise((r) => setTimeout(r, 200));
+      const started = Date.now();
+      expect(await bridgeMessage(browser.sw, { type: 'stopRun' })).toEqual({
+        ok: true,
+      });
+      expect(Date.now() - started).toBeLessThan(7_000);
+      await new Promise((r) => setTimeout(r, 500));
+      expect((await sendLog()).includes('createIsolatedWorld')).toBe(false);
+      expect(await leftovers()).toBe(0);
+    } finally {
+      await unpatchSendCommand();
+    }
+    await agent.close();
+  });
+
+  it('a hung command makes the screenshot refuse instead of wedging the tab (I-A)', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.childSession(session);
+    await patchSendCommand('logDelayMask');
+    try {
+      void agent.call(
+        'Runtime.evaluate',
+        { expression: 'new Promise(() => {})', awaitPromise: true },
+        session,
+      );
+      // The command has reached chrome.debugger (it is in flight).
+      await until(async () => (await sendLog()).includes('send new Promise'));
+      const shot = await agent.call('Page.captureScreenshot', {}, session);
+      expect(shot.error?.message).toBe(REFUSED);
+      expect(await leftovers()).toBe(0);
+      // Not wedged: other commands still run.
+      const after = await agent.call(
+        'Runtime.evaluate',
+        { expression: '1 + 1', returnByValue: true },
+        session,
+      );
+      expect(after.result?.result).toEqual({
+        type: 'number',
+        value: 2,
+        description: '2',
+      });
+    } finally {
+      await unpatchSendCommand();
+      await agent.close();
+      // The reload settles the hung evaluate.
+      await reloadFixture();
+    }
+  });
 
   it('hides the selection, placeholders and descendants against page rules (C4)', async () => {
     await page.evaluate(() => {
@@ -1412,10 +1706,11 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     // Reloads the tab after the masks are applied, before the capture: the
     // image would show a document that was never masked.
     await patchSendCommand('reloadBeforeCapture');
+    let shot: CdpMessage;
     try {
-      const shot = await agent.call('Page.captureScreenshot', {}, session);
-      expect(shot.result).toBeUndefined();
-      expect(shot.error?.message).toBe(REFUSED);
+      // The first attempt's verify sees the navigation and refuses; the
+      // retry masks the new document.
+      shot = await agent.call('Page.captureScreenshot', {}, session);
     } finally {
       await unpatchSendCommand();
     }
@@ -1425,6 +1720,13 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
       .locator('#cc')
       .waitFor({ state: 'attached', timeout: 10_000 });
     expect(await leftovers()).toBe(0);
+    expect(shot.error).toBeUndefined();
+    await blurAll();
+    const rect = await insetBox(page.locator('#ssn'));
+    const [u] = await regions(await rawCapture(), [rect]);
+    const [m] = await regions(shot.result?.data as string, [rect]);
+    expect(u.nonBg).toBeGreaterThan(0);
+    expect(m.nonBg).toBe(0);
     await agent.close();
   });
 

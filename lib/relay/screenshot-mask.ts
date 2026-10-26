@@ -24,9 +24,16 @@ export const SCREENSHOT_REFUSED =
 
 /** A refused screenshot. The message is fixed: it never carries page data. */
 export class ScreenshotMaskError extends Error {
-  constructor() {
+  /**
+   * True when the page changed during the mask window (verify refused): a
+   * fresh attempt may succeed. False for a refusal the page's structure
+   * causes (a closed shadow root, an uncovered frame, a stale mask).
+   */
+  readonly retryable: boolean;
+  constructor(retryable = false) {
     super(SCREENSHOT_REFUSED);
     this.name = 'ScreenshotMaskError';
+    this.retryable = retryable;
   }
 }
 
@@ -164,8 +171,8 @@ export function descriptorFromParts(parts: FieldParts): FieldDescriptor {
 
 /**
  * True when the field is sensitive by `isSensitiveField`, judged on the
- * joined descriptor and on each label source alone (joining two labels can
- * only add signals, but a pattern's lookahead could see the next label).
+ * joined descriptor, on each label source alone (a pattern's lookahead
+ * could see the next label), and on the name and the id alone.
  * Anything that is not an object fails toward sensitive.
  */
 export function isSensitiveParts(parts: unknown): boolean {
@@ -174,9 +181,18 @@ export function isSensitiveParts(parts: unknown): boolean {
   const descriptor = descriptorFromParts(p);
   if (isSensitiveField(descriptor)) return true;
   const labels = [str(p.ariaLabel), ...strs(p.labels), str(p.accessibleName)];
-  return labels.some(
-    (label) =>
-      label !== undefined && isSensitiveField({ ...descriptor, label }),
+  if (
+    labels.some(
+      (label) =>
+        label !== undefined && isSensitiveField({ ...descriptor, label }),
+    )
+  ) {
+    return true;
+  }
+  // The name and the id alone too: a pattern anchored to the whole text
+  // (a separator-free key such as `calworksid`) fails on the joined pair.
+  return [str(p.name), str(p.id)].some(
+    (name) => name !== undefined && isSensitiveField({ ...descriptor, name }),
   );
 }
 
@@ -208,8 +224,9 @@ export const MASK_WORLD = '__labs_screenshot_mask__';
  *                         echoed text nodes, then watches for changes
  *   settle()           -> 'raf' after two animation frames, or 'timeout'
  *                         when none were rendered within 500ms
- *   verify()           -> { ok, values }: ok when nothing touched the masks,
- *                         values are the current values of unmasked fields
+ *   verify()           -> { ok, values, texts }: ok when nothing touched the
+ *                         masks; values are the current values of unmasked
+ *                         fields, texts the text that appeared meanwhile
  *   restore()          -> puts every touched attribute back exactly
  * It is a string, not a stringified function, so no bundler transform can
  * change what the page runs. It logs nothing.
@@ -385,6 +402,24 @@ export const PAGE_SOURCE = `(() => {
   const touches = (node) =>
     node.nodeType === 1 &&
     (node.matches(WATCHED) || node.querySelector(WATCHED) !== null || recorded.has(node));
+  // Text that appeared during the window, for the worker's known-value
+  // check. Text inside a masked element is hidden anyway.
+  const TEXT_CAP = 8192;
+  const insideMask = (node) => {
+    const el = node.nodeType === 1 ? node : node.parentElement;
+    return !!(el && el.closest('[' + MARK + ']'));
+  };
+  const STALE = 'data-labs-mask-';
+  const hasStaleMask = () => {
+    for (const root of found.roots) {
+      for (const el of root.querySelectorAll('*')) {
+        for (const name of el.getAttributeNames()) {
+          if (name.startsWith(STALE)) return true;
+        }
+      }
+    }
+    return false;
+  };
 
   return {
     report() {
@@ -403,6 +438,10 @@ export const PAGE_SOURCE = `(() => {
       return document;
     },
     mask(indices, ms, ...textNodes) {
+      // Another capture's mask is still on the page (its restore never ran;
+      // its self-restore will clear it): recording it as the page's own
+      // style would make it permanent. Refuse instead.
+      if (hasStaleMask()) return -1;
       masked = new Set(indices);
       const targets = [];
       for (const i of indices) {
@@ -431,8 +470,9 @@ export const PAGE_SOURCE = `(() => {
         o.observe(root, {
           subtree: true,
           childList: true,
+          characterData: true,
           attributes: true,
-          attributeFilter: ['style', 'type', 'contenteditable', 'role', 'hidden', 'class'],
+          attributeFilter: ['style', 'type', 'contenteditable', 'role', 'hidden', 'class', MARK],
         });
         observers.push(o);
       }
@@ -452,14 +492,28 @@ export const PAGE_SOURCE = `(() => {
       });
     },
     verify() {
-      const fail = { ok: false, values: [] };
+      const fail = { ok: false, values: [], texts: [] };
       if (document.documentElement !== rootElement) return fail;
       const changes = mutations.splice(0);
       for (const o of observers) for (const m of o.takeRecords()) changes.push(m);
+      const texts = [];
+      const addText = (node, text) => {
+        if (insideMask(node) || !text) return true;
+        if (text.length > TEXT_CAP) return false;
+        texts.push(text);
+        return true;
+      };
       for (const m of changes) {
         if (m.type === 'childList') {
-          for (const n of m.addedNodes) if (touches(n)) return fail;
+          for (const n of m.addedNodes) {
+            if (touches(n)) return fail;
+            if ((n.nodeType === 3 || n.nodeType === 1) && !addText(n, n.textContent)) return fail;
+          }
           for (const n of m.removedNodes) if (touches(n)) return fail;
+        } else if (m.type === 'characterData') {
+          if (!addText(m.target, m.target.data)) return fail;
+        } else if (m.attributeName === MARK) {
+          return fail;
         } else if (m.attributeName === 'style') {
           if (recorded.has(m.target)) return fail;
         } else if (m.attributeName === 'type' || m.attributeName === 'contenteditable' ||
@@ -471,6 +525,9 @@ export const PAGE_SOURCE = `(() => {
         // MARK sheet win over class rules, and hidden fields are masked too.
       }
       const now = enumerate();
+      const rootSet = new Set(found.roots);
+      // A shadow root attached during the window was never walked.
+      for (const root of now.roots) if (!rootSet.has(root)) return fail;
       for (const el of now.fields) if (!fieldSet.has(el)) return fail;
       for (const el of now.owners) if (!ownerSet.has(el)) return fail;
       for (const r of records) {
@@ -493,7 +550,7 @@ export const PAGE_SOURCE = `(() => {
       found.fields.forEach((el, i) => {
         if (!masked.has(i)) values.push(valueOf(el));
       });
-      return { ok: true, values };
+      return { ok: true, values, texts };
     },
     restore,
   };
@@ -626,6 +683,86 @@ export function hasClosedShadowField(node: unknown): boolean {
   return scan(node);
 }
 
+/**
+ * The backend node ids to mask for registered known values echoed as page
+ * text, from a Accessibility.getFullAXTree node list. The text of each node
+ * is its descendant StaticText names joined in order with '' (so a value
+ * split by markup, `<span>900</span>-00-1234`, is found), and the deepest
+ * node whose text holds a known value is chosen. A chosen node with no DOM
+ * node is replaced by its nearest ancestor that has one. Returns null when
+ * a match cannot be tied to any DOM node: refuse.
+ */
+export function echoTargets(
+  axNodes: unknown[],
+  hasKnownValue: (text: string) => boolean,
+): number[] | null {
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const n of axNodes) {
+    if (isObject(n) && typeof n.nodeId === 'string') byId.set(n.nodeId, n);
+  }
+  const role = (n: Record<string, unknown>) =>
+    isObject(n.role) ? n.role.value : undefined;
+  const childrenOf = (n: Record<string, unknown>) =>
+    (Array.isArray(n.childIds) ? n.childIds : [])
+      .map((id) => byId.get(String(id)))
+      .filter((c): c is Record<string, unknown> => c !== undefined);
+  const memo = new Map<Record<string, unknown>, string>();
+  const textOf = (n: Record<string, unknown>, depth = 0): string => {
+    const cached = memo.get(n);
+    if (cached !== undefined) return cached;
+    let text = '';
+    if (role(n) === 'StaticText') {
+      text =
+        isObject(n.name) && typeof n.name.value === 'string'
+          ? n.name.value
+          : '';
+    } else if (role(n) !== 'InlineTextBox' && depth < 512) {
+      text = childrenOf(n)
+        .map((c) => textOf(c, depth + 1))
+        .join('');
+    }
+    memo.set(n, text);
+    return text;
+  };
+  const isText = (n: Record<string, unknown>) =>
+    role(n) === 'StaticText' || role(n) === 'InlineTextBox';
+  const roots = [...byId.values()].filter(
+    (n) => typeof n.parentId !== 'string' || !byId.has(n.parentId),
+  );
+  const chosen: Record<string, unknown>[] = [];
+  // Top-down: a node whose text holds no known value has no descendant
+  // whose (contiguous) text does.
+  const visit = (n: Record<string, unknown>, depth: number) => {
+    const deeper = childrenOf(n).filter(
+      (c) => !isText(c) && hasKnownValue(textOf(c)),
+    );
+    if (deeper.length === 0 || depth >= 512) {
+      chosen.push(n);
+      return;
+    }
+    for (const c of deeper) visit(c, depth + 1);
+  };
+  for (const r of roots) {
+    if (!isText(r) && hasKnownValue(textOf(r))) visit(r, 0);
+  }
+  const out = new Set<number>();
+  for (const n of chosen) {
+    let at: Record<string, unknown> | undefined = n;
+    while (at && typeof at.backendDOMNodeId !== 'number') {
+      at = typeof at.parentId === 'string' ? byId.get(at.parentId) : undefined;
+    }
+    if (!at) return null;
+    out.add(at.backendDOMNodeId as number);
+  }
+  return [...out];
+}
+
+// Fields whose accessible name is looked up one DOM.describeNode at a time,
+// a few in parallel; past the cap a field is masked without the lookup
+// (fail toward sensitive), so hundreds of fields cannot exhaust the budget.
+const DESCRIBE_PARALLEL = 16;
+const DESCRIBE_CAP = 400;
+
 interface World {
   holder: string;
   frameId: string;
@@ -741,7 +878,6 @@ export function createMaskSession(
     const ax = await send('Accessibility.getFullAXTree', { frameId });
     const axNodes = isObject(ax) && Array.isArray(ax.nodes) ? ax.nodes : fail();
     const names = new Map<number, string>();
-    const echoes: number[] = [];
     for (const n of axNodes as unknown[]) {
       if (!isObject(n) || typeof n.backendDOMNodeId !== 'number') continue;
       const name =
@@ -749,11 +885,8 @@ export function createMaskSession(
           ? n.name.value
           : '';
       names.set(n.backendDOMNodeId, name);
-      const role = isObject(n.role) ? n.role.value : undefined;
-      if (role === 'StaticText' && name !== '' && hasKnownValue(name)) {
-        echoes.push(n.backendDOMNodeId);
-      }
     }
+    const echoes = echoTargets(axNodes as unknown[], hasKnownValue) ?? fail();
 
     open();
     const list = objectIdOf(
@@ -772,25 +905,34 @@ export function createMaskSession(
         fieldObjects.set(Number(p.name), p.value.objectId);
       }
     }
-    const indices: number[] = [];
-    for (let i = 0; i < fields.length; i++) {
-      const field = fields[i];
-      if (!isObject(field) || !isObject(field.parts)) fail();
-      const f = field as { parts: FieldParts; value: unknown };
+    const accessibleNameOf = async (i: number) => {
+      if (i >= DESCRIBE_CAP) return undefined;
       const objectId = fieldObjects.get(i) ?? fail();
-      open();
       const described = await send('DOM.describeNode', { objectId });
       const node = isObject(described) ? described.node : undefined;
       const backend = isObject(node) ? node.backendNodeId : undefined;
-      const accessibleName =
-        typeof backend === 'number' ? names.get(backend) : undefined;
-      const sensitive =
-        // No AX node: nothing to check the label against, so mask.
-        accessibleName === undefined ||
-        isSensitiveParts({ ...f.parts, accessibleName }) ||
-        typeof f.value !== 'string' ||
-        isSensitiveValue(f.value);
-      if (sensitive) indices.push(i);
+      return typeof backend === 'number' ? names.get(backend) : undefined;
+    };
+    const indices: number[] = [];
+    for (let start = 0; start < fields.length; start += DESCRIBE_PARALLEL) {
+      open();
+      const batch = fields.slice(start, start + DESCRIBE_PARALLEL);
+      const accessibleNames = await Promise.all(
+        batch.map((_, k) => accessibleNameOf(start + k)),
+      );
+      batch.forEach((field, k) => {
+        if (!isObject(field) || !isObject(field.parts)) fail();
+        const f = field as { parts: FieldParts; value: unknown };
+        const accessibleName = accessibleNames[k];
+        const sensitive =
+          // No AX node (or past the cap): nothing to check the label
+          // against, so mask.
+          accessibleName === undefined ||
+          isSensitiveParts({ ...f.parts, accessibleName }) ||
+          typeof f.value !== 'string' ||
+          isSensitiveValue(f.value);
+        if (sensitive) indices.push(start + k);
+      });
     }
 
     const textNodes: Array<{ objectId: string }> = [];
@@ -813,7 +955,26 @@ export function createMaskSession(
         [{ value: indices }, { value: selfRestoreMs }, ...textNodes],
       )
     ).value;
-    if (typeof masked !== 'number') fail();
+    // -1: another capture's mask is still on the page.
+    if (typeof masked !== 'number' || masked < 0) fail();
+  };
+
+  /** True when the session's documents hold a closed shadow root with a field. */
+  const closedShadowField = async () => {
+    const doc = objectIdOf(
+      await call(
+        worlds[0]?.holder ?? fail(),
+        'function () { return this.doc(); }',
+        [],
+        false,
+      ),
+    );
+    const described = await send('DOM.describeNode', {
+      objectId: doc,
+      depth: -1,
+      pierce: true,
+    });
+    return !isObject(described) || hasClosedShadowField(described.node);
   };
 
   return {
@@ -831,20 +992,7 @@ export function createMaskSession(
       // Page script cannot see into a closed shadow root: refuse when one
       // holds a field (scanned once; pierce reaches same-process frames).
       open();
-      const doc = objectIdOf(
-        await call(
-          worlds[0]?.holder ?? fail(),
-          'function () { return this.doc(); }',
-          [],
-          false,
-        ),
-      );
-      const tree2 = await send('DOM.describeNode', {
-        objectId: doc,
-        depth: -1,
-        pierce: true,
-      });
-      if (!isObject(tree2) || hasClosedShadowField(tree2.node)) fail();
+      if (await closedShadowField()) fail();
     },
 
     async settle() {
@@ -876,6 +1024,8 @@ export function createMaskSession(
 
     async verify() {
       if (worlds.length === 0) throw new ScreenshotMaskError();
+      // The page changed during the window: worth one more attempt.
+      const changed = () => new ScreenshotMaskError(true);
       for (const w of worlds) {
         let result: unknown;
         try {
@@ -883,16 +1033,28 @@ export function createMaskSession(
             await call(w.holder, 'function () { return this.verify(); }')
           ).value;
         } catch {
-          throw new ScreenshotMaskError();
+          throw changed();
         }
-        if (!isObject(result) || result.ok !== true) {
-          throw new ScreenshotMaskError();
-        }
+        if (!isObject(result) || result.ok !== true) throw changed();
         const values = Array.isArray(result.values) ? result.values : [];
         if (values.some((v) => typeof v !== 'string' || isSensitiveValue(v))) {
-          throw new ScreenshotMaskError();
+          throw changed();
+        }
+        // Text that appeared during the window: a known value in it (a
+        // toast, a re-rendered echo) may be in the image.
+        const texts = Array.isArray(result.texts) ? result.texts : [];
+        if (texts.some((t) => typeof t !== 'string' || hasKnownValue(t))) {
+          throw changed();
         }
       }
+      // A closed shadow root attached during the window.
+      let closedNow: boolean;
+      try {
+        closedNow = await closedShadowField();
+      } catch {
+        throw changed();
+      }
+      if (closedNow) throw new ScreenshotMaskError();
     },
 
     async restore() {

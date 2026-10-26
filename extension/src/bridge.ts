@@ -561,20 +561,24 @@ async function forwardCdp(
   }
 
   const screenshot = method === 'Page.captureScreenshot';
-  // Nothing else of this tab reaches the page while a screenshot's masks
-  // are on it (see captureMasked).
-  if (!screenshot) await screenshotsIdle(current.tabId, true);
+  const lock = lockFor(current.tabId);
 
   const isTab = sessionId === tabSessionId(current.tabId);
   const child = isTab ? undefined : current.children.get(sessionId);
   if (!isTab && !child) throw new Error('unknown session');
 
-  // The tab's current URL is checked on every command, child or not.
-  await requireTabInScope(current);
-  if (child && !frameAllowed(current, child.url)) {
-    throw new Error(FRAME_OUT_OF_SCOPE);
+  // The tab's current URL is checked on every command, child or not. An
+  // ordinary command waits out a screenshot's mask window first, and takes
+  // its shared hold right after these checks (see the send below).
+  for (;;) {
+    if (!screenshot) await untilNoScreenshot(lock);
+    await requireTabInScope(current);
+    if (child && !frameAllowed(current, child.url)) {
+      throw new Error(FRAME_OUT_OF_SCOPE);
+    }
+    if (!current.attached) throw new Error('not attached');
+    if (screenshot || !lock.writer) break;
   }
-  if (!current.attached) throw new Error('not attached');
 
   // describe() below is answered by the same session that produced the
   // result: backend node ids are only meaningful within their own renderer.
@@ -589,11 +593,20 @@ async function forwardCdp(
         params as Record<string, unknown> | undefined,
       ),
     );
-  const raw = screenshot
-    ? await onTabScreenshots(current.tabId, () =>
-        captureMasked(current, sendIt),
-      )
-    : await sendIt();
+  let raw: unknown;
+  if (screenshot) {
+    raw = await exclusive(current, lock, () =>
+      captureWithRetries(current, sendIt),
+    );
+  } else {
+    // Shared hold: no await between taking it and chrome.debugger receiving
+    // the command (tracked() calls sendCommand synchronously), released when
+    // the command settles. Redaction below runs outside the hold.
+    const release = holdShared(lock);
+    const pending = sendIt();
+    pending.then(release, release);
+    raw = await pending;
+  }
   const result = await redact(
     current,
     method,
@@ -634,56 +647,140 @@ const MASK_STEP_MS = 3_000;
 const MASK_APPLY_BUDGET_MS = 10_000;
 const CAPTURE_MS = 8_000;
 const STOP_WAIT_MS = 5_000;
+// A screenshot waits this long for the commands already in flight to
+// settle, then gives up (refused) so a hung command cannot wedge the tab.
+const DRAIN_MS = 5_000;
+// An ordinary command waits this long for a screenshot's window to end.
+const COMMAND_WAIT_MS = 30_000;
+// A screenshot whose verify saw the page change is retried this often, this
+// far apart, while less than RETRY_WINDOW_MS has passed.
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 250;
+const RETRY_WINDOW_MS = 10_000;
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
- * One screenshot queue per tab, at module level rather than per run: a run
- * replaced mid-screenshot still owns masks on the page, and a second run's
- * screenshot must not record them as the page's own style. `active` is set
- * while a screenshot's masks are on the page.
+ * A per-tab reader/writer lock, at module level rather than per run (a run
+ * replaced mid-screenshot still owns masks on the page). Ordinary commands
+ * hold it shared while chrome.debugger runs them; a screenshot holds it
+ * exclusively for its whole mask window, after the commands in flight have
+ * drained. `queue` orders screenshots one at a time.
  */
-interface TabScreenshots {
+interface TabLock {
   queue: ReturnType<typeof createScreenshotQueue>;
-  active?: Promise<void>;
+  readers: number;
+  drained: Array<() => void>;
+  /** Set while a screenshot holds the tab; resolves when it lets go. */
+  writer?: Promise<void>;
 }
-const tabScreenshots = new Map<number, TabScreenshots>();
+const tabLocks = new Map<number, TabLock>();
 
-function screenshotsFor(tabId: number): TabScreenshots {
-  let entry = tabScreenshots.get(tabId);
-  if (!entry) {
-    entry = { queue: createScreenshotQueue() };
-    tabScreenshots.set(tabId, entry);
+function lockFor(tabId: number): TabLock {
+  let lock = tabLocks.get(tabId);
+  if (!lock) {
+    lock = { queue: createScreenshotQueue(), readers: 0, drained: [] };
+    tabLocks.set(tabId, lock);
   }
-  return entry;
+  return lock;
 }
 
-function onTabScreenshots<T>(tabId: number, task: () => Promise<T>) {
-  const entry = screenshotsFor(tabId);
-  return entry.queue(async () => {
-    let done = () => {};
-    entry.active = new Promise<void>((resolve) => {
-      done = resolve;
-    });
-    try {
-      return await task();
-    } finally {
-      entry.active = undefined;
-      done();
+/** Waits (bounded) until no screenshot holds the tab. */
+async function untilNoScreenshot(lock: TabLock) {
+  const deadline = Date.now() + COMMAND_WAIT_MS;
+  while (lock.writer) {
+    const left = deadline - Date.now();
+    if (left <= 0) throw new Error('tab busy with a screenshot');
+    await Promise.race([lock.writer, sleep(left)]);
+  }
+}
+
+function holdShared(lock: TabLock): () => void {
+  lock.readers += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    lock.readers -= 1;
+    if (lock.readers === 0) {
+      for (const notify of lock.drained.splice(0)) notify();
     }
+  };
+}
+
+/** True once no command holds the tab, false after `ms`. */
+function drained(lock: TabLock, ms: number): Promise<boolean> {
+  if (lock.readers === 0) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    lock.drained.push(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
   });
 }
 
 /**
- * Resolves once no screenshot of the tab is running; with `activeOnly`
- * false, also once every queued one has finished.
+ * Runs a screenshot with the tab held exclusively: queued behind other
+ * screenshots of the tab, new commands held from the moment it starts,
+ * commands already in flight drained first (bounded). A run stopped before
+ * or while it waits never applies a mask.
  */
-async function screenshotsIdle(tabId: number, activeOnly = false) {
-  const entry = tabScreenshots.get(tabId);
-  if (!entry) return;
-  if (!activeOnly) {
-    await entry.queue(async () => {});
-    return;
+function exclusive<T>(current: Run, lock: TabLock, task: () => Promise<T>) {
+  return lock.queue(async () => {
+    if (current.stopped || current.blocked) throw new ScreenshotMaskError();
+    let release = () => {};
+    lock.writer = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    try {
+      if (!(await drained(lock, DRAIN_MS))) throw new ScreenshotMaskError();
+      if (current.stopped || current.blocked) throw new ScreenshotMaskError();
+      return await task();
+    } finally {
+      lock.writer = undefined;
+      release();
+    }
+  });
+}
+
+/** Resolves once every queued screenshot of the tab has finished. */
+async function screenshotsIdle(tabId: number) {
+  await tabLocks.get(tabId)?.queue(async () => {});
+}
+
+/**
+ * captureMasked, tried again (up to MAX_RETRIES, RETRY_DELAY_MS apart, while
+ * under RETRY_WINDOW_MS) only when verify refused because the page changed
+ * during the window, as a re-render or text churn does; a structural
+ * refusal (closed shadow root, uncovered frame, stale mask) is final. The
+ * refusal message is the same either way.
+ */
+async function captureWithRetries(
+  current: Run,
+  capture: () => Promise<unknown>,
+): Promise<unknown> {
+  const started = Date.now();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await captureMasked(current, capture);
+    } catch (error) {
+      const retry =
+        error instanceof ScreenshotMaskError &&
+        error.retryable &&
+        attempt < MAX_RETRIES &&
+        Date.now() - started < RETRY_WINDOW_MS &&
+        !current.stopped &&
+        !current.blocked;
+      if (!retry) {
+        throw error instanceof ScreenshotMaskError
+          ? new ScreenshotMaskError()
+          : error;
+      }
+      await sleep(RETRY_DELAY_MS);
+    }
   }
-  while (entry.active) await entry.active;
 }
 
 /**
@@ -741,13 +838,13 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, what: string) =>
  * refusal with a fixed message; the raw image is only returned when every
  * session was masked and verified.
  *
- * Ordering: forwardCdp runs every screenshot through the tab's queue, so a
- * second screenshot (from the tab, any child session, or another run on the
- * same tab) waits until the first has restored the page; overlapping masks
- * would otherwise record each other's style as the page's own. While a
- * screenshot is running, every other forwarded command of the tab waits
- * too. Page script can still change the page during the window; verify
- * refuses the capture when it touched a field, a frame or a mask.
+ * Ordering: forwardCdp runs every screenshot under the tab's lock held
+ * exclusively (see exclusive): a second screenshot (from the tab, any child
+ * session, or another run on the same tab) waits until the first has
+ * restored the page, and no other command of the tab runs inside the mask
+ * window. Page script can still change the page during the window; verify
+ * refuses the capture when it touched a field, a frame, a mask or showed a
+ * known value.
  */
 async function captureMasked(
   current: Run,
@@ -802,8 +899,17 @@ async function captureMasked(
   // restore then stops it before its next step.
   const applyBy = Date.now() + MASK_APPLY_BUDGET_MS;
   const sessions = masks.map((mask) => ({
-    apply: () =>
-      withTimeout(mask.apply(), Math.max(0, applyBy - Date.now()), 'masking'),
+    apply: () => {
+      // A run stopped between applies masks nothing more.
+      if (current.stopped || current.blocked) {
+        return Promise.reject(new Error('run stopped'));
+      }
+      return withTimeout(
+        mask.apply(),
+        Math.max(0, applyBy - Date.now()),
+        'masking',
+      );
+    },
     restore: () => mask.restore(),
   }));
   const known = new Set(current.children.keys());

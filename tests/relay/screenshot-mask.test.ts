@@ -707,6 +707,176 @@ describe('page side', { timeout: 30_000 }, () => {
     await session.restore();
   });
 
+  it('masks a known value split by markup, and a name split by markup (I-B)', async () => {
+    await load(`<!doctype html><html lang="en"><body>
+      <p id="split">You entered <span>900</span>-00-1234</p>
+      <p id="name">Applicant: <b>Zebulon</b> Quixote</p>
+      <p id="other">Nothing here</p>
+    </body></html>`);
+    const before = await styles();
+    const session = maskSession({
+      hasKnownValue: (t) =>
+        t.includes('900-00-1234') || t.includes('Zebulon Quixote'),
+    });
+    await session.apply();
+    expect([
+      await fill('#split'),
+      await fill('#split span'),
+      await fill('#name'),
+      await fill('#name b'),
+      await fill('#other'),
+    ]).toEqual([
+      TRANSPARENT,
+      TRANSPARENT,
+      TRANSPARENT,
+      TRANSPARENT,
+      'rgb(0, 0, 0)',
+    ]);
+    await session.verify();
+    await session.restore();
+    expect(await styles()).toEqual(before);
+  });
+
+  it('verify refuses a toast with a known value appearing during the window, and a text node changed to one (I-B)', async () => {
+    await load(FORM);
+    const toast = maskSession();
+    await toast.apply();
+    await page.evaluate((v) => {
+      const t = document.createElement('div');
+      t.textContent = `Saved ${v}`;
+      document.body.append(t);
+    }, KNOWN);
+    const refusal = await toast.verify().catch((e) => e);
+    expect(refusal).toBeInstanceOf(ScreenshotMaskError);
+    expect(refusal.retryable).toBe(true);
+    await toast.restore();
+
+    await load(`${FORM}<p id="msg">Saved</p>`);
+    const changed = maskSession();
+    await changed.apply();
+    await page.evaluate((v) => {
+      const text = document.getElementById('msg')?.firstChild as Text;
+      text.data = `Saved ${v}`;
+    }, KNOWN);
+    await expect(changed.verify()).rejects.toBeInstanceOf(ScreenshotMaskError);
+    await changed.restore();
+
+    // Text churn without a known value is fine.
+    await load(`${FORM}<p id="clock">12:00</p>`);
+    const churn = maskSession();
+    await churn.apply();
+    await page.evaluate(() => {
+      const clock = document.getElementById('clock') as HTMLElement;
+      clock.textContent = '12:01';
+      (clock.firstChild as Text).data = '12:02';
+    });
+    await churn.verify();
+    await churn.restore();
+  });
+
+  it("refuses while another capture's mask is still on the page, and the page clears itself (N10)", async () => {
+    await load(FORM);
+    // Session A masks and its restore never runs (the worker died).
+    const a = maskSession({ selfRestoreMs: 600 });
+    await a.apply();
+    // Session B inside A's self-restore window: refused, masks nothing.
+    const b = maskSession({ objectGroup: 'mask-test-b' });
+    await expect(b.apply()).rejects.toThrow();
+    await b.restore();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            document.querySelectorAll('[style]').length +
+            Array.from(document.querySelectorAll('*')).filter((el) =>
+              el
+                .getAttributeNames()
+                .some((n) => n.startsWith('data-labs-mask')),
+            ).length,
+        ),
+      )
+      .toBe(1); // only #ssn's own pre-existing style
+    expect(
+      await page.evaluate(() =>
+        document.getElementById('ssn')?.getAttribute('style'),
+      ),
+    ).toBe('width: 14em; color: rgb(20, 20, 20) !important');
+    const c = maskSession();
+    await c.apply();
+    await c.restore();
+  });
+
+  it('verify refuses when the page removes and re-adds the mask marker (N5)', async () => {
+    await load(FORM);
+    const session = maskSession();
+    await session.apply();
+    await page.evaluate(() => {
+      const el = document.getElementById('pin') as HTMLElement;
+      const mark = el
+        .getAttributeNames()
+        .find((n) => n.startsWith('data-labs-mask')) as string;
+      el.removeAttribute(mark);
+      el.setAttribute(mark, '');
+    });
+    await expect(session.verify()).rejects.toBeInstanceOf(ScreenshotMaskError);
+    await session.restore();
+  });
+
+  it('verify refuses an open shadow root attached during the window (I-D)', async () => {
+    await load(`${FORM}<div id="host"></div>`);
+    const session = maskSession();
+    await session.apply();
+    await page.evaluate(() => {
+      const root = (
+        document.getElementById('host') as HTMLElement
+      ).attachShadow({
+        mode: 'open',
+      });
+      root.innerHTML = '<p>later</p>';
+    });
+    await expect(session.verify()).rejects.toBeInstanceOf(ScreenshotMaskError);
+    await session.restore();
+  });
+
+  it('verify refuses a lazily upgraded custom element attaching a closed shadow root with a field (I-D)', async () => {
+    await load(`${FORM}<x-late id="late"></x-late>`);
+    const session = maskSession();
+    await session.apply();
+    await page.evaluate(() => {
+      customElements.define(
+        'x-late',
+        class extends HTMLElement {
+          constructor() {
+            super();
+            const root = this.attachShadow({ mode: 'closed' });
+            root.innerHTML = '<label>SSN <input value="900-00-1234"></label>';
+          }
+        },
+      );
+    });
+    const refusal = await session.verify().catch((e) => e);
+    expect(refusal).toBeInstanceOf(ScreenshotMaskError);
+    // Structural: not worth a retry.
+    expect(refusal.retryable).toBe(false);
+    await session.restore();
+  });
+
+  it('hundreds of fields: names are looked up in parallel batches and past the cap a field is masked, never shown', async () => {
+    const many = Array.from(
+      { length: 450 },
+      (_, i) =>
+        `<label for="f${i}">Pet ${i}</label><input id="f${i}" value="Rex">`,
+    ).join('');
+    await load(`<!doctype html><html lang="en"><body>${many}</body></html>`);
+    const session = maskSession();
+    const started = Date.now();
+    await session.apply();
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(await fill('#f0')).toBe('rgb(0, 0, 0)');
+    expect(await fill('#f449')).toBe(TRANSPARENT);
+    await session.restore();
+  });
+
   it('settle resolves after a rendered frame', async () => {
     await load(FORM);
     const session = maskSession({ outOfProcess: true });
