@@ -118,7 +118,7 @@ const CARD_SIGNAL_TEXT = new RegExp(wrap(CARD_SIGNAL));
 // Value-shaped placeholders: an SSN-like example or its masked form (x, #, *,
 // underscore or bullet). A date (__/__/____) or phone ((___) ___-____) mask
 // has a different shape and does not match.
-const SSN_SHAPED =
+export const SSN_SHAPED =
   /(?<!\d)\d{3}-?\d{2}-?\d{4}(?!\d)|(?<![x#*_•●\d])[x#*_•●]{3}[- ]?[x#*_•●]{2}[- ]?[x#*_•●]{4}(?![x#*_•●\d])/i;
 
 const SENSITIVE_TEXT = new RegExp(PATTERNS.map(wrap).join('|'));
@@ -137,7 +137,8 @@ const normalize = (text: string): string =>
 // patterns above. Tested against the WHOLE normalized text with separators
 // removed, anchored at both ends, so `pinned` and `membership` still pass.
 // Bare `cin` and `dl` are left out on purpose: too many false positives.
-const COMPACT_SENSITIVE = /^(?:calworksid|calworksnumber|cwid|pincode|ebtcard|ebt|idnumber|dlnumber|drivinglicen[sc]e|drivinglicen[sc]enumber|driverlicen[sc]e|driverslicen[sc]e|ssnnumber|taxid|accountnumber|routingnumber|cardnumber)$/;
+const COMPACT_SENSITIVE =
+  /^(?:calworksid|calworksnumber|cwid|pincode|ebtcard|ebt|idnumber|dlnumber|drivinglicen[sc]e|drivinglicen[sc]enumber|driverlicen[sc]e|driverslicen[sc]e|ssnnumber|taxid|accountnumber|routingnumber|cardnumber)$/;
 const compactIsSensitive = (text: string): boolean =>
   COMPACT_SENSITIVE.test(text.replace(/[^a-z0-9]/g, ''));
 

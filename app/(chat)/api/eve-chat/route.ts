@@ -20,7 +20,7 @@ import { isProductionEnvironment } from '@/lib/constants';
 import { normalizeOrigin } from '@/lib/relay/policy';
 import {
   MAX_RELAY_TEXT_CHARS,
-  hasSensitiveValueInProse,
+  mustRefuseRelayText,
   stripSensitiveText,
 } from '@/lib/data/sensitive-record';
 import { buildExtensionRunMessage } from '@/lib/relay/run-prompt';
@@ -79,7 +79,7 @@ const relayText = (text: string): RelayText => {
     return { ok: false, reason: 'message_too_large' };
   }
   const stripped = stripSensitiveText(text);
-  if (hasSensitiveValueInProse(stripped)) {
+  if (mustRefuseRelayText(stripped)) {
     return { ok: false, reason: 'sensitive_value_in_message' };
   }
   return { ok: true, text: stripped };

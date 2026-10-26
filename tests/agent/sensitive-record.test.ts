@@ -3,6 +3,7 @@ import { PARTICIPANTS, buildApplicationPrompt } from '@/lib/data/participants';
 import {
   SENSITIVE_RECORD_PATHS,
   hasSensitiveValueInProse,
+  mustRefuseRelayText,
   WITHHELD,
   stripSensitiveFields,
   stripSensitiveText,
@@ -240,6 +241,82 @@ describe('hasSensitiveValueInProse', () => {
       expect(hasSensitiveValueInProse(stripSensitiveText(opening(p)))).toBe(
         false,
       );
+    },
+  );
+});
+
+describe('fail closed on unparsed blocks and padded values', () => {
+  const refuses = (text: string) =>
+    mustRefuseRelayText(stripSensitiveText(text));
+
+  it.each([
+    ['label + 60 spaces + value', `SSN:${' '.repeat(60)}123-45-6789`],
+    ['label + 60 spaces + non-SSN id', `calworks id${' '.repeat(60)}A100103`],
+    ['value before label', '123-45-6789 is the SSN'],
+    ['card number alone', 'here it is 4111 1111 1111 1111'],
+    ['zero-width padded label', 'S​S​N​: 1​23-45-6789'],
+    [
+      'zero-width padding between label and value',
+      `SSN${'​ '.repeat(40)}A12345`,
+    ],
+    ['full-width digits', 'ssn １２３－４５－６７８９'],
+    [
+      'unparseable block with a sensitive key',
+      '{"a": 1, "ssn": "x1y2z3", oops}',
+    ],
+    [
+      'unclosed block with a sensitive key',
+      '{"participant": {"tax_id": "AB-12',
+    ],
+  ])('refuses %s', (_n, text) => {
+    expect(refuses(text)).toBe(true);
+  });
+
+  it('strips or refuses a record nested 6 levels deep holding ssn', () => {
+    let obj: unknown = { ssn: '123456789', x: 1 };
+    for (let i = 0; i < 6; i++) obj = { level: obj };
+    const text = JSON.stringify(obj);
+    const out = stripSensitiveText(text);
+    expect(out).not.toContain('123456789');
+    expect(out).toContain(WITHHELD);
+    expect(refuses(text)).toBe(false);
+  });
+
+  it('refuses a 6-deep block that is broken JSON with ssn inside', () => {
+    const text = `${'{"l":'.repeat(6)}{"ssn": "x1y2z3",}${'}'.repeat(6)}`;
+    expect(refuses(text)).toBe(true);
+  });
+
+  it('refuses when the scan budget runs out, and stays fast', () => {
+    for (const text of ['{'.repeat(200_000), '{"a":'.repeat(40_000)]) {
+      const t = performance.now();
+      expect(refuses(text)).toBe(true);
+      expect(performance.now() - t).toBeLessThan(500);
+    }
+  });
+
+  it('a 200 KB message of distinct words is bounded', () => {
+    const text = Array.from({ length: 30_000 }, (_, i) => `w${i}x`).join(' ');
+    const t = performance.now();
+    mustRefuseRelayText(text);
+    expect(performance.now() - t).toBeLessThan(1000);
+  });
+
+  it.each([
+    'the participant has no SSN on file',
+    "ask for the social worker's name",
+    'call the office at (555) 123-4567 or 555-123-4567 tomorrow',
+    'the invoice total is 1234567890 units',
+    'order placed at 1699999999999 ms',
+  ])('does not refuse %j', (text) => {
+    expect(refuses(text)).toBe(false);
+  });
+
+  it.each(PARTICIPANTS.map((p) => [p.record_id, p] as const))(
+    'never refuses the normal opening message for %s',
+    (_id, p) => {
+      expect(refuses(opening(p))).toBe(false);
+      expect(refuses(`Also check page 2.\n${opening(p)}\nThanks.`)).toBe(false);
     },
   );
 });
