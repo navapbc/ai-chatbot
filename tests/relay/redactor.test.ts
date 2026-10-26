@@ -1491,7 +1491,10 @@ describe('review regressions, round 5: value shapes (nothing registered)', () =>
         url: 'https://b.test/apply?x=900001234&sort=name#pin=4321&tab=2',
         method: 'POST',
         postData: 'ssn=900-00-1234&first=Ada',
-        headers: { Referer: 'https://b.test/form?ssn=900-00-1234' },
+        headers: {
+          Referer: 'https://b.test/form?ssn=900-00-1234',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
       },
     }) as {
       documentURL: string;
@@ -1728,11 +1731,19 @@ describe('review regressions, round 6: shape guard gaps (nothing registered)', (
 
   it('masks form bodies with empty, bare or trailing segments, encodings, and value-shaped JSON', () => {
     const r = createRedactor();
-    const body = (postData: string) =>
+    const body = (
+      postData: string,
+      type = 'application/x-www-form-urlencoded',
+    ) =>
       (
         r.redactEvent('Network.requestWillBeSent', {
           requestId: '1.1',
-          request: { url: 'https://b.test/', method: 'POST', postData },
+          request: {
+            url: 'https://b.test/',
+            method: 'POST',
+            postData,
+            headers: { 'Content-Type': type },
+          },
         }) as { request: { postData: string } }
       ).request.postData;
     expect(body('a=1&&ssn=900-00-1234')).toBe(`a=1&&ssn=${MASK}`);
@@ -1913,6 +1924,128 @@ describe('review regressions, round 6: shape guard gaps (nothing registered)', (
       },
     };
     expect(await r.redactResult('DOM.getBoxModel', box)).toEqual(box);
+  });
+});
+
+describe('review regressions, round 7: request body handling by content type', () => {
+  const body = (postData: string, headers?: Record<string, string>) => {
+    const r = createRedactor();
+    return (
+      r.redactEvent('Network.requestWillBeSent', {
+        requestId: '1.1',
+        request: {
+          url: 'https://b.test/',
+          method: 'POST',
+          postData,
+          ...(headers ? { headers } : {}),
+        },
+      }) as { request: { postData: string } }
+    ).request.postData;
+  };
+  const form = { 'Content-Type': 'application/x-www-form-urlencoded' };
+
+  it('a body mentioning content-disposition is still masked by parameter name', () => {
+    expect(body('x=content-disposition&password=hunter2', form)).toBe(
+      `x=content-disposition&password=${MASK}`,
+    );
+    // No content type: ambiguous, masked whole.
+    expect(body('x=content-disposition&password=hunter2')).toBe(MASK);
+  });
+
+  it('a urlencoded body with a -- line is masked by parameter name', () => {
+    expect(body('a=1&password=hunter2\n--x', form)).not.toContain('hunter2');
+  });
+
+  it('reads Content-Type case-insensitively, with parameters', () => {
+    for (const key of ['content-type', 'CONTENT-TYPE', 'Content-type']) {
+      expect(
+        body('password=hunter2&a=1', {
+          [key]: 'Application/X-WWW-Form-Urlencoded; charset=UTF-8',
+        }),
+      ).toBe(`password=${MASK}&a=1`);
+    }
+    expect(body('pin=1234', { 'content-type': 'text/plain' })).toBe(
+      `pin=${MASK}`,
+    );
+  });
+
+  it('masks JSON leaves by key name and by shape', () => {
+    const out = body(
+      '{"password":"hunter2","user":{"pin":1234,"note":"900-00-1234"},"ok":"yes"}',
+      { 'Content-Type': 'application/json' },
+    );
+    expect(JSON.parse(out)).toEqual({
+      password: MASK,
+      user: { pin: MASK, note: MASK },
+      ok: 'yes',
+    });
+    // No content type, but it parses as JSON.
+    expect(JSON.parse(body('{"password":"hunter2"}'))).toEqual({
+      password: MASK,
+    });
+    // Declared JSON that does not parse: ambiguous, masked whole.
+    expect(
+      body('{"password":"hunter2"', { 'Content-Type': 'application/json' }),
+    ).toBe(MASK);
+    // Ordinary JSON is returned as sent.
+    const plain = '{ "a": 1, "b": "two" }';
+    expect(body(plain, { 'Content-Type': 'application/json' })).toBe(plain);
+  });
+
+  it('masks multipart parts by Content-Disposition name and by shape', () => {
+    const multipart = [
+      '--XyZ',
+      'Content-Disposition: form-data; name="password"',
+      '',
+      'hunter2',
+      '--XyZ',
+      'Content-Disposition: form-data; name="note"',
+      '',
+      'case 900-00-1234',
+      '--XyZ',
+      'Content-Disposition: form-data; name="first"',
+      '',
+      'Ada',
+      '--XyZ--',
+      '',
+    ].join('\r\n');
+    const out = body(multipart, {
+      'Content-Type': 'multipart/form-data; boundary=XyZ',
+    });
+    expect(out).not.toContain('hunter2');
+    expect(out).not.toContain('900-00-1234');
+    expect(out).toContain('Ada');
+    expect(out).toContain('name="password"');
+    // Without a boundary in the content type: ambiguous, masked whole.
+    expect(body(multipart, { 'Content-Type': 'multipart/form-data' })).toBe(
+      MASK,
+    );
+  });
+
+  it('masks an XML body with a sensitive tag or a value shape whole', () => {
+    const xml = { 'Content-Type': 'application/xml' };
+    expect(body('<user><password>hunter2</password></user>', xml)).toBe(MASK);
+    expect(body('<n>900-00-1234</n>', xml)).toBe(MASK);
+    expect(body('<user><first>Ada</first></user>', xml)).toBe(
+      '<user><first>Ada</first></user>',
+    );
+    // No content type: the tag name still masks it.
+    expect(body('<password>hunter2</password>')).toBe(MASK);
+  });
+
+  it('masks an ambiguous body whole when a name or shape is found', () => {
+    expect(body('password=hunter2\n--x')).toBe(MASK);
+    expect(body('note: 900 00 1234')).toBe(MASK);
+    expect(
+      body('--b\r\nContent-Disposition: form-data; name="pin"\r\n\r\n1234'),
+    ).toBe(MASK);
+  });
+
+  it('leaves an ordinary urlencoded body unchanged', () => {
+    expect(body('first=Ada&last=Lovelace&page=2', form)).toBe(
+      'first=Ada&last=Lovelace&page=2',
+    );
+    expect(body('first=Ada&last=Lovelace')).toBe('first=Ada&last=Lovelace');
   });
 });
 

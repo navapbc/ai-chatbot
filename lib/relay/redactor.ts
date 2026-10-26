@@ -573,12 +573,133 @@ const URL_IN_TEXT = /[a-z][a-z0-9+.-]*:\/\/[^\s"'<>`]+/gi;
 const maskUrls = (s: string): string =>
   s.includes('://') ? s.replace(URL_IN_TEXT, maskUrl) : s;
 
-// A request body (Network postData). JSON, XML and multipart bodies are
-// masked whole when value-shaped; anything else is treated as form-encoded.
-const STRUCTURED_BODY = /^\s*[{[<]|content-disposition|^--\S/im;
-const maskFormBody = (s: string): string => {
-  if (STRUCTURED_BODY.test(s)) return hasSensitiveShape(s) ? MASK : s;
-  return maskParams(s);
+// ------------------------------------------------------------ request bodies
+// A request body (`postData`) is handled by its declared Content-Type, never
+// by a substring of the body. A missing or unknown type is ambiguous: the
+// body is masked whole when any sensitive name or value shape is found.
+
+const isSensitiveName = (name: string): boolean =>
+  name !== '' && isSensitiveField({ name, label: name });
+
+const contentTypeOf = (headers: unknown): string | undefined => {
+  if (!isObj(headers)) return undefined;
+  for (const key of Object.keys(headers)) {
+    const v = headers[key];
+    if (key.toLowerCase() === 'content-type' && typeof v === 'string') return v;
+  }
+  return undefined;
+};
+
+// JSON: a leaf under a sensitive key, a value-shaped string or a 9+ digit
+// integer becomes MASK; value-shaped keys are renamed. Returns undefined
+// when the body is not a JSON object or array.
+const maskJsonBody = (body: string): string | undefined => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  let changed = false;
+  const walk = (v: unknown, sensitive: boolean): unknown => {
+    if (typeof v === 'string') {
+      if ((sensitive && v !== '') || hasSensitiveShape(v)) {
+        changed = true;
+        return MASK;
+      }
+      return v;
+    }
+    if (typeof v === 'number') {
+      if (sensitive || (Number.isInteger(v) && Math.abs(v) >= 1e8)) {
+        changed = true;
+        return MASK;
+      }
+      return v;
+    }
+    if (Array.isArray(v)) return v.map((item) => walk(item, sensitive));
+    if (!isObj(v)) return v;
+    const out: Obj = {};
+    for (const key of Object.keys(v)) {
+      let name = key;
+      if (hasSensitiveShape(key)) {
+        changed = true;
+        name = MASK;
+        for (let n = 2; Object.hasOwn(out, name); n++) name = `${MASK}#${n}`;
+      }
+      setOwn(out, name, walk(v[key], sensitive || isSensitiveName(key)));
+    }
+    return out;
+  };
+  const masked = walk(parsed, false);
+  return changed ? JSON.stringify(masked) : body;
+};
+
+const PART_NAME = /(?:^|;)\s*name="([^"]*)"/im;
+const PART_HEADER_END = /\r?\n\r?\n/;
+const BOUNDARY = /boundary=(?:"([^"]+)"|([^;\s]+))/i;
+
+// Multipart: each part's body is masked when its Content-Disposition name is
+// sensitive or the body is value-shaped; part headers are kept.
+const maskMultipartBody = (body: string, boundary: string): string => {
+  const delimiter = `--${boundary}`;
+  return body
+    .split(delimiter)
+    .map((part, i) => {
+      if (i === 0 || part.startsWith('--')) return part;
+      const end = PART_HEADER_END.exec(part);
+      if (!end) return hasSensitiveShape(part) ? MASK : part;
+      const headers = part.slice(0, end.index + end[0].length);
+      const content = part.slice(headers.length);
+      const trail = /\r?\n$/.exec(content)?.[0] ?? '';
+      const value = content.slice(0, content.length - trail.length);
+      const name = PART_NAME.exec(headers)?.[1] ?? '';
+      const sensitive = isSensitiveName(name) || hasSensitiveShape(value);
+      return sensitive && value !== '' ? `${headers}${MASK}${trail}` : part;
+    })
+    .join(delimiter);
+};
+
+const XML_TAG = /<\/?([A-Za-z_][\w.:-]*)/g;
+const xmlHasSensitiveTag = (body: string): boolean => {
+  for (const match of body.matchAll(XML_TAG)) {
+    if (isSensitiveName(match[1])) return true;
+  }
+  return false;
+};
+
+// Names an ambiguous body may carry: form parameters, multipart names, XML
+// tags and JSON-like keys.
+const NAME_HINTS = [PART_NAME, XML_TAG, /"([^"\\]{1,64})"\s*:/g].map(
+  (re) =>
+    new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`),
+);
+const ambiguousBodyIsSensitive = (body: string): boolean =>
+  maskParams(body) !== body ||
+  hasSensitiveShape(body) ||
+  NAME_HINTS.some((re) =>
+    [...body.matchAll(re)].some((m) => isSensitiveName(m[1] ?? '')),
+  );
+
+const maskBody = (body: string, contentType: string | undefined): string => {
+  const type = (contentType ?? '').split(';')[0].trim().toLowerCase();
+  const ambiguous = () => (ambiguousBodyIsSensitive(body) ? MASK : body);
+  if (type === 'application/x-www-form-urlencoded' || type === 'text/plain') {
+    const out = maskParams(body);
+    return hasSensitiveShape(out) ? MASK : out;
+  }
+  if (type === '' || type === 'application/json' || type.endsWith('+json')) {
+    return maskJsonBody(body) ?? ambiguous();
+  }
+  if (type.startsWith('multipart/')) {
+    const match = BOUNDARY.exec(contentType ?? '');
+    const boundary = match?.[1] ?? match?.[2];
+    return boundary ? maskMultipartBody(body, boundary) : ambiguous();
+  }
+  if (type.endsWith('/xml') || type.endsWith('+xml')) {
+    return xmlHasSensitiveTag(body) || hasSensitiveShape(body) ? MASK : body;
+  }
+  return ambiguous();
 };
 
 // Script results whose page data gets the value-shape guard.
@@ -1167,7 +1288,7 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
                 trusted && HEADER_KEYS.has(key),
               );
         if (key === 'postData' && typeof copied === 'string' && scrubbing) {
-          copied = maskFormBody(copied);
+          copied = maskBody(copied, contentTypeOf(source.headers));
         }
         setOwn(o, name, copied);
       }
