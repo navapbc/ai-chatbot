@@ -276,8 +276,8 @@ behind a flag, alongside the existing production loop
 `lib/ai/eve/eve-client.ts` (HTTP client for Eve's session API),
 `lib/ai/eve/stream-adapter.ts` (Eve NDJSON → AI SDK `UIMessageStream` chunks,
 plus the tool-name map documented above), and
-`lib/ai/eve/session-continuity.ts` (an in-memory map from `userId:chatId` to
-the Eve session id + continuation token).
+`lib/ai/eve/run-store.ts` (Postgres-backed run store keyed by `userId:chatId`:
+the Eve session id, continuation token and stream cursor).
 
 ### Running it
 
@@ -383,8 +383,8 @@ two servers above are up:
    `components/message.tsx`), not a raw tool-call block.
 6. Fill the card and submit. Confirm the follow-up turn continues the *same*
    Eve session rather than starting a new one. There is no visible session id
-   in the UI to check directly — continuity is tracked server-side, in memory,
-   keyed by `userId:chatId` (`lib/ai/eve/session-continuity.ts`); the
+   in the UI to check directly — continuity is tracked server-side in Postgres,
+   keyed by `userId:chatId` (`lib/ai/eve/run-store.ts`); the
    observable proof is behavioral: the agent's next reply reflects the
    values you just filled in (e.g. references them or proceeds past that gap)
    without you having to repeat them.

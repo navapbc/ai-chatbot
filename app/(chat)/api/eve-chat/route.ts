@@ -2,7 +2,7 @@ import { createUIMessageStream, JsonToSseTransformStream } from 'ai';
 import { auth } from '@/app/(auth)/auth';
 import { generateUUID } from '@/lib/utils';
 import { ChatSDKError } from '@/lib/errors';
-import { getContinuity, setContinuity } from '@/lib/ai/eve/session-continuity';
+import { EveRunExistsError, getRunStore } from '@/lib/ai/eve/run-store';
 import { setLiveViewUrl } from '@/lib/ai/eve/live-view-store';
 import {
   createEveSession,
@@ -84,17 +84,16 @@ export async function POST(request: Request) {
   }
 
   // Resolve or create the Eve session for this chat.
+  const store = getRunStore();
   let sessionId: string;
   // Where to resume this chat's durable event stream. A continued session picks
   // up past the previous turn's `session.waiting`; a fresh one starts at 0.
   let startIndex = 0;
   try {
-    const existing = getContinuity(userId, chatId);
+    const existing = await store.get(userId, chatId);
     // Session-continuity diagnostic. This is the only place that records
-    // whether a turn continued an Eve session or silently started a new one
-    // (`session-continuity.ts` is an in-memory Map, so a lost entry looks
-    // identical to a first turn from the outside), and the resume cursor here
-    // is what a stream stall has to be read against.
+    // whether a turn continued an Eve session or started a new one, and the
+    // resume cursor here is what a stream stall has to be read against.
     //
     // It deliberately logs NO message content. It used to append
     // `text.slice(0, 60)`, which on a real run was cut mid-SSN at "Social
@@ -108,18 +107,43 @@ export async function POST(request: Request) {
       `[eve-chat] turn userId=${userId} chatId=${chatId} decision=${existing ? 'CONTINUE' : 'CREATE'} existingSession=${existing?.eveSessionId ?? 'none'} resumeFrom=${existing?.streamIndex ?? 0} msgChars=${text.length}`,
     );
     if (existing) {
-      const { continuationToken } = await continueEveSession(
-        existing.eveSessionId,
-        existing.continuationToken,
-        text,
-      );
+      // Claim the stored token before talking to Eve: only one concurrent
+      // turn wins the compare-and-set, so a second turn never sends Eve a
+      // second message on the same (single-use) token. The claim is a random
+      // placeholder; the real token replaces it once Eve answers.
+      const claim = `claim:${generateUUID()}`;
+      if (
+        !(await store.swapToken(
+          userId,
+          chatId,
+          existing.continuationToken,
+          claim,
+        ))
+      ) {
+        return new ChatSDKError('offline:chat').toResponse();
+      }
+      try {
+        const { continuationToken } = await continueEveSession(
+          existing.eveSessionId,
+          existing.continuationToken,
+          text,
+        );
+        await store.swapToken(userId, chatId, claim, continuationToken);
+      } catch (err) {
+        // Put the stored token back so the run is unchanged and retryable. A
+        // relay run (relayOrigin set) never falls back to a fresh session: its
+        // browser lives in the extension and a new session would lose it. Web
+        // chats fail the turn the same way, as before.
+        await store.swapToken(
+          userId,
+          chatId,
+          claim,
+          existing.continuationToken,
+        );
+        throw err;
+      }
       sessionId = existing.eveSessionId;
       startIndex = existing.streamIndex;
-      setContinuity(userId, chatId, {
-        eveSessionId: sessionId,
-        continuationToken,
-        streamIndex: startIndex,
-      });
     } else {
       // Model override is a dev/eval feature — never honor it in production
       // (server-side parity with the legacy route; the client also only sends
@@ -129,14 +153,35 @@ export async function POST(request: Request) {
         : toVertexModelId(body.modelOverride);
       const created = await createEveSession(text, model);
       sessionId = created.sessionId;
-      setContinuity(userId, chatId, {
-        eveSessionId: sessionId,
-        continuationToken: created.continuationToken,
-        streamIndex: 0,
-      });
+      try {
+        await store.create(userId, chatId, {
+          eveSessionId: sessionId,
+          continuationToken: created.continuationToken,
+        });
+      } catch (err) {
+        if (!(err instanceof EveRunExistsError)) {
+          // A real store failure, not a lost race: do not report it as the
+          // conflict. The Eve session above is likewise unreferenced.
+          console.error('[eve-chat] run create failed; orphan eve session', {
+            sessionId,
+            chatId,
+            err,
+          });
+          return new ChatSDKError('bad_request:database').toResponse();
+        }
+        // Two first turns raced; the other one owns the run. The Eve session
+        // created above is now unreferenced (Eve has no delete call here), so
+        // report it rather than leave it silent.
+        console.error('[eve-chat] orphan eve session after create conflict', {
+          sessionId,
+          chatId,
+        });
+        return new ChatSDKError('offline:chat').toResponse();
+      }
     }
   } catch (err) {
-    // Eve server unreachable or errored on session create/continue.
+    // Eve server unreachable or errored on session create/continue, or the run
+    // store failed.
     console.error('[eve-chat] session error:', err);
     return new ChatSDKError('offline:chat').toResponse();
   }
@@ -182,8 +227,7 @@ export async function POST(request: Request) {
               // this `session.waiting`, so the next turn resumes on the event
               // after it. Only advanced at the turn boundary — a connection
               // dropped mid-turn replays that turn rather than skipping it.
-              setContinuity(userId, chatId, {
-                eveSessionId: sessionId,
+              await store.advance(userId, chatId, {
                 continuationToken: r.continuationToken,
                 streamIndex: consumed,
               });
@@ -230,7 +274,7 @@ export async function POST(request: Request) {
       // timeout on the loopback read (`UND_ERR_BODY_TIMEOUT`), a dropped
       // connection (`ECONNRESET`), an AI SDK `UIMessageStreamError` (a
       // tool-output chunk whose tool-input never arrived, e.g. on a replayed
-      // startIndex), or a throw out of setContinuity/setLiveViewUrl.
+      // startIndex), or a throw out of store.advance/setLiveViewUrl.
       console.error('[eve-chat] stream error:', {
         sessionId,
         chatId,
