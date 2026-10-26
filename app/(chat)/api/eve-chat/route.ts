@@ -15,10 +15,7 @@ import {
   extractLatestUserText,
 } from '@/lib/ai/eve/stream-adapter';
 import { toVertexModelId } from '@/lib/ai/eve/model-map';
-import {
-  type InputAnswer,
-  validateAnswers,
-} from '@/lib/ai/eve/input-requests';
+import { type InputAnswer, validateAnswers } from '@/lib/ai/eve/input-requests';
 import { isProductionEnvironment } from '@/lib/constants';
 import { normalizeOrigin } from '@/lib/relay/policy';
 import { buildExtensionRunMessage } from '@/lib/relay/run-prompt';

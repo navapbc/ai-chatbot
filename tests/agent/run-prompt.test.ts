@@ -13,6 +13,7 @@ describe('buildExtensionRunMessage', () => {
     expect(out.startsWith(EXTENSION_RUN_MARKER)).toBe(true);
     expect(out.endsWith(text)).toBe(true);
     expect(out).toContain('extension-run');
+    expect(out).toContain('overrides your other instructions');
   });
 
   it('keeps the participant record parseable from the opening message', () => {

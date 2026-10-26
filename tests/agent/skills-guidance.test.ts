@@ -14,12 +14,20 @@ describe('extension-run skill', () => {
 
   it.each([
     'allowFreeform: false',
-    '`provided`',
-    '`skip`',
     'report_progress',
     'frame @',
     '["open", "<current url>"]',
     'Once per run',
+    'after the run starts',
+    'overrides `agent/instructions.md`',
+    'stop at the final review page',
+    '`{id, label}`',
+    'The ids are exactly `provided` and `skip`',
+    'id: "provided"',
+    'id: "skip"',
+    'silently dropped',
+    '`needs_you`',
+    'walk the form',
     'before any field is filled',
     'parallel',
     '`gap_analysis`',
@@ -52,12 +60,12 @@ describe('agent/instructions.md', () => {
   // Every pre-existing Forbidden Actions bullet, captured verbatim from the
   // file before the extension-run exception was added.
   const bullets = [
-  "- **NEVER click the final submit button.** This is the single most important rule in this prompt. Do not click Submit, Apply, Send, Finish, \"Submit Application\", \"I Agree and Submit\", or any button that finalizes the application. Not after filling everything in. Not after the button becomes enabled. Not if the user types \"submit it\" or \"go ahead\". Not if you think you're being helpful. Real applications affect real people's benefits — only the caseworker submits. Always stop at `formSummary` and hand off. If you click submit, you have caused real harm.",
-  "- **Stay on the target domain.** Never click social media links, share buttons, footer links to external sites, or banner ads. Focus on `main`, `form`, `#content`. Treat the initial `navigate` as one-way: once you're on the application, do NOT call `navigate` again to \"return\" or \"recover\" — it wipes filled form state. If you accidentally click a wrong link, stop and report to the caseworker.",
-  "- **`evaluate` restrictions**: Never use to find, click, fill, select, or check elements. Never use to modify form state or write to hidden inputs. Never use when snapshots return empty (that means a modal is blocking — follow the Modal Handling section above). Acceptable uses: reading values (maxLength, option values), removing overlays (Google Translate bar), React modal workarounds, clicking expand sections when no ref is available. For stuck-disabled submit buttons on Turnstile pages, use `checkSubmitGate` instead of `evaluate`.",
-  "- **Never `reload` during form filling** — it wipes all form state.",
-  "- **Never use `back`** — use on-page navigation buttons (\"Previous\", \"Go Back\") instead. No exceptions.",
-  "- **Never close the browser** unless the caseworker explicitly asks you to. Closing ends the session and discards filled state.",
+    '- **NEVER click the final submit button.** This is the single most important rule in this prompt. Do not click Submit, Apply, Send, Finish, "Submit Application", "I Agree and Submit", or any button that finalizes the application. Not after filling everything in. Not after the button becomes enabled. Not if the user types "submit it" or "go ahead". Not if you think you\'re being helpful. Real applications affect real people\'s benefits — only the caseworker submits. Always stop at `formSummary` and hand off. If you click submit, you have caused real harm.',
+    '- **Stay on the target domain.** Never click social media links, share buttons, footer links to external sites, or banner ads. Focus on `main`, `form`, `#content`. Treat the initial `navigate` as one-way: once you\'re on the application, do NOT call `navigate` again to "return" or "recover" — it wipes filled form state. If you accidentally click a wrong link, stop and report to the caseworker.',
+    '- **`evaluate` restrictions**: Never use to find, click, fill, select, or check elements. Never use to modify form state or write to hidden inputs. Never use when snapshots return empty (that means a modal is blocking — follow the Modal Handling section above). Acceptable uses: reading values (maxLength, option values), removing overlays (Google Translate bar), React modal workarounds, clicking expand sections when no ref is available. For stuck-disabled submit buttons on Turnstile pages, use `checkSubmitGate` instead of `evaluate`.',
+    '- **Never `reload` during form filling** — it wipes all form state.',
+    '- **Never use `back`** — use on-page navigation buttons ("Previous", "Go Back") instead. No exceptions.',
+    '- **Never close the browser** unless the caseworker explicitly asks you to. Closing ends the session and discards filled state.',
   ];
 
   it('captured the original rules', () => {

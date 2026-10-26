@@ -606,16 +606,44 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
 
   describe('rejections never touch the token or Eve', () => {
     it.each([
-      ['an unknown requestId', [{ requestId: 'nope', text: 'x' }, ...validAnswers], 'unknown_request'],
-      ['text on an option-only request', [validAnswers[0], { requestId: 'call-b', text: 'red' }], 'text_not_allowed'],
-      ['an unknown option', [validAnswers[0], { requestId: 'call-b', optionId: 'blue' }], 'unknown_option'],
+      [
+        'an unknown requestId',
+        [{ requestId: 'nope', text: 'x' }, ...validAnswers],
+        'unknown_request',
+      ],
+      [
+        'text on an option-only request',
+        [validAnswers[0], { requestId: 'call-b', text: 'red' }],
+        'text_not_allowed',
+      ],
+      [
+        'an unknown option',
+        [validAnswers[0], { requestId: 'call-b', optionId: 'blue' }],
+        'unknown_option',
+      ],
       ['a missing answer', [validAnswers[0]], 'missing_answer'],
-      ['a duplicate answer', [...validAnswers, validAnswers[0]], 'duplicate_answer'],
-      ['a blank answer', [{ requestId: 'call-a', text: '   ' }, validAnswers[1]], 'empty_answer'],
+      [
+        'a duplicate answer',
+        [...validAnswers, validAnswers[0]],
+        'duplicate_answer',
+      ],
+      [
+        'a blank answer',
+        [{ requestId: 'call-a', text: '   ' }, validAnswers[1]],
+        'empty_answer',
+      ],
       ['a non-array body', { requestId: 'call-a' }, 'missing_answer'],
       ['an empty answer list', [], 'missing_answer'],
-      ['oversized text', [{ requestId: 'call-a', text: 'x'.repeat(2001) }, validAnswers[1]], 'empty_answer'],
-      ['a numeric optionId', [validAnswers[0], { requestId: 'call-b', optionId: 1 }], 'unknown_option'],
+      [
+        'oversized text',
+        [{ requestId: 'call-a', text: 'x'.repeat(2001) }, validAnswers[1]],
+        'empty_answer',
+      ],
+      [
+        'a numeric optionId',
+        [validAnswers[0], { requestId: 'call-b', optionId: 1 }],
+        'unknown_option',
+      ],
     ])('rejects %s', async (_n, inputResponses, cause) => {
       await seedRelay();
       const swap = vi.spyOn(store, 'swapToken');

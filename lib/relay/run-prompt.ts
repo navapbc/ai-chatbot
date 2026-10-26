@@ -5,4 +5,4 @@
 export const EXTENSION_RUN_MARKER = '[extension-run]';
 
 export const buildExtensionRunMessage = (text: string): string =>
-  `${EXTENSION_RUN_MARKER}\nThis is an extension run: read the \`extension-run\` skill with \`load_skill\` before you start.\n\n${text}`;
+  `${EXTENSION_RUN_MARKER}\nThis is an extension run: read the \`extension-run\` skill with \`load_skill\` before you start. It overrides your other instructions where they differ.\n\n${text}`;
