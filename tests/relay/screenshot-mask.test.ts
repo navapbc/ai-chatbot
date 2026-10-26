@@ -487,21 +487,6 @@ describe('page side', { timeout: 30_000 }, () => {
     await session.restore();
   });
 
-  it('masks the parent of a registered known value echoed as page text (I2)', async () => {
-    await load(`<!doctype html><html lang="en"><body>
-      <p id="confirm">You entered: <span id="echo">${KNOWN}</span></p>
-      <p id="other">Nothing here</p>
-    </body></html>`);
-    const before = await styles();
-    const session = maskSession();
-    await session.apply();
-    expect(await fill('#echo')).toBe(TRANSPARENT);
-    expect(await fill('#other')).toBe('rgb(0, 0, 0)');
-    await session.verify();
-    await session.restore();
-    expect(await styles()).toEqual(before);
-  });
-
   it('hides ::selection, ::placeholder and descendants against page rules (C4)', async () => {
     await load(`<!doctype html><html lang="en"><head><style>
       ::selection { color: #000; background: #fff; -webkit-text-fill-color: #000; }
@@ -707,61 +692,115 @@ describe('page side', { timeout: 30_000 }, () => {
     await session.restore();
   });
 
-  it('masks a known value split by markup, and a name split by markup (I-B)', async () => {
-    await load(`<!doctype html><html lang="en"><body>
-      <p id="split">You entered <span>900</span>-00-1234</p>
-      <p id="name">Applicant: <b>Zebulon</b> Quixote</p>
-      <p id="other">Nothing here</p>
-    </body></html>`);
-    const before = await styles();
-    const session = maskSession({
-      hasKnownValue: (t) =>
-        t.includes('900-00-1234') || t.includes('Zebulon Quixote'),
+  // --- registered values shown as page text are refused (P21) ---
+
+  const NAME = 'Zebulon Quixote';
+  const knownOf =
+    (...values: string[]) =>
+    (t: string) =>
+      values.some((v) => t.includes(v));
+
+  for (const [name, body, values] of [
+    [
+      'an echo of a registered value (I2)',
+      `<p>You entered: <span>${KNOWN}</span></p>`,
+      [KNOWN],
+    ],
+    [
+      'a split occurrence beside a matching child (E1)',
+      `<p>Saw <span>900</span>-77-4321 and <span>${KNOWN}</span></p>`,
+      [KNOWN],
+    ],
+    [
+      'a value split by markup',
+      'You entered <span>900</span>-77-4321',
+      [KNOWN],
+    ],
+    ['a name split by markup', `Applicant: <b>Zebulon</b> Quixote`, [NAME]],
+    ['an aria-hidden copy (E2)', `<p aria-hidden="true">${KNOWN}</p>`, [KNOWN]],
+    ['a display:none copy', `<p style="display: none">${KNOWN}</p>`, [KNOWN]],
+    [
+      'SVG text (E2c)',
+      `<svg width="200" height="30"><text x="0" y="20">${KNOWN}</text></svg>`,
+      [KNOWN],
+    ],
+    [
+      'the second of several registered values',
+      `<p>Applicant: ${NAME}</p>`,
+      [KNOWN, NAME],
+    ],
+  ] as const) {
+    it(`refuses ${name}`, async () => {
+      await load(`<!doctype html><html lang="en"><body>${body}</body></html>`);
+      const session = maskSession({ hasKnownValue: knownOf(...values) });
+      await expect(session.apply()).rejects.toThrow();
+      await session.restore();
+      expect(
+        await page.evaluate(() => document.adoptedStyleSheets.length),
+      ).toBe(0);
     });
-    await session.apply();
-    expect([
-      await fill('#split'),
-      await fill('#split span'),
-      await fill('#name'),
-      await fill('#name b'),
-      await fill('#other'),
-    ]).toEqual([
-      TRANSPARENT,
-      TRANSPARENT,
-      TRANSPARENT,
-      TRANSPARENT,
-      'rgb(0, 0, 0)',
-    ]);
-    await session.verify();
+  }
+
+  it('refuses a registered value in a closed shadow root text', async () => {
+    await load(`<!doctype html><html lang="en"><body><div id="host"></div><script>
+      document.getElementById('host').attachShadow({ mode: 'closed' }).innerHTML =
+        '<p>${KNOWN}</p>';
+    </script></body></html>`);
+    const session = maskSession();
+    await expect(session.apply()).rejects.toThrow();
     await session.restore();
-    expect(await styles()).toEqual(before);
   });
 
-  it('verify refuses a toast with a known value appearing during the window, and a text node changed to one (I-B)', async () => {
-    await load(FORM);
-    const toast = maskSession();
-    await toast.apply();
-    await page.evaluate((v) => {
-      const t = document.createElement('div');
-      t.textContent = `Saved ${v}`;
-      document.body.append(t);
-    }, KNOWN);
-    const refusal = await toast.verify().catch((e) => e);
-    expect(refusal).toBeInstanceOf(ScreenshotMaskError);
-    expect(refusal.retryable).toBe(true);
-    await toast.restore();
+  it('succeeds when the registered value is not shown, only in a masked field, or the echo is unregistered (P11)', async () => {
+    await load(`<!doctype html><html lang="en"><body>
+      <label for="note">Note</label> <input id="note" value="see ${KNOWN}">
+      <p>SSN on file: 900-12-3456</p>
+    </body></html>`);
+    const session = maskSession({ hasKnownValue: knownOf(KNOWN, NAME) });
+    await session.apply();
+    // The value is only in a field's own value: the field is masked.
+    expect(await fill('#note')).toBe(TRANSPARENT);
+    // An unregistered SSN-shaped echo stays visible (accepted residual P11).
+    await session.settle();
+    await session.verify();
+    await session.restore();
+  });
 
-    await load(`${FORM}<p id="msg">Saved</p>`);
-    const changed = maskSession();
-    await changed.apply();
-    await page.evaluate((v) => {
-      const text = document.getElementById('msg')?.firstChild as Text;
-      text.data = `Saved ${v}`;
-    }, KNOWN);
-    await expect(changed.verify()).rejects.toBeInstanceOf(ScreenshotMaskError);
-    await changed.restore();
+  for (const [name, html, change] of [
+    [
+      'a sibling text node completing the value (F1b)',
+      '<p id="f"><span>900-77</span></p>',
+      `document.getElementById('f').append('-4321')`,
+    ],
+    [
+      'a sibling text node changed to complete the value (F1c)',
+      '<p id="f"><span>900-77-</span>xxxx</p>',
+      `document.getElementById('f').lastChild.data = '4321'`,
+    ],
+    [
+      'an element appended to complete the value (F1e)',
+      '<p id="f">900-77-</p>',
+      `const b = document.createElement('b'); b.textContent = '4321'; document.getElementById('f').append(b)`,
+    ],
+    [
+      'a toast with the value appearing',
+      '<p>Saved</p>',
+      `const t = document.createElement('div'); t.textContent = 'Saved ${KNOWN}'; document.body.append(t)`,
+    ],
+  ] as const) {
+    it(`verify refuses ${name} during the window`, async () => {
+      await load(`<!doctype html><html lang="en"><body>${html}</body></html>`);
+      const session = maskSession();
+      await session.apply();
+      await page.evaluate((code) => new Function(code)(), change);
+      await expect(session.verify()).rejects.toBeInstanceOf(
+        ScreenshotMaskError,
+      );
+      await session.restore();
+    });
+  }
 
-    // Text churn without a known value is fine.
+  it('text churn without a registered value does not refuse', async () => {
     await load(`${FORM}<p id="clock">12:00</p>`);
     const churn = maskSession();
     await churn.apply();
@@ -927,6 +966,9 @@ describe('createMaskSession with a stub send', () => {
         return { result: { objectId: 'o' } };
       }
       if (fn.includes('mask(')) return { result: { value: 0 } };
+      if (fn.includes('texts(')) {
+        return { result: { value: { over: false, chunks: [] } } };
+      }
       if (fn.includes('settle')) {
         const how = settle.shift();
         if (how === 'fail') throw new Error('gone');

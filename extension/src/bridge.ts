@@ -595,15 +595,22 @@ async function forwardCdp(
     );
   let raw: unknown;
   if (screenshot) {
-    raw = await exclusive(current, lock, () =>
-      captureWithRetries(current, sendIt),
+    raw = await exclusive(current, lock, (deadline) =>
+      captureWithRetries(current, sendIt, deadline),
     );
   } else {
     // Shared hold: no await between taking it and chrome.debugger receiving
     // the command (tracked() calls sendCommand synchronously), released when
     // the command settles. Redaction below runs outside the hold.
     const release = holdShared(lock);
-    const pending = sendIt();
+    let pending: Promise<unknown>;
+    try {
+      pending = sendIt();
+    } catch (error) {
+      // A synchronous throw must not leak the hold.
+      release();
+      throw error;
+    }
     pending.then(release, release);
     raw = await pending;
   }
@@ -653,10 +660,14 @@ const DRAIN_MS = 5_000;
 // An ordinary command waits this long for a screenshot's window to end.
 const COMMAND_WAIT_MS = 30_000;
 // A screenshot whose verify saw the page change is retried this often, this
-// far apart, while less than RETRY_WINDOW_MS has passed.
+// far apart, while more than MIN_RETRY_REMAINING_MS of its deadline is left.
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 250;
-const RETRY_WINDOW_MS = 10_000;
+const MIN_RETRY_REMAINING_MS = 5_000;
+// One deadline per screenshot, covering the drain, every attempt's applies
+// and every capture. Verify and restore (one 3s step each) run after it, so
+// the reply still lands inside the relay's 30s command timeout.
+const SCREENSHOT_DEADLINE_MS = 22_000;
 
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -727,9 +738,15 @@ function drained(lock: TabLock, ms: number): Promise<boolean> {
  * commands already in flight drained first (bounded). A run stopped before
  * or while it waits never applies a mask.
  */
-function exclusive<T>(current: Run, lock: TabLock, task: () => Promise<T>) {
+function exclusive<T>(
+  current: Run,
+  lock: TabLock,
+  task: (deadline: number) => Promise<T>,
+) {
   return lock.queue(async () => {
     if (current.stopped || current.blocked) throw new ScreenshotMaskError();
+    // One deadline for the drain and every attempt.
+    const deadline = Date.now() + SCREENSHOT_DEADLINE_MS;
     let release = () => {};
     lock.writer = new Promise<void>((resolve) => {
       release = resolve;
@@ -737,7 +754,7 @@ function exclusive<T>(current: Run, lock: TabLock, task: () => Promise<T>) {
     try {
       if (!(await drained(lock, DRAIN_MS))) throw new ScreenshotMaskError();
       if (current.stopped || current.blocked) throw new ScreenshotMaskError();
-      return await task();
+      return await task(deadline);
     } finally {
       lock.writer = undefined;
       release();
@@ -752,7 +769,8 @@ async function screenshotsIdle(tabId: number) {
 
 /**
  * captureMasked, tried again (up to MAX_RETRIES, RETRY_DELAY_MS apart, while
- * under RETRY_WINDOW_MS) only when verify refused because the page changed
+ * over MIN_RETRY_REMAINING_MS of the deadline is left) only when verify
+ * refused because the page changed
  * during the window, as a re-render or text churn does; a structural
  * refusal (closed shadow root, uncovered frame, stale mask) is final. The
  * refusal message is the same either way.
@@ -760,17 +778,17 @@ async function screenshotsIdle(tabId: number) {
 async function captureWithRetries(
   current: Run,
   capture: () => Promise<unknown>,
+  deadline: number,
 ): Promise<unknown> {
-  const started = Date.now();
   for (let attempt = 0; ; attempt++) {
     try {
-      return await captureMasked(current, capture);
+      return await captureMasked(current, capture, deadline);
     } catch (error) {
       const retry =
         error instanceof ScreenshotMaskError &&
         error.retryable &&
         attempt < MAX_RETRIES &&
-        Date.now() - started < RETRY_WINDOW_MS &&
+        deadline - Date.now() > MIN_RETRY_REMAINING_MS &&
         !current.stopped &&
         !current.blocked;
       if (!retry) {
@@ -849,6 +867,7 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, what: string) =>
 async function captureMasked(
   current: Run,
   capture: () => Promise<unknown>,
+  deadline: number,
 ): Promise<unknown> {
   const objectGroup = `mask-${crypto.randomUUID()}`;
   const frames = [...current.children].filter(
@@ -897,7 +916,7 @@ async function captureMasked(
   ];
   // An apply that outlives the shared budget is refused; its session's
   // restore then stops it before its next step.
-  const applyBy = Date.now() + MASK_APPLY_BUDGET_MS;
+  const applyBy = Math.min(Date.now() + MASK_APPLY_BUDGET_MS, deadline);
   const sessions = masks.map((mask) => ({
     apply: () => {
       // A run stopped between applies masks nothing more.
@@ -917,7 +936,11 @@ async function captureMasked(
     await Promise.all(masks.map((mask) => mask.settle()));
     // A run stopped meanwhile only restores (stopRun waits for that).
     if (current.stopped || current.blocked) throw new ScreenshotMaskError();
-    const shot = await withTimeout(capture(), CAPTURE_MS, 'screenshot');
+    const shot = await withTimeout(
+      capture(),
+      Math.max(0, Math.min(CAPTURE_MS, deadline - Date.now())),
+      'screenshot',
+    );
     await Promise.all(masks.map((mask) => mask.verify()));
     // A frame that attached during the window was never masked.
     for (const [sessionId, child] of current.children) {

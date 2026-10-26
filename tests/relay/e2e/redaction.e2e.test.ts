@@ -1317,33 +1317,32 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     }
   });
 
-  it('text churn during the window does not refuse; a toast with a known value is masked or refused (I-B)', async () => {
-    // A clock ticking every 20ms: text changes, no known value.
+  it('text churn during the window does not refuse; a toast with a registered value refuses (I-B)', async () => {
+    const OTHER = '900-88-1357';
+    // A clock ticking every 20ms: text changes, no registered value.
     await page.evaluate(() => {
       const clock = document.createElement('p');
       clock.id = 'clock';
       document.body.append(clock);
-      (window as unknown as { tick: number }).tick = window.setInterval(() => {
+      window.setInterval(() => {
         clock.textContent = new Date().toISOString();
       }, 20);
     });
     try {
       const { cdp } = await startRun();
-      expect(await addKnownValue(KNOWN)).toEqual({ ok: true });
+      expect(await addKnownValue(OTHER)).toEqual({ ok: true });
       const agent = await rawAgent(cdp);
       const session = await agent.attach();
       await agent.childSession(session);
       const shot = await agent.call('Page.captureScreenshot', {}, session);
       expect(shot.error).toBeUndefined();
 
-      // A toast saying the known value appears once, inside the window: the
-      // first attempt refuses, the retry finds it in the AX tree and masks it.
+      // A toast saying the registered value appears inside the window.
       await page.evaluate((v) => {
         const target = document.getElementById('ssn') as HTMLElement;
         const watcher = new MutationObserver(() => {
           watcher.disconnect();
           const toast = document.createElement('p');
-          toast.id = 'toast';
           toast.textContent = `Saved ${v}`;
           document.body.prepend(toast);
         });
@@ -1351,41 +1350,33 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
           attributes: true,
           attributeFilter: ['style'],
         });
-      }, KNOWN);
+      }, OTHER);
       const second = await agent.call('Page.captureScreenshot', {}, session);
-      if (second.error) {
-        expect(second.error.message).toBe(REFUSED);
-      } else {
-        const rect = await insetBox(page.locator('#toast'), 0);
-        const [u] = await regions(await rawCapture(), [rect]);
-        const [m] = await regions(second.result?.data as string, [rect]);
-        expect(u.nonBg).toBeGreaterThan(0);
-        expect(m.nonBg).toBe(0);
-      }
+      expect(second.error?.message).toBe(REFUSED);
       await agent.close();
+      await until(async () => (await leftovers()) === 0, 3_000);
     } finally {
       await reloadFixture();
     }
   });
 
-  it('a known value split by markup in page text is hidden (I-B)', async () => {
+  it('a registered value split by markup in page text refuses the screenshot (I-B, E1)', async () => {
+    const OTHER = '900-88-1357';
     await page.evaluate(() => {
       const p = document.createElement('p');
       p.id = 'split';
-      p.innerHTML = 'Reference <span>900</span>-77-4321 confirmed';
+      p.innerHTML = 'Reference <span>900</span>-88-1357 confirmed';
       document.body.prepend(p);
     });
     try {
       const { cdp } = await startRun();
-      expect(await addKnownValue(KNOWN)).toEqual({ ok: true });
+      expect(await addKnownValue(OTHER)).toEqual({ ok: true });
       const agent = await rawAgent(cdp);
       const session = await agent.attach();
       await agent.childSession(session);
-      expect(
-        await hiddenIn(agent, session, {
-          split: await insetBox(page.locator('#split'), 0),
-        }),
-      ).toEqual({ split: 'hidden' });
+      const shot = await agent.call('Page.captureScreenshot', {}, session);
+      expect(shot.error?.message).toBe(REFUSED);
+      expect(await leftovers()).toBe(0);
       await agent.close();
     } finally {
       await page.evaluate(() => document.getElementById('split')?.remove());
@@ -1573,19 +1564,22 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     }
   });
 
-  it('a registered known value echoed as page text is hidden (I2)', async () => {
+  it('a registered value shown as page text refuses the screenshot; one not on the page does not (I2, P21)', async () => {
     const { cdp } = await startRun();
-    expect(await addKnownValue(KNOWN)).toEqual({ ok: true });
+    // Not on the page: the screenshot goes ahead.
+    expect(await addKnownValue('900-88-1357')).toEqual({ ok: true });
     const agent = await rawAgent(cdp);
     const session = await agent.attach();
     await agent.childSession(session);
+    const fine = await agent.call('Page.captureScreenshot', {}, session);
+    expect(fine.error).toBeUndefined();
+    // The fixture's #echo shows this one.
+    expect(await addKnownValue(KNOWN)).toEqual({ ok: true });
     const before = await styleAttributes();
-    expect(
-      await hiddenIn(agent, session, {
-        echo: await insetBox(page.locator('#echo'), 0),
-      }),
-    ).toEqual({ echo: 'hidden' });
+    const shot = await agent.call('Page.captureScreenshot', {}, session);
+    expect(shot.error?.message).toBe(REFUSED);
     expect(await styleAttributes()).toEqual(before);
+    expect(await leftovers()).toBe(0);
     await agent.close();
   });
 
