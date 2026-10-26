@@ -41,6 +41,12 @@ export interface Redactor {
    * it (fail closed).
    */
   addKnownValue(value: string): boolean;
+  /**
+   * Read-only: true when `text` contains a registered value in any form the
+   * scrubber recognizes. Used to mask pixels (screenshots) where the text
+   * itself cannot be rewritten.
+   */
+  hasKnownValue(text: string): boolean;
   clear(): void;
   redactResult(
     method: string,
@@ -1328,6 +1334,10 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
       known.set(value, alternativesFor(value));
       rebuild();
       return true;
+    },
+
+    hasKnownValue(text) {
+      return typeof text === 'string' && scrubKnown(text) !== text;
     },
 
     clear() {

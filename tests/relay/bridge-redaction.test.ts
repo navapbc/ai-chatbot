@@ -11,6 +11,7 @@ import {
 
 const stub = (overrides: Partial<Redactor>): Redactor => ({
   addKnownValue: () => true,
+  hasKnownValue: () => false,
   clear: () => {},
   redactResult: async (_m, r) => r,
   redactEvent: (_m, p) => p,

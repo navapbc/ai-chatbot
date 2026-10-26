@@ -2148,3 +2148,20 @@ describe('descriptorFromAttributes', () => {
     });
   });
 });
+
+describe('hasKnownValue', () => {
+  it('finds a registered value in any recognized form and changes nothing', () => {
+    const r = createRedactor();
+    expect(r.hasKnownValue('Reference 900-77-4321')).toBe(false);
+    expect(r.addKnownValue('900-77-4321')).toBe(true);
+    expect(r.hasKnownValue('Reference 900-77-4321')).toBe(true);
+    expect(r.hasKnownValue('ref 900774321')).toBe(true);
+    expect(r.hasKnownValue('Springfield')).toBe(false);
+    // Read-only: scrubbing still behaves as before.
+    expect(r.redactEvent('Bridge.error', { message: 'x 900-77-4321' })).toEqual(
+      {
+        message: 'x [masked]',
+      },
+    );
+  });
+});

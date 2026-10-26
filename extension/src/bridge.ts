@@ -15,11 +15,13 @@ import type {
 import {
   createRedactor,
   descriptorFromAttributes,
+  hasSensitiveShape,
   type Redactor,
 } from '../../lib/relay/redactor';
 import {
   createMaskSession,
   createScreenshotQueue,
+  MASK_WORLD,
   ScreenshotMaskError,
   withScreenshotMask,
 } from '../../lib/relay/screenshot-mask';
@@ -99,8 +101,6 @@ interface Run extends RunConfig {
    * stopRun, and empty on a run rebuilt after a worker restart.
    */
   redactor: Redactor;
-  /** Runs this run's screenshots one at a time (see captureMasked). */
-  screenshots: ReturnType<typeof createScreenshotQueue>;
 }
 
 const STORAGE_KEY = 'run';
@@ -303,6 +303,13 @@ export async function stopRun(
     } catch {
       // Already closed.
     }
+    // Let a screenshot in flight restore the page while the debugger is
+    // still attached (it sees `stopped` and skips its capture); bounded, so
+    // a hung page cannot hold the stop.
+    await Promise.race([
+      screenshotsIdle(current.tabId),
+      new Promise((resolve) => setTimeout(resolve, STOP_WAIT_MS)),
+    ]);
     dropChildren(current);
     current.attached = false;
     // Always let go: a blocked run has already cleared `attached`.
@@ -362,7 +369,6 @@ function begin(
     reconnectDelayMs: FIRST_RECONNECT_MS,
     announceResume: resumed,
     redactor: createRedactor(),
-    screenshots: createScreenshotQueue(),
   };
   run = current;
   current.expiryTimer = setTimeout(
@@ -554,6 +560,11 @@ async function forwardCdp(
     throw new Error('invalid params');
   }
 
+  const screenshot = method === 'Page.captureScreenshot';
+  // Nothing else of this tab reaches the page while a screenshot's masks
+  // are on it (see captureMasked).
+  if (!screenshot) await screenshotsIdle(current.tabId, true);
+
   const isTab = sessionId === tabSessionId(current.tabId);
   const child = isTab ? undefined : current.children.get(sessionId);
   if (!isTab && !child) throw new Error('unknown session');
@@ -578,10 +589,11 @@ async function forwardCdp(
         params as Record<string, unknown> | undefined,
       ),
     );
-  const raw =
-    method === 'Page.captureScreenshot'
-      ? await current.screenshots(() => captureMasked(current, sendIt))
-      : await sendIt();
+  const raw = screenshot
+    ? await onTabScreenshots(current.tabId, () =>
+        captureMasked(current, sendIt),
+      )
+    : await sendIt();
   const result = await redact(
     current,
     method,
@@ -621,6 +633,88 @@ function tracked<T>(child: Child | undefined, run: () => Promise<T>) {
 const MASK_STEP_MS = 3_000;
 const MASK_APPLY_BUDGET_MS = 10_000;
 const CAPTURE_MS = 8_000;
+const STOP_WAIT_MS = 5_000;
+
+/**
+ * One screenshot queue per tab, at module level rather than per run: a run
+ * replaced mid-screenshot still owns masks on the page, and a second run's
+ * screenshot must not record them as the page's own style. `active` is set
+ * while a screenshot's masks are on the page.
+ */
+interface TabScreenshots {
+  queue: ReturnType<typeof createScreenshotQueue>;
+  active?: Promise<void>;
+}
+const tabScreenshots = new Map<number, TabScreenshots>();
+
+function screenshotsFor(tabId: number): TabScreenshots {
+  let entry = tabScreenshots.get(tabId);
+  if (!entry) {
+    entry = { queue: createScreenshotQueue() };
+    tabScreenshots.set(tabId, entry);
+  }
+  return entry;
+}
+
+function onTabScreenshots<T>(tabId: number, task: () => Promise<T>) {
+  const entry = screenshotsFor(tabId);
+  return entry.queue(async () => {
+    let done = () => {};
+    entry.active = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    try {
+      return await task();
+    } finally {
+      entry.active = undefined;
+      done();
+    }
+  });
+}
+
+/**
+ * Resolves once no screenshot of the tab is running; with `activeOnly`
+ * false, also once every queued one has finished.
+ */
+async function screenshotsIdle(tabId: number, activeOnly = false) {
+  const entry = tabScreenshots.get(tabId);
+  if (!entry) return;
+  if (!activeOnly) {
+    await entry.queue(async () => {});
+    return;
+  }
+  while (entry.active) await entry.active;
+}
+
+/**
+ * Isolated-world execution contexts the masking created, per CDP session.
+ * Their Runtime.executionContextCreated / Destroyed events are dropped, so
+ * the agent never sees (or tries to use) the mask's world.
+ */
+const maskContexts = new Set<string>();
+const contextKey = (sessionId: string | undefined, id: unknown) =>
+  `${sessionId ?? ''}:${String(id)}`;
+
+/** True when the event is about the mask's isolated world: drop it. */
+function isMaskWorldEvent(
+  sessionId: string | undefined,
+  method: string,
+  params: unknown,
+): boolean {
+  if (!isObject(params)) return false;
+  if (method === 'Runtime.executionContextCreated') {
+    const context = isObject(params.context) ? params.context : undefined;
+    if (context?.name !== MASK_WORLD) return false;
+    maskContexts.add(contextKey(sessionId, context.id));
+    return true;
+  }
+  if (method === 'Runtime.executionContextDestroyed') {
+    return maskContexts.delete(
+      contextKey(sessionId, params.executionContextId),
+    );
+  }
+  return false;
+}
 // Child targets with no document to mask (and nothing painted on screen).
 const WORKER_TYPES = new Set([
   'worker',
@@ -647,12 +741,13 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, what: string) =>
  * refusal with a fixed message; the raw image is only returned when every
  * session was masked and verified.
  *
- * Ordering: forwardCdp runs every screenshot through the run's queue, so a
- * second screenshot (from the tab or any child session) waits until the
- * first has restored the page; overlapping masks would otherwise record each
- * other's style as the page's own. Other agent commands are not held: none
- * can unmask a field (eval is refused at the tool layer), and a navigation
- * or re-render during the window fails the verify step instead.
+ * Ordering: forwardCdp runs every screenshot through the tab's queue, so a
+ * second screenshot (from the tab, any child session, or another run on the
+ * same tab) waits until the first has restored the page; overlapping masks
+ * would otherwise record each other's style as the page's own. While a
+ * screenshot is running, every other forwarded command of the tab waits
+ * too. Page script can still change the page during the window; verify
+ * refuses the capture when it touched a field, a frame or a mask.
  */
 async function captureMasked(
   current: Run,
@@ -677,17 +772,29 @@ async function captureMasked(
         MASK_STEP_MS,
         'screenshot mask',
       );
+  // A field is masked by its value too: a value-shaped number, or a value
+  // the caseworker registered. Known values stay in the worker.
+  const isSensitiveValue = (value: string) =>
+    hasSensitiveShape(value) || current.redactor.hasKnownValue(value);
+  const hasKnownValue = (text: string) => current.redactor.hasKnownValue(text);
+  const common = {
+    objectGroup,
+    isCoveredFrame,
+    isSensitiveValue,
+    hasKnownValue,
+  };
   const masks = [
     createMaskSession({
+      ...common,
       send: maskSend({ tabId: current.tabId }),
-      objectGroup,
-      isCoveredFrame,
+      onWorld: (id) => maskContexts.add(contextKey(undefined, id)),
     }),
     ...frames.map(([sessionId, child]) =>
       createMaskSession({
+        ...common,
         send: maskSend({ tabId: current.tabId, sessionId }, child),
-        objectGroup,
-        isCoveredFrame,
+        outOfProcess: true,
+        onWorld: (id) => maskContexts.add(contextKey(sessionId, id)),
       }),
     ),
   ];
@@ -702,6 +809,8 @@ async function captureMasked(
   const known = new Set(current.children.keys());
   return withScreenshotMask(sessions, async () => {
     await Promise.all(masks.map((mask) => mask.settle()));
+    // A run stopped meanwhile only restores (stopRun waits for that).
+    if (current.stopped || current.blocked) throw new ScreenshotMaskError();
     const shot = await withTimeout(capture(), CAPTURE_MS, 'screenshot');
     await Promise.all(masks.map((mask) => mask.verify()));
     // A frame that attached during the window was never masked.
@@ -906,6 +1015,8 @@ export function onDebuggerEvent(
       forwarded = withoutTargetUrl(params);
     }
   }
+
+  if (isMaskWorldEvent(source.sessionId, method, params)) return;
 
   const filtered = filterEvent(method, forwarded);
   if (!filtered) return;

@@ -301,6 +301,8 @@ async function addScreenshotFields() {
       <textarea id="pinnote" aria-label="PIN" rows="1">8642</textarea>
       <style>#faded { transition: all 2s; }</style>
       <input id="faded" aria-label="Routing number" value="011000015">
+      <label for="ref">Reference</label> <input id="ref" value="900-00-1234">
+      <input id="field_37" name="field_37" value="900 00 1234">
       <iframe id="so" title="same origin" style="height: 40px" srcdoc="<label for=sp>PIN</label> <input id=sp value=5555> <label for=sq>Pet</label> <input id=sq value=Rex>"></iframe>`;
     document.body.append(box);
   }, STYLED);
@@ -357,6 +359,8 @@ const SENSITIVE_IN_SHOT = [
   'main#cardce',
   'main#pinnote',
   'main#faded',
+  'main#ref',
+  'main#field_37',
   'srcdoc#sp',
   'xo#cc',
 ];
@@ -385,6 +389,8 @@ async function fieldRects(): Promise<Record<string, Rect>> {
     'main#cardce': page.locator('#cardce'),
     'main#pinnote': page.locator('#pinnote'),
     'main#faded': page.locator('#faded'),
+    'main#ref': page.locator('#ref'),
+    'main#field_37': page.locator('#field_37'),
     'srcdoc#sp': page.frameLocator('#so').locator('#sp'),
     'srcdoc#sq': page.frameLocator('#so').locator('#sq'),
     'xo#cc': page.frameLocator('#xo').locator('#cc'),
@@ -422,8 +428,10 @@ const rawCapture = async () =>
 /**
  * Decodes a PNG (in the extension worker: createImageBitmap + OffscreenCanvas)
  * and summarizes each region: `ink` counts pixels whose darkest channel is
- * under 200 (text, bullets, placeholder grey), `dark` those under 120 (text,
- * but not a selection highlight), `hash` fingerprints the exact pixels.
+ * under 200 (text, bullets, placeholder grey), `nonBg` counts pixels that
+ * differ by more than 24 in any channel from the region's most common colour
+ * (its background: any text, selection highlight or glyph), `hash`
+ * fingerprints the exact pixels.
  */
 const regions = (data: string, rects: Rect[]) =>
   browser.sw.evaluate(
@@ -439,12 +447,27 @@ const regions = (data: string, rects: Rect[]) =>
       return rects.map((r) => {
         const px = ctx.getImageData(r.x, r.y, r.width, r.height).data;
         let ink = 0;
-        let dark = 0;
         let hash = 0;
+        const counts = new Map<number, number>();
+        for (let i = 0; i < px.length; i += 4) {
+          const c = px[i] * 65536 + px[i + 1] * 256 + px[i + 2];
+          counts.set(c, (counts.get(c) ?? 0) + 1);
+        }
+        const bg = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
+        const [br, bgr, bb] = [bg >> 16, (bg >> 8) & 255, bg & 255];
+        let nonBg = 0;
         for (let i = 0; i < px.length; i += 4) {
           const min = Math.min(px[i], px[i + 1], px[i + 2]);
           if (min < 200) ink += 1;
-          if (min < 120) dark += 1;
+          if (
+            Math.max(
+              Math.abs(px[i] - br),
+              Math.abs(px[i + 1] - bgr),
+              Math.abs(px[i + 2] - bb),
+            ) > 24
+          ) {
+            nonBg += 1;
+          }
           hash =
             (Math.imul(hash, 31) +
               px[i] * 65536 +
@@ -452,7 +475,7 @@ const regions = (data: string, rects: Rect[]) =>
               px[i + 2]) >>>
             0;
         }
-        return { ink, dark, hash };
+        return { ink, nonBg, hash };
       });
     },
     { data, rects },
@@ -463,7 +486,13 @@ const regions = (data: string, rects: Rect[]) =>
  * every call) to inject a fault into the bridge's own mask commands. Test
  * only: nothing in the shipped extension has a fault hook.
  */
-const patchSendCommand = (mode: 'failChildEvaluate' | 'reloadBeforeCapture') =>
+const patchSendCommand = (
+  mode:
+    | 'failChildEvaluate'
+    | 'reloadBeforeCapture'
+    | 'slowCapture'
+    | 'detachAfterMask',
+) =>
   browser.sw.evaluate((mode) => {
     const dbg = chrome.debugger as unknown as {
       sendCommand: (...args: unknown[]) => Promise<unknown>;
@@ -495,9 +524,110 @@ const patchSendCommand = (mode: 'failChildEvaluate' | 'reloadBeforeCapture') =>
         await original.call(dbg, { tabId: target.tabId }, 'Page.reload', {});
         await new Promise((r) => setTimeout(r, 1_000));
       }
+      if (
+        mode === 'slowCapture' &&
+        armed &&
+        method === 'Page.captureScreenshot'
+      ) {
+        armed = false;
+        await new Promise((r) => setTimeout(r, 1_500));
+      }
+      const fn = String(
+        (params as { functionDeclaration?: string } | undefined)
+          ?.functionDeclaration ?? '',
+      );
+      if (mode === 'detachAfterMask' && armed && fn.includes('this.mask(')) {
+        armed = false;
+        // The page's self-restore, shortened from 25s for the test.
+        const p = params as unknown as {
+          arguments: Array<{ value?: unknown }>;
+        };
+        p.arguments[1] = { value: 1_500 };
+        const out = await original.apply(dbg, args);
+        await chrome.debugger.detach({ tabId: target.tabId });
+        return out;
+      }
       return original.apply(dbg, args);
     };
   }, mode);
+
+/** Mask leftovers in every frame: marker attributes, mask styles, sheets. */
+const leftovers = async () => {
+  let n = 0;
+  for (const frame of page.frames()) {
+    n += await frame.evaluate(() => {
+      let found = document.adoptedStyleSheets.length;
+      for (const el of document.querySelectorAll('*')) {
+        if (
+          el.getAttributeNames().some((a) => a.startsWith('data-labs-mask'))
+        ) {
+          found += 1;
+        }
+        if ((el.getAttribute('style') ?? '').includes('text-fill-color')) {
+          found += 1;
+        }
+      }
+      return found;
+    });
+  }
+  return n;
+};
+
+/** Reloads the fixture (after a test that changed its DOM). */
+async function reloadFixture() {
+  await page.goto(sensitiveUrl);
+  await page
+    .frameLocator('#xo')
+    .locator('#cc')
+    .waitFor({ state: 'attached', timeout: 10_000 });
+}
+
+/** A locator's box inset by `inset` pixels on every side. */
+async function insetBox(
+  locator: { boundingBox(): Promise<Rect | null> },
+  inset = 3,
+): Promise<Rect> {
+  const box = await locator.boundingBox();
+  if (!box) throw new Error('no box');
+  return {
+    x: Math.ceil(box.x + inset),
+    y: Math.ceil(box.y + inset),
+    width: Math.floor(box.width - 2 * inset),
+    height: Math.floor(box.height - 2 * inset),
+  };
+}
+
+/**
+ * Masked and unmasked captures of the same moment, each region summarized:
+ * `hidden` when the control shows something and the masked capture shows
+ * only background.
+ */
+async function hiddenIn(
+  agent: Agent,
+  session: string,
+  rects: Record<string, Rect>,
+) {
+  const names = Object.keys(rects);
+  const control = await rawCapture();
+  const shot = await agent.call('Page.captureScreenshot', {}, session);
+  if (shot.error) return { error: shot.error.message };
+  const u = await regions(
+    control,
+    names.map((n) => rects[n]),
+  );
+  const m = await regions(
+    shot.result?.data as string,
+    names.map((n) => rects[n]),
+  );
+  return Object.fromEntries(
+    names.map((n, i) => [
+      n,
+      u[i].nonBg > 0 && m[i].nonBg === 0
+        ? 'hidden'
+        : `visible (${u[i].nonBg} -> ${m[i].nonBg})`,
+    ]),
+  );
+}
 
 const unpatchSendCommand = () =>
   browser.sw.evaluate(() => {
@@ -801,20 +931,33 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
       const { cdp } = await startRun();
       const agent = await rawAgent(cdp);
       const session = await agent.attach();
+      await agent.call('Runtime.enable', {}, session);
       await agent.childSession(session);
       const before = await styleAttributes();
       // Pre-existing inline styles (with and without !important) and none.
       expect(before.get('main#styled')).toBe(STYLED);
       expect(before.get('main#ssn')).toBeNull();
 
+      const started = Date.now();
       const shot = await agent.call(
         'Page.captureScreenshot',
         { format: 'png' },
         session,
       );
+      // Well inside the relay's 30s command timeout.
+      expect(Date.now() - started).toBeLessThan(10_000);
       expect(shot.error).toBeUndefined();
       expect(typeof shot.result?.data).toBe('string');
       expect(await styleAttributes()).toEqual(before);
+      expect(await leftovers()).toBe(0);
+      // The mask's isolated worlds are never announced to the agent.
+      expect(
+        agent.events.some(
+          (m) =>
+            m.method === 'Runtime.executionContextCreated' &&
+            JSON.stringify(m.params).includes('__labs_screenshot_mask__'),
+        ),
+      ).toBe(false);
       await agent.close();
     } finally {
       await remove();
@@ -859,10 +1002,10 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
           return [
             name,
             sensitive
-              ? // Visible text without the mask, none with it.
-                u.ink > 0 && m.ink === 0
+              ? // Something visible without the mask, only background with it.
+                u.nonBg > 0 && m.nonBg === 0
                 ? 'hidden'
-                : `not hidden (ink ${u.ink} -> ${m.ink})`
+                : `not hidden (${u.nonBg} -> ${m.nonBg})`
               : u.hash === m.hash
                 ? 'identical'
                 : 'changed',
@@ -896,6 +1039,7 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
       expect(shot.error?.message).toBe(REFUSED);
       // The tab session was masked first; it is back as it was.
       expect(await styleAttributes()).toEqual(before);
+      expect(await leftovers()).toBe(0);
     } finally {
       await unpatchSendCommand();
     }
@@ -904,31 +1048,10 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     await agent.close();
   });
 
-  it('a same-origin srcdoc iframe field is masked, and a same-site cross-origin iframe no session covers refuses the screenshot', async () => {
+  it('a same-site cross-origin iframe is masked through the frame tree; an out-of-process iframe with no child session refuses', async () => {
     const framePort = new URL(fixtures.frameOrigin).port;
-    const { cdp } = await startRun();
-    const agent = await rawAgent(cdp);
-    const session = await agent.attach();
-    await agent.childSession(session);
-
-    const remove = await addScreenshotFields();
-    try {
-      await blurAll();
-      const rects = await fieldRects();
-      const shot = await agent.call('Page.captureScreenshot', {}, session);
-      expect(shot.error).toBeUndefined();
-      const [pin, pet] = await regions(shot.result?.data as string, [
-        rects['srcdoc#sp'],
-        rects['srcdoc#sq'],
-      ]);
-      expect(pin.ink).toBe(0);
-      expect(pet.ink).toBeGreaterThan(0);
-    } finally {
-      await remove();
-    }
-
-    // Same site (localhost), other port: cross-origin, so the page cannot
-    // look inside it, but in the tab's process, so it gets no child session.
+    // Same site (localhost), other port: cross-origin, so page script could
+    // not look inside it, but in the tab's process and frame tree.
     await page.evaluate((src) => {
       const frame = document.createElement('iframe');
       frame.id = 'samesite';
@@ -936,29 +1059,310 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
       document.body.append(frame);
     }, `https://localhost:${framePort}/oopif-sensitive.html`);
     try {
-      await page
-        .frameLocator('#samesite')
-        .locator('#cc')
-        .waitFor({ state: 'attached', timeout: 10_000 });
-      await new Promise((r) => setTimeout(r, 300));
+      const inner = page.frameLocator('#samesite').locator('#cc');
+      await inner.waitFor({ state: 'attached', timeout: 10_000 });
+      const { cdp } = await startRun();
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.childSession(session);
+      await blurAll();
       expect(
-        agent.events.some(
-          (m) =>
-            m.method === 'Target.attachedToTarget' &&
-            String(
-              (m.params?.targetInfo as { url?: string })?.url ?? '',
-            ).includes(`localhost:${framePort}`),
-        ),
-      ).toBe(false);
-      const before = await styleAttributes();
-      const shot = await agent.call('Page.captureScreenshot', {}, session);
-      expect(shot.error?.message).toBe(REFUSED);
-      expect(await styleAttributes()).toEqual(before);
+        await hiddenIn(agent, session, { samesite: await insetBox(inner) }),
+      ).toEqual({ samesite: 'hidden' });
+      await agent.close();
     } finally {
       await page.evaluate(() => document.getElementById('samesite')?.remove());
     }
+
+    // No Target.setAutoAttach: the cross-site #xo has no child session.
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    const before = await styleAttributes();
+    const shot = await agent.call('Page.captureScreenshot', {}, session);
+    expect(shot.error?.message).toBe(REFUSED);
+    expect(await styleAttributes()).toEqual(before);
+    expect(await leftovers()).toBe(0);
+    await agent.close();
+  });
+
+  it('an <object> and an <embed> holding an SSN field are masked (P2)', async () => {
+    const framePort = new URL(fixtures.frameOrigin).port;
+    const src = `https://localhost:${framePort}/oopif-sensitive.html`;
+    await page.evaluate((url) => {
+      const o = document.createElement('object');
+      o.id = 'ob';
+      o.data = url;
+      o.width = '300';
+      o.height = '60';
+      const e = document.createElement('embed');
+      e.id = 'em';
+      e.src = url;
+      e.width = '300';
+      e.height = '60';
+      document.body.append(o, e);
+    }, src);
+    try {
+      await until(
+        () =>
+          page.frames().filter((f) => f.url() === src).length === 2 &&
+          Promise.all(
+            page
+              .frames()
+              .filter((f) => f.url() === src)
+              .map((f) => f.locator('#cc').count()),
+          ).then((c) => c.every((n) => n === 1)),
+      );
+      const frames = page.frames().filter((f) => f.url() === src);
+      const { cdp } = await startRun();
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.childSession(session);
+      await blurAll();
+      expect(
+        await hiddenIn(agent, session, {
+          first: await insetBox(frames[0].locator('#cc')),
+          second: await insetBox(frames[1].locator('#cc')),
+        }),
+      ).toEqual({ first: 'hidden', second: 'hidden' });
+      await agent.close();
+    } finally {
+      await page.evaluate(() => {
+        document.getElementById('ob')?.remove();
+        document.getElementById('em')?.remove();
+      });
+    }
+  });
+
+  it('a closed shadow root holding a field refuses the screenshot (P3)', async () => {
+    await page.evaluate(() => {
+      const host = document.createElement('div');
+      host.id = 'closedhost';
+      const root = host.attachShadow({ mode: 'closed' });
+      root.innerHTML = '<label>SSN <input value="900-00-1234"></label>';
+      document.body.append(host);
+    });
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.childSession(session);
+    try {
+      const shot = await agent.call('Page.captureScreenshot', {}, session);
+      expect(shot.error?.message).toBe(REFUSED);
+      expect(await leftovers()).toBe(0);
+    } finally {
+      await page.evaluate(() =>
+        document.getElementById('closedhost')?.remove(),
+      );
+    }
     const again = await agent.call('Page.captureScreenshot', {}, session);
     expect(again.error).toBeUndefined();
+    await agent.close();
+  });
+
+  it('a page that overrides querySelectorAll, Set.has, Array.push and getPropertyValue still gets masked (P7)', async () => {
+    await page.evaluate(() => {
+      Document.prototype.querySelectorAll = () => {
+        throw new Error('nope');
+      };
+      Set.prototype.has = () => false;
+      Array.prototype.push = () => 0;
+      CSSStyleDeclaration.prototype.getPropertyValue = () => 'transparent';
+    });
+    try {
+      const { cdp } = await startRun();
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.childSession(session);
+      expect(
+        await hiddenIn(agent, session, {
+          ssn: await insetBox(page.locator('#ssn')),
+        }),
+      ).toEqual({ ssn: 'hidden' });
+      await agent.close();
+    } finally {
+      await reloadFixture();
+    }
+  });
+
+  for (const [name, script] of [
+    [
+      'a React-style re-render that replaces the masked input (P1)',
+      `const old = document.getElementById('ssn');
+       const fresh = document.createElement('input');
+       fresh.id = 'ssn'; fresh.value = old.value;
+       old.replaceWith(fresh);`,
+    ],
+    [
+      'a clone swapped in for the capture and swapped back (P1b)',
+      `const old = document.getElementById('ssn');
+       const clone = old.cloneNode(true);
+       clone.removeAttribute('style');
+       for (const a of clone.getAttributeNames()) if (a.startsWith('data-labs-mask')) clone.removeAttribute(a);
+       old.replaceWith(clone);
+       setTimeout(() => clone.replaceWith(old), 1500);`,
+    ],
+    [
+      'a srcdoc iframe with an SSN field appended during the window',
+      `const f = document.createElement('iframe');
+       f.srcdoc = '<label for=s>SSN</label><input id=s value=900-00-1234>';
+       document.body.append(f);`,
+    ],
+  ] as const) {
+    it(`refuses ${name}`, async () => {
+      // Runs when the mask lands on #ssn, i.e. inside the mask window.
+      await page.evaluate((body) => {
+        const target = document.getElementById('ssn') as HTMLElement;
+        const watcher = new MutationObserver(() => {
+          watcher.disconnect();
+          new Function(body)();
+        });
+        watcher.observe(target, {
+          attributes: true,
+          attributeFilter: ['style'],
+        });
+      }, script);
+      try {
+        const { cdp } = await startRun();
+        const agent = await rawAgent(cdp);
+        const session = await agent.attach();
+        await agent.childSession(session);
+        const shot = await agent.call('Page.captureScreenshot', {}, session);
+        expect(shot.result).toBeUndefined();
+        expect(shot.error?.message).toBe(REFUSED);
+        await agent.close();
+        await until(async () => (await leftovers()) === 0, 3_000);
+      } finally {
+        await reloadFixture();
+      }
+    });
+  }
+
+  it('hides the selection, placeholders and descendants against page rules (C4)', async () => {
+    await page.evaluate(() => {
+      const style = document.createElement('style');
+      style.id = 'c4style';
+      style.textContent = `
+        ::selection { color: #000; background: #fff; }
+        #ssn::selection { -webkit-text-fill-color: #000; }
+        ::placeholder { -webkit-text-fill-color: #000; }
+        .v { -webkit-text-fill-color: #000 !important; }`;
+      document.head.append(style);
+      const box = document.createElement('div');
+      box.id = 'c4box';
+      box.innerHTML = `<span id="c4l">Card number</span>
+        <div id="c4ce" contenteditable aria-labelledby="c4l" style="display: inline-block; width: 10em"><span class="v">4111 1111</span></div>`;
+      document.body.append(box);
+    });
+    try {
+      const { cdp } = await startRun();
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.childSession(session);
+      await blurAll();
+      await page.focus('#ssn');
+      await page.keyboard.press('ControlOrMeta+a');
+      expect(
+        await hiddenIn(agent, session, {
+          selected: await insetBox(page.locator('#ssn')),
+          placeholder: await insetBox(page.locator('#spouse')),
+          child: await insetBox(page.locator('#c4ce')),
+        }),
+      ).toEqual({ selected: 'hidden', placeholder: 'hidden', child: 'hidden' });
+      await agent.close();
+    } finally {
+      await blurAll();
+      await page.evaluate(() => {
+        document.getElementById('c4style')?.remove();
+        document.getElementById('c4box')?.remove();
+      });
+    }
+  });
+
+  it('a registered known value echoed as page text is hidden (I2)', async () => {
+    const { cdp } = await startRun();
+    expect(await addKnownValue(KNOWN)).toEqual({ ok: true });
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.childSession(session);
+    const before = await styleAttributes();
+    expect(
+      await hiddenIn(agent, session, {
+        echo: await insetBox(page.locator('#echo'), 0),
+      }),
+    ).toEqual({ echo: 'hidden' });
+    expect(await styleAttributes()).toEqual(before);
+    await agent.close();
+  });
+
+  it('other commands of the tab wait while a screenshot is in flight (I3)', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.childSession(session);
+    const order: string[] = [];
+    await patchSendCommand('slowCapture');
+    try {
+      const shot = agent
+        .call('Page.captureScreenshot', {}, session)
+        .then((r) => order.push(r.error ? 'shot failed' : 'shot'));
+      await new Promise((r) => setTimeout(r, 300));
+      const other = agent
+        .call(
+          'Runtime.evaluate',
+          { expression: '1', returnByValue: true },
+          session,
+        )
+        .then(() => order.push('evaluate'));
+      await Promise.all([shot, other]);
+      expect(order).toEqual(['shot', 'evaluate']);
+    } finally {
+      await unpatchSendCommand();
+    }
+    await agent.close();
+  });
+
+  it('two runs on the same tab cannot leave the page masked (P16)', async () => {
+    const first = await startRun();
+    const a = await rawAgent(first.cdp);
+    const sa = await a.attach();
+    await a.childSession(sa);
+    await patchSendCommand('slowCapture');
+    try {
+      const pending = a.call('Page.captureScreenshot', {}, sa);
+      await new Promise((r) => setTimeout(r, 300));
+      // Replaces the first run while its screenshot's masks are on the page.
+      const second = await startRun();
+      const b = await rawAgent(second.cdp);
+      const sb = await b.attach();
+      await b.childSession(sb);
+      const shot = await b.call('Page.captureScreenshot', {}, sb);
+      expect(shot.error).toBeUndefined();
+      await Promise.race([pending, a.closed]);
+      await b.close();
+    } finally {
+      await unpatchSendCommand();
+      await a.close();
+    }
+    expect(await leftovers()).toBe(0);
+  });
+
+  it('a page whose debugger detaches after the mask restores itself (I4)', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.childSession(session);
+    await patchSendCommand('detachAfterMask');
+    try {
+      const shot = await agent.call('Page.captureScreenshot', {}, session);
+      expect(shot.result).toBeUndefined();
+      // Masked right after (the worker could not restore)...
+      expect(await leftovers()).toBeGreaterThan(0);
+    } finally {
+      await unpatchSendCommand();
+    }
+    // ...and back within the shortened self-restore.
+    await until(async () => (await leftovers()) === 0, 5_000);
     await agent.close();
   });
 
@@ -968,27 +1372,14 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     const session = await agent.attach();
     await agent.childSession(session);
     await blurAll();
-    await page.evaluate(() => {
-      const ssn = document.getElementById('ssn') as HTMLInputElement;
-      ssn.focus();
-      ssn.select();
-    });
+    await page.focus('#ssn');
+    await page.keyboard.press('ControlOrMeta+a');
     try {
-      const box = await page.locator('#ssn').boundingBox();
-      if (!box) throw new Error('no box for #ssn');
-      const rect = {
-        x: Math.ceil(box.x + 3),
-        y: Math.ceil(box.y + 3),
-        width: Math.floor(box.width - 6),
-        height: Math.floor(box.height - 6),
-      };
-      const control = await rawCapture();
-      const shot = await agent.call('Page.captureScreenshot', {}, session);
-      expect(shot.error).toBeUndefined();
-      const [u] = await regions(control, [rect]);
-      const [m] = await regions(shot.result?.data as string, [rect]);
-      expect(u.dark).toBeGreaterThan(0);
-      expect(m.dark).toBe(0);
+      expect(
+        await hiddenIn(agent, session, {
+          ssn: await insetBox(page.locator('#ssn')),
+        }),
+      ).toEqual({ ssn: 'hidden' });
     } finally {
       await blurAll();
     }
@@ -1002,12 +1393,13 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     const child = await agent.childSession(session);
     const before = await styleAttributes();
     const shot = await agent.call('Page.captureScreenshot', {}, child);
-    // Chromium may not capture from an iframe target; either way the bridge
-    // masked and restored every session around the attempt.
+    // Chromium does not capture from an iframe target; either way the
+    // bridge masked and restored every session around the attempt.
     expect(shot.error === undefined || shot.error.message !== REFUSED).toBe(
       true,
     );
     expect(await styleAttributes()).toEqual(before);
+    expect(await leftovers()).toBe(0);
     await agent.close();
   });
 
@@ -1032,17 +1424,7 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
       .frameLocator('#xo')
       .locator('#cc')
       .waitFor({ state: 'attached', timeout: 10_000 });
-    const masks = await Promise.all(
-      page
-        .frames()
-        .map((f) =>
-          f.evaluate(
-            () =>
-              document.querySelectorAll('[style*="text-fill-color"]').length,
-          ),
-        ),
-    );
-    expect(masks.every((n) => n === 0)).toBe(true);
+    expect(await leftovers()).toBe(0);
     await agent.close();
   });
 
@@ -1056,6 +1438,7 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
       expect(shot.success).toBe(true);
       expect(statSync(file).size).toBeGreaterThan(1000);
       expect(await styleAttributes()).toEqual(before);
+      expect(await leftovers()).toBe(0);
     } finally {
       await closeAgentSessions();
       rmSync(dir, { recursive: true, force: true });
