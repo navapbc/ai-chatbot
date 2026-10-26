@@ -17,6 +17,9 @@ import {
 import { toVertexModelId } from '@/lib/ai/eve/model-map';
 import { isProductionEnvironment } from '@/lib/constants';
 
+/** Placeholder stored while a follow-up turn is in flight; never sent to Eve. */
+const CLAIM_PREFIX = 'claim:';
+
 export const maxDuration = 300; // 5 min for long web-automation turns
 
 /**
@@ -110,8 +113,17 @@ export async function POST(request: Request) {
       // Claim the stored token before talking to Eve: only one concurrent
       // turn wins the compare-and-set, so a second turn never sends Eve a
       // second message on the same (single-use) token. The claim is a random
-      // placeholder; the real token replaces it once Eve answers.
-      const claim = `claim:${generateUUID()}`;
+      // placeholder; the real token replaces it once Eve answers. A crash
+      // between the claim and that final swap leaves the chat on a claim until
+      // recovery is built (no stale-claim takeover exists yet).
+      if (existing.continuationToken.startsWith(CLAIM_PREFIX)) {
+        // Another turn holds the claim. Never hand a placeholder to Eve.
+        console.error('[eve-chat] turn in flight; stored token is a claim', {
+          chatId,
+        });
+        return new ChatSDKError('offline:chat').toResponse();
+      }
+      const claim = `${CLAIM_PREFIX}${generateUUID()}`;
       if (
         !(await store.swapToken(
           userId,
@@ -122,25 +134,46 @@ export async function POST(request: Request) {
       ) {
         return new ChatSDKError('offline:chat').toResponse();
       }
+      let nextToken: string;
       try {
-        const { continuationToken } = await continueEveSession(
+        ({ continuationToken: nextToken } = await continueEveSession(
           existing.eveSessionId,
           existing.continuationToken,
           text,
-        );
-        await store.swapToken(userId, chatId, claim, continuationToken);
+        ));
       } catch (err) {
-        // Put the stored token back so the run is unchanged and retryable. A
-        // relay run (relayOrigin set) never falls back to a fresh session: its
-        // browser lives in the extension and a new session would lose it. Web
-        // chats fail the turn the same way, as before.
-        await store.swapToken(
-          userId,
-          chatId,
-          claim,
-          existing.continuationToken,
-        );
+        // Eve never accepted the message, so put the stored token back and the
+        // run is unchanged and retryable. A failed continue never falls back to
+        // a fresh session; the turn fails as it did before.
+        try {
+          await store.swapToken(
+            userId,
+            chatId,
+            claim,
+            existing.continuationToken,
+          );
+        } catch (rollbackErr) {
+          console.error('[eve-chat] token rollback failed', {
+            chatId,
+            rollbackErr,
+          });
+        }
         throw err;
+      }
+      // Eve has consumed the old token: from here the stored one must never be
+      // restored. If this swap fails the row keeps the claim, and `advance` at
+      // session.waiting writes the real token and heals it.
+      try {
+        if (!(await store.swapToken(userId, chatId, claim, nextToken))) {
+          console.error('[eve-chat] final token swap returned false', {
+            chatId,
+          });
+        }
+      } catch (swapErr) {
+        console.error('[eve-chat] final token swap failed', {
+          chatId,
+          swapErr,
+        });
       }
       sessionId = existing.eveSessionId;
       startIndex = existing.streamIndex;

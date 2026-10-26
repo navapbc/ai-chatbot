@@ -207,4 +207,95 @@ describe('POST /api/eve-chat run continuity', () => {
     expect(row?.streamIndex).toBe(50);
     expect(row?.continuationToken).toBe('tok-new');
   });
+
+  describe('claim handling', () => {
+    const seed = () =>
+      store.create(USER, CHAT, {
+        eveSessionId: 'sess-1',
+        continuationToken: 'tok-0',
+      });
+
+    it('streams and does not roll back when the final swap throws', async () => {
+      await seed();
+      eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+      const real = store.swapToken.bind(store);
+      let calls = 0;
+      store.swapToken = vi.fn(async (...args) => {
+        if (++calls === 2) throw new Error('db blip');
+        return real(...args);
+      });
+      streamEvents(waiting('tok-2'));
+
+      const res = await turn();
+      expect(res.status).toBe(200);
+      await drain(res);
+
+      // Only the claim and the failed final swap ran: no rollback to tok-0.
+      expect(calls).toBe(2);
+      const row = await store.get(USER, CHAT);
+      expect(row?.continuationToken).toBe('tok-2');
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('final token swap'),
+        expect.objectContaining({ chatId: CHAT }),
+      );
+    });
+
+    it('logs and streams when the final swap returns false', async () => {
+      await seed();
+      eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+      const real = store.swapToken.bind(store);
+      let calls = 0;
+      store.swapToken = vi.fn(async (...args) =>
+        ++calls === 2 ? false : real(...args),
+      );
+      streamEvents(waiting('tok-2'));
+
+      const res = await turn();
+      expect(res.status).toBe(200);
+      await drain(res);
+
+      expect(calls).toBe(2);
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('final token swap'),
+        expect.objectContaining({ chatId: CHAT }),
+      );
+      expect((await store.get(USER, CHAT))?.continuationToken).toBe('tok-2');
+    });
+
+    it('treats a stored claim as a turn in flight and never sends it', async () => {
+      await seed();
+      await store.swapToken(USER, CHAT, 'tok-0', 'claim:abc');
+
+      const res = await turn();
+
+      expect(res.status).toBe(503);
+      expect(eve.continueEveSession).not.toHaveBeenCalled();
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('turn in flight'),
+        expect.objectContaining({ chatId: CHAT }),
+      );
+      expect((await store.get(USER, CHAT))?.continuationToken).toBe(
+        'claim:abc',
+      );
+    });
+
+    it('logs a failing rollback distinctly and still fails the turn', async () => {
+      await seed();
+      eve.continueEveSession.mockRejectedValue(new Error('eve down'));
+      const real = store.swapToken.bind(store);
+      let calls = 0;
+      store.swapToken = vi.fn(async (...args) => {
+        if (++calls === 2) throw new Error('db blip');
+        return real(...args);
+      });
+
+      const res = await turn();
+
+      expect(res.status).toBe(503);
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('rollback'),
+        expect.objectContaining({ chatId: CHAT }),
+      );
+    });
+  });
 });
