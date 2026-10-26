@@ -392,7 +392,6 @@ describe('ZIP+4, phones and dates stay out of the prose guard', () => {
     '5551234567',
     '2026-10-26',
     '2026/10/26 10:30',
-    '1234 5678 9012 3456',
   ])('does not refuse %j', (text) => {
     expect(refuses(text)).toBe(false);
   });
@@ -422,4 +421,69 @@ describe('ZIP+4, phones and dates stay out of the prose guard', () => {
       expect(refuses(opening(p))).toBe(false);
     },
   );
+});
+
+describe('card windows and decoded blocks', () => {
+  const refuses = (text: string) =>
+    mustRefuseRelayText(stripSensitiveText(text));
+  const CARD = '4111111111111111';
+
+  it.each([
+    ['card + phone adjacent', `${CARD} 555 123 4567`],
+    ['phone + card adjacent', `555 123 4567 ${CARD}`],
+    ['card + ZIP+4 adjacent', `${CARD} 94110-1234`],
+    ['card embedded in a 25-digit run', `12345${CARD}12345`.slice(0, 25)],
+    ['card after a 3-char separator', `99 ... ${CARD}`],
+    ['card in a run longer than 19', `7${CARD}123`],
+    [
+      'escaped digits and an SSN value in an unparsed block',
+      '{"note": "\\u0039\\u0030\\u0030-00-1234", oops}',
+    ],
+    [
+      'null then a value inside an unparsed block',
+      '{"ssn": null 900-00-1234, oops}',
+    ],
+    ['null then an id inside an unparsed block', '{"ssn": null x1y2z3q, oops}'],
+    [
+      'decoded value in a parsed block',
+      `{"a": "ssn \\u0039\\u0030\\u0030\\u002d00\\u002d1234"}`,
+    ],
+  ])('refuses %s', (_n, text) => {
+    expect(refuses(text)).toBe(true);
+  });
+
+  it.each([
+    '(555) 123-4567 and 555-987-6543',
+    'CA 94110-1234, dated 2026-10-26',
+    '{"a": 1, oops, "zip": "94110-1234"}',
+  ])('does not refuse %j', (text) => {
+    expect(refuses(text)).toBe(false);
+  });
+
+  it.each(PARTICIPANTS.map((p) => [p.record_id, p] as const))(
+    'never refuses the normal opening message for %s',
+    (_id, p) => {
+      expect(refuses(opening(p))).toBe(false);
+    },
+  );
+
+  it('stays fast on 200 KB of card-length digit runs', () => {
+    for (const text of [
+      '1'.repeat(200_000),
+      '4111 1111 1111 1111 '.repeat(10_000),
+    ]) {
+      const t = performance.now();
+      expect(refuses(text)).toBe(true);
+      expect(performance.now() - t).toBeLessThan(1500);
+    }
+  });
+
+  it('stays fast on 200 KB of many small strings in a parsed block', () => {
+    const text = JSON.stringify({
+      a: Array.from({ length: 20_000 }, (_, i) => `v${i}`),
+    });
+    const t = performance.now();
+    refuses(text);
+    expect(performance.now() - t).toBeLessThan(2000);
+  });
 });

@@ -91,7 +91,11 @@ const ZERO_WIDTH = /\u200b|\u200c|\u200d|\u2060|\ufeff|\u00ad/g;
 // when a sensitive label sits within the token window.
 const SSN_GROUPED =
   /(?<!\d)\d{3}[^\p{L}\p{N}]{1,3}\d{2}[^\p{L}\p{N}]{1,3}\d{4}(?!\d)/u;
-const CARD_RUN = /(?<!\d)\d(?:[^\p{L}\p{N}]{0,3}\d){12,18}(?!\d)/gu;
+// A maximal run of digits joined by up to 3 separator characters each.
+const DIGIT_RUN = /\d(?:[^\p{L}\p{N}]{0,3}\d)*/gu;
+// Card-length windows tested per run, and per message; over either => refuse.
+const MAX_WINDOWS_PER_RUN = 256;
+const MAX_WINDOWS_PER_TEXT = 20_000;
 
 // Every Unicode decimal digit (Arabic-Indic, full-width, mathematical...) to
 // ASCII. Decimal digits sit in contiguous runs starting at a zero, so the
@@ -127,13 +131,26 @@ const luhnValid = (digits: string): boolean => {
   return sum % 10 === 0;
 };
 
-/** An SSN-grouped (3-2-4) token or a Luhn-valid 13-19 digit number, anywhere. */
+/**
+ * An SSN-grouped (3-2-4) token, or a Luhn-valid 13-19 digit number anywhere.
+ * Every 13-19 digit window of a digit run is tested, so a card next to a
+ * phone, a ZIP or a longer run is still found. A run with more windows than
+ * the cap is itself refused.
+ */
 const hasValueShape = (text: string): boolean => {
   if (SSN_GROUPED.test(text)) return true;
-  for (const m of text.matchAll(CARD_RUN)) {
+  let total = 0;
+  for (const m of text.matchAll(DIGIT_RUN)) {
     const digits = m[0].replace(/\D/g, '');
-    if (digits.length >= 13 && digits.length <= 19 && luhnValid(digits)) {
-      return true;
+    if (digits.length < 13) continue;
+    let perRun = 0;
+    for (let len = 13; len <= 19; len++) {
+      for (let at = 0; at + len <= digits.length; at++) {
+        if (++perRun > MAX_WINDOWS_PER_RUN || ++total > MAX_WINDOWS_PER_TEXT) {
+          return true;
+        }
+        if (luhnValid(digits.slice(at, at + len))) return true;
+      }
     }
   }
   return false;
@@ -253,7 +270,10 @@ const blockHasSensitiveKey = (
         .join(' ');
       if (!classifier.sensitive(label)) continue;
       const value = block.slice(at + 1).replace(/^\s+/, '');
-      if (emptyLength(value) === 0) return true;
+      const skip = emptyLength(value);
+      if (skip === 0) return true;
+      const next = value.slice(skip).split(' ').filter(Boolean);
+      if (hasValueLike(next.slice(0, TOKEN_WINDOW))) return true;
     }
   }
   return false;
@@ -274,7 +294,8 @@ export function hasUnparsedSensitiveBlock(raw: string): boolean {
     // An escape that does not decode is hiding something: fail closed.
     return (
       decoded === null ||
-      blockHasSensitiveKey(normalizeText(decoded), classifier)
+      blockHasSensitiveKey(normalizeText(decoded), classifier) ||
+      hasSensitiveValueInProse(decoded)
     );
   });
 }
@@ -315,12 +336,12 @@ const parsedBlocksHaveValueShape = (raw: string): boolean => {
   for (let n = 0; todo.length > 0 && n < MAX_VALUE_NODES; n++) {
     const v = todo.pop();
     if (typeof v === 'string') {
-      if (hasValueShape(normalizeText(v))) return true;
+      if (hasSensitiveValueInProse(v)) return true;
     } else if (typeof v === 'number') {
-      if (hasValueShape(normalizeText(String(v)))) return true;
+      if (hasSensitiveValueInProse(String(v))) return true;
     } else if (v && typeof v === 'object') {
       for (const [k, c] of Object.entries(v)) {
-        if (hasValueShape(normalizeText(k))) return true;
+        if (hasSensitiveValueInProse(k)) return true;
         todo.push(c);
       }
     }
