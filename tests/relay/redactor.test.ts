@@ -1504,7 +1504,7 @@ describe('review regressions, round 5: value shapes (nothing registered)', () =>
     expect(event.request.url).toBe(
       `https://b.test/apply?x=${MASK}&sort=name#pin=${MASK}&tab=2`,
     );
-    expect(event.request.postData).toBe(`ssn=${MASK}&first=Ada`);
+    expect(event.request.postData).toBe(MASK);
     expect(event.request.headers.Referer).toBe(
       `https://b.test/form?ssn=${MASK}`,
     );
@@ -1746,12 +1746,12 @@ describe('review regressions, round 6: shape guard gaps (nothing registered)', (
           },
         }) as { request: { postData: string } }
       ).request.postData;
-    expect(body('a=1&&ssn=900-00-1234')).toBe(`a=1&&ssn=${MASK}`);
-    expect(body('ssn=900-00-1234&flag')).toBe(`ssn=${MASK}&flag`);
-    expect(body('x=1&v=900-00-1234&')).toBe(`x=1&v=${MASK}&`);
-    expect(body('v=900%2D00%2D1234')).toBe(`v=${MASK}`);
-    expect(body('v=900+00+1234')).toBe(`v=${MASK}`);
-    expect(body('a=1;v=900001234')).toBe(`a=1;v=${MASK}`);
+    expect(body('a=1&&ssn=900-00-1234')).toBe(MASK);
+    expect(body('ssn=900-00-1234&flag')).toBe(MASK);
+    expect(body('x=1&v=900-00-1234&')).toBe(MASK);
+    expect(body('v=900%2D00%2D1234')).toBe(MASK);
+    expect(body('v=900+00+1234')).toBe(MASK);
+    expect(body('a=1;v=900001234')).toBe(MASK);
     noLeak(body('{"ssn":"900-00-1234"}'));
     noLeak(
       body(
@@ -1944,10 +1944,8 @@ describe('review regressions, round 7: request body handling by content type', (
   };
   const form = { 'Content-Type': 'application/x-www-form-urlencoded' };
 
-  it('a body mentioning content-disposition is still masked by parameter name', () => {
-    expect(body('x=content-disposition&password=hunter2', form)).toBe(
-      `x=content-disposition&password=${MASK}`,
-    );
+  it('a body mentioning content-disposition is still masked', () => {
+    expect(body('x=content-disposition&password=hunter2', form)).toBe(MASK);
     // No content type: ambiguous, masked whole.
     expect(body('x=content-disposition&password=hunter2')).toBe(MASK);
   });
@@ -1962,27 +1960,23 @@ describe('review regressions, round 7: request body handling by content type', (
         body('password=hunter2&a=1', {
           [key]: 'Application/X-WWW-Form-Urlencoded; charset=UTF-8',
         }),
-      ).toBe(`password=${MASK}&a=1`);
+      ).toBe(MASK);
     }
-    expect(body('pin=1234', { 'content-type': 'text/plain' })).toBe(
-      `pin=${MASK}`,
-    );
+    expect(body('pin=1234', { 'content-type': 'text/plain' })).toBe(MASK);
   });
 
-  it('masks JSON leaves by key name and by shape', () => {
-    const out = body(
-      '{"password":"hunter2","user":{"pin":1234,"note":"900-00-1234"},"ok":"yes"}',
-      { 'Content-Type': 'application/json' },
-    );
-    expect(JSON.parse(out)).toEqual({
-      password: MASK,
-      user: { pin: MASK, note: MASK },
-      ok: 'yes',
-    });
+  it('masks a JSON body naming or shaping a sensitive value whole', () => {
+    expect(
+      body(
+        '{"password":"hunter2","user":{"pin":1234,"note":"900-00-1234"},"ok":"yes"}',
+        { 'Content-Type': 'application/json' },
+      ),
+    ).toBe(MASK);
+    expect(body('{"note":"900-00-1234"}')).toBe(MASK);
     // No content type, but it parses as JSON.
-    expect(JSON.parse(body('{"password":"hunter2"}'))).toEqual({
-      password: MASK,
-    });
+    expect(body('{"password":"hunter2"}')).toBe(MASK);
+    // A JSON-escaped key.
+    expect(body('{"\\u0070assword":"hunter2"}')).toBe(MASK);
     // Declared JSON that does not parse: ambiguous, masked whole.
     expect(
       body('{"password":"hunter2"', { 'Content-Type': 'application/json' }),
@@ -1992,7 +1986,7 @@ describe('review regressions, round 7: request body handling by content type', (
     expect(body(plain, { 'Content-Type': 'application/json' })).toBe(plain);
   });
 
-  it('masks multipart parts by Content-Disposition name and by shape', () => {
+  it('masks a multipart body naming or shaping a sensitive value whole', () => {
     const multipart = [
       '--XyZ',
       'Content-Disposition: form-data; name="password"',
@@ -2012,10 +2006,7 @@ describe('review regressions, round 7: request body handling by content type', (
     const out = body(multipart, {
       'Content-Type': 'multipart/form-data; boundary=XyZ',
     });
-    expect(out).not.toContain('hunter2');
-    expect(out).not.toContain('900-00-1234');
-    expect(out).toContain('Ada');
-    expect(out).toContain('name="password"');
+    expect(out).toBe(MASK);
     // Without a boundary in the content type: ambiguous, masked whole.
     expect(body(multipart, { 'Content-Type': 'multipart/form-data' })).toBe(
       MASK,
@@ -2046,6 +2037,86 @@ describe('review regressions, round 7: request body handling by content type', (
       'first=Ada&last=Lovelace&page=2',
     );
     expect(body('first=Ada&last=Lovelace')).toBe('first=Ada&last=Lovelace');
+  });
+});
+
+describe('review regressions, round 8: request bodies masked whole', () => {
+  const body = (postData: string, type?: string) => {
+    const r = createRedactor();
+    return (
+      r.redactEvent('Network.requestWillBeSent', {
+        requestId: '1.1',
+        request: {
+          url: 'https://b.test/',
+          method: 'POST',
+          postData,
+          ...(type ? { headers: { 'Content-Type': type } } : {}),
+        },
+      }) as { request: { postData: string } }
+    ).request.postData;
+  };
+  const multipart = 'multipart/form-data; boundary=XyZ';
+
+  it('multipart: preamble, epilogue, no-delimiter segments and unquoted names', () => {
+    expect(
+      body(
+        'password: hunter2\r\n--XyZ\r\nContent-Disposition: form-data; name="a"\r\n\r\n1\r\n--XyZ--',
+        multipart,
+      ),
+    ).toBe(MASK);
+    expect(
+      body(
+        '--XyZ\r\nContent-Disposition: form-data; name="a"\r\n\r\n1\r\n--XyZ--\r\npin 4321',
+        multipart,
+      ),
+    ).toBe(MASK);
+    expect(body('no delimiter here, pin 4321', multipart)).toBe(MASK);
+    expect(
+      body(
+        '--XyZ\r\nContent-Disposition: form-data; name=password\r\n\r\nhunter2\r\n--XyZ--',
+        multipart,
+      ),
+    ).toBe(MASK);
+  });
+
+  it('text/plain: a JSON body is masked', () => {
+    expect(body('{"password":"hunter2"}', 'text/plain')).toBe(MASK);
+    expect(body('{"secret":"hunter2","ssn_last4":"6789"}', 'text/plain')).toBe(
+      MASK,
+    );
+  });
+
+  it('XML: attribute names and values are checked, not only tags', () => {
+    const xml = 'application/xml';
+    expect(body('<field name="password" value="hunter2"/>', xml)).toBe(MASK);
+    expect(body('<f key="routing_number">021000021</f>', xml)).toBe(MASK);
+    expect(body('<input id=pin value=4321 />', xml)).toBe(MASK);
+    expect(body('<user password="hunter2"/>', xml)).toBe(MASK);
+  });
+
+  it('encoded names are checked', () => {
+    expect(
+      body('p%61ssword=hunter2', 'application/x-www-form-urlencoded'),
+    ).toBe(MASK);
+    expect(body('&lt;password&gt;hunter2&lt;/password&gt;', 'text/html')).toBe(
+      MASK,
+    );
+  });
+
+  it('ordinary bodies of every type are returned unchanged', () => {
+    for (const [postData, type] of [
+      ['first=Ada&last=Lovelace&page=2', 'application/x-www-form-urlencoded'],
+      ['{ "a": 1, "b": "two" }', 'application/json'],
+      ['<user first="Ada"><last>Lovelace</last></user>', 'application/xml'],
+      [
+        '--XyZ\r\nContent-Disposition: form-data; name="first"\r\n\r\nAda\r\n--XyZ--',
+        multipart,
+      ],
+      ['hello world', 'text/plain'],
+      ['hello world', undefined],
+    ] as const) {
+      expect(body(postData, type), postData).toBe(postData);
+    }
   });
 });
 
