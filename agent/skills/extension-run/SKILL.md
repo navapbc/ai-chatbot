@@ -40,4 +40,5 @@ Switch into an iframe with `frame @<ref>`, using the ref from the snapshot. Neve
 
 - Do not use `gap_analysis`, `form_summary`, or `check_submit_gate`. They are for web chats.
 - Do not delegate to the `form_review` subagent. Its summary tool refuses on extension runs.
+- Do not hand browser work to the built-in `agent` tool or any other child session. A child runs in its own session, and its `browser` calls are refused on extension runs.
 - Never click Submit, Apply, Send, or any button that finalizes the application. Stop at the final review page and tell the caseworker to submit on the site themselves.

@@ -176,11 +176,15 @@ export async function POST(request: Request) {
       `[eve-chat] turn userId=${userId} chatId=${chatId} decision=${existing ? 'CONTINUE' : 'CREATE'} existingSession=${existing?.eveSessionId ?? 'none'} resumeFrom=${existing?.streamIndex ?? 0} ${typeof input === 'string' ? `msgChars=${text.length}` : `answers=${input.inputResponses.length}`}`,
     );
     if (existing) {
-      // Claim the stored token before talking to Eve: only one concurrent
-      // turn wins the compare-and-set, so a second turn never sends Eve a
-      // message while one is in flight (Eve 0.27 keeps one token per session,
-      // so the token alone would not stop it). The claim is a random
-      // placeholder; the real token replaces it once Eve answers. A crash
+      // Claim the stored token before talking to Eve: of turns that arrive
+      // together, only one wins the compare-and-set and reaches Eve. The
+      // claim is released at the final swap, right after continue returns,
+      // not at session.waiting: a follow-up sent while Eve is still running
+      // the turn can reach Eve, which folds it into the next turn, and that
+      // request's read replays from the old cursor (Eve 0.27 keeps one token
+      // per session, so the token alone does not stop it). Holding the claim
+      // until session.waiting is an open decision (todo). The claim is a
+      // random placeholder; the real token replaces it. A crash
       // between the claim and that final swap leaves the chat on a claim until
       // recovery is built (no stale-claim takeover exists yet).
       if (existing.continuationToken.startsWith(CLAIM_PREFIX)) {

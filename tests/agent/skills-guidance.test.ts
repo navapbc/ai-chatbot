@@ -37,6 +37,7 @@ describe('extension-run skill', () => {
     'form_review',
     'Never put a field value',
     'with no options',
+    'built-in `agent` tool',
   ])('contains %s', (needle) => {
     expect(skill).toContain(needle);
   });

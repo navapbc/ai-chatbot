@@ -50,8 +50,11 @@ Follow-ups:
 - [ ] An answer turn whose pending clear fails and whose stream dies before `session.waiting` leaves the answered requests pending, so the next answer is validated against stale questions (same class as the replay item above).
 - [ ] A read resuming from a stale cursor stops at the earlier turn's `session.waiting`, so that turn's own output is not streamed (the token is now safe: `advance` never stores a stream token).
 - [ ] `EveRun` rows are never deleted when chats are removed: `store.remove` has no caller.
+- [ ] Decide whether to hold the turn claim until `session.waiting` instead of releasing it at the final swap. Today a follow-up sent while Eve is still running a turn reaches Eve (which folds it into the next turn) and its read replays from the old cursor; holding the claim closes that but widens the stranded-claim window (R7).
+- [ ] Dev databases may hold `EveRun` rows with an empty continuation token (stored by follow-ups before the fix); they need a one-off cleanup.
+- [ ] A relay follow-up that Eve delivers to a fresh session (the stored session's run ended) now fails the turn, but Eve has already started that fresh session without relay attributes and it runs the turn; cancel it (`POST /eve/v1/session/:id/cancel`) or decide how an ended relay run is restarted.
 - [ ] `report_progress` on web chats streams a raw `reportProgress` tool card that the web UI has no renderer for.
-- [ ] The built-in `agent` tool (Eve's root-only copy of the agent) gets the parent's tools and auth but runs in its own child session, so on a relay run its `browser` calls are now refused by the agent-token route's session binding. Disable it on extension runs, or decide how a child may share the run.
+- [ ] The built-in `agent` tool (Eve's root-only copy of the agent) gets the parent's tools and auth but runs in its own child session, so on a relay run its `browser` calls are now refused by the agent-token route's session binding. Consider disabling it on extension runs (the extension-run skill already tells the agent not to use it), or decide how a child may share the run.
 - [ ] `fetchAgentToken`: in-flight dedupe, and cache eviction when the relay rejects the token.
 - [ ] Restart recovery: reset only agents that attached before the extension went away; `ELEMENT_REF` recognizes only the `@eN` form; add a committed test against real agent-browser error wording.
 - [ ] The stale marker sentence stays in stored caseworker text and reaches Jev corroboration context (harmless noise).
