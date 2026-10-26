@@ -180,6 +180,11 @@ const REMOTE_OBJECT_TYPES = new Set([
   'bigint',
 ]);
 
+// A RemoteObject carries a string `type`; an object without one (a property
+// descriptor, say) is not one.
+const isRemoteObject = (x: Obj): boolean =>
+  typeof x.type === 'string' && REMOTE_OBJECT_TYPES.has(x.type);
+
 // Accessibility roles that hold a user-entered value.
 const INPUT_ROLES = new Set([
   'textbox',
@@ -500,11 +505,13 @@ const decodeParam = (s: string): string => {
 };
 
 // Masks the value of each `name=value` pair whose name is sensitive or
-// whose value is value-shaped; a bare value-shaped item is masked whole.
+// whose decoded value is value-shaped; a bare value-shaped item is masked
+// whole. `&` and `;` both separate parameters; empty segments are kept.
 const maskParams = (params: string): string =>
   params
-    .split('&')
-    .map((part) => {
+    .split(/([&;])/)
+    .map((part, i) => {
+      if (i % 2 === 1 || part === '') return part;
       const eq = part.indexOf('=');
       if (eq < 0) return hasSensitiveShape(decodeParam(part)) ? MASK : part;
       const name = decodeParam(part.slice(0, eq));
@@ -515,15 +522,37 @@ const maskParams = (params: string): string =>
         hasSensitiveShape(decodeParam(value));
       return sensitive ? `${part.slice(0, eq)}=${MASK}` : part;
     })
-    .join('&');
+    .join('');
 
-// Masks sensitive query and fragment parameters of one URL; scheme, host and
-// path are kept.
+// A path segment: value-shaped (after decoding) is masked; `;name=value`
+// path parameters go through maskParams.
+const maskPathSegment = (segment: string): string => {
+  if (segment === '') return segment;
+  const semi = segment.indexOf(';');
+  const head = semi < 0 ? segment : segment.slice(0, semi);
+  const masked = hasSensitiveShape(decodeParam(head)) ? MASK : head;
+  return semi < 0 ? masked : `${masked};${maskParams(segment.slice(semi + 1))}`;
+};
+
+// Masks one URL for the model's view (routing uses the raw message): any
+// userinfo, value-shaped path segments, and sensitive query, `;` and
+// fragment parameters. Scheme and host are kept.
 const maskUrl = (url: string): string => {
+  const schemeEnd = url.indexOf('://') + 3;
   const hashAt = url.indexOf('#');
   const end = hashAt < 0 ? url.length : hashAt;
   const queryAt = url.slice(0, end).indexOf('?');
-  let out = url.slice(0, queryAt < 0 ? end : queryAt);
+  const pathEnd = queryAt < 0 ? end : queryAt;
+  const rest = url.slice(schemeEnd, pathEnd);
+  const slash = rest.indexOf('/');
+  let authority = slash < 0 ? rest : rest.slice(0, slash);
+  const path = slash < 0 ? '' : rest.slice(slash);
+  const at = authority.lastIndexOf('@');
+  if (at >= 0) authority = `${MASK}@${authority.slice(at + 1)}`;
+  let out =
+    url.slice(0, schemeEnd) +
+    authority +
+    path.split('/').map(maskPathSegment).join('/');
   if (queryAt >= 0) out += `?${maskParams(url.slice(queryAt + 1, end))}`;
   if (hashAt >= 0) {
     const fragment = url.slice(hashAt + 1);
@@ -544,10 +573,13 @@ const URL_IN_TEXT = /[a-z][a-z0-9+.-]*:\/\/[^\s"'<>`]+/gi;
 const maskUrls = (s: string): string =>
   s.includes('://') ? s.replace(URL_IN_TEXT, maskUrl) : s;
 
-// A form-urlencoded request body (Network postData).
-const FORM_BODY = /^[^=&{}\s<>]+=[^&]*(?:&[^=&]+=[^&]*)*$/;
-const maskFormBody = (s: string): string =>
-  FORM_BODY.test(s) ? maskParams(s) : s;
+// A request body (Network postData). JSON, XML and multipart bodies are
+// masked whole when value-shaped; anything else is treated as form-encoded.
+const STRUCTURED_BODY = /^\s*[{[<]|content-disposition|^--\S/im;
+const maskFormBody = (s: string): string => {
+  if (STRUCTURED_BODY.test(s)) return hasSensitiveShape(s) ? MASK : s;
+  return maskParams(s);
+};
 
 // Script results whose page data gets the value-shape guard.
 const SCRIPT_RESULT_METHODS = new Set([
@@ -557,10 +589,11 @@ const SCRIPT_RESULT_METHODS = new Set([
   'Runtime.awaitPromise',
 ]);
 
-// Masks value-shaped strings, and 9+ digit integers in by-value page data,
-// in a script result copy. Handles (objectId and other protocol ids) and
-// type tags are left alone outside page data; booleans, null, small numbers
-// and decimals are never touched.
+// Masks value-shaped strings, and 9+ digit integers in by-value page data.
+// Handles (objectId and other protocol ids) and type tags are left alone
+// outside page data; booleans, null, small numbers and decimals are never
+// touched. Keys of page data that are value-shaped are renamed to MASK
+// (numbered on collision). Works on a private copy.
 const maskShapes = (x: unknown, pageData: boolean): unknown => {
   if (typeof x === 'string') return hasSensitiveShape(x) ? MASK : x;
   if (typeof x === 'number') {
@@ -571,16 +604,68 @@ const maskShapes = (x: unknown, pageData: boolean): unknown => {
     return x;
   }
   if (!isObj(x)) return x;
-  const remoteObject = REMOTE_OBJECT_TYPES.has(String(x.type));
+  const remoteObject = isRemoteObject(x);
+  const out: Obj = {};
   for (const key of Object.keys(x)) {
     const v = x[key];
-    if (
-      !pageData &&
-      (key === 'type' || key === 'subtype' || isProtocolId(key, v))
-    ) {
-      continue;
+    let name = key;
+    if (pageData && hasSensitiveShape(key)) {
+      name = MASK;
+      for (let n = 2; Object.hasOwn(out, name); n++) name = `${MASK}#${n}`;
     }
-    x[key] = maskShapes(v, pageData || (remoteObject && key === 'value'));
+    const keep =
+      !pageData &&
+      (key === 'type' || key === 'subtype' || isProtocolId(key, v));
+    setOwn(
+      out,
+      name,
+      keep ? v : maskShapes(v, pageData || (remoteObject && key === 'value')),
+    );
+  }
+  return out;
+};
+
+// Page text carried by Page and Target payloads (dialogs, frame and window
+// names, document titles): value-shaped text is masked; ids, URLs (masked
+// separately) and enums are left alone.
+const PAGE_TEXT_KEYS = new Set([
+  'message',
+  'defaultPrompt',
+  'name',
+  'windowName',
+  'title',
+  'errorText',
+]);
+const maskPageText = (x: unknown): unknown => {
+  if (Array.isArray(x)) {
+    for (let i = 0; i < x.length; i++) x[i] = maskPageText(x[i]);
+    return x;
+  }
+  if (!isObj(x)) return x;
+  for (const key of Object.keys(x)) {
+    const v = x[key];
+    if (typeof v === 'string') {
+      if (PAGE_TEXT_KEYS.has(key) && hasSensitiveShape(v)) x[key] = MASK;
+    } else if (typeof v === 'object' && v !== null) {
+      maskPageText(v);
+    }
+  }
+  return x;
+};
+
+// Which shape guard a method's result or event params get. The AX tree is
+// left to field masking and known-value scrubbing (its text is the page the
+// agent reads); Input and empty results carry nothing.
+const shapeGuard = (method: string, x: unknown): unknown => {
+  if (
+    method.startsWith('Runtime.') ||
+    method.startsWith('Network.') ||
+    method.startsWith('DOM.')
+  ) {
+    return maskShapes(x, false);
+  }
+  if (method.startsWith('Page.') || method.startsWith('Target.')) {
+    return maskPageText(x);
   }
   return x;
 };
@@ -1044,7 +1129,7 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
       const roleValue = trusted && ROLE_AX_TYPES.has(String(source.type));
       // A RemoteObject's by-value payload is page data: its keys are not
       // protocol fields, so nothing below it is exempt.
-      const remoteObject = REMOTE_OBJECT_TYPES.has(String(source.type));
+      const remoteObject = isRemoteObject(source);
       // Keys of page data and header maps are data; protocol field names in
       // trusted positions are never renamed.
       const scrubKeys = scrubbing && pattern !== null && (!trusted || pageKeys);
@@ -1242,9 +1327,7 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
         ) {
           return null;
         }
-        const out = SCRIPT_RESULT_METHODS.has(method)
-          ? maskShapes(copyOf(method, result), false)
-          : copyOf(method, result);
+        const out = shapeGuard(method, copyOf(method, result));
         if (method === 'DOM.getAttributes') {
           if (
             !isObj(out) ||
@@ -1270,7 +1353,7 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
     redactEvent(method, params) {
       try {
         if (DROPPED_EVENTS.has(method)) return null;
-        const out = copyOf(method, params);
+        const out = shapeGuard(method, copyOf(method, params));
         if (method === 'Accessibility.loadComplete') {
           if (!isObj(out) || !isObj(out.root) || !isObj(params)) return null;
           const pairs = axPairs([out.root], [params.root]);

@@ -1675,6 +1675,247 @@ describe('review regressions, round 5: value shapes (nothing registered)', () =>
   });
 });
 
+describe('review regressions, round 6: shape guard gaps (nothing registered)', () => {
+  const noLeak = (x: unknown) =>
+    expect(JSON.stringify(x)).not.toMatch(/900-00-1234|900001234|900 00 1234/);
+
+  it('renames value-shaped keys of page data, uniquely, keeping __proto__ safe', async () => {
+    const r = createRedactor();
+    const value = JSON.parse(
+      '{"900-00-1234": 1, "900 00 1234": 2, "ok": 3, "__proto__": {"x": 1}}',
+    );
+    const out = (await r.redactResult('Runtime.callFunctionOn', {
+      result: { type: 'object', value },
+    })) as { result: { value: Record<string, unknown> } };
+    expect(Object.keys(out.result.value)).toEqual([
+      MASK,
+      `${MASK}#2`,
+      'ok',
+      '__proto__',
+    ]);
+    expect(Object.getPrototypeOf(out.result.value)).toBe(Object.prototype);
+  });
+
+  it('masks value-shaped property names in Runtime.getProperties, not protocol names', async () => {
+    const r = createRedactor();
+    const out = (await r.redactResult('Runtime.getProperties', {
+      result: [
+        { name: '900001234', value: { type: 'string', value: 'a' } },
+        {
+          name: 'length',
+          value: { type: 'number', value: 3, description: '3' },
+        },
+        {
+          name: '__proto__',
+          value: { type: 'object', objectId: '-781234567890.1.2' },
+        },
+      ],
+      internalProperties: [
+        { name: '[[900-00-1234]]', value: { type: 'string', value: 'b' } },
+      ],
+    })) as {
+      result: Array<{ name: string; value: Record<string, unknown> }>;
+      internalProperties: Array<{ name: string }>;
+    };
+    expect(out.result.map((p) => p.name)).toEqual([
+      MASK,
+      'length',
+      '__proto__',
+    ]);
+    expect(out.result[2].value.objectId).toBe('-781234567890.1.2');
+    expect(out.internalProperties[0].name).toBe(MASK);
+  });
+
+  it('masks form bodies with empty, bare or trailing segments, encodings, and value-shaped JSON', () => {
+    const r = createRedactor();
+    const body = (postData: string) =>
+      (
+        r.redactEvent('Network.requestWillBeSent', {
+          requestId: '1.1',
+          request: { url: 'https://b.test/', method: 'POST', postData },
+        }) as { request: { postData: string } }
+      ).request.postData;
+    expect(body('a=1&&ssn=900-00-1234')).toBe(`a=1&&ssn=${MASK}`);
+    expect(body('ssn=900-00-1234&flag')).toBe(`ssn=${MASK}&flag`);
+    expect(body('x=1&v=900-00-1234&')).toBe(`x=1&v=${MASK}&`);
+    expect(body('v=900%2D00%2D1234')).toBe(`v=${MASK}`);
+    expect(body('v=900+00+1234')).toBe(`v=${MASK}`);
+    expect(body('a=1;v=900001234')).toBe(`a=1;v=${MASK}`);
+    noLeak(body('{"ssn":"900-00-1234"}'));
+    noLeak(
+      body(
+        '--b\r\nContent-Disposition: form-data; name="x"\r\n\r\n900-00-1234\r\n--b--',
+      ),
+    );
+    expect(body('a=1&b=two')).toBe('a=1&b=two');
+  });
+
+  it('masks URL userinfo, value-shaped path segments, ; parameters and path-like fragments', () => {
+    const r = createRedactor();
+    const url = (u: string) =>
+      (
+        r.redactEvent('Page.navigatedWithinDocument', { url: u }) as {
+          url: string;
+        }
+      ).url;
+    expect(url('https://900-00-1234@host.test/')).toBe(
+      `https://${MASK}@host.test/`,
+    );
+    expect(url('https://user:900001234@host.test/a')).toBe(
+      `https://${MASK}@host.test/a`,
+    );
+    expect(url('https://b.test/ssn/900-00-1234/edit')).toBe(
+      `https://b.test/ssn/${MASK}/edit`,
+    );
+    expect(url('https://b.test/p/900%2D00%2D1234')).toBe(
+      `https://b.test/p/${MASK}`,
+    );
+    expect(url('https://b.test/a;ssn=900-00-1234/b')).toBe(
+      `https://b.test/a;ssn=${MASK}/b`,
+    );
+    expect(url('https://b.test/q?a=1;ssn=900-00-1234')).toBe(
+      `https://b.test/q?a=1;ssn=${MASK}`,
+    );
+    expect(url('https://b.test/#ssn=900-00-1234')).toBe(
+      `https://b.test/#ssn=${MASK}`,
+    );
+    expect(url('https://b.test/#/ssn/900001234')).toBe(
+      `https://b.test/#${MASK}`,
+    );
+    expect(url('https://b.test/list/2;page=3?sort=name')).toBe(
+      'https://b.test/list/2;page=3?sort=name',
+    );
+  });
+
+  it('applies the shape guard to Runtime events', () => {
+    const r = createRedactor();
+    noLeak(
+      r.redactEvent('Runtime.consoleAPICalled', {
+        type: 'log',
+        args: [
+          { type: 'string', value: 'ssn 900-00-1234' },
+          { type: 'number', value: 900001234, description: '900001234' },
+          { type: 'object', value: { '900-00-1234': true } },
+        ],
+        executionContextId: 1,
+        timestamp: 1792786214322.5,
+        stackTrace: {
+          callFrames: [
+            {
+              functionName: 'f900001234',
+              scriptId: '12',
+              url: 'https://b.test/a.js',
+              lineNumber: 1,
+              columnNumber: 2,
+            },
+          ],
+        },
+      }),
+    );
+    noLeak(
+      r.redactEvent('Runtime.exceptionThrown', {
+        timestamp: 1,
+        exceptionDetails: {
+          exceptionId: 1,
+          text: 'Uncaught 900-00-1234',
+          lineNumber: 0,
+          columnNumber: 0,
+          exception: {
+            type: 'object',
+            subtype: 'error',
+            description: 'Error: 900001234',
+          },
+        },
+      }),
+    );
+    noLeak(
+      r.redactEvent('Runtime.inspectRequested', {
+        object: { type: 'string', value: '900-00-1234' },
+        hints: {},
+      }),
+    );
+    noLeak(
+      r.redactEvent('Runtime.bindingCalled', {
+        name: 'cb',
+        payload: '{"ssn":"900-00-1234"}',
+        executionContextId: 1,
+      }),
+    );
+  });
+
+  it('applies the shape guard to dialog, frame, target, network and DOM page text', async () => {
+    const r = createRedactor();
+    noLeak(
+      r.redactEvent('Page.javascriptDialogOpening', {
+        url: 'https://b.test/',
+        message: 'Confirm SSN 900-00-1234?',
+        type: 'prompt',
+        defaultPrompt: '900001234',
+      }),
+    );
+    noLeak(
+      r.redactEvent('Page.frameNavigated', {
+        frame: {
+          id: 'ABCDEF0123456789AB1234CDEF012345',
+          name: 'f-900001234',
+          url: 'https://b.test/',
+        },
+      }),
+    );
+    noLeak(
+      r.redactEvent('Target.targetInfoChanged', {
+        targetInfo: {
+          targetId: '0123ABCD1234EF5678901234ABCDEF12',
+          title: 'Case 900-00-1234',
+          url: 'https://b.test/',
+        },
+      }),
+    );
+    noLeak(
+      r.redactEvent('Network.responseReceived', {
+        requestId: '1.1',
+        response: {
+          url: 'https://b.test/',
+          status: 200,
+          statusText: 'OK',
+          headers: { 'X-Ssn': '900-00-1234' },
+        },
+      }),
+    );
+    noLeak(
+      r.redactEvent('Network.webSocketFrameReceived', {
+        requestId: '1.1',
+        response: { opcode: 1, mask: false, payloadData: '{"v":"900001234"}' },
+      }),
+    );
+    noLeak(
+      await r.redactResult('DOM.describeNode', {
+        node: {
+          nodeType: 1,
+          nodeName: 'DIV',
+          attributes: ['data-x', '900-00-1234'],
+        },
+      }),
+    );
+    // Ids, enums and timestamps survive.
+    const lifecycle = {
+      frameId: 'ABCDEF0123456789AB1234CDEF012345',
+      loaderId: 'ABCDEF0123456789AB1234CDEF012345',
+      name: 'load',
+      timestamp: 1234567.89,
+    };
+    expect(r.redactEvent('Page.lifecycleEvent', lifecycle)).toEqual(lifecycle);
+    const box = {
+      model: {
+        content: [412.3333435058594, 10, 712, 10, 712, 50, 412, 50],
+        width: 300,
+        height: 40,
+      },
+    };
+    expect(await r.redactResult('DOM.getBoxModel', box)).toEqual(box);
+  });
+});
+
 describe('descriptorFromAttributes', () => {
   it('maps DOM attributes to a field descriptor', () => {
     const d: FieldDescriptor = descriptorFromAttributes([
