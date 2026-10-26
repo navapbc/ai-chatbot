@@ -355,6 +355,10 @@ export async function POST(request: Request) {
               // directly: that map lives in the `eve dev` process, not this one.
               setLiveViewUrl(userId, chatId, r.liveViewUrl);
             }
+            if (r.progress && structuredInput) {
+              // Relay runs only; the adapter has already sanitized it.
+              await store.setProgress(userId, chatId, r.progress);
+            }
             if (r.inputRequests) {
               // Persisted before session.waiting is handled, so the answer
               // turn validates against them even after a restart. An answer

@@ -446,3 +446,62 @@ describe('translateEveEvent', () => {
     expect(headless.liveViewUrl).toBeUndefined();
   });
 });
+
+describe('report_progress', () => {
+  const call = (input: unknown) => ({
+    type: 'actions.requested',
+    data: {
+      actions: [
+        { kind: 'tool-call', callId: 'p1', toolName: 'report_progress', input },
+      ],
+    },
+  });
+  const good = {
+    sections: [{ name: 'Name', status: 'done', filled: 2, ssn: '123' }],
+    current: 'Address',
+  };
+
+  it('maps the tool name', () => {
+    expect(mapToolName('report_progress')).toBe('reportProgress');
+  });
+
+  it('returns sanitized progress on a relay stream', () => {
+    const { writer } = collect();
+    const r = translateEveEvent(call(good), writer, {
+      textId: null,
+      generateId: gen,
+      structuredInput: true,
+    });
+    expect(r.progress).toStrictEqual({
+      sections: [{ name: 'Name', status: 'done', filled: 2 }],
+      current: 'Address',
+    });
+  });
+
+  it('ignores invalid progress input', () => {
+    const { writer } = collect();
+    const r = translateEveEvent(call({ sections: 'nope' }), writer, {
+      textId: null,
+      generateId: gen,
+      structuredInput: true,
+    });
+    expect(r.progress).toBeUndefined();
+  });
+
+  it('leaves non-relay output unchanged and returns no progress', () => {
+    const { writer, chunks } = collect();
+    const r = translateEveEvent(call(good), writer, {
+      textId: null,
+      generateId: gen,
+    });
+    expect(r.progress).toBeUndefined();
+    expect(chunks).toStrictEqual([
+      {
+        type: 'tool-input-available',
+        toolCallId: 'p1',
+        toolName: 'reportProgress',
+        input: good,
+      },
+    ]);
+  });
+});

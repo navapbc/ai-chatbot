@@ -835,4 +835,50 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
     expect(res.status).toBe(400);
     expect(eve.continueEveSession).not.toHaveBeenCalled();
   });
+
+  describe('progress', () => {
+    const progressEvent = (input: unknown) => ({
+      type: 'actions.requested',
+      data: {
+        actions: [
+          {
+            kind: 'tool-call',
+            callId: 'p1',
+            toolName: 'report_progress',
+            input,
+          },
+        ],
+      },
+    });
+    const good = {
+      sections: [{ name: 'Name', status: 'done', filled: 2, ssn: '123' }],
+    };
+    const first = {
+      message: { role: 'user', parts: [{ type: 'text', text: 'go' }] },
+      relay: { origin: ORIGIN },
+    };
+
+    it('stores sanitized progress on a relay run', async () => {
+      const setProgress = vi.spyOn(store, 'setProgress');
+      streamEvents(progressEvent(good), waiting('tok-1'));
+      await drain(await post(first));
+      expect(setProgress).toHaveBeenCalledWith(USER, RELAY_CHAT, {
+        sections: [{ name: 'Name', status: 'done', filled: 2 }],
+      });
+    });
+
+    it('does not store invalid progress', async () => {
+      const setProgress = vi.spyOn(store, 'setProgress');
+      streamEvents(progressEvent({ sections: 'nope' }), waiting('tok-1'));
+      await drain(await post(first));
+      expect(setProgress).not.toHaveBeenCalled();
+    });
+
+    it('does not store progress for a web run', async () => {
+      const setProgress = vi.spyOn(store, 'setProgress');
+      streamEvents(progressEvent(good), waiting('tok-1'));
+      await drain(await turn('hi', 'web-chat'));
+      expect(setProgress).not.toHaveBeenCalled();
+    });
+  });
 });

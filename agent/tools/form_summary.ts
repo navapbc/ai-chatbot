@@ -1,6 +1,7 @@
 import { defineTool } from 'eve/tools';
 import { z } from 'zod';
 import { annotateSummaryFields } from '@/lib/jev/enrich';
+import { relayCredentialState } from '@/lib/relay/eve-relay-browser';
 import { currentCaseworkerMessages, currentParticipant } from '../lib/jev';
 
 // Returns validated structured data for the form-summary card. The interactive
@@ -29,6 +30,15 @@ export default defineTool({
     ),
   }),
   async execute({ fields }, ctx) {
+    // Extension runs gather missing data with ask_question; refuse before any
+    // participant or Jev work.
+    if (relayCredentialState(ctx).kind !== 'none') {
+      return {
+        success: false,
+        error:
+          'Not available in extension runs: use ask_question for missing data and report_progress for status.',
+      };
+    }
     // `jev` checks each filled value against the participant record, and
     // checks the `source` label the agent attached to it. Annotate-only: the
     // agent's fields are never rewritten. The participant comes from session

@@ -1,6 +1,7 @@
 import { defineTool } from 'eve/tools';
 import { z } from 'zod';
 import { annotateGapFields } from '@/lib/jev/enrich';
+import { relayCredentialState } from '@/lib/relay/eve-relay-browser';
 import { currentParticipant } from '../lib/jev';
 
 // Returns validated structured data for the gap-analysis card. The interactive
@@ -26,6 +27,15 @@ export default defineTool({
     ),
   }),
   async execute({ formName, missingFields }, ctx) {
+    // Extension runs gather missing data with ask_question; refuse before any
+    // participant or Jev work.
+    if (relayCredentialState(ctx).kind !== 'none') {
+      return {
+        success: false,
+        error:
+          'Not available in extension runs: use ask_question for missing data and report_progress for status.',
+      };
+    }
     // Validates and surfaces the missing-field data; card render is SP-B.
     //
     // `jev` annotates each row with whether the record already answers it.

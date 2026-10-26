@@ -8,9 +8,12 @@ import {
   parseInputRequests,
 } from '@/lib/ai/eve/input-requests';
 
+import { type RunProgress, sanitizeProgress } from '@/lib/relay/progress';
+
 export const EVE_TOOL_NAME_MAP: Record<string, string> = {
   gap_analysis: 'gapAnalysis',
   form_summary: 'formSummary',
+  report_progress: 'reportProgress',
 };
 
 export function mapToolName(eveName: string): string {
@@ -102,6 +105,7 @@ export function translateEveEvent(
   continuationToken?: string;
   liveViewUrl?: string;
   inputRequests?: PendingInputRequest[];
+  progress?: RunProgress;
 } {
   let textId = ctx.textId;
   let reasoningId = ctx.reasoningId ?? null;
@@ -109,6 +113,8 @@ export function translateEveEvent(
   // Kernel browser that `eve dev` created in its own process.
   let liveViewUrl: string | undefined;
   let inputRequests: PendingInputRequest[] | undefined;
+  // Relay runs only: sanitized status from a report_progress call.
+  let progress: RunProgress | undefined;
   switch (event?.type) {
     case 'message.appended': {
       const delta = event.data?.messageDelta ?? '';
@@ -156,6 +162,11 @@ export function translateEveEvent(
           input: a.input ?? {},
         });
         ctx.emittedToolCallIds?.add(a.callId);
+        if (ctx.structuredInput && a.toolName === 'report_progress') {
+          // Invalid input is ignored, never stored. Nothing is logged: the
+          // input is applicant-adjacent.
+          progress = sanitizeProgress(a.input) ?? progress;
+        }
       }
       break;
     }
@@ -297,5 +308,5 @@ export function translateEveEvent(
       console.warn('[eve-stream-adapter] unhandled Eve event type:', event?.type, event?.data);
       break;
   }
-  return { textId, reasoningId, done: false, liveViewUrl, inputRequests };
+  return { textId, reasoningId, done: false, liveViewUrl, inputRequests, progress };
 }
