@@ -8,6 +8,7 @@ import {
   type FrameScope,
   frameInScope,
   framesOfTree,
+  NO_FRAME_CONTENT_METHODS,
   pruneAXTree,
   pruneDescribedNode,
   pruneFrameTree,
@@ -136,6 +137,8 @@ interface Run extends RunConfig {
   redactor: Redactor;
   /** True once a known value was registered; see addKnownValue. */
   hasKnownValues: boolean;
+  /** The bridge's focus-reading isolated world in the main frame, if made. */
+  focusWorld?: number;
 }
 
 const STORAGE_KEY = 'run';
@@ -584,6 +587,7 @@ async function handleCommand(
       current.attached = false;
       dropChildren(current);
       current.frameScope = createFrameScope();
+      current.focusWorld = undefined;
       try {
         await chrome.debugger.detach({ tabId: current.tabId });
       } catch {
@@ -690,12 +694,24 @@ async function forwardCdp(
   if (!session && child && !WORKER_TYPES.has(child.type ?? '')) {
     throw new Error(FRAME_OUT_OF_SCOPE);
   }
-  // The lookups are not sent inside a screenshot's mask window either.
-  if (session && !screenshot) await untilNoScreenshot(lock);
-  const handles = session
-    ? await resolveFrames(current, session, addresses)
-    : { frameIds: [], contextIds: [] };
+  // The lookups run under the tab's shared hold, so no screenshot's mask
+  // window opens while they talk to the page.
+  let handles: { frameIds: string[]; contextIds: number[] } = {
+    frameIds: [],
+    contextIds: [],
+  };
+  if (!screenshot) {
+    await untilNoScreenshot(lock);
+    const releaseLookups = holdShared(lock);
+    try {
+      if (session) handles = await resolveFrames(current, session, addresses);
+      await checkInputTarget(current, method, params);
+    } finally {
+      releaseLookups();
+    }
+  }
   const framesInScope = () =>
+    !(screenshot && outOfScopeFramePresent(current)) &&
     (!child || childAllowed(current, child)) &&
     (!session ||
       (handles.frameIds.every((frameId) =>
@@ -729,10 +745,19 @@ async function forwardCdp(
         params as Record<string, unknown> | undefined,
       ),
     );
+  // A screenshot paints every in-process frame: it is refused while any
+  // frame out of scope is present, checked right before each capture (no
+  // await in between) and again after it, when the image is discarded.
+  const capture = async () => {
+    if (outOfScopeFramePresent(current)) throw new Error(FRAME_OUT_OF_SCOPE);
+    const shot = await sendIt();
+    if (outOfScopeFramePresent(current)) throw new Error(FRAME_OUT_OF_SCOPE);
+    return shot;
+  };
   let raw: unknown;
   if (screenshot) {
     raw = await exclusive(current, lock, (deadline) =>
-      captureWithRetries(current, sendIt, deadline),
+      captureWithRetries(current, capture, deadline),
     );
   } else {
     // Shared hold: no await between taking it and chrome.debugger receiving
@@ -768,8 +793,22 @@ async function forwardCdp(
 // --- frame scope of a session ---------------------------------------------------
 
 const FRAME_CHECK_GROUP = 'relay-frame-check';
-// Each lookup step is bounded; a lookup that fails or times out refuses.
+// Each lookup step is bounded, and one discovery pass as a whole; a lookup
+// that fails or times out refuses.
 const FRAME_STEP_MS = 3_000;
+const DISCOVERY_MS = 8_000;
+/** The bridge's isolated world for reading where keyboard focus is. */
+const FOCUS_WORLD = 'relay-focus';
+const FRAME_OWNER_TAGS = /^(IFRAME|FRAME|OBJECT|EMBED)$/;
+// Mouse actions that act on the page (a move only hovers).
+const MOUSE_ACTIONS = new Set(['mousePressed', 'mouseReleased', 'mouseWheel']);
+const KEY_INPUT_METHODS = new Set([
+  'Input.dispatchKeyEvent',
+  'Input.insertText',
+]);
+
+/** A fresh object group, so concurrent lookups never release each other's. */
+const checkGroup = () => `${FRAME_CHECK_GROUP}-${crypto.randomUUID()}`;
 
 /** A CDP session whose frames the bridge tracks: the tab or a frame child. */
 interface FrameSession {
@@ -801,7 +840,12 @@ function frameSession(
   };
 }
 
-const sessionSend = (session: FrameSession, method: string, params?: object) =>
+const sessionSend = (
+  session: FrameSession,
+  method: string,
+  params?: object,
+  deadline = Number.POSITIVE_INFINITY,
+) =>
   withTimeout(
     tracked(session.child, () =>
       chrome.debugger.sendCommand(
@@ -810,8 +854,13 @@ const sessionSend = (session: FrameSession, method: string, params?: object) =>
         params as Record<string, unknown> | undefined,
       ),
     ),
-    FRAME_STEP_MS,
+    Math.max(0, Math.min(FRAME_STEP_MS, deadline - Date.now())),
     'frame check',
+  );
+
+const releaseGroup = (session: FrameSession, objectGroup: string) =>
+  sessionSend(session, 'Runtime.releaseObjectGroup', { objectGroup }).catch(
+    () => {},
   );
 
 const objectIdOf = (result: unknown, key: 'object' | 'result') => {
@@ -837,29 +886,33 @@ const describedNode = (described: unknown) => {
  */
 async function discoverContexts(session: FrameSession) {
   const scope = session.scope;
+  const deadline = Date.now() + DISCOVERY_MS;
+  const objectGroup = checkGroup();
+  const send = (method: string, params: object) =>
+    sessionSend(session, method, params, deadline);
   try {
     for (const [frameId, frame] of [...scope.frames]) {
       let objectId: string | undefined;
       let documentUrl: unknown;
       if (frameId === session.rootFrameId || frame.parentId === undefined) {
-        const evaluated = await sessionSend(session, 'Runtime.evaluate', {
+        const evaluated = await send('Runtime.evaluate', {
           expression: 'document',
-          objectGroup: FRAME_CHECK_GROUP,
+          objectGroup,
         });
         objectId = objectIdOf(evaluated, 'result');
         if (!objectId) continue;
-        const described = await sessionSend(session, 'DOM.describeNode', {
+        const described = await send('DOM.describeNode', {
           objectId,
         });
         documentUrl = describedNode(described)?.documentURL;
       } else {
-        const owner = await sessionSend(session, 'DOM.getFrameOwner', {
+        const owner = await send('DOM.getFrameOwner', {
           frameId,
         }).catch(() => undefined);
         const ownerId = isObject(owner) ? owner.backendNodeId : undefined;
         if (typeof ownerId !== 'number') continue;
         const node = describedNode(
-          await sessionSend(session, 'DOM.describeNode', {
+          await send('DOM.describeNode', {
             backendNodeId: ownerId,
           }),
         );
@@ -867,9 +920,9 @@ async function discoverContexts(session: FrameSession) {
         const document = node.contentDocument;
         if (!isObject(document)) continue;
         documentUrl = document.documentURL;
-        const resolved = await sessionSend(session, 'DOM.resolveNode', {
+        const resolved = await send('DOM.resolveNode', {
           backendNodeId: document.backendNodeId,
-          objectGroup: FRAME_CHECK_GROUP,
+          objectGroup,
         }).catch(() => undefined);
         objectId = objectIdOf(resolved, 'object');
       }
@@ -885,7 +938,7 @@ async function discoverContexts(session: FrameSession) {
     }
   } finally {
     void sessionSend(session, 'Runtime.releaseObjectGroup', {
-      objectGroup: FRAME_CHECK_GROUP,
+      objectGroup,
     }).catch(() => {});
   }
 }
@@ -897,13 +950,16 @@ async function nodeContext(
 ): Promise<number | undefined> {
   // Resolved without a context param, so the node lands in its own frame's
   // main world. A CDP error (a stale node id) is passed on as the reply.
-  const resolved = await sessionSend(session, 'DOM.resolveNode', {
-    ...node,
-    objectGroup: FRAME_CHECK_GROUP,
-  });
-  void sessionSend(session, 'Runtime.releaseObjectGroup', {
-    objectGroup: FRAME_CHECK_GROUP,
-  }).catch(() => {});
+  const objectGroup = checkGroup();
+  let resolved: unknown;
+  try {
+    resolved = await sessionSend(session, 'DOM.resolveNode', {
+      ...node,
+      objectGroup,
+    });
+  } finally {
+    await releaseGroup(session, objectGroup);
+  }
   const objectId = objectIdOf(resolved, 'object');
   return objectId ? contextIdFromObjectId(objectId) : undefined;
 }
@@ -981,7 +1037,131 @@ function pruneResult(
       return pruned;
     }
     default:
-      return raw;
+      // Fail closed: a method not classified in frames.ts sends nothing.
+      if (NO_FRAME_CONTENT_METHODS.has(method)) return raw;
+      throw new Error(FRAME_OUT_OF_SCOPE);
+  }
+}
+
+/**
+ * True while a frame out of scope is present in the tab's renderer, or in
+ * the renderer of an allowed out-of-process frame. Frames that are disallowed
+ * out-of-process children are not counted (they are not in these scopes):
+ * plan 1 lets them paint (ads, reCAPTCHA).
+ */
+function outOfScopeFramePresent(current: Run): boolean {
+  const any = (scope: FrameScope) => {
+    for (const frameId of scope.frames.keys()) {
+      if (!frameAllowedIn(current, scope, frameId)) return true;
+    }
+    return false;
+  };
+  if (any(current.frameScope)) return true;
+  for (const child of current.children.values()) {
+    if (child.frameScope && childAllowed(current, child)) {
+      if (any(child.frameScope)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The frame id of the frame owner that holds keyboard focus, read in the
+ * bridge's own isolated world of the main frame (page script cannot tamper
+ * with it): focus is followed into same-origin frames and stops at a frame
+ * whose document is not reachable. Null when focus is not on a frame owner;
+ * undefined when the owner has no frame id.
+ */
+async function focusedFrameId(
+  current: Run,
+  tab: FrameSession,
+): Promise<string | null | undefined> {
+  const expression = `(() => {
+    let el = document.activeElement;
+    for (let i = 0; i < 32 && el; i++) {
+      if (!${FRAME_OWNER_TAGS}.test(el.tagName)) return null;
+      let doc = null;
+      try { doc = el.contentDocument; } catch {}
+      if (!doc) return el;
+      el = doc.activeElement;
+    }
+    return el;
+  })()`;
+  const objectGroup = checkGroup();
+  const evaluate = async (contextId: number) =>
+    sessionSend(tab, 'Runtime.evaluate', {
+      expression,
+      contextId,
+      objectGroup,
+    });
+  try {
+    let evaluated: unknown;
+    try {
+      if (current.focusWorld === undefined) throw new Error('no world');
+      evaluated = await evaluate(current.focusWorld);
+    } catch {
+      // No world yet, or its document is gone: make one (its context
+      // events are dropped like the mask's, see isBridgeWorldCreated).
+      const world = await sessionSend(tab, 'Page.createIsolatedWorld', {
+        frameId: current.mainFrameId,
+        worldName: FOCUS_WORLD,
+      });
+      const contextId = isObject(world) ? world.executionContextId : undefined;
+      if (typeof contextId !== 'number') return undefined;
+      current.focusWorld = contextId;
+      evaluated = await evaluate(contextId);
+    }
+    const objectId = objectIdOf(evaluated, 'result');
+    if (!objectId) return null;
+    const node = describedNode(
+      await sessionSend(tab, 'DOM.describeNode', { objectId }),
+    );
+    return typeof node?.frameId === 'string' ? node.frameId : undefined;
+  } finally {
+    await releaseGroup(tab, objectGroup);
+  }
+}
+
+/**
+ * Refuses input that would land in a frame out of scope: a key or text
+ * while focus is in such a frame, a mouse press, release or wheel at a point
+ * inside one. Only while such a frame is present, so ordinary pages pay
+ * nothing. Input goes to the tab whatever session sends it.
+ */
+async function checkInputTarget(current: Run, method: string, params: unknown) {
+  const mouse = method === 'Input.dispatchMouseEvent';
+  if (!mouse && !KEY_INPUT_METHODS.has(method)) return;
+  if (mouse && !(isObject(params) && MOUSE_ACTIONS.has(String(params.type)))) {
+    return;
+  }
+  if (!outOfScopeFramePresent(current)) return;
+  const tab: FrameSession = {
+    scope: current.frameScope,
+    debuggee: { tabId: current.tabId },
+    rootFrameId: current.mainFrameId,
+  };
+  let frameId: string | null | undefined;
+  if (mouse) {
+    const { x, y } = params as Record<string, unknown>;
+    if (typeof x !== 'number' || typeof y !== 'number') {
+      throw new Error(FRAME_OUT_OF_SCOPE);
+    }
+    // Hit-tests into in-process frames and names the frame of the node.
+    const hit = await sessionSend(tab, 'DOM.getNodeForLocation', {
+      x: Math.round(x),
+      y: Math.round(y),
+    }).catch(() => undefined);
+    frameId =
+      isObject(hit) && typeof hit.frameId === 'string'
+        ? hit.frameId
+        : undefined;
+  } else {
+    frameId = await focusedFrameId(current, tab);
+    if (frameId === null) return;
+  }
+  // No frame to judge (a miss, an owner without a frame): refuse.
+  if (frameId === undefined || !frameAllowedIn(current, tab.scope, frameId)) {
+    throw new Error(FRAME_OUT_OF_SCOPE);
   }
 }
 
@@ -1178,7 +1358,7 @@ function isMaskWorldEvent(
   if (!isObject(params)) return false;
   if (method === 'Runtime.executionContextCreated') {
     const context = isObject(params.context) ? params.context : undefined;
-    if (context?.name !== MASK_WORLD) return false;
+    if (!context || !BRIDGE_WORLDS.has(String(context.name))) return false;
     maskContexts.add(contextKey(sessionId, context.id));
     return true;
   }
@@ -1189,11 +1369,14 @@ function isMaskWorldEvent(
   }
   return false;
 }
+/** Isolated worlds the bridge makes: never shown to, or usable by, the agent. */
+const BRIDGE_WORLDS = new Set([MASK_WORLD, FOCUS_WORLD]);
+
 const isMaskWorldCreated = (method: string, params: unknown) =>
   method === 'Runtime.executionContextCreated' &&
   isObject(params) &&
   isObject(params.context) &&
-  params.context.name === MASK_WORLD;
+  BRIDGE_WORLDS.has(String(params.context.name));
 
 // Child targets with no document to mask (and nothing painted on screen).
 const WORKER_TYPES = new Set([

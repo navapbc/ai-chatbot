@@ -949,6 +949,30 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       await page.reload();
     });
 
+    it('an alert raised by an out-of-scope same-site frame is auto-accepted', async () => {
+      await page.goto(`${fixtures.origin}/samesite.html`);
+      const frame = page
+        .frames()
+        .find((f) => f.url().startsWith(fixtures.sameSiteOrigin)) as Frame;
+      await frame.locator('#h').waitFor({ state: 'attached' });
+      const { cdp } = await startRun({ allowedFrameOrigins: [] });
+      expect(
+        (await agentBrowser(['snapshot', '-i'], cdp, 'ss-dialog')).success,
+      ).toBe(true);
+      await frame.evaluate(() => {
+        setTimeout(() => alert('ss-dialog-sentinel'), 50);
+      });
+      await new Promise((r) => setTimeout(r, 500));
+      const next = await agentBrowser(['get', 'title'], cdp, 'ss-dialog');
+      expect(next.success, JSON.stringify(next)).toBe(true);
+      expect(relay.frames.some((f) => f.includes('ss-dialog-sentinel'))).toBe(
+        false,
+      );
+      await closeAgentSessions();
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await page.goto(fixtures.formUrl);
+    });
+
     it('an alert and a beforeunload prompt are auto-accepted and nothing hangs', async () => {
       const { cdp } = await startRun();
       expect(
@@ -1276,6 +1300,134 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
           .frameLocator('#ss')
           .locator('#h')
           .waitFor({ state: 'attached' });
+      }
+    });
+
+    it('a screenshot is refused while the out-of-scope frame is present', async () => {
+      for (const [allowed, ok] of [
+        [[], false],
+        [[fixtures.sameSiteOrigin], true],
+      ] as const) {
+        const { cdp } = await startRun({ allowedFrameOrigins: [...allowed] });
+        const agent = await rawAgent(cdp);
+        const session = await agent.attach();
+        const shot = await agent.call('Page.captureScreenshot', {}, session);
+        if (ok) {
+          expect(shot.error).toBeUndefined();
+          expect(typeof shot.result?.data).toBe('string');
+        } else {
+          expect(shot.error?.message).toBe(FRAME_OUT_OF_SCOPE);
+          expect(shot.result).toBeUndefined();
+        }
+        await agent.close();
+      }
+    });
+
+    it('keys and clicks cannot reach the out-of-scope frame; in-scope input still works', async () => {
+      const hidden = page.frameLocator('#ss').locator('#h');
+      // Focus inside the out-of-scope frame (as Tab from the page would).
+      await hidden.focus();
+      const { cdp } = await startRun({ allowedFrameOrigins: [] });
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      for (const [method, params] of [
+        ['Input.insertText', { text: 'typed' }],
+        ['Input.dispatchKeyEvent', { type: 'keyDown', key: 'y', text: 'y' }],
+      ] as const) {
+        const reply = await agent.call(method, params, session);
+        expect(reply.error?.message).toBe(FRAME_OUT_OF_SCOPE);
+      }
+      // A click at a point inside the frame.
+      const box = await page.locator('#ss').boundingBox();
+      const at = {
+        x: Math.round((box?.x ?? 0) + 20),
+        y: Math.round((box?.y ?? 0) + 20),
+      };
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        const reply = await agent.call(
+          'Input.dispatchMouseEvent',
+          { type, ...at, button: 'left', clickCount: 1 },
+          session,
+        );
+        expect(reply.error?.message).toBe(FRAME_OUT_OF_SCOPE);
+      }
+      await agent.close();
+
+      // Through agent-browser: `press` into the focused frame is refused;
+      // typing and clicking in-scope fields on the same page work.
+      const pressed = await agentBrowser(['press', 'x'], cdp, 'input');
+      expect(pressed.success).toBe(false);
+      const snap = await agentBrowser(['snapshot', '-i'], cdp, 'input');
+      const top = refFor(snap, 'textbox', 'Top field');
+      expect(
+        (await agentBrowser(['fill', top, 'Grace'], cdp, 'input')).success,
+      ).toBe(true);
+      expect((await agentBrowser(['click', top], cdp, 'input')).success).toBe(
+        true,
+      );
+      expect(await page.locator('#top').inputValue()).toBe('Grace');
+      expect(await hidden.inputValue()).toBe(HIDDEN_VALUE);
+      await closeAgentSessions();
+      await page.locator('#top').fill('');
+    });
+
+    it('with the frame origin allowed, input reaches it and costs no lookups', async () => {
+      const hidden = page.frameLocator('#ss').locator('#h');
+      // Record what the bridge itself sends to chrome.debugger.
+      await browser.sw.evaluate(() => {
+        const w = globalThis as unknown as { __cdpLog?: string[] };
+        w.__cdpLog = [];
+        const dbg = chrome.debugger as unknown as {
+          sendCommand: (...a: unknown[]) => unknown;
+          __orig?: (...a: unknown[]) => unknown;
+        };
+        dbg.__orig ??= dbg.sendCommand;
+        dbg.sendCommand = (...a: unknown[]) => {
+          w.__cdpLog?.push(String(a[1]));
+          return (dbg.__orig as (...x: unknown[]) => unknown)(...a);
+        };
+      });
+      try {
+        const { cdp } = await startRun({
+          allowedFrameOrigins: [fixtures.sameSiteOrigin],
+        });
+        const snap = await agentBrowser(['snapshot', '-i'], cdp, 'allowed-in');
+        const field = refFor(snap, 'textbox', 'Hidden frame field');
+        const top = refFor(snap, 'textbox', 'Top field');
+        await browser.sw.evaluate(() => {
+          (globalThis as unknown as { __cdpLog: string[] }).__cdpLog = [];
+        });
+        expect(
+          (await agentBrowser(['click', top], cdp, 'allowed-in')).success,
+        ).toBe(true);
+        expect(
+          (await agentBrowser(['fill', field, 'zz'], cdp, 'allowed-in'))
+            .success,
+        ).toBe(true);
+        expect(
+          (await agentBrowser(['press', 'q'], cdp, 'allowed-in')).success,
+        ).toBe(true);
+        expect(await hidden.inputValue()).toBe('zzq');
+        const log = (await browser.sw.evaluate(
+          () => (globalThis as unknown as { __cdpLog: string[] }).__cdpLog,
+        )) as string[];
+        expect(
+          log.filter(
+            (m) =>
+              m === 'DOM.getNodeForLocation' ||
+              m === 'Page.createIsolatedWorld',
+          ),
+        ).toEqual([]);
+        await closeAgentSessions();
+      } finally {
+        await browser.sw.evaluate(() => {
+          const dbg = chrome.debugger as unknown as {
+            sendCommand: unknown;
+            __orig?: unknown;
+          };
+          if (dbg.__orig) dbg.sendCommand = dbg.__orig;
+        });
+        await hidden.fill(HIDDEN_VALUE);
       }
     });
 

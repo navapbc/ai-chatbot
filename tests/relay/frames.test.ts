@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ALLOWED_CDP_METHODS } from '@/lib/relay/allowed-cdp-methods';
 import {
   commandAddresses,
   contextIdFromObjectId,
@@ -9,7 +10,9 @@ import {
   type FrameInfo,
   frameInScope,
   framesOfTree,
+  NO_FRAME_CONTENT_METHODS,
   navigationDestination,
+  PRUNED_RESULT_METHODS,
   pruneAXTree,
   pruneDescribedNode,
   pruneFrameTree,
@@ -744,5 +747,139 @@ describe('documentOrigin', () => {
     scope.contexts.set(1, 'main');
     scope.contextOrigins.set(1, refused as string);
     expect(contextInScope(scope, origins, 1)).toBe(false);
+  });
+});
+
+describe('dialog events are not frame-scoped', () => {
+  it('forwards a dialog raised by an out-of-scope frame (filterEvent blanks it)', () => {
+    const scope = createFrameScope();
+    scope.frames.set('main', { url: `${RUN}/form` });
+    scope.frames.set('f', { url: `${OTHER}/x`, parentId: 'main' });
+    for (const method of [
+      'Page.javascriptDialogOpening',
+      'Page.javascriptDialogClosed',
+    ]) {
+      expect(
+        scopeFrameEvent(scope, origins, method, {
+          frameId: 'f',
+          type: 'alert',
+        }),
+      ).toBe(true);
+    }
+  });
+});
+
+describe('network follow-ups of a dropped request', () => {
+  it('are dropped too, and forgotten once the request ends', () => {
+    const scope = createFrameScope();
+    scope.frames.set('main', { url: `${RUN}/form` });
+    scope.frames.set('f', { url: `${OTHER}/x`, parentId: 'main' });
+    expect(
+      scopeFrameEvent(scope, origins, 'Network.requestWillBeSent', {
+        requestId: 'r1',
+        frameId: 'f',
+        type: 'Script',
+        request: { url: `${OTHER}/a.js` },
+      }),
+    ).toBe(false);
+    for (const method of [
+      'Network.requestServedFromCache',
+      'Network.loadingFinished',
+    ]) {
+      expect(scopeFrameEvent(scope, origins, method, { requestId: 'r1' })).toBe(
+        false,
+      );
+    }
+    expect(scope.droppedRequests.has('r1')).toBe(false);
+    expect(
+      scopeFrameEvent(scope, origins, 'Network.loadingFailed', {
+        requestId: 'r2',
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps the dropped set bounded', () => {
+    const scope = createFrameScope();
+    scope.frames.set('f', { url: `${OTHER}/x` });
+    for (let i = 0; i < 5000; i++) {
+      scopeFrameEvent(scope, origins, 'Network.requestWillBeSent', {
+        requestId: `r${i}`,
+        frameId: 'f',
+        type: 'Script',
+        request: { url: `${OTHER}/a.js` },
+      });
+    }
+    expect(scope.droppedRequests.size).toBeLessThanOrEqual(2000);
+    expect(scope.droppedRequests.has('r4999')).toBe(true);
+  });
+});
+
+describe('result classification', () => {
+  it('classifies every allowed CDP method exactly once', () => {
+    const pruned = [...PRUNED_RESULT_METHODS];
+    const plain = [...NO_FRAME_CONTENT_METHODS];
+    expect(pruned.filter((m) => NO_FRAME_CONTENT_METHODS.has(m))).toEqual([]);
+    expect([...pruned, ...plain].sort()).toEqual(
+      [...ALLOWED_CDP_METHODS].sort(),
+    );
+  });
+
+  // Pinned per allowed method: the params that address a frame, context,
+  // object or node. A new allowed method fails here until it is classified.
+  const HANDLE_PARAMS: Record<string, Record<string, unknown>> = {
+    'Runtime.evaluate': { contextId: 1, uniqueContextId: 'u' },
+    'Runtime.enable': {},
+    'Runtime.callFunctionOn': {
+      objectId: '1.2.3',
+      executionContextId: 1,
+      arguments: [{ objectId: '1.2.4' }],
+    },
+    'Runtime.runIfWaitingForDebugger': {},
+    'Page.enable': {},
+    'Page.navigate': { frameId: 'f' },
+    'Page.captureScreenshot': {},
+    'Page.handleJavaScriptDialog': {},
+    'Page.getFrameTree': {},
+    'Page.bringToFront': {},
+    'Network.enable': {},
+    'Target.setAutoAttach': {},
+    'DOM.enable': {},
+    'DOM.describeNode': { nodeId: 1, backendNodeId: 2, objectId: '1.2.3' },
+    'DOM.resolveNode': {
+      nodeId: 1,
+      backendNodeId: 2,
+      executionContextId: 3,
+    },
+    'DOM.getBoxModel': { nodeId: 1, backendNodeId: 2, objectId: '1.2.3' },
+    'DOM.scrollIntoViewIfNeeded': {
+      nodeId: 1,
+      backendNodeId: 2,
+      objectId: '1.2.3',
+    },
+    'Accessibility.enable': {},
+    'Accessibility.getFullAXTree': { frameId: 'f' },
+    'Input.insertText': {},
+    'Input.dispatchKeyEvent': {},
+    'Input.dispatchMouseEvent': {},
+  };
+
+  it('pins the handle params of every allowed method', () => {
+    expect(Object.keys(HANDLE_PARAMS).sort()).toEqual(
+      [...ALLOWED_CDP_METHODS].sort(),
+    );
+    for (const params of Object.values(HANDLE_PARAMS)) {
+      const a = commandAddresses(params);
+      const found =
+        a.frameIds.length +
+        a.contextIds.length +
+        a.uniqueContextIds.length +
+        a.objectIds.length +
+        a.nodes.length;
+      const expected = Object.entries(params).reduce(
+        (n, [key, value]) => n + (Array.isArray(value) ? value.length : 1),
+        0,
+      );
+      expect(found).toBe(expected);
+    }
   });
 });

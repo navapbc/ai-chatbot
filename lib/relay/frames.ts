@@ -35,7 +35,61 @@ export interface FrameScope {
    */
   announcedFrames: Set<string>;
   announcedContexts: Set<number>;
+  /**
+   * Request ids whose requestWillBeSent (or responseReceived) was dropped,
+   * so their follow-ups (loadingFinished and the like, which name no frame)
+   * are dropped too. Bounded: the oldest entries go first.
+   */
+  droppedRequests: Set<string>;
 }
+
+const MAX_DROPPED_REQUESTS = 2000;
+
+/**
+ * Allowed CDP methods whose results can carry content of frames other than
+ * the one addressed: the bridge prunes out-of-scope frames from them.
+ */
+export const PRUNED_RESULT_METHODS: ReadonlySet<string> = new Set([
+  'Accessibility.getFullAXTree',
+  'DOM.describeNode',
+  'Page.getFrameTree',
+]);
+
+/**
+ * Allowed CDP methods whose results carry no content of a frame other than
+ * the one their (checked) handles address. A method in neither set is
+ * refused, so a newly allowed method fails closed until it is classified.
+ */
+export const NO_FRAME_CONTENT_METHODS: ReadonlySet<string> = new Set([
+  // Domain switches and session plumbing: no page content in the result.
+  'Runtime.enable',
+  'Runtime.runIfWaitingForDebugger',
+  'Page.enable',
+  'Network.enable',
+  'DOM.enable',
+  'Accessibility.enable',
+  'Target.setAutoAttach',
+  'Page.bringToFront',
+  'Page.handleJavaScriptDialog',
+  // Run in one checked context (the main frame's when none is named);
+  // script there cannot read a cross-origin frame.
+  'Runtime.evaluate',
+  'Runtime.callFunctionOn',
+  // Addressed by checked node, object or context handles; geometry or a
+  // handle comes back, for that node only.
+  'DOM.resolveNode',
+  'DOM.getBoxModel',
+  'DOM.scrollIntoViewIfNeeded',
+  // A navigation id and loader id; the frameId param is checked.
+  'Page.navigate',
+  // Input results are empty; where the input lands is checked separately.
+  'Input.insertText',
+  'Input.dispatchKeyEvent',
+  'Input.dispatchMouseEvent',
+  // Pixels of the whole tab: refused while an out-of-scope frame is
+  // present (checked separately, before and after the capture).
+  'Page.captureScreenshot',
+]);
 
 export interface ScopeOrigins {
   origin: string;
@@ -49,6 +103,7 @@ export const createFrameScope = (): FrameScope => ({
   contextOrigins: new Map(),
   announcedFrames: new Set(),
   announcedContexts: new Set(),
+  droppedRequests: new Set(),
 });
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -366,6 +421,21 @@ export function scopeFrameEvent(
     return forward;
   };
   if (!isObject(params)) return true;
+  // A dialog freezes the whole renderer, the tab included, until answered:
+  // its events are forwarded whatever frame raised it (filterEvent rebuilds
+  // them without frame, URL or text).
+  if (method.startsWith('Page.javascriptDialog')) return true;
+  const requestId =
+    typeof params.requestId === 'string' ? params.requestId : undefined;
+  if (requestId !== undefined && scope.droppedRequests.has(requestId)) {
+    if (
+      method === 'Network.loadingFinished' ||
+      method === 'Network.loadingFailed'
+    ) {
+      scope.droppedRequests.delete(requestId);
+    }
+    return false;
+  }
 
   switch (method) {
     case 'Page.frameAttached': {
@@ -474,9 +544,18 @@ export function scopeFrameEvent(
   }
 
   if (!('frameId' in params)) return true;
-  if (!keep(params.frameId)) return false;
   const destination = navigationDestination(method, params);
-  return destination === undefined || destinationAllowed(destination, origins);
+  const forward =
+    keep(params.frameId) &&
+    (destination === undefined || destinationAllowed(destination, origins));
+  if (!forward && requestId !== undefined) {
+    scope.droppedRequests.add(requestId);
+    if (scope.droppedRequests.size > MAX_DROPPED_REQUESTS) {
+      const oldest = scope.droppedRequests.values().next().value;
+      if (oldest !== undefined) scope.droppedRequests.delete(oldest);
+    }
+  }
+  return forward;
 }
 
 /**
