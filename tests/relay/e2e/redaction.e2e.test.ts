@@ -38,8 +38,9 @@ const FIELD_VALUES = [
 ];
 // Known redactor gap, reported for a redactor fix round: DOM.describeNode
 // keeps a sensitive node's aria-label in clear (it is on the redactor's
-// SENSITIVE_KEEP_ATTRIBUTES list). Pinned by the `it.fails` test below, which
-// starts failing once the redactor masks it; then drop this exclusion.
+// SENSITIVE_KEEP_ATTRIBUTES list). Excluded only from DOM.describeNode
+// replies and pinned exactly by a test below, which fails once the redactor
+// masks it; then drop this exclusion.
 const ARIA_LABEL = FIELD_VALUES.indexOf('900-55-0001');
 // Echoed in ordinary text; protected only once registered.
 const KNOWN = '900-77-4321';
@@ -77,6 +78,33 @@ const seenSince = (mark: number) => [
   ...relay.frames.slice(mark),
   ...relay.logs.map((l) => JSON.stringify(l)),
 ];
+
+/**
+ * Splits what crossed the relay since `mark` into DOM.describeNode replies
+ * and everything else (logs included), pairing replies with their commands.
+ */
+const splitDescribeReplies = (mark: number) => {
+  const methods = new Map<string, string>();
+  const describe: string[] = [];
+  const rest: string[] = relay.logs.map((l) => JSON.stringify(l));
+  for (const frame of relay.frames.slice(mark)) {
+    const msg = JSON.parse(frame) as {
+      t?: string;
+      cmd?: { id?: string; method?: string };
+      type?: string;
+      id?: string;
+    };
+    if (msg.t === 'cmd' && msg.cmd?.id && msg.cmd.method) {
+      methods.set(msg.cmd.id, msg.cmd.method);
+    }
+    const isDescribeReply =
+      msg.type === 'reply' &&
+      msg.id !== undefined &&
+      methods.get(msg.id) === 'DOM.describeNode';
+    (isDescribeReply ? describe : rest).push(frame);
+  }
+  return { describe, rest };
+};
 
 async function until(check: () => boolean | Promise<boolean>, ms = 10_000) {
   const deadline = Date.now() + ms;
@@ -315,10 +343,29 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     expect([...childFields.keys()].sort()).toEqual(['cc', 'qty']);
     await agent.close();
 
-    // agent-browser's own snapshot, click and fill paths.
-    expect((await agentBrowser(['snapshot', '-i'], cdp, 'red')).success).toBe(
+    // agent-browser's own snapshot, click and fill paths, by ref (as the
+    // agent drives it) and by selector.
+    const snap = await agentBrowser(['snapshot', '-i'], cdp, 'red');
+    expect(snap.success).toBe(true);
+    const refs = Object.entries(
+      (snap.data as { refs: Record<string, { role: string; name: string }> })
+        .refs,
+    );
+    const ref = (match: (r: { role: string; name: string }) => boolean) => {
+      const hit = refs.find(([, r]) => match(r));
+      if (!hit) throw new Error('ref not found in snapshot');
+      return `@${hit[0]}`;
+    };
+    const masked = ref((r) => r.role === 'textbox' && r.name === MASK);
+    const middle = ref(
+      (r) => r.role === 'textbox' && r.name.trim() === 'Middle name',
+    );
+    expect((await agentBrowser(['click', masked], cdp, 'red')).success).toBe(
       true,
     );
+    expect(
+      (await agentBrowser(['fill', middle, 'Quinn'], cdp, 'red')).success,
+    ).toBe(true);
     expect((await agentBrowser(['click', '#ssn'], cdp, 'red')).success).toBe(
       true,
     );
@@ -328,25 +375,28 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     expect((await agentBrowser(['snapshot'], cdp, 'red')).success).toBe(true);
     await closeAgentSessions();
 
+    const { describe, rest } = splitDescribeReplies(mark);
+    expect(leaked(rest, FIELD_VALUES)).toEqual([]);
     expect(
-      leaked(seenSince(mark), FIELD_VALUES).filter((i) => i !== ARIA_LABEL),
+      leaked(describe, FIELD_VALUES).filter((i) => i !== ARIA_LABEL),
     ).toEqual([]);
     // Positive control: the ordinary value the agent typed did go up.
     expect(seenSince(mark).some((f) => f.includes('Quinn'))).toBe(true);
   });
 
-  it.fails(
-    "a sensitive field's aria-label is masked in DOM.describeNode (redactor gap)",
-    async () => {
-      const { cdp } = await startRun();
-      const agent = await rawAgent(cdp);
-      const session = await agent.attach();
-      const mark = relay.frames.length;
-      await textboxValues(agent, session);
-      await agent.close();
-      expect(leaked(seenSince(mark), FIELD_VALUES)).toEqual([]);
-    },
-  );
+  it('pins the redactor gap: only the aria-label leaks, only via DOM.describeNode', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    const mark = relay.frames.length;
+    expect((await textboxValues(agent, session)).size).toBeGreaterThan(0);
+    await agent.close();
+    const { describe, rest } = splitDescribeReplies(mark);
+    expect(describe.length).toBeGreaterThan(0);
+    // Turns red when the redactor masks it: then drop ARIA_LABEL.
+    expect(leaked(describe, FIELD_VALUES)).toEqual([ARIA_LABEL]);
+    expect(leaked(rest, FIELD_VALUES)).toEqual([]);
+  });
 
   it('the agent can tell a filled sensitive field from an empty one', async () => {
     const { cdp } = await startRun();
