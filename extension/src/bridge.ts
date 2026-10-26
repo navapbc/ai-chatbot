@@ -593,6 +593,7 @@ async function handleCommand(
       dropChildren(current);
       current.frameScope = createFrameScope();
       current.focusWorld = undefined;
+      current.dialog = undefined;
       try {
         await chrome.debugger.detach({ tabId: current.tabId });
       } catch {
@@ -699,14 +700,18 @@ async function forwardCdp(
   if (!session && child && !WORKER_TYPES.has(child.type ?? '')) {
     throw new Error(FRAME_OUT_OF_SCOPE);
   }
-  // A dialog raised by a frame out of scope was already answered by the
-  // bridge; the agent may only dismiss, never accept or type into it.
+  // Deny by default: the agent may accept or type into a dialog only while
+  // one is known to be open and was raised by a frame in scope. A plain
+  // dismissal is always allowed, so the tab never stays frozen. (One raised
+  // out of scope was already answered by the bridge.)
   if (
     method === 'Page.handleJavaScriptDialog' &&
-    current.dialog?.outOfScope &&
+    !(current.dialog && !current.dialog.outOfScope) &&
     (!isObject(params) || params.accept !== false || 'promptText' in params)
   ) {
-    throw new Error(FRAME_OUT_OF_SCOPE);
+    throw new Error(
+      current.dialog?.outOfScope ? FRAME_OUT_OF_SCOPE : 'no dialog is open',
+    );
   }
   // The lookups run under the tab's shared hold, so no screenshot's mask
   // window opens while they talk to the page.
@@ -1898,9 +1903,11 @@ export function onDebuggerEvent(
       scopeFrameEvent(scope, current, method, params, (frameId) =>
         childFrameAllowed(current, frameId),
       ));
+  // Dialogs are tracked (and an out-of-scope one answered) from raw events
+  // too, attached or not, so a dialog opened during an attach is known.
+  const dialogForwarded = dialogEventForwarded(current, source, method, params);
   // Nothing leaves the browser unless we hold the tab and it is in scope.
-  if (!current.attached) return;
-  if (!dialogEventForwarded(current, source, method, params)) return;
+  if (!current.attached || !dialogForwarded) return;
 
   if (source.sessionId === undefined) {
     const navUrl = mainFrameNavigationUrl(current, method, params);

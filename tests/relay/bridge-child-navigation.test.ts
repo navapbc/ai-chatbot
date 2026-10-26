@@ -358,11 +358,15 @@ describe('dialogs raised by a frame out of scope', () => {
       userInput: '',
     });
     expect(JSON.stringify(socket.sent)).not.toContain('javascriptDialog');
-    // Cleared on close: the next (in-scope) dialog's answer is the agent's.
+    // Cleared on close: with no dialog known to be open, only a dismissal
+    // passes.
     expect(
       (await ask(socket, handle('d4', { accept: true, promptText: 'x' })))
         .error,
-    ).toBeUndefined();
+    ).toBe('no dialog is open');
+    expect((await ask(socket, handle('d4b', { accept: false }))).error).toBe(
+      undefined,
+    );
   });
 
   it('an alert is accepted (its only answer)', async () => {
@@ -394,5 +398,62 @@ describe('dialogs raised by a frame out of scope', () => {
       (await ask(socket, handle('d5', { accept: true, promptText: 'ok' })))
         .error,
     ).toBeUndefined();
+  });
+});
+
+describe('dialog state the bridge has not seen', () => {
+  const handle = (id: string, params: object) =>
+    tabCommand(id, 'Page.handleJavaScriptDialog', params);
+
+  it('takes only a dismissal while no dialog is known to be open', async () => {
+    const socket = await attachedWithChild();
+    for (const params of [
+      { accept: true },
+      { accept: false, promptText: 'x' },
+      {},
+    ]) {
+      expect(
+        (await ask(socket, handle(`u-${JSON.stringify(params)}`, params)))
+          .error,
+      ).toBe('no dialog is open');
+    }
+    expect(
+      (await ask(socket, handle('u-dismiss', { accept: false }))).error,
+    ).toBeUndefined();
+    expect(sentTo('Page.handleJavaScriptDialog')).toEqual([
+      [{ tabId: 1 }, 'Page.handleJavaScriptDialog', { accept: false }],
+    ]);
+  });
+
+  it('tracks a dialog opened before the attach completes, and answers one out of scope', async () => {
+    fake.tabFrames = [{ id: 'S', url: `${OTHER}/x` }];
+    const token = `${b64url({
+      runId: 'run-2',
+      role: 'extension',
+      origin: ORIGIN,
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    })}.sig`;
+    await bridge.handleMessage({
+      type: 'startRun',
+      relayUrl: 'ws://127.0.0.1:1',
+      token,
+      tabId: 1,
+      allowedFrameOrigins: [FRAME],
+    });
+    const socket = FakeSocket.last;
+    await socket.onopen?.();
+    // Not attached yet: the frame is unknown, so it counts as out of scope.
+    bridge.onDebuggerEvent({ tabId: 1 }, 'Page.javascriptDialogOpening', {
+      frameId: 'S',
+      type: 'prompt',
+      message: 'q',
+      url: '',
+      defaultPrompt: '',
+      hasBrowserHandler: false,
+    });
+    expect(sentTo('Page.handleJavaScriptDialog')).toEqual([
+      [{ tabId: 1 }, 'Page.handleJavaScriptDialog', { accept: false }],
+    ]);
+    expect(JSON.stringify(socket.sent)).not.toContain('javascriptDialog');
   });
 });
