@@ -18,6 +18,12 @@ import {
   type Redactor,
 } from '../../lib/relay/redactor';
 import {
+  createMaskSession,
+  createScreenshotQueue,
+  ScreenshotMaskError,
+  withScreenshotMask,
+} from '../../lib/relay/screenshot-mask';
+import {
   type Describe,
   redactErrorMessage,
   redactEventParams,
@@ -50,6 +56,8 @@ interface RunConfig {
 
 interface Child {
   targetId?: string;
+  /** CDP target type (iframe, worker, ...); decides screenshot masking. */
+  type?: string;
   url: string;
   /** Rejects this child's in-flight commands; see dropChild. */
   inFlight: Set<(error: Error) => void>;
@@ -91,6 +99,8 @@ interface Run extends RunConfig {
    * stopRun, and empty on a run rebuilt after a worker restart.
    */
   redactor: Redactor;
+  /** Runs this run's screenshots one at a time (see captureMasked). */
+  screenshots: ReturnType<typeof createScreenshotQueue>;
 }
 
 const STORAGE_KEY = 'run';
@@ -352,6 +362,7 @@ function begin(
     reconnectDelayMs: FIRST_RECONNECT_MS,
     announceResume: resumed,
     redactor: createRedactor(),
+    screenshots: createScreenshotQueue(),
   };
   run = current;
   current.expiryTimer = setTimeout(
@@ -559,23 +570,18 @@ async function forwardCdp(
   const debuggee: chrome.debugger.DebuggerSession = child
     ? { tabId: current.tabId, sessionId }
     : { tabId: current.tabId };
-  const raw = child
-    ? await new Promise<unknown>((resolve, reject) => {
-        child.inFlight.add(reject);
-        chrome.debugger
-          .sendCommand(
-            debuggee,
-            method,
-            params as Record<string, unknown> | undefined,
-          )
-          .then(resolve, reject)
-          .finally(() => child.inFlight.delete(reject));
-      })
-    : await chrome.debugger.sendCommand(
+  const sendIt = () =>
+    tracked(child, () =>
+      chrome.debugger.sendCommand(
         debuggee,
         method,
         params as Record<string, unknown> | undefined,
-      );
+      ),
+    );
+  const raw =
+    method === 'Page.captureScreenshot'
+      ? await current.screenshots(() => captureMasked(current, sendIt))
+      : await sendIt();
   const result = await redact(
     current,
     method,
@@ -586,6 +592,112 @@ async function forwardCdp(
   // sends nothing more.
   if (current.blocked || current.stopped) throw new Error(OUT_OF_SCOPE);
   return result;
+}
+
+/**
+ * Runs a command for a child session with its reject in the child's
+ * `inFlight`, so a frame removed meanwhile fails it at once (see dropChild);
+ * a tab-session command runs as is.
+ */
+function tracked<T>(child: Child | undefined, run: () => Promise<T>) {
+  if (!child) return run();
+  return new Promise<T>((resolve, reject) => {
+    child.inFlight.add(reject);
+    run()
+      .then(resolve, reject)
+      .finally(() => child.inFlight.delete(reject));
+  });
+}
+
+// --- screenshots -------------------------------------------------------------
+
+// Every mask step (one CDP call) and the capture itself are bounded, so a
+// hung page or a child that never answers ends in a refusal or a capture
+// error well inside the relay's command timeout. The page restores itself
+// after SELF_RESTORE_MS (25s) if the worker never gets to.
+const MASK_STEP_MS = 3_000;
+const CAPTURE_MS = 10_000;
+// Child targets with no document to mask (and nothing painted on screen).
+const WORKER_TYPES = new Set([
+  'worker',
+  'shared_worker',
+  'service_worker',
+  'worklet',
+  'shared_storage_worklet',
+  'auction_worklet',
+]);
+
+const withTimeout = <T>(promise: Promise<T>, ms: number, what: string) =>
+  new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${what} timed out`)), ms);
+    promise.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+
+/**
+ * Captures a screenshot with every sensitive field hidden. The bridge masks
+ * the tab session and every attached frame session (an out-of-process
+ * iframe paints into the tab's screenshot) straight through chrome.debugger,
+ * never through the agent's allowlist, captures, checks that every mask is
+ * still in place in the same documents, then restores. Any failure is a
+ * refusal with a fixed message; the raw image is only returned when every
+ * session was masked and verified.
+ *
+ * Ordering: forwardCdp runs every screenshot through the run's queue, so a
+ * second screenshot (from the tab or any child session) waits until the
+ * first has restored the page; overlapping masks would otherwise record each
+ * other's style as the page's own. Other agent commands are not held: none
+ * can unmask a field (eval is refused at the tool layer), and a navigation
+ * or re-render during the window fails the verify step instead.
+ */
+async function captureMasked(
+  current: Run,
+  capture: () => Promise<unknown>,
+): Promise<unknown> {
+  const objectGroup = `mask-${crypto.randomUUID()}`;
+  const frames = [...current.children].filter(
+    ([, child]) => !WORKER_TYPES.has(child.type ?? ''),
+  );
+  // An out-of-process iframe's target id is its frame id.
+  const covered = new Set(
+    frames.flatMap(([, child]) => (child.targetId ? [child.targetId] : [])),
+  );
+  const isCoveredFrame = (frameId: string) => covered.has(frameId);
+  const maskSend =
+    (debuggee: chrome.debugger.DebuggerSession, child?: Child) =>
+    (method: string, params?: Record<string, unknown>) =>
+      withTimeout(
+        tracked(child, () =>
+          chrome.debugger.sendCommand(debuggee, method, params),
+        ),
+        MASK_STEP_MS,
+        'screenshot mask',
+      );
+  const sessions = [
+    createMaskSession({
+      send: maskSend({ tabId: current.tabId }),
+      objectGroup,
+      isCoveredFrame,
+    }),
+    ...frames.map(([sessionId, child]) =>
+      createMaskSession({
+        send: maskSend({ tabId: current.tabId, sessionId }, child),
+        objectGroup,
+        isCoveredFrame,
+      }),
+    ),
+  ];
+  const known = new Set(current.children.keys());
+  return withScreenshotMask(sessions, async () => {
+    const shot = await withTimeout(capture(), CAPTURE_MS, 'screenshot');
+    for (const session of sessions) await session.verify();
+    // A frame that attached during the window was never masked.
+    for (const [sessionId, child] of current.children) {
+      if (!known.has(sessionId) && !WORKER_TYPES.has(child.type ?? '')) {
+        throw new ScreenshotMaskError();
+      }
+    }
+    return shot;
+  });
 }
 
 /**
@@ -653,6 +765,7 @@ function trackChildren(current: Run, method: string, params: unknown) {
     if (typeof params.sessionId !== 'string') return;
     current.children.set(params.sessionId, {
       targetId: typeof info?.targetId === 'string' ? info.targetId : undefined,
+      type: typeof info?.type === 'string' ? info.type : undefined,
       // An unknown URL is treated as out of scope.
       url: typeof info?.url === 'string' ? info.url : '',
       inFlight: current.children.get(params.sessionId)?.inFlight ?? new Set(),

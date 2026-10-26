@@ -1,4 +1,7 @@
 import { once } from 'node:events';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import type { Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
@@ -273,6 +276,230 @@ const storedAnywhere = () =>
       await chrome.storage.sync.get(null),
     ]),
   ) as Promise<string>;
+
+// --- screenshot helpers ----------------------------------------------------------
+
+const REFUSED =
+  'The screenshot was refused because sensitive fields could not be masked.';
+const STYLED = 'width: 9em; color: rgb(20, 20, 20) !important;';
+
+/**
+ * Adds a row of extra fields for the screenshot tests: a sensitive input
+ * that already has an inline style, a select, a contenteditable, a textarea,
+ * and a same-origin srcdoc iframe with one sensitive and one ordinary field.
+ * Returns a function that removes them again.
+ */
+async function addScreenshotFields() {
+  await page.evaluate((styled) => {
+    const box = document.createElement('div');
+    box.id = 'shotbox';
+    box.innerHTML = `
+      <input id="styled" aria-label="Passport number" value="X1234567" style="${styled}">
+      <select id="sid" aria-label="State ID number"><option>D1234567</option></select>
+      <span id="cardlbl">Card number</span>
+      <div id="cardce" contenteditable aria-labelledby="cardlbl" style="display: inline-block; width: 10em">4111 1111</div>
+      <textarea id="pinnote" aria-label="PIN" rows="1">8642</textarea>
+      <iframe id="so" title="same origin" style="height: 40px" srcdoc="<label for=sp>PIN</label> <input id=sp value=5555> <label for=sq>Pet</label> <input id=sq value=Rex>"></iframe>`;
+    document.body.append(box);
+  }, STYLED);
+  await page.frameLocator('#so').locator('#sq').waitFor({ state: 'attached' });
+  return () =>
+    page.evaluate(() => document.getElementById('shotbox')?.remove());
+}
+
+/** The tab, the srcdoc frame and the cross-site frame, by test name. */
+const frameName = (url: string) =>
+  url === 'about:srcdoc'
+    ? 'srcdoc'
+    : url.includes('oopif-sensitive')
+      ? 'xo'
+      : 'main';
+
+/** `frame#id` -> the style attribute of every element with an id. */
+async function styleAttributes() {
+  const out = new Map<string, string | null>();
+  for (const frame of page.frames()) {
+    const name = frameName(frame.url());
+    const entries = await frame.evaluate(() =>
+      Array.from(document.querySelectorAll('[id]'), (el) => [
+        el.id,
+        el.getAttribute('style'),
+      ]),
+    );
+    for (const [id, style] of entries) out.set(`${name}#${id}`, style);
+  }
+  return out;
+}
+
+const blurAll = () =>
+  Promise.all(
+    page
+      .frames()
+      .map((f) =>
+        f.evaluate(() =>
+          (document.activeElement as HTMLElement | null)?.blur(),
+        ),
+      ),
+  );
+
+// Sensitive fields whose pixels must vanish; every other field in
+// fieldRects must render identically masked and unmasked.
+const SENSITIVE_IN_SHOT = [
+  'main#code',
+  'main#ssn',
+  'main#ssn2',
+  'main#spouse',
+  'main#acct',
+  'main#styled',
+  'main#sid',
+  'main#cardce',
+  'main#pinnote',
+  'srcdoc#sp',
+  'xo#cc',
+];
+
+interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The inner area of each field in viewport pixels, inset past the border
+ * (and past the select's arrow and the textarea's grip, which are not text).
+ */
+async function fieldRects(): Promise<Record<string, Rect>> {
+  const locate = {
+    'main#code': page.locator('#code'),
+    'main#ssn': page.locator('#ssn'),
+    'main#ssn2': page.locator('#ssn2'),
+    'main#spouse': page.locator('#spouse'),
+    'main#acct': page.locator('#acct'),
+    'main#city': page.locator('#city'),
+    'main#styled': page.locator('#styled'),
+    'main#sid': page.locator('#sid'),
+    'main#cardce': page.locator('#cardce'),
+    'main#pinnote': page.locator('#pinnote'),
+    'srcdoc#sp': page.frameLocator('#so').locator('#sp'),
+    'srcdoc#sq': page.frameLocator('#so').locator('#sq'),
+    'xo#cc': page.frameLocator('#xo').locator('#cc'),
+    'xo#qty': page.frameLocator('#xo').locator('#qty'),
+  };
+  const out: Record<string, Rect> = {};
+  for (const [name, locator] of Object.entries(locate)) {
+    const box = await locator.boundingBox();
+    if (!box) throw new Error(`no box for ${name}`);
+    // The select's arrow and the textarea's resize grip are drawn in the
+    // field's corner and are not text.
+    const right = name === 'main#sid' ? 24 : name === 'main#pinnote' ? 14 : 3;
+    out[name] = {
+      x: Math.ceil(box.x + 3),
+      y: Math.ceil(box.y + 3),
+      width: Math.floor(box.width - 3 - right),
+      height: Math.floor(box.height - 6),
+    };
+  }
+  return out;
+}
+
+/** An unmasked capture of the tab, straight through chrome.debugger. */
+const rawCapture = async () =>
+  (
+    (await browser.sw.evaluate(
+      (id) =>
+        chrome.debugger.sendCommand({ tabId: id }, 'Page.captureScreenshot', {
+          format: 'png',
+        }),
+      tabId,
+    )) as { data: string }
+  ).data;
+
+/**
+ * Decodes a PNG (in the extension worker: createImageBitmap + OffscreenCanvas)
+ * and summarizes each region: `ink` counts pixels darker than 200 in every
+ * channel's minimum (text, bullets, placeholder grey), `hash` fingerprints
+ * the region's exact pixels.
+ */
+const regions = (data: string, rects: Rect[]) =>
+  browser.sw.evaluate(
+    async ({ data, rects }) => {
+      const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+      const bitmap = await createImageBitmap(
+        new Blob([bytes], { type: 'image/png' }),
+      );
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('no 2d context');
+      ctx.drawImage(bitmap, 0, 0);
+      return rects.map((r) => {
+        const px = ctx.getImageData(r.x, r.y, r.width, r.height).data;
+        let ink = 0;
+        let hash = 0;
+        for (let i = 0; i < px.length; i += 4) {
+          if (Math.min(px[i], px[i + 1], px[i + 2]) < 200) ink += 1;
+          hash =
+            (Math.imul(hash, 31) +
+              px[i] * 65536 +
+              px[i + 1] * 256 +
+              px[i + 2]) >>>
+            0;
+        }
+        return { ink, hash };
+      });
+    },
+    { data, rects },
+  );
+
+/**
+ * Wraps chrome.debugger.sendCommand in the worker (the bridge looks it up on
+ * every call) to inject a fault into the bridge's own mask commands. Test
+ * only: nothing in the shipped extension has a fault hook.
+ */
+const patchSendCommand = (mode: 'failChildEvaluate' | 'reloadBeforeCapture') =>
+  browser.sw.evaluate((mode) => {
+    const dbg = chrome.debugger as unknown as {
+      sendCommand: (...args: unknown[]) => Promise<unknown>;
+    };
+    const g = globalThis as unknown as { originalSendCommand?: unknown };
+    const original = dbg.sendCommand;
+    g.originalSendCommand = original;
+    let armed = true;
+    dbg.sendCommand = async (...args: unknown[]) => {
+      const [target, method, params] = args as [
+        { tabId: number; sessionId?: string },
+        string,
+        { objectGroup?: string } | undefined,
+      ];
+      if (
+        mode === 'failChildEvaluate' &&
+        target.sessionId !== undefined &&
+        method === 'Runtime.evaluate' &&
+        String(params?.objectGroup ?? '').startsWith('mask-')
+      ) {
+        throw new Error('forced failure');
+      }
+      if (
+        mode === 'reloadBeforeCapture' &&
+        armed &&
+        method === 'Page.captureScreenshot'
+      ) {
+        armed = false;
+        await original.call(dbg, { tabId: target.tabId }, 'Page.reload', {});
+        await new Promise((r) => setTimeout(r, 1_000));
+      }
+      return original.apply(dbg, args);
+    };
+  }, mode);
+
+const unpatchSendCommand = () =>
+  browser.sw.evaluate(() => {
+    const g = globalThis as unknown as { originalSendCommand?: unknown };
+    if (g.originalSendCommand) {
+      (chrome.debugger as unknown as { sendCommand: unknown }).sendCommand =
+        g.originalSendCommand;
+    }
+  });
 
 beforeAll(async () => {
   fixtures = await serveFixtures();
@@ -557,6 +784,226 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
       ),
     ).toBe(true);
     await page.goto(sensitiveUrl);
+  });
+
+  // --- screenshots (Task 5) ---------------------------------------------------
+
+  it("a screenshot of the sensitive fixture succeeds and the field's inline style is unchanged afterward", async () => {
+    const remove = await addScreenshotFields();
+    try {
+      const { cdp } = await startRun();
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.childSession(session);
+      const before = await styleAttributes();
+      // Pre-existing inline styles (with and without !important) and none.
+      expect(before.get('main#styled')).toBe(STYLED);
+      expect(before.get('main#ssn')).toBeNull();
+
+      const shot = await agent.call(
+        'Page.captureScreenshot',
+        { format: 'png' },
+        session,
+      );
+      expect(shot.error).toBeUndefined();
+      expect(typeof shot.result?.data).toBe('string');
+      expect(await styleAttributes()).toEqual(before);
+      await agent.close();
+    } finally {
+      await remove();
+    }
+  });
+
+  it('a masked screenshot hides every sensitive field (tab, srcdoc and cross-site frames) and leaves ordinary fields pixel-identical', async () => {
+    const remove = await addScreenshotFields();
+    try {
+      const { cdp } = await startRun();
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.childSession(session);
+      await blurAll();
+      const rects = await fieldRects();
+
+      // Control: the same tab captured through chrome.debugger directly,
+      // bypassing the bridge, so nothing is masked.
+      const control = await rawCapture();
+      const shot = await agent.call(
+        'Page.captureScreenshot',
+        { format: 'png' },
+        session,
+      );
+      expect(shot.error).toBeUndefined();
+      const masked = shot.result?.data as string;
+
+      const names = Object.keys(rects);
+      const unmaskedRegions = await regions(
+        control,
+        names.map((n) => rects[n]),
+      );
+      const maskedRegions = await regions(
+        masked,
+        names.map((n) => rects[n]),
+      );
+      const result = Object.fromEntries(
+        names.map((name, i) => {
+          const sensitive = SENSITIVE_IN_SHOT.includes(name);
+          const u = unmaskedRegions[i];
+          const m = maskedRegions[i];
+          return [
+            name,
+            sensitive
+              ? // Visible text without the mask, none with it.
+                u.ink > 0 && m.ink === 0
+                ? 'hidden'
+                : `not hidden (ink ${u.ink} -> ${m.ink})`
+              : u.hash === m.hash
+                ? 'identical'
+                : 'changed',
+          ];
+        }),
+      );
+      expect(result).toEqual(
+        Object.fromEntries(
+          names.map((n) => [
+            n,
+            SENSITIVE_IN_SHOT.includes(n) ? 'hidden' : 'identical',
+          ]),
+        ),
+      );
+      await agent.close();
+    } finally {
+      await remove();
+    }
+  });
+
+  it('a screenshot is refused when the mask cannot be applied (a child session whose evaluate is forced to fail)', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.childSession(session);
+    const before = await styleAttributes();
+    await patchSendCommand('failChildEvaluate');
+    try {
+      const shot = await agent.call('Page.captureScreenshot', {}, session);
+      expect(shot.result).toBeUndefined();
+      expect(shot.error?.message).toBe(REFUSED);
+      // The tab session was masked first; it is back as it was.
+      expect(await styleAttributes()).toEqual(before);
+    } finally {
+      await unpatchSendCommand();
+    }
+    const again = await agent.call('Page.captureScreenshot', {}, session);
+    expect(again.error).toBeUndefined();
+    await agent.close();
+  });
+
+  it('a same-origin srcdoc iframe field is masked, and a same-site cross-origin iframe no session covers refuses the screenshot', async () => {
+    const framePort = new URL(fixtures.frameOrigin).port;
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.childSession(session);
+
+    const remove = await addScreenshotFields();
+    try {
+      await blurAll();
+      const rects = await fieldRects();
+      const shot = await agent.call('Page.captureScreenshot', {}, session);
+      expect(shot.error).toBeUndefined();
+      const [pin, pet] = await regions(shot.result?.data as string, [
+        rects['srcdoc#sp'],
+        rects['srcdoc#sq'],
+      ]);
+      expect(pin.ink).toBe(0);
+      expect(pet.ink).toBeGreaterThan(0);
+    } finally {
+      await remove();
+    }
+
+    // Same site (localhost), other port: cross-origin, so the page cannot
+    // look inside it, but in the tab's process, so it gets no child session.
+    await page.evaluate((src) => {
+      const frame = document.createElement('iframe');
+      frame.id = 'samesite';
+      frame.src = src;
+      document.body.append(frame);
+    }, `https://localhost:${framePort}/oopif-sensitive.html`);
+    try {
+      await page
+        .frameLocator('#samesite')
+        .locator('#cc')
+        .waitFor({ state: 'attached', timeout: 10_000 });
+      await new Promise((r) => setTimeout(r, 300));
+      expect(
+        agent.events.some(
+          (m) =>
+            m.method === 'Target.attachedToTarget' &&
+            String(
+              (m.params?.targetInfo as { url?: string })?.url ?? '',
+            ).includes(`localhost:${framePort}`),
+        ),
+      ).toBe(false);
+      const before = await styleAttributes();
+      const shot = await agent.call('Page.captureScreenshot', {}, session);
+      expect(shot.error?.message).toBe(REFUSED);
+      expect(await styleAttributes()).toEqual(before);
+    } finally {
+      await page.evaluate(() => document.getElementById('samesite')?.remove());
+    }
+    const again = await agent.call('Page.captureScreenshot', {}, session);
+    expect(again.error).toBeUndefined();
+    await agent.close();
+  });
+
+  it('a navigation between apply and capture still leaves no masked style behind', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.childSession(session);
+    const loaded = page.waitForEvent('load');
+    // Reloads the tab after the masks are applied, before the capture: the
+    // image would show a document that was never masked.
+    await patchSendCommand('reloadBeforeCapture');
+    try {
+      const shot = await agent.call('Page.captureScreenshot', {}, session);
+      expect(shot.result).toBeUndefined();
+      expect(shot.error?.message).toBe(REFUSED);
+    } finally {
+      await unpatchSendCommand();
+    }
+    await loaded;
+    await page
+      .frameLocator('#xo')
+      .locator('#cc')
+      .waitFor({ state: 'attached', timeout: 10_000 });
+    const masks = await Promise.all(
+      page
+        .frames()
+        .map((f) =>
+          f.evaluate(
+            () =>
+              document.querySelectorAll('[style*="text-fill-color"]').length,
+          ),
+        ),
+    );
+    expect(masks.every((n) => n === 0)).toBe(true);
+    await agent.close();
+  });
+
+  it('agent-browser screenshot through the real CLI succeeds against the fixture', async () => {
+    const { cdp } = await startRun();
+    const dir = mkdtempSync(path.join(tmpdir(), 'relay-e2e-shot-'));
+    try {
+      const file = path.join(dir, 'shot.png');
+      const before = await styleAttributes();
+      const shot = await agentBrowser(['screenshot', file], cdp, 'shot');
+      expect(shot.success).toBe(true);
+      expect(statSync(file).size).toBeGreaterThan(1000);
+      expect(await styleAttributes()).toEqual(before);
+    } finally {
+      await closeAgentSessions();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   // Kept last: Playwright reports no handle for the restarted worker, so
