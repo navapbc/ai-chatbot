@@ -29,7 +29,7 @@ export const TRACER_NAME = 'labs-asp.jev';
 
 /** Attribute keys, named once so spans and logs cannot disagree. */
 export const ATTR = {
-  /** `gap-triage` | `summary-check` | `field-value`. Low cardinality. */
+  /** `gap-triage` | `summary-check` | `field-value` | `sensitive-field`. Low cardinality. */
   feature: 'jev.feature',
   /** False when the flag is off or no participant record was found. */
   enabled: 'jev.enabled',
