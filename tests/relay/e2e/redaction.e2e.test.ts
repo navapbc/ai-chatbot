@@ -1744,6 +1744,83 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     }
   });
 
+  it('other painted text showing a registered value refuses: a button value, ::before content, an img alt, <title>, a closed shadow root, a transient toast', async () => {
+    const OTHER = '900-88-1357';
+    const cases: Array<[string, string]> = [
+      [
+        'button',
+        `const i = document.createElement('input'); i.type = 'button'; i.value = '${OTHER}'; i.className = 'r4'; document.body.append(i);`,
+      ],
+      [
+        'before',
+        `const s = document.createElement('style'); s.className = 'r4'; s.textContent = '.r4b::before { content: "${OTHER}"; }'; document.head.append(s); const p = document.createElement('p'); p.className = 'r4 r4b'; document.body.append(p);`,
+      ],
+      [
+        'alt',
+        `const i = document.createElement('img'); i.alt = '${OTHER}'; i.className = 'r4'; document.body.append(i);`,
+      ],
+      [
+        'title',
+        `window.r4title = document.title; document.title = '${OTHER}';`,
+      ],
+      [
+        'closed',
+        `const h = document.createElement('div'); h.className = 'r4'; h.attachShadow({ mode: 'closed' }).innerHTML = '<p>Ordinary words</p>'; document.body.append(h);`,
+      ],
+    ];
+    const { cdp } = await startRun();
+    expect(await addKnownValue(OTHER)).toEqual({ ok: true });
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.childSession(session);
+    const results: Record<string, string> = {};
+    try {
+      for (const [name, code] of cases) {
+        await page.evaluate((c) => new Function(c)(), code);
+        const shot = await agent.call('Page.captureScreenshot', {}, session);
+        results[name] = shot.error?.message === REFUSED ? 'refused' : 'taken';
+        await page.evaluate(() => {
+          for (const el of document.querySelectorAll('.r4')) el.remove();
+          const w = window as unknown as { r4title?: string };
+          if (w.r4title !== undefined) document.title = w.r4title;
+        });
+      }
+      // A toast added and removed again inside the window.
+      await page.evaluate((v) => {
+        const target = document.getElementById('ssn') as HTMLElement;
+        const watcher = new MutationObserver(() => {
+          watcher.disconnect();
+          const t = document.createElement('p');
+          t.textContent = `Saved ${v}`;
+          document.body.append(t);
+          setTimeout(() => t.remove(), 0);
+        });
+        watcher.observe(target, {
+          attributes: true,
+          attributeFilter: ['style'],
+        });
+      }, OTHER);
+      const toast = await agent.call('Page.captureScreenshot', {}, session);
+      results.toast = toast.error?.message === REFUSED ? 'refused' : 'taken';
+      // Nothing showing it: taken.
+      const clean = await agent.call('Page.captureScreenshot', {}, session);
+      results.clean = clean.error ? 'refused' : 'taken';
+      expect(results).toEqual({
+        button: 'refused',
+        before: 'refused',
+        alt: 'refused',
+        title: 'refused',
+        closed: 'refused',
+        toast: 'refused',
+        clean: 'taken',
+      });
+      expect(await leftovers()).toBe(0);
+    } finally {
+      await agent.close();
+      await reloadFixture();
+    }
+  });
+
   // Kept last: Playwright reports no handle for the restarted worker, so
   // `browser.sw` is dead afterwards (modelled on bridge.e2e.test.ts).
   it('known values are gone after the worker restarts; fields stay masked', async () => {

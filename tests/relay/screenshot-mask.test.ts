@@ -725,6 +725,27 @@ describe('page side', { timeout: 30_000 }, () => {
       [KNOWN],
     ],
     [
+      'a button input value',
+      `<input type="button" value="${KNOWN}"><input type="submit" value="x">`,
+      [KNOWN],
+    ],
+    [
+      'CSS generated content',
+      `<style>.x::before { content: '${KNOWN}'; }</style><p class="x"></p>`,
+      [KNOWN],
+    ],
+    ['an image alt text', `<img alt="${KNOWN}" src="data:,">`, [KNOWN]],
+    [
+      'an accessible name only the AX tree joins',
+      `<style>.tail::after { content: '4321'; }</style><button class="tail">900-77-</button>`,
+      [KNOWN],
+    ],
+    [
+      'text in <title>',
+      `<script>document.title = '${KNOWN}'</script>`,
+      [KNOWN],
+    ],
+    [
       'the second of several registered values',
       `<p>Applicant: ${NAME}</p>`,
       [KNOWN, NAME],
@@ -799,6 +820,35 @@ describe('page side', { timeout: 30_000 }, () => {
       await session.restore();
     });
   }
+
+  it('verify refuses a transient toast added and removed again during the window', async () => {
+    await load(FORM);
+    const session = maskSession();
+    await session.apply();
+    await page.evaluate((v) => {
+      const t = document.createElement('div');
+      t.textContent = `Saved ${v}`;
+      document.body.append(t);
+      setTimeout(() => t.remove(), 0);
+    }, KNOWN);
+    await page.waitForTimeout(50);
+    await expect(session.verify()).rejects.toBeInstanceOf(ScreenshotMaskError);
+    await session.restore();
+  });
+
+  it('a closed shadow root with ordinary text refuses only while values are registered', async () => {
+    const html = `<!doctype html><html lang="en"><body><div id="host"></div><script>
+      document.getElementById('host').attachShadow({ mode: 'closed' }).innerHTML =
+        '<p>Ordinary words</p>';
+    </script></body></html>`;
+    await load(html);
+    const registered = maskSession({ knownValuesRegistered: () => true });
+    await expect(registered.apply()).rejects.toThrow();
+    await registered.restore();
+    const none = maskSession({ knownValuesRegistered: () => false });
+    await none.apply();
+    await none.restore();
+  });
 
   it('text churn without a registered value does not refuse', async () => {
     await load(`${FORM}<p id="clock">12:00</p>`);

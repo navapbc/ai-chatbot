@@ -220,14 +220,15 @@ export const MASK_WORLD = '__labs_screenshot_mask__';
  *   fieldList()        -> the field elements (for their backend node ids)
  *   owner(i)           -> the i-th visible frame owner element
  *   doc()              -> the document (for the closed-shadow-root scan)
- *   texts()            -> { over, chunks: [parent, text][] }: every text
- *                         node outside fields, hidden ones included
+ *   texts()            -> { over, chunks: [group, text][] }: every text node
+ *                         outside fields (hidden ones and <head> included),
+ *                         painted attribute text and generated content
  *   mask(indices, ms)  -> masks fields, then watches for changes
  *   settle()           -> 'raf' after two animation frames, or 'timeout'
  *                         when none were rendered within 500ms
- *   verify()           -> { ok, values }: ok when nothing touched the
+ *   verify()           -> { ok, values, seen }: ok when nothing touched the
  *                         masks; values are the current values of unmasked
- *                         fields
+ *                         fields, seen the text that appeared meanwhile
  *   restore()          -> puts every touched attribute back exactly
  * It is a string, not a stringified function, so no bundler transform can
  * change what the page runs. It logs nothing.
@@ -408,30 +409,87 @@ export const PAGE_SOURCE = `(() => {
   // the worker's known-value check. Text inside a field is the field's
   // value, which field masking already judges.
   const TEXT_CAP = 1048576;
+  // Other painted text: button-like input values, alt, placeholder, title
+  // and aria-label, and CSS generated content. Each is its own group.
+  const ELEMENT_CAP = 20000;
+  const PAINTED_INPUTS = new Set(['button', 'submit', 'reset', 'image']);
+  const ATTR_TEXT = ['alt', 'title', 'aria-label', 'placeholder'];
+  const generated = (el, pseudo) => {
+    const c = getComputedStyle(el, pseudo).content;
+    return !c || c === 'none' || c === 'normal' ? '' : c;
+  };
   const texts = () => {
     const parents = new Map();
     const chunks = [];
     let total = 0;
+    let elements = 0;
+    let group = 0;
+    const add = (id, text) => {
+      if (!text || !text.trim()) return true;
+      total += text.length;
+      if (total > TEXT_CAP) return false;
+      chunks.push([id, text]);
+      return true;
+    };
+    const over = { over: true, chunks: [] };
     for (const root of enumerate().roots) {
-      const start = root.nodeType === 9 ? (root.body || root.documentElement) : root;
+      // From the root element: <title> and <head> text count too.
+      const start = root.nodeType === 9 ? root.documentElement : root;
       if (!start) continue;
       const walker = document.createTreeWalker(start, NodeFilter.SHOW_TEXT);
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        const text = node.data;
-        if (!text || !text.trim()) continue;
         const parent = node.parentElement;
         if (parent && parent.closest(FIELDS)) continue;
-        total += text.length;
-        if (total > TEXT_CAP) return { over: true, chunks: [] };
         let id = parents.get(parent);
         if (id === undefined) {
-          id = parents.size;
+          id = 'p' + parents.size;
           parents.set(parent, id);
         }
-        chunks.push([id, text]);
+        if (!add(id, node.data)) return over;
+      }
+      for (const el of root.querySelectorAll('*')) {
+        elements += 1;
+        if (elements > ELEMENT_CAP) return over;
+        for (const name of ATTR_TEXT) {
+          const v = el.getAttribute(name);
+          if (v !== null && !add('a' + group++, v)) return over;
+        }
+        if (el.localName === 'input' &&
+            PAINTED_INPUTS.has((el.getAttribute('type') || '').trim().toLowerCase()) &&
+            !add('a' + group++, String(el.value))) return over;
+        if (!add('a' + group++, generated(el, '::before'))) return over;
+        if (!add('a' + group++, generated(el, '::after'))) return over;
       }
     }
     return { over: false, chunks };
+  };
+  // Text that appeared during the window, recorded as it appears, so a
+  // transient toast added and removed before verify still counts.
+  const seen = [];
+  let seenTotal = 0;
+  let seenOver = false;
+  const see = (node, text) => {
+    if (!text || !text.trim()) return;
+    const el = node.nodeType === 1 ? node : node.parentElement;
+    if (el && el.closest(FIELDS)) return;
+    seenTotal += text.length;
+    if (seenTotal > TEXT_CAP) {
+      seenOver = true;
+      return;
+    }
+    seen.push(text);
+  };
+  const record = (list) => {
+    for (const m of list) {
+      mutations.push(m);
+      if (m.type === 'childList') {
+        for (const n of m.addedNodes) {
+          if (n.nodeType === 3 || n.nodeType === 1) see(n, n.textContent);
+        }
+      } else if (m.type === 'characterData') {
+        see(m.target, m.target.data);
+      }
+    }
   };
   const STALE = 'data-labs-mask-';
   const hasStaleMask = () => {
@@ -485,12 +543,11 @@ export const PAGE_SOURCE = `(() => {
       for (const root of found.roots) {
         root.adoptedStyleSheets = root.adoptedStyleSheets.concat([sheet]);
         sheets.push([root, sheet]);
-        const o = new MutationObserver((list) => {
-          for (const m of list) mutations.push(m);
-        });
+        const o = new MutationObserver(record);
         o.observe(root, {
           subtree: true,
           childList: true,
+          characterData: true,
           attributes: true,
           attributeFilter: ['style', 'type', 'contenteditable', 'role', 'hidden', 'class', MARK],
         });
@@ -514,8 +571,9 @@ export const PAGE_SOURCE = `(() => {
     verify() {
       const fail = { ok: false, values: [] };
       if (document.documentElement !== rootElement) return fail;
+      for (const o of observers) record(o.takeRecords());
+      if (seenOver) return fail;
       const changes = mutations.splice(0);
-      for (const o of observers) for (const m of o.takeRecords()) changes.push(m);
       for (const m of changes) {
         if (m.type === 'childList') {
           for (const n of m.addedNodes) if (touches(n)) return fail;
@@ -558,7 +616,7 @@ export const PAGE_SOURCE = `(() => {
       found.fields.forEach((el, i) => {
         if (!masked.has(i)) values.push(valueOf(el));
       });
-      return { ok: true, values };
+      return { ok: true, values, seen: seen.splice(0) };
     },
     restore,
   };
@@ -592,6 +650,11 @@ export interface MaskSessionOptions {
    * `settle` must see a rendered frame, not only its timeout.
    */
   outOfProcess?: boolean;
+  /**
+   * True when the run has registered known values. Unknown (not passed)
+   * counts as true: a closed shadow root with any text then refuses.
+   */
+  knownValuesRegistered?(): boolean;
   /** Called with each isolated world's execution context id. */
   onWorld?(executionContextId: number): void;
   /** See SELF_RESTORE_MS. */
@@ -665,6 +728,7 @@ const FIELD_ROLE = /(?:^|\s)(?:textbox|searchbox|combobox|spinbutton)(?:\s|$)/;
 export function hasClosedShadowField(
   node: unknown,
   hasKnownValue?: (text: string) => boolean,
+  anyText = false,
 ): boolean {
   const isFieldNode = (n: Record<string, unknown>): boolean => {
     if (typeof n.nodeName === 'string' && FIELD_NODE.has(n.nodeName)) {
@@ -698,6 +762,9 @@ export function hasClosedShadowField(
   const showsKnown = (n: unknown): boolean => {
     if (!hasKnownValue) return false;
     const parts = textOf(n, []);
+    // CDP may truncate a long nodeValue: with values registered, any text
+    // in a closed root refuses (`anyText`).
+    if (anyText && parts.some((t) => t.trim() !== '')) return true;
     return hasKnownValue(parts.join('')) || hasKnownValue(parts.join(' '));
   };
   const scan = (n: unknown): boolean => {
@@ -708,6 +775,44 @@ export function hasClosedShadowField(
     return children(n).some(scan);
   };
   return scan(node);
+}
+
+const AX_FIELD_ROLES = new Set([
+  'textbox',
+  'searchbox',
+  'combobox',
+  'spinbutton',
+  'listbox',
+]);
+
+/**
+ * True when any accessible name in an Accessibility.getFullAXTree node list
+ * (StaticText included) shows a registered value, other than inside a
+ * field (a field's own value is judged by field masking).
+ */
+export function axShowsKnownValue(
+  axNodes: unknown[],
+  hasKnownValue: (text: string) => boolean,
+): boolean {
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const n of axNodes) {
+    if (isObject(n) && typeof n.nodeId === 'string') byId.set(n.nodeId, n);
+  }
+  const insideField = (n: Record<string, unknown>) => {
+    let at = typeof n.parentId === 'string' ? byId.get(n.parentId) : undefined;
+    for (let depth = 0; at && depth < 1024; depth++) {
+      const role = isObject(at.role) ? at.role.value : undefined;
+      if (typeof role === 'string' && AX_FIELD_ROLES.has(role)) return true;
+      at = typeof at.parentId === 'string' ? byId.get(at.parentId) : undefined;
+    }
+    return false;
+  };
+  for (const n of byId.values()) {
+    const name =
+      isObject(n.name) && typeof n.name.value === 'string' ? n.name.value : '';
+    if (name !== '' && hasKnownValue(name) && !insideField(n)) return true;
+  }
+  return false;
 }
 
 // Fields whose accessible name is looked up one DOM.describeNode at a time,
@@ -729,6 +834,8 @@ export function createMaskSession(
   const { send, objectGroup, isCoveredFrame, isSensitiveValue, hasKnownValue } =
     options;
   const selfRestoreMs = options.selfRestoreMs ?? SELF_RESTORE_MS;
+  const knownValuesRegistered = () =>
+    options.knownValuesRegistered ? options.knownValuesRegistered() : true;
   const worlds: World[] = [];
   // Set by restore. An apply still running then (the bridge gave up on it)
   // stops before its next step, so it cannot mask after the restore.
@@ -830,6 +937,7 @@ export function createMaskSession(
     open();
     const ax = await send('Accessibility.getFullAXTree', { frameId });
     const axNodes = isObject(ax) && Array.isArray(ax.nodes) ? ax.nodes : fail();
+    if (axShowsKnownValue(axNodes as unknown[], hasKnownValue)) fail();
     const names = new Map<number, string>();
     for (const n of axNodes as unknown[]) {
       if (!isObject(n) || typeof n.backendDOMNodeId !== 'number') continue;
@@ -945,7 +1053,11 @@ export function createMaskSession(
     });
     return (
       !isObject(described) ||
-      hasClosedShadowField(described.node, hasKnownValue)
+      hasClosedShadowField(
+        described.node,
+        hasKnownValue,
+        knownValuesRegistered(),
+      )
     );
   };
 
@@ -1016,6 +1128,15 @@ export function createMaskSession(
         const values = Array.isArray(result.values) ? result.values : [];
         if (values.some((v) => typeof v !== 'string' || isSensitiveValue(v))) {
           throw changed();
+        }
+        // Text that appeared during the window, even if gone again (a
+        // transient toast): final.
+        const seen = Array.isArray(result.seen) ? result.seen : [];
+        if (
+          seen.some((t) => typeof t !== 'string' || hasKnownValue(t)) ||
+          hasKnownValue(seen.join(''))
+        ) {
+          throw new ScreenshotMaskError();
         }
         // The whole text again: a value completed during the window (a
         // toast, a sibling text node) may be in the image. Final: the same
