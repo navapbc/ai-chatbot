@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ALLOWED_EVENT_METHODS,
   checkCommand,
   filterEvent,
   inScope,
@@ -116,6 +117,174 @@ describe('checkCommand', () => {
       expect(checkCommand({ method: 'Page.navigate', params }, ctx).ok).toBe(
         false,
       );
+    }
+  });
+});
+
+const URL_METHODS = ['Page.navigate', 'Target.createTarget'];
+const BAD_PARAMS: unknown[] = [
+  undefined,
+  null,
+  'x',
+  5,
+  [],
+  {},
+  { url: 5 },
+  { url: {} },
+];
+
+describe('command policy regressions', () => {
+  it('normalizes https://a.gov@evil.com to evil.com, out of scope for a.gov', () => {
+    expect(normalizeOrigin('https://a.gov@evil.com')).toBe('https://evil.com');
+    expect(inScope('https://a.gov@evil.com/x', 'https://a.gov')).toBe(false);
+    for (const method of URL_METHODS) {
+      expect(
+        checkCommand({ method, params: { url: 'https://a.gov@evil.com' } }, ctx)
+          .ok,
+      ).toBe(false);
+    }
+  });
+
+  it('refuses javascript:, data:, blob: and file: urls for navigation and new targets', () => {
+    for (const method of URL_METHODS) {
+      for (const url of [
+        'javascript:alert(1)',
+        'JaVaScRiPt:alert(1)',
+        'data:text/html,<p>x</p>',
+        'blob:https://a.gov/uuid',
+        'file:///etc/passwd',
+      ]) {
+        expect(checkCommand({ method, params: { url } }, ctx).ok).toBe(false);
+      }
+    }
+  });
+
+  it('refuses lowercase method names', () => {
+    for (const method of [
+      'page.navigate',
+      'runtime.evaluate',
+      'PAGE.NAVIGATE',
+    ]) {
+      expect(isMethodAllowed(method)).toBe(false);
+      expect(
+        checkCommand({ method, params: { url: 'https://a.gov/' } }, ctx).ok,
+      ).toBe(false);
+    }
+  });
+
+  it('refuses non-string and non-object params for every URL-checked method', () => {
+    for (const method of URL_METHODS) {
+      for (const params of BAD_PARAMS) {
+        expect(checkCommand({ method, params }, ctx).ok).toBe(false);
+      }
+    }
+  });
+
+  it('refuses non-object params for methods that require them', () => {
+    for (const method of [
+      'Runtime.evaluate',
+      'Input.insertText',
+      'Runtime.callFunctionOn',
+    ]) {
+      for (const params of ['x', 5, [], null]) {
+        expect(checkCommand({ method, params }, ctx).ok).toBe(false);
+      }
+    }
+  });
+
+  it('refuses Page.disable: the bridge owns the Page domain', () => {
+    expect(isMethodAllowed('Page.disable')).toBe(false);
+    expect(checkCommand({ method: 'Page.disable' }, ctx).ok).toBe(false);
+    expect(isMethodAllowed('Page.enable')).toBe(true);
+  });
+});
+
+// Events the agent receives while driving every documented browser command,
+// measured by tests/relay/e2e/allowlist.e2e.test.ts (ALLOWLIST_VERBOSE=1).
+const MEASURED_EVENTS = [
+  'Accessibility.loadComplete',
+  'DOM.documentUpdated',
+  'Network.loadingFinished',
+  'Network.requestWillBeSent',
+  'Network.responseReceived',
+  'Page.backForwardCacheNotUsed',
+  'Page.domContentEventFired',
+  'Page.frameAttached',
+  'Page.frameDetached',
+  'Page.frameNavigated',
+  'Page.frameRequestedNavigation',
+  'Page.frameStartedLoading',
+  'Page.frameStartedNavigating',
+  'Page.frameStoppedLoading',
+  'Page.javascriptDialogClosed',
+  'Page.javascriptDialogOpening',
+  'Page.loadEventFired',
+  'Runtime.executionContextCreated',
+  'Runtime.executionContextDestroyed',
+  'Runtime.executionContextsCleared',
+  'Target.attachedToTarget',
+  'Target.detachedFromTarget',
+  'Target.targetInfoChanged',
+];
+
+// Allowed events that the measured run did not show, each with its reason.
+const UNMEASURED_JUSTIFICATIONS: Record<string, string> = {
+  'Network.loadingFailed': 'idle waits count failed requests (existing set)',
+  'Network.requestServedFromCache': 'idle waits count cached requests',
+  'Page.navigatedWithinDocument': 'history.pushState navigations settle waits',
+};
+
+describe('event allowlist', () => {
+  it('an unlisted event is dropped', () => {
+    for (const method of [
+      'Page.compilationCacheProduced',
+      'DOM.attributeModified',
+      'DOM.characterDataModified',
+      'Accessibility.nodesUpdated',
+      'Log.entryAdded',
+      'Console.messageAdded',
+      'Made.Up',
+      'page.frameNavigated',
+    ]) {
+      expect(filterEvent(method, { x: 1 })).toBeNull();
+    }
+  });
+
+  it('every allowed event is in the measured list or has a justification entry', () => {
+    for (const method of ALLOWED_EVENT_METHODS) {
+      expect(
+        MEASURED_EVENTS.includes(method) || method in UNMEASURED_JUSTIFICATIONS,
+        method,
+      ).toBe(true);
+    }
+    for (const method of Object.keys(UNMEASURED_JUSTIFICATIONS)) {
+      expect(ALLOWED_EVENT_METHODS.has(method), method).toBe(true);
+      expect(MEASURED_EVENTS.includes(method), method).toBe(false);
+    }
+  });
+
+  it('console and exception events are dropped', () => {
+    for (const method of [
+      'Runtime.consoleAPICalled',
+      'Runtime.exceptionThrown',
+      'Runtime.bindingCalled',
+      'Runtime.inspectRequested',
+      'Runtime.exceptionRevoked',
+      'Log.entryAdded',
+    ]) {
+      expect(ALLOWED_EVENT_METHODS.has(method)).toBe(false);
+      expect(filterEvent(method, { text: 'secret' })).toBeNull();
+    }
+  });
+
+  it('keeps the events agent-browser waits on', () => {
+    for (const method of [
+      'Page.frameNavigated',
+      'Page.loadEventFired',
+      'Runtime.executionContextCreated',
+      'Target.attachedToTarget',
+    ]) {
+      expect(filterEvent(method, {})).not.toBeNull();
     }
   });
 });

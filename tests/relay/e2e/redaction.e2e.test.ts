@@ -858,7 +858,7 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     });
   });
 
-  it('a value registered with addKnownValue is scrubbed from a snapshot, a console event and a dialog event', async () => {
+  it('a value registered with addKnownValue is scrubbed from a snapshot, and console and dialog events never reach the agent', async () => {
     const { cdp } = await startRun();
     expect(await addKnownValue(KNOWN)).toEqual({ ok: true });
     const mark = relay.frames.length;
@@ -872,16 +872,19 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
       console.log(`Echo ${v}`);
       setTimeout(() => alert(`Confirm ${v}`), 0);
     }, KNOWN);
-    const consoleEvent = await agent.waitFor(
-      (m) =>
-        m.method === 'Runtime.consoleAPICalled' &&
-        JSON.stringify(m.params).includes('Echo'),
+    // Content-bearing events are not on the event allowlist: an allowed event
+    // after them proves delivery works while they never arrive.
+    await page.reload();
+    await agent.waitFor(
+      (m) => m.method === 'Page.frameNavigated' && m.sessionId === session,
     );
-    const dialogEvent = await agent.waitFor(
-      (m) => m.method === 'Page.javascriptDialogOpening',
-    );
-    expect(JSON.stringify(consoleEvent.params)).toContain(MASK);
-    expect(JSON.stringify(dialogEvent.params)).toContain(MASK);
+    expect(
+      agent.events.filter(
+        (m) =>
+          m.method === 'Runtime.consoleAPICalled' ||
+          m.method === 'Page.javascriptDialogOpening',
+      ),
+    ).toEqual([]);
 
     const tree = await agent.call('Accessibility.getFullAXTree', {}, session);
     expect(JSON.stringify(tree.result)).toContain('You entered');

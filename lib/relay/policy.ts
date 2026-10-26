@@ -34,7 +34,16 @@ export function checkCommand(
   if (!isCreateTarget && !isMethodAllowed(method)) {
     return { ok: false, reason: `method not allowed: ${method}` };
   }
-  if (!URL_CHECKED_METHODS.has(method)) return { ok: true };
+  if (!URL_CHECKED_METHODS.has(method)) {
+    // CDP params are an object when present; anything else is malformed.
+    if (
+      params !== undefined &&
+      (typeof params !== 'object' || params === null || Array.isArray(params))
+    ) {
+      return { ok: false, reason: `${method} params must be an object` };
+    }
+    return { ok: true };
+  }
 
   const url =
     typeof params === 'object' && params !== null
@@ -48,6 +57,47 @@ export function checkCommand(
   }
   return { ok: true };
 }
+
+/**
+ * Events the agent may receive, by exact name. Anything else is dropped, so a
+ * new or content-bearing event (console output, exceptions, DOM mutations,
+ * accessibility updates, dialog text, Log/Console entries) never reaches the
+ * agent by default. Each entry was measured while driving every documented
+ * agent-browser command (tests/relay/e2e/allowlist.e2e.test.ts), or carries a
+ * reason in tests/relay/policy.test.ts. The redactor still scrubs what is sent.
+ *
+ * Dropped from the measured set, with the reason:
+ * - Accessibility.loadComplete: carries the whole AX tree; agent-browser
+ *   asks for it with Accessibility.getFullAXTree.
+ * - Page.javascriptDialogOpening / Page.javascriptDialogClosed: carry the
+ *   dialog message and typed prompt text; `dialog accept|dismiss` sends
+ *   Page.handleJavaScriptDialog without waiting for either.
+ * - Page.backForwardCacheNotUsed: diagnostic detail only.
+ */
+export const ALLOWED_EVENT_METHODS: ReadonlySet<string> = new Set([
+  'DOM.documentUpdated',
+  'Network.loadingFailed',
+  'Network.loadingFinished',
+  'Network.requestServedFromCache',
+  'Network.requestWillBeSent',
+  'Network.responseReceived',
+  'Page.domContentEventFired',
+  'Page.frameAttached',
+  'Page.frameDetached',
+  'Page.frameNavigated',
+  'Page.frameRequestedNavigation',
+  'Page.frameStartedLoading',
+  'Page.frameStartedNavigating',
+  'Page.frameStoppedLoading',
+  'Page.loadEventFired',
+  'Page.navigatedWithinDocument',
+  'Runtime.executionContextCreated',
+  'Runtime.executionContextDestroyed',
+  'Runtime.executionContextsCleared',
+  'Target.attachedToTarget',
+  'Target.detachedFromTarget',
+  'Target.targetInfoChanged',
+]);
 
 // Network events the agent may see. agent-browser needs them for load and
 // idle waits; everything else in the Network domain is dropped.
@@ -77,13 +127,15 @@ function stripSensitive(value: unknown): unknown {
 
 /**
  * Applied by the extension to every CDP event before it leaves the browser.
- * Returns null to drop the event. Network events lose all header, cookie and
- * post-data fields; other domains pass through unchanged.
+ * Returns null to drop an event outside ALLOWED_EVENT_METHODS. Network events
+ * lose all header, cookie and post-data fields; other allowed events pass
+ * through unchanged.
  */
 export function filterEvent(
   method: string,
   params: unknown,
 ): { method: string; params: unknown } | null {
+  if (!ALLOWED_EVENT_METHODS.has(method)) return null;
   if (!method.startsWith('Network.')) return { method, params };
   if (!FORWARDED_NETWORK_EVENTS.has(method)) return null;
   return { method, params: stripSensitive(params) };

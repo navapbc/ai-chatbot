@@ -785,6 +785,102 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     await closeAgentSessions();
   });
 
+  it('leaving the origin ends the run even when the agent never sent Page.enable', async () => {
+    const { cdp, runId } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    // Runtime and DOM only: no Page.enable, no Network.enable.
+    for (const domain of ['Runtime', 'DOM']) {
+      expect((await agent.call(`${domain}.enable`, {}, session)).error).toBe(
+        undefined,
+      );
+    }
+    const away = `${fixtures.frameOrigin}/away.html`;
+    const started = Date.now();
+    await page.goto(away);
+    expect(await agent.closed).toEqual({ code: 1000, reason: 'run stopped' });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(
+      relay.logs.some(
+        (l) =>
+          l.event === 'run-stopped' &&
+          l.runId === runId &&
+          l.reason === 'left-origin',
+      ),
+    ).toBe(true);
+    expect(await extensionAttached(tabId)).toBe(false);
+    expect(agent.frames.filter((f) => f.includes(away))).toEqual([]);
+    await page.goto(fixtures.formUrl);
+    await closeAgentSessions();
+  });
+
+  it('the bridge enables the Page domain: page events arrive without a Page.enable from the agent', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.call('Runtime.enable', {}, session);
+    await page.reload();
+    const event = await agent.waitFor(
+      (m) => m.method === 'Page.frameNavigated' && m.sessionId === session,
+    );
+    expect(event.method).toBe('Page.frameNavigated');
+    await agent.close();
+    await bridgeMessage(browser.sw, { type: 'stopRun' });
+  });
+
+  it('Page.disable is refused and the bridge keeps the Page domain on', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.call('Runtime.enable', {}, session);
+    const reply = await agent.call('Page.disable', {}, session);
+    expect(reply.error?.message).toMatch(/not allowed/);
+    expect(reply.result).toBeUndefined();
+    // Still on: a reload reports its navigation.
+    await page.reload();
+    await agent.waitFor(
+      (m) => m.method === 'Page.frameNavigated' && m.sessionId === session,
+    );
+    await agent.close();
+    await bridgeMessage(browser.sw, { type: 'stopRun' });
+  });
+
+  it('an unlisted event never reaches the agent', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.call('Runtime.enable', {}, session);
+    await agent.call('Page.enable', {}, session);
+    await page.evaluate(() => {
+      console.log('console-sentinel-7');
+      setTimeout(() => {
+        throw new Error('exception-sentinel-8');
+      }, 0);
+    });
+    // An allowed event after the page activity proves delivery is working.
+    await page.reload();
+    await agent.waitFor(
+      (m) => m.method === 'Page.frameNavigated' && m.sessionId === session,
+    );
+    await new Promise((r) => setTimeout(r, 300));
+    expect(
+      agent.events.filter(
+        (m) =>
+          m.method === 'Runtime.consoleAPICalled' ||
+          m.method === 'Runtime.exceptionThrown',
+      ),
+    ).toEqual([]);
+    expect(
+      agent.frames.filter(
+        (f) =>
+          f.includes('console-sentinel-7') ||
+          f.includes('exception-sentinel-8'),
+      ),
+    ).toEqual([]);
+    await agent.close();
+    await bridgeMessage(browser.sw, { type: 'stopRun' });
+  });
+
   describe('in-origin page activity keeps the run alive', () => {
     let cdp: string;
     let runId: string;

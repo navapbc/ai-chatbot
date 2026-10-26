@@ -1,6 +1,7 @@
 import type { Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ALLOWED_CDP_METHODS } from '../../../lib/relay/allowed-cdp-methods';
+import { ALLOWED_EVENT_METHODS } from '../../../lib/relay/policy';
 import {
   type AgentResult,
   agentBrowser,
@@ -349,6 +350,16 @@ describe('CDP allowlist', { timeout: 90_000 }, () => {
         ),
       );
     }
+
+    // An event method on the wire outside the allowlist fails the suite.
+    const unlistedEvents = eventMethods.filter(
+      (m) => !ALLOWED_EVENT_METHODS.has(m),
+    );
+    expect(
+      unlistedEvents,
+      'events reached the agent that are not in ALLOWED_EVENT_METHODS',
+    ).toEqual([]);
+    expect(eventMethods.length).toBeGreaterThan(0);
 
     const forbidden = sorted.filter(neverAllowed);
     expect(

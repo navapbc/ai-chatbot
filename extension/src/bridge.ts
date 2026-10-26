@@ -522,6 +522,25 @@ async function handleCommand(
         await chrome.debugger.detach({ tabId: current.tabId }).catch(() => {});
         throw new Error(OUT_OF_SCOPE);
       }
+      // The bridge owns the Page domain: leave-origin detection reads Page
+      // navigation events, so it never depends on the agent enabling Page
+      // (and the agent cannot disable it: Page.disable is not allowed). This
+      // does not go through the agent allowlist and the agent gets no reply.
+      // Fail closed: without it the run is not attached.
+      try {
+        await chrome.debugger.sendCommand(
+          { tabId: current.tabId },
+          'Page.enable',
+        );
+      } catch {
+        console.warn('relay: Page.enable failed; refusing attach');
+        await chrome.debugger.detach({ tabId: current.tabId }).catch(() => {});
+        throw new Error('could not enable page events');
+      }
+      if (current.blocked || current.stopped) {
+        await chrome.debugger.detach({ tabId: current.tabId }).catch(() => {});
+        throw new Error(OUT_OF_SCOPE);
+      }
       current.attached = true;
       current.mainFrameId = target.id;
       return redact(current, 'Target.attachToTarget', {
