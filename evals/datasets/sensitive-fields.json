@@ -1,0 +1,424 @@
+[
+  {
+    "id": "pw-unlabeled",
+    "field": {
+      "inputType": "password"
+    },
+    "sensitive": true,
+    "why": "password type with no label at all"
+  },
+  {
+    "id": "pw-code",
+    "field": {
+      "inputType": "password",
+      "label": "Code"
+    },
+    "sensitive": true,
+    "why": "password type with an innocuous label"
+  },
+  {
+    "id": "pw-label",
+    "field": {
+      "inputType": "password",
+      "label": "Password"
+    },
+    "sensitive": true,
+    "why": "password label and type"
+  },
+  {
+    "id": "pw-text-label",
+    "field": {
+      "inputType": "text",
+      "label": "Password"
+    },
+    "sensitive": true,
+    "why": "password label on a text input"
+  },
+  {
+    "id": "passcode",
+    "field": {
+      "label": "Passcode"
+    },
+    "sensitive": true,
+    "why": "passcode"
+  },
+  {
+    "id": "ssn",
+    "field": {
+      "label": "SSN"
+    },
+    "sensitive": true,
+    "why": "social security number abbreviation"
+  },
+  {
+    "id": "ss-hash",
+    "field": {
+      "label": "SS#"
+    },
+    "sensitive": true,
+    "why": "SSN abbreviation with hash"
+  },
+  {
+    "id": "social-sec",
+    "field": {
+      "label": "Social Sec #"
+    },
+    "sensitive": true,
+    "why": "abbreviated social security label"
+  },
+  {
+    "id": "ssn-last4",
+    "field": {
+      "label": "SSN (last 4)"
+    },
+    "sensitive": true,
+    "why": "partial SSN is still sensitive"
+  },
+  {
+    "id": "ssn-name-attr",
+    "field": {
+      "label": "Number",
+      "name": "applicant_ssn"
+    },
+    "sensitive": true,
+    "why": "signal only in name attribute"
+  },
+  {
+    "id": "ssn-autocomplete",
+    "field": {
+      "label": "ID",
+      "autocomplete": "social-security-number"
+    },
+    "sensitive": true,
+    "why": "autocomplete token contains social"
+  },
+  {
+    "id": "itin",
+    "field": {
+      "label": "ITIN"
+    },
+    "sensitive": true,
+    "why": "individual taxpayer identification number"
+  },
+  {
+    "id": "tin",
+    "field": {
+      "label": "TIN"
+    },
+    "sensitive": true,
+    "why": "tax identification number"
+  },
+  {
+    "id": "tax-id",
+    "field": {
+      "label": "Tax ID"
+    },
+    "sensitive": true,
+    "why": "tax id"
+  },
+  {
+    "id": "routing",
+    "field": {
+      "label": "Routing #"
+    },
+    "sensitive": true,
+    "why": "bank routing number"
+  },
+  {
+    "id": "acct-no",
+    "field": {
+      "label": "Acct. no."
+    },
+    "sensitive": true,
+    "why": "abbreviated account number"
+  },
+  {
+    "id": "account-number",
+    "field": {
+      "label": "Bank account number"
+    },
+    "sensitive": true,
+    "why": "bank account number"
+  },
+  {
+    "id": "card-number",
+    "field": {
+      "label": "Credit card number"
+    },
+    "sensitive": true,
+    "why": "card number"
+  },
+  {
+    "id": "cvv",
+    "field": {
+      "label": "CVV"
+    },
+    "sensitive": true,
+    "why": "card security code"
+  },
+  {
+    "id": "cc-number-ac",
+    "field": {
+      "label": "Number",
+      "autocomplete": "cc-number"
+    },
+    "sensitive": true,
+    "why": "cc-number autocomplete"
+  },
+  {
+    "id": "cc-exp-ac",
+    "field": {
+      "label": "Expires",
+      "autocomplete": "cc-exp"
+    },
+    "sensitive": true,
+    "why": "cc-exp autocomplete"
+  },
+  {
+    "id": "otp",
+    "field": {
+      "label": "Verification code",
+      "autocomplete": "one-time-code"
+    },
+    "sensitive": true,
+    "why": "one-time code"
+  },
+  {
+    "id": "pin",
+    "field": {
+      "label": "PIN"
+    },
+    "sensitive": true,
+    "why": "PIN alone is sensitive"
+  },
+  {
+    "id": "pin-code-branch",
+    "field": {
+      "label": "Pin code of branch"
+    },
+    "sensitive": true,
+    "why": "pin token is sensitive; fails toward sensitive. Postal labels use zip or postal"
+  },
+  {
+    "id": "security-answer",
+    "field": {
+      "label": "Security answer"
+    },
+    "sensitive": true,
+    "why": "security question answer"
+  },
+  {
+    "id": "a-number",
+    "field": {
+      "label": "A-Number"
+    },
+    "sensitive": true,
+    "why": "immigration alien number"
+  },
+  {
+    "id": "dl",
+    "field": {
+      "label": "Driver license no."
+    },
+    "sensitive": true,
+    "why": "driver license number"
+  },
+  {
+    "id": "dl-apos",
+    "field": {
+      "label": "Driver's license number"
+    },
+    "sensitive": true,
+    "why": "driver license with apostrophe"
+  },
+  {
+    "id": "passport",
+    "field": {
+      "label": "Passport #"
+    },
+    "sensitive": true,
+    "why": "passport number"
+  },
+  {
+    "id": "calworks",
+    "field": {
+      "label": "CalWORKs ID"
+    },
+    "sensitive": true,
+    "why": "benefit id"
+  },
+  {
+    "id": "calworks-name",
+    "field": {
+      "label": "Identifier",
+      "name": "calworks_id"
+    },
+    "sensitive": true,
+    "why": "benefit id in name attribute"
+  },
+  {
+    "id": "case-number",
+    "field": {
+      "label": "Case number"
+    },
+    "sensitive": true,
+    "why": "benefit case number"
+  },
+  {
+    "id": "conflict-name-label",
+    "field": {
+      "label": "Notes",
+      "name": "ssn"
+    },
+    "sensitive": true,
+    "why": "conflicting signals fail toward sensitive"
+  },
+  {
+    "id": "social-worker",
+    "field": {
+      "label": "Social worker name"
+    },
+    "sensitive": false,
+    "why": "near miss: social worker"
+  },
+  {
+    "id": "account-holder",
+    "field": {
+      "label": "Account holder name"
+    },
+    "sensitive": false,
+    "why": "near miss: account holder"
+  },
+  {
+    "id": "card-on-file",
+    "field": {
+      "label": "Card on file: no"
+    },
+    "sensitive": false,
+    "why": "near miss: card on file"
+  },
+  {
+    "id": "contact-method",
+    "field": {
+      "label": "Preferred contact method"
+    },
+    "sensitive": false,
+    "why": "preferred contact is not sensitive"
+  },
+  {
+    "id": "street",
+    "field": {
+      "label": "Street address"
+    },
+    "sensitive": false,
+    "why": "address is not sensitive"
+  },
+  {
+    "id": "dob",
+    "field": {
+      "label": "Date of birth"
+    },
+    "sensitive": false,
+    "why": "date of birth is not sensitive"
+  },
+  {
+    "id": "phone",
+    "field": {
+      "label": "Phone"
+    },
+    "sensitive": false,
+    "why": "phone is not sensitive"
+  },
+  {
+    "id": "email",
+    "field": {
+      "label": "Email address",
+      "autocomplete": "email"
+    },
+    "sensitive": false,
+    "why": "email is not sensitive"
+  },
+  {
+    "id": "zip",
+    "field": {
+      "label": "ZIP / postal code"
+    },
+    "sensitive": false,
+    "why": "postal code is not sensitive"
+  },
+  {
+    "id": "first-name",
+    "field": {
+      "label": "First name",
+      "autocomplete": "given-name"
+    },
+    "sensitive": false,
+    "why": "name is not sensitive"
+  },
+  {
+    "id": "cc-name",
+    "field": {
+      "label": "Name on card",
+      "autocomplete": "cc-name"
+    },
+    "sensitive": false,
+    "why": "cc-name is not sensitive"
+  },
+  {
+    "id": "a-number-of",
+    "field": {
+      "label": "Enter a number of dependents"
+    },
+    "sensitive": false,
+    "why": "a number of is a count, not an A-Number"
+  },
+  {
+    "id": "household",
+    "field": {
+      "label": "Household size"
+    },
+    "sensitive": false,
+    "why": "ordinary field"
+  },
+  {
+    "id": "employer",
+    "field": {
+      "label": "Employer name"
+    },
+    "sensitive": false,
+    "why": "ordinary field"
+  },
+  {
+    "id": "income",
+    "field": {
+      "label": "Monthly income"
+    },
+    "sensitive": false,
+    "why": "ordinary field"
+  },
+  {
+    "id": "tinted",
+    "field": {
+      "label": "Tinted windows"
+    },
+    "sensitive": false,
+    "why": "tin only as a whole word"
+  },
+  {
+    "id": "empty",
+    "field": {},
+    "sensitive": false,
+    "why": "empty descriptor"
+  },
+  {
+    "id": "textbox-role",
+    "field": {
+      "role": "textbox",
+      "inputType": "text",
+      "label": "Comments",
+      "placeholder": "Anything else?"
+    },
+    "sensitive": false,
+    "why": "ordinary textarea"
+  }
+]
