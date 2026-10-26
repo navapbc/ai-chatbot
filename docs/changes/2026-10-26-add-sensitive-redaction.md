@@ -6,7 +6,7 @@ Extension runs now keep sensitive values (SSN, bank and card numbers, passwords,
 
 ## Changes made
 
-Roughly 46 files, 43 commits on top of `browser-extension` (`git diff browser-extension...HEAD --stat`).
+About 53 files and 49 commits on top of `browser-extension` (`git diff browser-extension...HEAD --stat`).
 
 - Classifier: `lib/relay/sensitive-fields.ts` (pure; label, name, id, autocomplete, placeholder) with `evals/datasets/sensitive-fields.json` and a Jev question and eval (`lib/jev/questions.ts`, `evals/jev-questions.eval.ts`) for regression scoring.
 - Redaction: `lib/relay/redactor.ts` and `extension/src/redaction.ts` mask sensitive fields in accessibility trees, `DOM.describeNode`, URLs and `Runtime.*` results, scrub registered known values in every encoding, and mask value-shaped data. `extension/src/bridge.ts` routes every reply and event through them and exposes `addKnownValue`.
