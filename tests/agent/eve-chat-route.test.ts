@@ -971,6 +971,11 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
     it.each([
       ['an SSN-shaped answer', 'call-a', '123-45-6789'],
       ['a label and value answer', 'call-r', 'case number 1234567890'],
+      [
+        'a pasted record that stripping would change',
+        'call-r',
+        '{"record_id":"R1","participant":{"name":{"first":"A","last":"B"},"calworks_id":"zz-900"}}',
+      ],
     ])(
       'refuses %s without touching Eve, the token or pending',
       async (_n, requestId, text) => {

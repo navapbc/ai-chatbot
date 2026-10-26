@@ -184,14 +184,24 @@ export async function POST(request: Request) {
           const prompt =
             pending.find((p) => p.requestId === response.requestId)?.prompt ??
             '';
-          const checked = relayText(`${prompt}: ${response.text}`);
           if (answerChars > MAX_RELAY_TEXT_CHARS) {
             return new ChatSDKError(
               'bad_request:api',
               'message_too_large',
             ).toResponse();
           }
-          if (!checked.ok) {
+          const checked = relayText(`${prompt}: ${response.text}`);
+          // The raw answer is what Eve receives, so it must equal what was
+          // checked: an answer that stripping would change (a pasted record
+          // with sensitive keys) is refused, never forwarded or rewritten.
+          const strippedAnswer = stripSensitiveText(response.text);
+          if (!checked.ok || strippedAnswer !== response.text) {
+            if (checked.ok) {
+              return new ChatSDKError(
+                'bad_request:api',
+                'sensitive_value_in_message',
+              ).toResponse();
+            }
             return new ChatSDKError(
               'bad_request:api',
               checked.reason,
