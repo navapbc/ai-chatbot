@@ -1,4 +1,5 @@
-import type { RelayCredentials } from '@/lib/relay/eve-relay-browser';
+import type { InputAnswer } from '@/lib/ai/eve/input-requests';
+import type { RelayRunRef } from '@/lib/relay/eve-relay-browser';
 
 // Eve is mounted on this app's own origin: next.config.ts wraps the config in
 // `withEve()`, which rewrites /eve/v1/** to the Eve runtime. So the default
@@ -40,39 +41,62 @@ async function postJson(
 export async function createEveSession(
   message: string,
   model?: string,
-  relay?: RelayCredentials,
+  relay?: RelayRunRef,
 ) {
-  // Credentials travel in headers only (never the body or message text); the
-  // channel auth turns them into session attributes for the browser tool.
+  // The run reference travels in headers only (never the body or message
+  // text); the channel auth turns it into session attributes for the browser
+  // tool. It is not secret: no token is sent, the tool fetches one later.
   const headers: Record<string, string> = {};
   if (model) headers['x-eve-model'] = model;
   if (relay) {
-    // Without the shared secret the channel would ignore the credentials, so
-    // fail here rather than send them anyway.
+    // Without the shared secret the channel would ignore the reference, so
+    // fail here rather than send it anyway.
     const secret = process.env.EVE_INTERNAL_SECRET;
     if (!secret) throw new Error('relay sessions require EVE_INTERNAL_SECRET');
     headers['x-eve-internal-secret'] = secret;
     headers['x-eve-relay-url'] = relay.url;
-    headers['x-eve-relay-token'] = relay.token;
+    headers['x-eve-relay-run'] = relay.runId;
   }
   const { sessionId, continuationToken } = await postJson(
     '/eve/v1/session',
     { message },
     Object.keys(headers).length > 0 ? headers : undefined,
   );
+  // Both are stored on the run row; an empty one would strand the chat.
+  if (!sessionId || !continuationToken) {
+    throw new Error('Eve create returned no session id or token');
+  }
   return { sessionId, continuationToken };
 }
 
+/**
+ * Continue a session with a plain message (string form) or with structured
+ * answers to pending `ask_question` requests. Only keys that are set are sent,
+ * so an answer turn carries no `message`.
+ *
+ * Returns the session the turn landed on (`x-eve-session-id`). When the old
+ * run has ended, Eve's send path starts a fresh session instead of failing,
+ * so callers must compare it with the session they meant to continue.
+ */
 export async function continueEveSession(
   sessionId: string,
   continuationToken: string,
-  message: string,
+  input: string | { message?: string; inputResponses?: InputAnswer[] },
 ) {
-  const { continuationToken: next } = await postJson(
+  const { message, inputResponses } =
+    typeof input === 'string'
+      ? { message: input, inputResponses: undefined }
+      : input;
+  const { continuationToken: next, sessionId: landedOn } = await postJson(
     `/eve/v1/session/${sessionId}`,
-    { continuationToken, message },
+    {
+      continuationToken,
+      ...(message !== undefined ? { message } : {}),
+      ...(inputResponses !== undefined ? { inputResponses } : {}),
+    },
   );
-  return { continuationToken: next };
+  if (!landedOn) throw new Error('Eve continue returned no session id');
+  return { continuationToken: next, sessionId: landedOn };
 }
 
 /**

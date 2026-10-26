@@ -848,4 +848,221 @@ describe('RunHub', () => {
       }),
     );
   });
+
+  describe('resumed (service-worker restart)', () => {
+    // A restarted worker re-dials, registers, then sends `resumed` once.
+    const restartExtension = (hub: RunHub, ext: FakeSocket) => {
+      ext.close();
+      const rebuilt = new FakeSocket();
+      attachExt(hub, rebuilt);
+      rebuilt.receive({ type: 'resumed' });
+      return rebuilt;
+    };
+
+    it('closes the agent with "extension restarted" and keeps the run', async () => {
+      const { hub, logs } = makeHub({ resumeWindowMs: 60_000 });
+      const ext = new FakeSocket();
+      const agent = new FakeSocket();
+      attachExt(hub, ext);
+      hub.attachAgent(RUN, ORIGIN, agent);
+
+      const rebuilt = restartExtension(hub, ext);
+      await vi.waitFor(() =>
+        expect(agent.closed).toEqual({
+          code: 1000,
+          reason: 'extension restarted',
+        }),
+      );
+      expect(rebuilt.closed).toBeNull();
+      expect(logs).not.toContainEqual(
+        expect.objectContaining({ event: 'run-closed' }),
+      );
+
+      // No tombstone: a new agent attaches and reaches the same extension.
+      const next = new FakeSocket();
+      expect(hub.attachAgent(RUN, ORIGIN, next)).toBe('ok');
+      next.receive({ id: 30, sessionId: 'tab-7', method: 'Page.enable' });
+      await vi.waitFor(() => expect(rebuilt.sent).toHaveLength(1));
+      const cmd = rebuilt.messages()[0];
+      expect(cmd).toMatchObject({ type: 'cdp', method: 'Page.enable' });
+      rebuilt.receive({ type: 'reply', id: cmd.id, result: { ok: 1 } });
+      await vi.waitFor(() =>
+        expect(lastReply(next, 30)).toEqual({
+          id: 30,
+          sessionId: 'tab-7',
+          result: { ok: 1 },
+        }),
+      );
+      expect(next.closed).toBeNull();
+      hub.closeRun(RUN, 'test over');
+    });
+
+    it('resets an agent attached through another hub', async () => {
+      const bus = createLocalBus();
+      buses.push(bus);
+      const extHub = makeHub({ bus, resumeWindowMs: 60_000 }).hub;
+      const agentHub = makeHub({ bus, resumeWindowMs: 60_000 }).hub;
+      const ext = new FakeSocket();
+      const agent = new FakeSocket();
+      attachExt(extHub, ext);
+      agentHub.attachAgent(RUN, ORIGIN, agent);
+
+      restartExtension(extHub, ext);
+      await vi.waitFor(() =>
+        expect(agent.closed).toEqual({
+          code: 1000,
+          reason: 'extension restarted',
+        }),
+      );
+      expect(agentHub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('ok');
+    });
+
+    it("never flushes the old agent's queued command to the rebuilt extension", async () => {
+      const { hub } = makeHub({ resumeWindowMs: 60_000 });
+      const ext = new FakeSocket();
+      const agent = new FakeSocket();
+      attachExt(hub, ext);
+      hub.attachAgent(RUN, ORIGIN, agent);
+      ext.close();
+      // Sent while the worker is down: held in the agent's queue.
+      agent.receive({ id: 40, sessionId: 'tab-7', method: 'Page.enable' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const rebuilt = restartExtension(hub, ext);
+      await vi.waitFor(() =>
+        expect(agent.closed?.reason).toBe('extension restarted'),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(rebuilt.sent).toHaveLength(0);
+      hub.closeRun(RUN, 'test over');
+    });
+
+    it('resets at once when resumed arrives after the extension was announced', async () => {
+      const { hub, logs } = makeHub({ resumeWindowMs: 60_000 });
+      const ext = new FakeSocket();
+      const agent = new FakeSocket();
+      attachExt(hub, ext);
+      hub.attachAgent(RUN, ORIGIN, agent);
+      ext.close();
+      const rebuilt = new FakeSocket();
+      attachExt(hub, rebuilt);
+      await vi.waitFor(() =>
+        expect(logs).toContainEqual(
+          expect.objectContaining({ event: 'run-resumed' }),
+        ),
+      );
+      expect(agent.closed).toBeNull();
+
+      rebuilt.receive({ type: 'resumed' });
+      await vi.waitFor(() =>
+        expect(agent.closed).toEqual({
+          code: 1000,
+          reason: 'extension restarted',
+        }),
+      );
+      expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('ok');
+      hub.closeRun(RUN, 'test over');
+    });
+
+    it('keeps a cross-hub run open past the resume window after a reset', async () => {
+      const bus = createLocalBus();
+      buses.push(bus);
+      const extHub = makeHub({ bus, resumeWindowMs: 100 });
+      const agentHub = makeHub({ bus, resumeWindowMs: 100 });
+      const ext = new FakeSocket();
+      const agent = new FakeSocket();
+      attachExt(extHub.hub, ext);
+      agentHub.hub.attachAgent(RUN, ORIGIN, agent);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const rebuilt = restartExtension(extHub.hub, ext);
+      await vi.waitFor(() =>
+        expect(agent.closed?.reason).toBe('extension restarted'),
+      );
+      // Past the window: no hold may still be running on either hub.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      for (const { logs } of [extHub, agentHub]) {
+        expect(logs).not.toContainEqual(
+          expect.objectContaining({ event: 'run-closed' }),
+        );
+      }
+      const next = new FakeSocket();
+      expect(agentHub.hub.attachAgent(RUN, ORIGIN, next)).toBe('ok');
+      next.receive({ id: 41, sessionId: 'tab-7', method: 'Page.enable' });
+      await vi.waitFor(() => expect(rebuilt.sent).toHaveLength(1));
+      const cmd = rebuilt.messages()[0];
+      rebuilt.receive({ type: 'reply', id: cmd.id, result: {} });
+      await vi.waitFor(() => expect(lastReply(next, 41)).toBeDefined());
+      expect(next.closed).toBeNull();
+    });
+
+    it('does not reset when a socket that sent resumed early registers later', async () => {
+      const { hub, logs } = makeHub({ resumeWindowMs: 60_000 });
+      const ext = new FakeSocket();
+      const agent = new FakeSocket();
+      attachExt(hub, ext);
+      hub.attachAgent(RUN, ORIGIN, agent);
+
+      const pending = new FakeSocket();
+      hub.attachExtension(RUN, ORIGIN, pending);
+      pending.receive({ type: 'resumed' });
+      pending.receive({
+        type: 'register',
+        runId: RUN,
+        tabId: 7,
+        origin: ORIGIN,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(agent.closed).toBeNull();
+      expect(logs).not.toContainEqual(
+        expect.objectContaining({ event: 'extension-restarted' }),
+      );
+      expect(logs).not.toContainEqual(
+        expect.objectContaining({ event: 'agent-reset' }),
+      );
+      hub.closeRun(RUN, 'test over');
+    });
+
+    it('does nothing for resumed from a pending or unregistered socket', async () => {
+      const { hub } = makeHub();
+      const ext = new FakeSocket();
+      const agent = new FakeSocket();
+      attachExt(hub, ext);
+      hub.attachAgent(RUN, ORIGIN, agent);
+
+      const pending = new FakeSocket();
+      hub.attachExtension(RUN, ORIGIN, pending);
+      pending.receive({ type: 'resumed' });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(agent.closed).toBeNull();
+      expect(ext.closed).toBeNull();
+      expect(pending.closed).toBeNull();
+      expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('busy');
+      hub.closeRun(RUN, 'test over');
+    });
+
+    it('ignores a repeated or malformed resumed without closing a socket', async () => {
+      const { hub } = makeHub({ resumeWindowMs: 60_000 });
+      const ext = new FakeSocket();
+      const agent = new FakeSocket();
+      attachExt(hub, ext);
+      hub.attachAgent(RUN, ORIGIN, agent);
+      const rebuilt = restartExtension(hub, ext);
+      await vi.waitFor(() => expect(agent.closed).not.toBeNull());
+
+      const next = new FakeSocket();
+      expect(hub.attachAgent(RUN, ORIGIN, next)).toBe('ok');
+      for (const repeat of [
+        { type: 'resumed' },
+        { type: 'resumed', reason: 'again' },
+        '{"type":"resumed"',
+      ]) {
+        expect(() => rebuilt.receive(repeat)).not.toThrow();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(next.closed).toBeNull();
+      expect(rebuilt.closed).toBeNull();
+      hub.closeRun(RUN, 'test over');
+    });
+  });
 });

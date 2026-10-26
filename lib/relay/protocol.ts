@@ -32,4 +32,10 @@ export type ExtensionToRelay =
   | { type: 'reply'; id: string; result?: unknown; error?: string }
   | { type: 'event'; sessionId?: string; method: string; params: unknown }
   | { type: 'tabClosed' }
-  | { type: 'stop'; reason?: StopReason };
+  | { type: 'stop'; reason?: StopReason }
+  /**
+   * Sent once, right after `register`, by a run the extension rebuilt from
+   * storage after its service worker restarted. Its debugger attachment and
+   * child sessions are gone, so the relay drops the agent connection.
+   */
+  | { type: 'resumed' };

@@ -1,12 +1,14 @@
 import type { ToolContext } from 'eve/tools';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { _resetAgentTokenCache } from '@/lib/relay/agent-token';
 import {
   relayCredentialState,
-  relayCredentialsFrom,
+  relayRunRefFrom,
   runRelayCommand,
 } from '@/lib/relay/eve-relay-browser';
 
 const FAKE_TOKEN = 'FAKE-TOKEN-do-not-use-0123456789abcdef';
+const RUN = '0b6f7c4e-5d1a-4c55-9a53-3f7d2f0c9a11';
 
 type Principal = {
   attributes: Record<string, string | readonly string[]>;
@@ -31,45 +33,43 @@ const ctxWith = (
 ) =>
   ({ session: { id, auth: { initiator, current } } }) as unknown as ToolContext;
 
-describe('relayCredentialsFrom', () => {
+describe('relayRunRefFrom', () => {
   it('returns null with no attributes', () => {
-    expect(relayCredentialsFrom(ctxWith(null))).toBeNull();
-    expect(relayCredentialsFrom(ctxWith(principal({})))).toBeNull();
+    expect(relayRunRefFrom(ctxWith(null))).toBeNull();
+    expect(relayRunRefFrom(ctxWith(principal({})))).toBeNull();
   });
 
-  it('returns the credentials when both attributes are present', () => {
+  it('returns the run reference when both attributes are present', () => {
     const ctx = ctxWith(
-      principal({ relayUrl: 'wss://relay.example', relayToken: FAKE_TOKEN }),
+      principal({ relayUrl: 'wss://relay.example', relayRunId: RUN }),
     );
-    expect(relayCredentialsFrom(ctx)).toEqual({
+    expect(relayRunRefFrom(ctx)).toEqual({
       url: 'wss://relay.example',
-      token: FAKE_TOKEN,
+      runId: RUN,
     });
   });
 
   it('prefers the initiator over the current caller', () => {
     const ctx = ctxWith(
-      principal({ relayUrl: 'wss://a.example', relayToken: 'initiator' }),
-      principal({ relayUrl: 'wss://b.example', relayToken: 'current' }),
+      principal({ relayUrl: 'wss://a.example', relayRunId: 'initiator' }),
+      principal({ relayUrl: 'wss://b.example', relayRunId: 'current' }),
     );
-    expect(relayCredentialsFrom(ctx)?.token).toBe('initiator');
+    expect(relayRunRefFrom(ctx)?.runId).toBe('initiator');
   });
 
   it('falls back to the current caller when the initiator has none', () => {
     const ctx = ctxWith(
       principal({}),
-      principal({ relayUrl: 'wss://b.example', relayToken: 'current' }),
+      principal({ relayUrl: 'wss://b.example', relayRunId: 'current' }),
     );
-    expect(relayCredentialsFrom(ctx)?.token).toBe('current');
+    expect(relayRunRefFrom(ctx)?.runId).toBe('current');
   });
 
   it('returns null when only one of the two is set', () => {
     expect(
-      relayCredentialsFrom(ctxWith(principal({ relayUrl: 'wss://a.example' }))),
+      relayRunRefFrom(ctxWith(principal({ relayUrl: 'wss://a.example' }))),
     ).toBeNull();
-    expect(
-      relayCredentialsFrom(ctxWith(principal({ relayToken: FAKE_TOKEN }))),
-    ).toBeNull();
+    expect(relayRunRefFrom(ctxWith(principal({ relayRunId: RUN })))).toBeNull();
   });
 });
 
@@ -78,11 +78,11 @@ describe('relayCredentialState', () => {
     expect(relayCredentialState(ctxWith(null)).kind).toBe('none');
     expect(
       relayCredentialState(
-        ctxWith(principal({ relayUrl: 'wss://a.example', relayToken: 't' })),
+        ctxWith(principal({ relayUrl: 'wss://a.example', relayRunId: 't' })),
       ).kind,
     ).toBe('complete');
     expect(
-      relayCredentialState(ctxWith(principal({ relayToken: 't' }))).kind,
+      relayCredentialState(ctxWith(principal({ relayRunId: 't' }))).kind,
     ).toBe('partial');
     expect(
       relayCredentialState(ctxWith(principal({ relayUrl: 'wss://a.example' })))
@@ -91,12 +91,31 @@ describe('relayCredentialState', () => {
   });
 });
 
+const fetchMock = vi.fn();
+beforeEach(() => {
+  _resetAgentTokenCache();
+  vi.stubEnv('EVE_INTERNAL_SECRET', 'sekret-value');
+  fetchMock.mockReset();
+  fetchMock.mockImplementation(
+    async () =>
+      new Response(
+        JSON.stringify({ token: FAKE_TOKEN, expiresAt: 4_000_000_000 }),
+        { status: 200 },
+      ),
+  );
+  vi.stubGlobal('fetch', fetchMock);
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
 describe('relay URL allowlist', () => {
   const run = (url: string) =>
-    runRelayCommand(
-      ctxWith(principal({ relayUrl: url, relayToken: FAKE_TOKEN })),
-      ['get', 'url'],
-    );
+    runRelayCommand(ctxWith(principal({ relayUrl: url, relayRunId: RUN })), [
+      'get',
+      'url',
+    ]);
 
   it('refuses another origin when RELAY_PUBLIC_URL is set', async () => {
     vi.stubEnv('RELAY_PUBLIC_URL', 'wss://relay.example');
@@ -178,7 +197,7 @@ describe('runRelayCommand failures', () => {
     ['an unparseable url', 'not a url'],
   ];
   it.each(cases)('refuses %s without echoing the token', async (_n, url) => {
-    const ctx = ctxWith(principal({ relayUrl: url, relayToken: FAKE_TOKEN }));
+    const ctx = ctxWith(principal({ relayUrl: url, relayRunId: RUN }));
     const result = await runRelayCommand(ctx, ['snapshot']);
     expect(result.success).toBe(false);
     expect(result.liveViewUrl).toBeNull();
@@ -190,6 +209,47 @@ describe('runRelayCommand failures', () => {
     const result = await runRelayCommand(ctxWith(null), ['snapshot']);
     expect(result.success).toBe(false);
     expect(result.error).toBeTruthy();
+  });
+});
+
+describe('runRelayCommand with a fetched token', () => {
+  it('fails without starting agent-browser when the token fetch fails', async () => {
+    fetchMock.mockResolvedValue(new Response('no', { status: 500 }));
+    const result = await runRelayCommand(
+      ctxWith(principal({ relayUrl: 'ws://127.0.0.1:9', relayRunId: RUN })),
+      ['snapshot'],
+    );
+    expect(result).toMatchObject({ success: false, liveViewUrl: null });
+    expect(result.error).toBe('The relay token request was refused.');
+    expect(JSON.stringify(result)).not.toContain(FAKE_TOKEN);
+    expect(JSON.stringify(result)).not.toContain('sekret-value');
+    vi.unstubAllEnvs();
+  });
+
+  it('ignores a legacy relayToken attribute and the retired header value', async () => {
+    const SENTINEL = 'SENTINEL-LEGACY-TOKEN';
+    const result = await runRelayCommand(
+      ctxWith(
+        principal({
+          relayUrl: 'ws://127.0.0.1:9',
+          relayRunId: RUN,
+          relayToken: SENTINEL,
+        }),
+      ),
+      ['snapshot'],
+    );
+    expect(JSON.stringify(result)).not.toContain(SENTINEL);
+    expect(JSON.stringify(result)).not.toContain(FAKE_TOKEN);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('redacts the fetched token from a failing command', async () => {
+    const result = await runRelayCommand(
+      ctxWith(principal({ relayUrl: 'ws://127.0.0.1:9', relayRunId: RUN })),
+      ['snapshot'],
+    );
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(FAKE_TOKEN);
   });
 });
 
@@ -205,7 +265,7 @@ describe('browser tool routing', () => {
       }
     ).execute(
       { command: ['snapshot'] },
-      ctxWith(principal({ relayToken: FAKE_TOKEN })),
+      ctxWith(principal({ relayRunId: RUN })),
     );
     expect(result).toMatchObject({
       success: false,
@@ -257,8 +317,8 @@ describe('check_submit_gate routing', () => {
   };
 
   it.each([
-    ['complete', { relayUrl: 'wss://relay.example', relayToken: FAKE_TOKEN }],
-    ['partial', { relayToken: FAKE_TOKEN }],
+    ['complete', { relayUrl: 'wss://relay.example', relayRunId: RUN }],
+    ['partial', { relayRunId: RUN }],
   ])('refuses on %s relay credentials without a browser', async (_n, attrs) => {
     const { runBrowserCommand, execute } = await load();
     const result = await execute(ctxWith(principal(attrs)));
@@ -281,5 +341,298 @@ describe('check_submit_gate routing', () => {
     expect(runBrowserCommand.mock.calls[0][0]).toBe(ctx);
     expect(result).toMatchObject({ success: false, error: 'kernel path ran' });
     vi.doUnmock('@/lib/kernel/eve-browser');
+  });
+});
+
+describe('recovery after an extension restart', () => {
+  const RESTORED =
+    'The browser connection was restored. Take a new snapshot before continuing.';
+  const CLOSED = 'CDP response channel closed';
+
+  let seq = 0;
+  const load = async (
+    answer: (command: readonly string[], session: string) => unknown,
+  ) => {
+    vi.resetModules();
+    const calls: Array<{ command: string[]; session: string; cdp?: string }> =
+      [];
+    const runCommand = vi.fn(
+      async (
+        command: readonly string[],
+        options: { session: string; cdpUrl?: string },
+      ) => {
+        calls.push({
+          command: [...command],
+          session: options.session,
+          cdp: options.cdpUrl,
+        });
+        return answer(command, options.session);
+      },
+    );
+    vi.doMock('@/lib/kernel/cli', () => ({ runCommand }));
+    const mod = await import('@/lib/relay/eve-relay-browser');
+    const { cliSessionName } = await import('@/lib/kernel/session-store');
+    seq += 1;
+    const ctx = ctxWith(
+      principal({ relayUrl: 'ws://127.0.0.1:9', relayRunId: `${RUN}-${seq}` }),
+      null,
+      `wrun_restart_${seq}`,
+    );
+    const base = cliSessionName('s', `wrun_restart_${seq}`);
+    // Calls that ran a browser command, not the old session's close.
+    const ran = () => calls.filter((c) => c.command[0] !== 'close');
+    return { run: mod.runRelayCommand, ctx, base, calls, ran };
+  };
+  afterEach(() => {
+    vi.doUnmock('@/lib/kernel/cli');
+  });
+
+  const ok = (data: unknown = 'snap') => ({ success: true, data, error: null });
+  const fail = (error: string) => ({ success: false, data: null, error });
+
+  it('does not retry a ref command and tells the agent to snapshot again', async () => {
+    const { run, ctx, base, ran } = await load(() => fail(CLOSED));
+    const result = await run(ctx, ['click', '@e3']);
+    expect(result).toEqual({
+      success: false,
+      error: RESTORED,
+      liveViewUrl: null,
+    });
+    expect(ran()).toEqual([
+      { command: ['click', '@e3'], session: base, cdp: expect.any(String) },
+    ]);
+  });
+
+  it('retries a ref-free command once on the next session name', async () => {
+    let first = true;
+    const { run, ctx, base, ran, calls } = await load((command) => {
+      if (command[0] === 'close') return ok();
+      if (first) {
+        first = false;
+        return fail('CDP error (DOM.enable): not attached');
+      }
+      return ok('fresh snapshot');
+    });
+    const result = await run(ctx, ['snapshot', '-i']);
+    expect(result).toEqual({
+      success: true,
+      data: 'fresh snapshot',
+      error: null,
+      liveViewUrl: null,
+    });
+    expect(ran().map((c) => c.session)).toEqual([base, `${base}-r1`]);
+    // The old daemon session is closed before the retry runs.
+    expect(calls.map((c) => [c.command[0], c.session])).toEqual([
+      ['snapshot', base],
+      ['close', base],
+      ['snapshot', `${base}-r1`],
+    ]);
+  });
+
+  it('retries only once', async () => {
+    const { run, ctx, ran } = await load((command) =>
+      command[0] === 'close' ? ok() : fail(CLOSED),
+    );
+    const result = await run(ctx, ['snapshot', '-i']);
+    expect(result).toMatchObject({ success: false, error: CLOSED });
+    expect(ran()).toHaveLength(2);
+  });
+
+  it('does not retry a failure that is not a lost connection', async () => {
+    const { run, ctx, base, ran } = await load(() =>
+      fail('Unknown ref: e1 (element not found)'),
+    );
+    const result = await run(ctx, ['snapshot', '-i']);
+    expect(result).toMatchObject({ success: false });
+    await run(ctx, ['get', 'url']);
+    expect(ran().map((c) => c.session)).toEqual([base, base]);
+  });
+
+  it('treats a ref inside a batch step or a frame command as a ref command', async () => {
+    const { run, ctx, ran } = await load((command) =>
+      command[0] === 'close' ? ok() : fail(CLOSED),
+    );
+    expect(
+      (await run(ctx, ['batch', '--bail', 'fill @e2 Ada', 'press Tab'])).error,
+    ).toBe(RESTORED);
+    expect((await run(ctx, ['frame', '@e7'])).error).toBe(RESTORED);
+    // The batch failed and rotated; the frame command never ran.
+    expect(ran()).toHaveLength(1);
+  });
+
+  it('advances the session name once per restart', async () => {
+    let down = true;
+    const { run, ctx, base, ran } = await load((command, session) => {
+      if (command[0] === 'close') return ok();
+      if (down) {
+        down = false;
+        return fail(CLOSED);
+      }
+      return ok(session);
+    });
+    await run(ctx, ['snapshot', '-i']);
+    await run(ctx, ['get', 'url']);
+    down = true;
+    await run(ctx, ['snapshot', '-i']);
+    expect(ran().map((c) => c.session)).toEqual([
+      base,
+      `${base}-r1`,
+      `${base}-r1`,
+      `${base}-r1`,
+      `${base}-r2`,
+    ]);
+  });
+
+  it('rotates once when two commands are in flight and refuses the queued ref command', async () => {
+    let down = true;
+    const { run, ctx, base, ran } = await load((command) => {
+      if (command[0] === 'close') return ok();
+      if (down) {
+        down = false;
+        return fail('CDP error (Page.enable): tab or extension disconnected');
+      }
+      return ok();
+    });
+    const [snap, click, url] = await Promise.all([
+      run(ctx, ['snapshot', '-i']),
+      run(ctx, ['click', '@e5']),
+      run(ctx, ['get', 'url']),
+    ]);
+    expect(snap.success).toBe(true);
+    expect(click).toEqual({
+      success: false,
+      error: RESTORED,
+      liveViewUrl: null,
+    });
+    expect(url.success).toBe(true);
+    expect(ran().map((c) => [c.command[0], c.session])).toEqual([
+      ['snapshot', base],
+      ['snapshot', `${base}-r1`],
+      ['get', `${base}-r1`],
+    ]);
+  });
+
+  it('refuses ref commands after a rotation until a snapshot succeeds', async () => {
+    let down = true;
+    const { run, ctx, base, ran } = await load((command) => {
+      if (command[0] === 'close') return ok();
+      if (down) {
+        down = false;
+        return fail(CLOSED);
+      }
+      return ok();
+    });
+    // A read-only command detects the restart and is retried on -r1.
+    expect((await run(ctx, ['get', 'url'])).success).toBe(true);
+    // Its refs came from the old daemon: refused without running.
+    expect((await run(ctx, ['fill', '@e3', 'Ada'])).error).toBe(RESTORED);
+    expect((await run(ctx, ['get', 'url'])).success).toBe(true);
+    expect((await run(ctx, ['click', '@e3'])).error).toBe(RESTORED);
+    expect((await run(ctx, ['snapshot', '-i'])).success).toBe(true);
+    expect((await run(ctx, ['fill', '@e3', 'Ada'])).success).toBe(true);
+    expect(ran().map((c) => [c.command[0], c.session])).toEqual([
+      ['get', base],
+      ['get', `${base}-r1`],
+      ['get', `${base}-r1`],
+      ['snapshot', `${base}-r1`],
+      ['fill', `${base}-r1`],
+    ]);
+  });
+
+  it.each([
+    [['press', 'Enter']],
+    [['open', 'https://benefits.example.gov/next']],
+    [['click', '#submit']],
+    [['eval', 'document.title']],
+    [['get', 'cdp-url']],
+    [['tab', 'new']],
+    [['unknown-command']],
+    [['snapshot', '-s', '@e3']],
+  ])('does not run %j again after a lost connection', async (command) => {
+    const { run, ctx, base, ran } = await load((argv) =>
+      argv[0] === 'close' ? ok() : fail(CLOSED),
+    );
+    expect(await run(ctx, command)).toEqual({
+      success: false,
+      error: RESTORED,
+      liveViewUrl: null,
+    });
+    expect(ran()).toEqual([
+      { command, session: base, cdp: expect.any(String) },
+    ]);
+  });
+
+  it.each([
+    [['snapshot', '-i']],
+    [['screenshot']],
+    [['get', 'title']],
+    [['get', 'text', '#status']],
+    [['tab']],
+    [['tab', 'list']],
+  ])('retries the read-only %j once', async (command) => {
+    let first = true;
+    const { run, ctx, base, ran } = await load((argv) => {
+      if (argv[0] === 'close') return ok();
+      if (first) {
+        first = false;
+        return fail(CLOSED);
+      }
+      return ok();
+    });
+    expect((await run(ctx, command)).success).toBe(true);
+    expect(ran().map((c) => c.session)).toEqual([base, `${base}-r1`]);
+  });
+
+  it.each([
+    'CDP error (Runtime.evaluate): Error: the dialog was closed',
+    'Element is not attached to the DOM',
+    'CDP error (DOM.focus): not attached to the DOM',
+    'CDP error (DOM.focus): Node is detached, socket closed',
+    'Navigation failed: net::ERR_CONNECTION_CLOSED',
+    'page said: ECONNRESET',
+  ])(
+    'does not treat the page-style error %j as a lost connection',
+    async (error) => {
+      const { run, ctx, base, ran } = await load(() => fail(error));
+      expect(await run(ctx, ['snapshot', '-i'])).toMatchObject({
+        success: false,
+        error,
+      });
+      await run(ctx, ['get', 'url']);
+      expect(ran().map((c) => c.session)).toEqual([base, base]);
+    },
+  );
+
+  it.each([
+    'CDP response channel closed',
+    'CDP error (DOM.enable): not attached',
+    'CDP error (Page.enable): tab or extension disconnected',
+    'CDP error (Runtime.evaluate): extension restarted',
+    'ECONNRESET: socket hang up',
+    'EPIPE',
+  ])('treats the transport error %j as a lost connection', async (error) => {
+    let first = true;
+    const { run, ctx, base, ran } = await load((argv) => {
+      if (argv[0] === 'close') return ok();
+      if (first) {
+        first = false;
+        return fail(error);
+      }
+      return ok();
+    });
+    expect((await run(ctx, ['snapshot', '-i'])).success).toBe(true);
+    expect(ran().map((c) => c.session)).toEqual([base, `${base}-r1`]);
+  });
+
+  it('keeps the token out of the result when recovery fails', async () => {
+    const { run, ctx } = await load((command) =>
+      command[0] === 'close'
+        ? fail(`closed ${FAKE_TOKEN}`)
+        : fail(`ECONNRESET at ws://127.0.0.1:9/cdp?token=${FAKE_TOKEN}`),
+    );
+    for (const command of [['snapshot'], ['click', '@e1']]) {
+      const result = await run(ctx, command);
+      expect(JSON.stringify(result)).not.toContain(FAKE_TOKEN);
+    }
   });
 });

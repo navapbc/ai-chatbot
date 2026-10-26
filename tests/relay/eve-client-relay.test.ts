@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createEveSession } from '@/lib/ai/eve/eve-client';
 
-const relay = { url: 'wss://relay.example', token: 'tok-123' };
+const relay = {
+  url: 'wss://relay.example',
+  runId: '0b6f7c4e-5d1a-4c55-9a53-3f7d2f0c9a11',
+};
 
 describe('createEveSession with relay credentials', () => {
   const fetchMock = vi.fn();
   beforeEach(() => {
     fetchMock.mockResolvedValue(
-      new Response('{}', {
+      new Response(JSON.stringify({ continuationToken: 'eve:tok' }), {
         status: 200,
         headers: { 'x-eve-session-id': 's1' },
       }),
@@ -27,7 +30,6 @@ describe('createEveSession with relay credentials', () => {
     );
     expect(error).toBeInstanceOf(Error);
     expect(error.message).toBe('relay sessions require EVE_INTERNAL_SECRET');
-    expect(error.message).not.toContain(relay.token);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -38,8 +40,9 @@ describe('createEveSession with relay credentials', () => {
     expect(init.headers).toMatchObject({
       'x-eve-internal-secret': 'sekret',
       'x-eve-relay-url': relay.url,
-      'x-eve-relay-token': relay.token,
+      'x-eve-relay-run': relay.runId,
     });
+    expect(init.headers).not.toHaveProperty('x-eve-relay-token');
     expect(init.body).toBe(JSON.stringify({ message: 'hi' }));
   });
 

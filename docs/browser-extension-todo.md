@@ -36,11 +36,33 @@ Nothing here has been applied. The relay stays off until `RELAY_ENABLED` is `tru
 
 ## Plan 2: Agent Loop
 
-- [ ] Service-worker restart resume: the run is rebuilt unattached and nothing re-attaches, so commands fail with "not attached". Re-attach on resume and test with a real worker restart.
-- [ ] Postgres-backed Eve session continuity (replaces the in-memory `Map`).
-- [ ] `ask_question` as the Needs You card, and the structured progress contract (sections, counts, action log).
-- [ ] Verify Eve's Postgres world does not persist session auth attributes (only the local file world was checked).
-- [ ] Eve instructions: re-open the current URL before relying on cross-site iframe content; `frame <selector>` does not work in agent-browser 0.33.2, `frame @ref` does.
+- [x] Service-worker restart resume: the run re-attaches after a restart.
+- [x] Postgres-backed Eve session continuity (replaces the in-memory `Map`).
+- [x] `ask_question` as the Needs You card, and the structured progress contract (sections, counts, action log).
+- [x] Verify what Eve's Postgres world stores: Eve does persist session auth attributes, so the guarantee rests on the code (Eve carries only the run reference, the agent token is fetched at call time, and tool output is redacted). A scan of a local Postgres world, including zstd frames, found neither the retired `x-eve-relay-token` header value nor the internal secret. It did not search for a minted agent token.
+- [x] Eve instructions: re-open the current URL before relying on cross-site iframe content; `frame <selector>` does not work in agent-browser 0.33.2, `frame @ref` does.
+
+Follow-ups:
+
+- [ ] Stale `claim:` token recovery: a crash between the token claim and the final swap leaves a chat on a `claim:` token; needs a timestamped claim and stream resume at the stored index.
+- [ ] A lost concurrent first-turn race leaks an Eve session (Eve has no cancel call).
+- [ ] Stale-cursor replay can resurrect cleared pending questions when `setPending` landed but `advance` did not (needs a position guard or an atomic pending and cursor write); questions are also shown before they are persisted.
+- [ ] An answer turn whose pending clear fails and whose stream dies before `session.waiting` leaves the answered requests pending, so the next answer is validated against stale questions (same class as the replay item above).
+- [ ] A read resuming from a stale cursor stops at the earlier turn's `session.waiting`, so that turn's own output is not streamed (the token is now safe: `advance` never stores a stream token).
+- [ ] `EveRun` rows are never deleted when chats are removed: `store.remove` has no caller.
+- [ ] Decide whether to hold the turn claim until `session.waiting` instead of releasing it at the final swap. Today a follow-up sent while Eve is still running a turn reaches Eve (which folds it into the next turn) and its read replays from the old cursor; holding the claim closes that but widens the stranded-claim window (R7).
+- [ ] Dev databases may hold `EveRun` rows with an empty continuation token (stored by follow-ups before the fix); they need a one-off cleanup.
+- [ ] A relay follow-up that Eve delivers to a fresh session (the stored session's run ended) now fails the turn, but Eve has already started that fresh session without relay attributes and it runs the turn; cancel it (`POST /eve/v1/session/:id/cancel`) or decide how an ended relay run is restarted.
+- [ ] `report_progress` on web chats streams a raw `reportProgress` tool card that the web UI has no renderer for.
+- [ ] The built-in `agent` tool (Eve's root-only copy of the agent) gets the parent's tools and auth but runs in its own child session, so on a relay run its `browser` calls are now refused by the agent-token route's session binding. Consider disabling it on extension runs (the extension-run skill already tells the agent not to use it), or decide how a child may share the run.
+- [ ] `fetchAgentToken`: in-flight dedupe, and cache eviction when the relay rejects the token.
+- [ ] Restart recovery: reset only agents that attached before the extension went away; `ELEMENT_REF` recognizes only the `@eN` form; add a committed test against real agent-browser error wording.
+- [ ] The stale marker sentence stays in stored caseworker text and reaches Jev corroboration context (harmless noise).
+
+- [ ] Hub restart minors: reword the hub comment that says queued commands fail with `not attached` (a queued browser-level `attach` from the old agent could succeed) or reject queued `attach` waiters on `ext-up` from a resumed socket.
+- [ ] A socket that closes between `register` and promote skips `resumed`; recovery relies on the Eve-side `not attached` rotation.
+- [ ] Cross-hub gap: a hub holding a run with no subscribed agent never receives `ext-up` or `agent-reset` (single instance for now).
+- [ ] `tests/relay/e2e/bridge.e2e.test.ts` teardown: use `Promise.allSettled` so a throwing `browser.stop()` still stops the relay and fixtures.
 
 ## Plan 3: Sensitive-Value Redaction
 
@@ -52,11 +74,18 @@ Nothing here has been applied. The relay stays off until `RELAY_ENABLED` is `tru
 - [ ] Policy regression tests: `https://a.gov@evil.com`, `javascript:`, `data:`, `blob:`, lowercase method names, non-string params.
 - [ ] Consider an event-method allowlist (23 event methods were measured).
 
+## Plan 3 And 4: Relay Stream Sensitivity
+
+- [ ] Treat the whole relay stream as sensitive: the extension must not render or log raw tool inputs (browser `fill` values and `ask_question` inputs cross it).
+
 ## Plan 4: Side Panel And App API
 
 - [ ] The six screens, the participant API on Neon, and saved details with the 8-hour limit.
-- [ ] Bind runs to users before enabling the token route: server-created runs, `runId` to `userId`, origin from the stored run, refuse guest sessions, mint only the role the caller needs, a `sub` claim with a hub peer check, rate limiting.
-- [ ] Token refresh: the initiator's credentials win, so a re-minted token on a later turn is ignored, and `continueEveSession` sends no relay headers.
+- [ ] Bind runs to users before enabling the token route: server-created runs, `runId` to `userId`, origin from the stored run, refuse guest sessions, rate limiting, a `sub` claim with a hub peer check. (Token refresh for the agent leg is no longer needed: it fetches on demand.)
+- [ ] The public `app/(chat)/api/relay/token/route.ts` still mints and returns an `agentToken`. Before `RELAY_TOKEN_ENDPOINT_ENABLED` is set anywhere, make it mint only the role its caller needs (the extension token); the agent leg gets its token from the internal agent-token route.
+- [ ] Chat-id squatting on the internal token route: another user who creates an `EveRun` row for the same chat id first makes the route 404 for the real owner, and if a run id leaks, that user can obtain an agent token for the run with an origin they chose (hijack). The session binding (the route mints only for the Eve session stored on the row) narrows this to the squatter's own session but does not stop it; fix with user binding, plus a partial unique index on `EveRun.chatId` where `relayOrigin` is not null, or a relay-only store lookup.
+- [ ] `EVE_INTERNAL_SECRET` has no minimum-length check.
+- [ ] The agent-token route reads an unbounded JSON body after authentication.
 - [ ] Per-run "Allow this site?" approval for a redirect (leaving the origin currently ends the run, which breaks login redirects).
 - [ ] Serialize `startRun` so concurrent calls cannot orphan a run.
 - [ ] Mint-side claim validation and refusing an empty secret in `mintRelayToken`; log a value-free line on route misconfiguration; `Cache-Control: no-store` on error responses.
@@ -83,9 +112,12 @@ Nothing here has been applied. The relay stays off until `RELAY_ENABLED` is `tru
 
 - Cross-site iframe fields appear in `snapshot -i` only for frames created after the debugger attached (after agent-browser `open`); `wait @ref` times out even on plain Chrome.
 - Leaving the origin ends the run, so a login redirect ends it until the plan 4 approval flow.
+- Non-default-port origins such as `https://host:8443` are valid exact origins.
+- The relay e2e suite now passes locally.
 - One relay instance only; `REDIS_URL` is refused unless `RELAY_MULTI_INSTANCE_ACKNOWLEDGED=1`.
 - A run token can be replayed for its 30-minute lifetime after a run closes.
 - One in-flight command can race a navigation (check-then-send); a short window of events can follow an off-origin navigation if the agent never enabled the Page domain.
+- A relay run row left behind after `RELAY_RUNS_ENABLED` is turned off still continues as a relay run, while the agent-token route returns 404, so its browser calls fail closed.
 
 ## Rulings To Confirm
 
@@ -111,3 +143,22 @@ Decisions made while executing plan 1 without asking, with the cost if wrong.
 18. The relay is opt-in per repository via `RELAY_ENABLED`; secrets are keyed on the base environment, so previews share preview secrets.
 19. The relay depends on the log exclusion, and the deploy account is not granted logging permissions in code.
 20. A service-worker restart does not resume a run in plan 1 (deferred to plan 2).
+
+### Plan 2 rulings
+
+R1. Branch base `feat/agent-loop-impl` was cut from `browser-extension`; cost: rebase if the base moves.
+R2. Node 24 is set per command; cost: a forgotten prefix gives confusing pnpm errors.
+R3. Only the typed duplicate-create error counts as a run conflict; cost: other create failures surface as errors, not retries.
+R4. DB tests need `TEST_DATABASE_URL` and CI skips that half; cost: store regressions go unseen in CI.
+R5. Microsandbox edits from `eve:dev` are reverted; cost: none beyond re-installing on the next dev run.
+R6. Cheaper model tiers were used for small tasks; cost: extra review rounds if quality slipped.
+R7. Stale-claim takeover is deferred (minimum: never forward a `claim:` token); cost: a crash mid-swap strands that chat.
+R8. Token fetch dedupe and eviction on relay rejection are deferred; cost: extra token requests and a rejected token reused until expiry.
+R9. Chat-id squatting is deferred to plan 4 user binding; cost: denial of the token route for the real owner, and if a run id leaks, another user who creates the row first can obtain an agent token for that run with an origin they chose (hijack). Partly mitigated by binding the token to the Eve session stored on the row (no other session, such as an orphan, can use the run), which does not stop a squatter's own session.
+R10. Non-default ports stay valid origins; cost: a run can bind to an unexpected port on an allowed host.
+R11. Replay resurrection and persist-before-show are deferred; cost: a cleared question can reappear after a crash.
+R12. The relay stream is treated as sensitive; cost: the extension UI cannot show raw tool inputs.
+R13. The marker sentence is accepted in stored text; cost: noise in Jev context.
+R14. Post-restart retry only for a read-only allowlist and only on anchored transport errors; cost: some commands fail instead of retrying.
+R15. Restart-recovery minors are deferred; cost: rare wrong resets or missed element refs.
+R16. Hub restart minors are deferred (reword the `not attached` comment or reject queued `attach` waiters; a socket closing between register and promote skips `resumed`; a cross-hub gap for a hub with no subscribed agent; e2e teardown should use `Promise.allSettled`); cost: a rare stale attach and slower recovery.

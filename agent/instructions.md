@@ -71,3 +71,4 @@ Your audience is a **caseworker in social services** — and sometimes the benef
 - **Never `reload` during form filling** — it wipes all form state.
 - **Never use `back`** — use on-page navigation buttons ("Previous", "Go Back") instead. No exceptions.
 - **Never close the browser** unless the caseworker explicitly asks you to. Closing ends the session and discards filled state.
+- **One exception to the `navigate` rule, extension runs only:** the single re-open of the current URL described in the `extension-run` skill, allowed once and only before any field is filled. Nothing else changes.

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mapToolName, extractLatestUserText, translateEveEvent } from '@/lib/ai/eve/stream-adapter';
 
 function collect() {
@@ -186,6 +186,142 @@ describe('translateEveEvent', () => {
       expect(delta).toContain('Reply with one of: riverside, orange');
     });
 
+    // Guard captured from the pre-structured adapter: web chats must keep this
+    // exact output, chunk for chunk.
+    it('keeps the prose output byte-for-byte when not structured', () => {
+      const { writer, chunks } = collect();
+      const r = translateEveEvent(askQuestion, writer, {
+        textId: null,
+        generateId: gen,
+        emittedToolCallIds: new Set(),
+      });
+      expect(JSON.stringify(chunks)).toBe(
+        JSON.stringify([
+          { type: 'text-start', id: 'txt-1' },
+          {
+            type: 'text-delta',
+            id: 'txt-1',
+            delta:
+              'Which county issued the card?\n\n- `riverside` Riverside\n- `orange` Orange — Orange County\n\nReply with one of: riverside, orange',
+          },
+          { type: 'text-end', id: 'txt-1' },
+        ]),
+      );
+      expect(r.inputRequests).toBeUndefined();
+    });
+
+    describe('structured mode', () => {
+      // The spiked shape: two parallel ask_question calls in one batch.
+      const spiked = {
+        type: 'input.requested',
+        data: {
+          requests: [
+            {
+              requestId: 'call-a',
+              prompt: 'Name?',
+              display: 'text',
+              allowFreeform: true,
+              action: { kind: 'tool-call', callId: 'call-a' },
+            },
+            {
+              requestId: 'call-b',
+              prompt: 'Color?',
+              display: 'select',
+              allowFreeform: false,
+              action: { kind: 'tool-call', callId: 'call-b' },
+              options: [
+                { id: 'red', label: 'Red', description: 'warm' },
+                { id: 'green', label: 'Green' },
+                { id: 'blue', label: 'Blue' },
+              ],
+            },
+          ],
+        },
+      };
+      const parsed = [
+        {
+          requestId: 'call-a',
+          prompt: 'Name?',
+          display: 'text',
+          options: [],
+          allowFreeform: true,
+        },
+        {
+          requestId: 'call-b',
+          prompt: 'Color?',
+          display: 'select',
+          options: [
+            { id: 'red', label: 'Red' },
+            { id: 'green', label: 'Green' },
+            { id: 'blue', label: 'Blue' },
+          ],
+          allowFreeform: false,
+        },
+      ];
+
+      it('emits one data-input-request chunk and no text', () => {
+        const { writer, chunks } = collect();
+        const r = translateEveEvent(spiked, writer, {
+          textId: null,
+          generateId: gen,
+          emittedToolCallIds: new Set(),
+          structuredInput: true,
+        });
+        expect(chunks).toStrictEqual([
+          { type: 'data-input-request', data: { requests: parsed } },
+        ]);
+        expect(r.inputRequests).toStrictEqual(parsed);
+        expect(r.textId).toBeNull();
+        expect(r.done).toBe(false);
+      });
+
+      it('warns with counts only when requests fail to parse', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const { writer, chunks } = collect();
+        const r = translateEveEvent(
+          {
+            type: 'input.requested',
+            data: {
+              requests: [
+                ...spiked.data.requests,
+                { prompt: 'Secret-Prompt-Text', display: 'text' },
+              ],
+            },
+          },
+          writer,
+          { textId: null, generateId: gen, structuredInput: true },
+        );
+        expect(r.inputRequests).toHaveLength(2);
+        expect(chunks).toHaveLength(1);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0][1]).toEqual({ received: 3, parsed: 2 });
+        expect(JSON.stringify(warn.mock.calls)).not.toContain('Secret');
+        warn.mockRestore();
+      });
+
+      it('does not warn when every request parses', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        translateEveEvent(spiked, collect().writer, {
+          textId: null,
+          generateId: gen,
+          structuredInput: true,
+        });
+        expect(warn).not.toHaveBeenCalled();
+        warn.mockRestore();
+      });
+
+      it('writes nothing and returns no requests for an empty batch', () => {
+        const { writer, chunks } = collect();
+        const r = translateEveEvent(
+          { type: 'input.requested', data: { requests: [] } },
+          writer,
+          { textId: null, generateId: gen, structuredInput: true },
+        );
+        expect(chunks).toEqual([]);
+        expect(r.inputRequests).toBeUndefined();
+      });
+    });
+
     it('closes its text block so it never swallows later deltas', () => {
       const { writer } = collect();
       const r = translateEveEvent(askQuestion, writer, {
@@ -308,5 +444,78 @@ describe('translateEveEvent', () => {
       { textId: null, generateId: gen },
     );
     expect(headless.liveViewUrl).toBeUndefined();
+  });
+});
+
+describe('report_progress', () => {
+  const call = (input: unknown) => ({
+    type: 'actions.requested',
+    data: {
+      actions: [
+        { kind: 'tool-call', callId: 'p1', toolName: 'report_progress', input },
+      ],
+    },
+  });
+  const good = {
+    sections: [{ name: 'Name', status: 'done', filled: 2, ssn: '123' }],
+    current: 'Address',
+  };
+
+  it('maps the tool name', () => {
+    expect(mapToolName('report_progress')).toBe('reportProgress');
+  });
+
+  it('returns sanitized progress on a relay stream', () => {
+    const { writer } = collect();
+    const r = translateEveEvent(call(good), writer, {
+      textId: null,
+      generateId: gen,
+      structuredInput: true,
+    });
+    expect(r.progress).toStrictEqual({
+      sections: [{ name: 'Name', status: 'done', filled: 2 }],
+      current: 'Address',
+    });
+  });
+
+  it('streams the sanitized input on a relay run', () => {
+    const { writer, chunks } = collect();
+    translateEveEvent(call(good), writer, {
+      textId: null,
+      generateId: gen,
+      structuredInput: true,
+    });
+    expect(chunks[0].input).toStrictEqual({
+      sections: [{ name: 'Name', status: 'done', filled: 2 }],
+      current: 'Address',
+    });
+    expect(JSON.stringify(chunks)).not.toContain('ssn');
+  });
+
+  it('ignores invalid progress input', () => {
+    const { writer } = collect();
+    const r = translateEveEvent(call({ sections: 'nope' }), writer, {
+      textId: null,
+      generateId: gen,
+      structuredInput: true,
+    });
+    expect(r.progress).toBeUndefined();
+  });
+
+  it('leaves non-relay output unchanged and returns no progress', () => {
+    const { writer, chunks } = collect();
+    const r = translateEveEvent(call(good), writer, {
+      textId: null,
+      generateId: gen,
+    });
+    expect(r.progress).toBeUndefined();
+    expect(chunks).toStrictEqual([
+      {
+        type: 'tool-input-available',
+        toolCallId: 'p1',
+        toolName: 'reportProgress',
+        input: good,
+      },
+    ]);
   });
 });

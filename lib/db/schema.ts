@@ -10,7 +10,11 @@ import {
   foreignKey,
   boolean,
   unique,
+  integer,
+  jsonb,
 } from 'drizzle-orm/pg-core';
+import type { PendingInputRequest } from '../ai/eve/input-requests';
+import type { RunProgress } from '../relay/progress';
 
 export const user = pgTable('User', {
   id: uuid('id').primaryKey().notNull().defaultRandom(),
@@ -210,3 +214,39 @@ export const sessionMapping = pgTable(
 );
 
 export type SessionMapping = InferSelectModel<typeof sessionMapping>;
+
+// One row per Eve-driven chat run, replacing the in-memory continuity map.
+// chatId deliberately has no foreign key: the eve-chat route does not create
+// Chat rows. The continuation token is an Eve session handle; no relay token
+// or credential is ever stored here.
+export const eveRun = pgTable(
+  'EveRun',
+  {
+    id: uuid('id').primaryKey().notNull().defaultRandom(),
+    chatId: uuid('chatId').notNull(),
+    userId: uuid('userId')
+      .notNull()
+      .references(() => user.id),
+    eveSessionId: text('eveSessionId').notNull(),
+    continuationToken: text('continuationToken').notNull(),
+    // Count of stream events already forwarded; the next read's startIndex.
+    streamIndex: integer('streamIndex').notNull().default(0),
+    // Exact https origin of the relay page; set only for extension runs.
+    relayOrigin: text('relayOrigin'),
+    pendingRequests: jsonb('pendingRequests')
+      .$type<PendingInputRequest[]>()
+      .notNull()
+      .default([]),
+    progress: jsonb('progress').$type<RunProgress>(),
+    createdAt: timestamp('createdAt').notNull(),
+    updatedAt: timestamp('updatedAt').notNull(),
+  },
+  (table) => ({
+    userChatUnique: unique('EveRun_userId_chatId_unique').on(
+      table.userId,
+      table.chatId,
+    ),
+  }),
+);
+
+export type EveRun = InferSelectModel<typeof eveRun>;

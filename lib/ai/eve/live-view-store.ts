@@ -8,7 +8,7 @@
 // /api/eve-chat reader records it here. /api/kernel-browser then serves it to
 // the browser artifact, which needs no knowledge of which transport produced it.
 //
-// SINGLE-PROCESS and lost on restart, matching `session-continuity.ts`. Losing
+// SINGLE-PROCESS and lost on restart, unlike `run-store.ts`. Losing
 // an entry only blanks the live-view panel until the agent's next browser
 // command re-reports the same URL; it never affects the automation itself.
 const store = new Map<string, string>();

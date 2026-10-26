@@ -44,6 +44,8 @@ type ToExtFrame =
 type ToAgentFrame =
   | { t: 'ext-up'; origin: string }
   | { t: 'ext-down' }
+  /** Drop the agent connection but keep the run (extension restarted). */
+  | { t: 'agent-reset' }
   | { t: 'close'; reason: string };
 
 type ExtCommand = DistributiveOmit<RelayToExtension, 'id'>;
@@ -78,6 +80,10 @@ interface ExtSide {
   registered: boolean;
   registerTimer?: ReturnType<typeof setTimeout>;
   unsubscribe?: Promise<() => Promise<void>>;
+  /** True once `ext-up` was published for this socket. */
+  announced: boolean;
+  /** This socket already sent `resumed`; any later one is ignored. */
+  resumed: boolean;
 }
 
 interface Run {
@@ -93,6 +99,7 @@ interface Run {
 
 const DISCONNECTED = 'tab or extension disconnected';
 const NO_ANSWER = 'extension did not answer';
+const EXTENSION_RESTARTED = 'extension restarted';
 const NOT_RETURNED = 'extension did not return';
 const NORMAL_CLOSE = 1000;
 const POLICY_CLOSE = 1008;
@@ -168,7 +175,14 @@ export class RunHub {
     const run = this.run(runId, origin);
     // Held apart until it registers, so it cannot displace the current
     // extension or receive commands on the strength of its token alone.
-    const side: ExtSide = { socket, origin, closed: false, registered: false };
+    const side: ExtSide = {
+      socket,
+      origin,
+      closed: false,
+      registered: false,
+      announced: false,
+      resumed: false,
+    };
     run.pendingExts.add(side);
     side.registerTimer = setTimeout(() => {
       if (side.registered || side.closed) return;
@@ -326,6 +340,23 @@ export class RunHub {
         this.log({ event: 'tab-closed', runId, role: 'extension' });
         this.closeRun(runId, 'tab closed');
         return;
+      case 'resumed': {
+        // Once per socket: a repeat could otherwise cut off the agent that
+        // attached after the first one.
+        if (side.resumed) {
+          this.log({ event: 'resumed-repeated', runId, role: 'extension' });
+          return;
+        }
+        side.resumed = true;
+        this.log({ event: 'extension-restarted', runId, role: 'extension' });
+        // Not announced yet: promote publishes the reset ahead of `ext-up`.
+        // Already announced: `ext-up` may have flushed queued commands to
+        // this socket; they fail there (`not attached`), and the Eve tool
+        // rotates on that error.
+        if (side.announced)
+          this.publish(runId, 'to-agent', { t: 'agent-reset' });
+        return;
+      }
       case 'stop': {
         // Only a fixed reason is ever logged; anything else counts as 'user'.
         const reason =
@@ -391,7 +422,12 @@ export class RunHub {
           by: this.instanceId,
           origin: side.origin,
         });
+        // A restarted extension's agent is reset before `ext-up`, so the
+        // commands it queued while the worker was down are failed, never
+        // flushed to an extension that holds none of its sessions.
+        if (side.resumed) this.publish(runId, 'to-agent', { t: 'agent-reset' });
         this.publish(runId, 'to-agent', { t: 'ext-up', origin: side.origin });
+        side.announced = true;
         this.clearHold(runId, current);
       },
       () => this.closeExtensionSocket(runId, side, 'relay bus unavailable'),
@@ -674,6 +710,18 @@ export class RunHub {
       for (const waiter of agent.queue.splice(0)) {
         this.dispatch(runId, agent, waiter);
       }
+    } else if (frame.t === 'agent-reset') {
+      // The extension lost its debugger session and every ref the agent
+      // holds: end this connection, keep the run for the next one.
+      this.closeAgent(agent, EXTENSION_RESTARTED);
+      if (run?.agent === agent) {
+        run.agent = undefined;
+        // The extension is back (the reset follows its registration): a
+        // hold left on this hub must not expire and close the run.
+        this.clearHold(runId, run);
+        this.forgetIfEmpty(runId, run);
+      }
+      this.log({ event: 'agent-reset', runId, role: 'agent' });
     } else if (frame.t === 'close' && typeof frame.reason === 'string') {
       this.closeLocal(runId, frame.reason);
     }
