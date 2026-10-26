@@ -420,5 +420,395 @@
     },
     "sensitive": false,
     "why": "ordinary textarea"
+  },
+  {
+    "id": "ein",
+    "field": {
+      "label": "EIN"
+    },
+    "sensitive": true,
+    "why": "employer id number"
+  },
+  {
+    "id": "fein",
+    "field": {
+      "label": "FEIN"
+    },
+    "sensitive": true,
+    "why": "federal employer id"
+  },
+  {
+    "id": "employer-ident",
+    "field": {
+      "label": "Employer identification number"
+    },
+    "sensitive": true,
+    "why": "long form EIN"
+  },
+  {
+    "id": "federal-id",
+    "field": {
+      "label": "Federal tax ID"
+    },
+    "sensitive": true,
+    "why": "federal tax id"
+  },
+  {
+    "id": "iban",
+    "field": {
+      "label": "IBAN"
+    },
+    "sensitive": true,
+    "why": "bank account"
+  },
+  {
+    "id": "aba",
+    "field": {
+      "label": "ABA"
+    },
+    "sensitive": true,
+    "why": "routing"
+  },
+  {
+    "id": "uscis",
+    "field": {
+      "label": "USCIS number"
+    },
+    "sensitive": true,
+    "why": "immigration"
+  },
+  {
+    "id": "alien-reg",
+    "field": {
+      "label": "Alien registration"
+    },
+    "sensitive": true,
+    "why": "immigration"
+  },
+  {
+    "id": "state-id",
+    "field": {
+      "label": "State ID"
+    },
+    "sensitive": true,
+    "why": "state id"
+  },
+  {
+    "id": "state-ident-long",
+    "field": {
+      "label": "State identification number"
+    },
+    "sensitive": true,
+    "why": "state id long form"
+  },
+  {
+    "id": "dmv-id",
+    "field": {
+      "label": "DMV ID"
+    },
+    "sensitive": true,
+    "why": "state id"
+  },
+  {
+    "id": "licence-no",
+    "field": {
+      "label": "Licence no."
+    },
+    "sensitive": true,
+    "why": "license number"
+  },
+  {
+    "id": "dl-num",
+    "field": {
+      "label": "DL num"
+    },
+    "sensitive": true,
+    "why": "driver license"
+  },
+  {
+    "id": "secret-question",
+    "field": {
+      "label": "Secret question"
+    },
+    "sensitive": true,
+    "why": "security answer"
+  },
+  {
+    "id": "security-question",
+    "field": {
+      "label": "Security question"
+    },
+    "sensitive": true,
+    "why": "security answer"
+  },
+  {
+    "id": "maiden-name",
+    "field": {
+      "label": "Mother's maiden name"
+    },
+    "sensitive": true,
+    "why": "security answer"
+  },
+  {
+    "id": "mfa-code",
+    "field": {
+      "label": "MFA code"
+    },
+    "sensitive": true,
+    "why": "one-time code"
+  },
+  {
+    "id": "2fa-code",
+    "field": {
+      "label": "2FA code"
+    },
+    "sensitive": true,
+    "why": "one-time code"
+  },
+  {
+    "id": "auth-code",
+    "field": {
+      "label": "Authentication code"
+    },
+    "sensitive": true,
+    "why": "one-time code"
+  },
+  {
+    "id": "security-code",
+    "field": {
+      "label": "Security code"
+    },
+    "sensitive": true,
+    "why": "card code"
+  },
+  {
+    "id": "cc-num",
+    "field": {
+      "label": "CC num"
+    },
+    "sensitive": true,
+    "why": "card number"
+  },
+  {
+    "id": "credit-card-bare",
+    "field": {
+      "label": "Credit card"
+    },
+    "sensitive": true,
+    "why": "bare card label"
+  },
+  {
+    "id": "debit-card-bare",
+    "field": {
+      "label": "Debit card"
+    },
+    "sensitive": true,
+    "why": "bare card label"
+  },
+  {
+    "id": "passphrase",
+    "field": {
+      "label": "Passphrase"
+    },
+    "sensitive": true,
+    "why": "password"
+  },
+  {
+    "id": "pass-phrase",
+    "field": {
+      "label": "Pass phrase"
+    },
+    "sensitive": true,
+    "why": "password"
+  },
+  {
+    "id": "pwd",
+    "field": {
+      "label": "Confirm pwd"
+    },
+    "sensitive": true,
+    "why": "password"
+  },
+  {
+    "id": "passwd",
+    "field": {
+      "name": "passwd"
+    },
+    "sensitive": true,
+    "why": "password"
+  },
+  {
+    "id": "user-pass",
+    "field": {
+      "name": "user_pass"
+    },
+    "sensitive": true,
+    "why": "password in name"
+  },
+  {
+    "id": "bank-acct",
+    "field": {
+      "label": "Bank acct"
+    },
+    "sensitive": true,
+    "why": "bank account"
+  },
+  {
+    "id": "acct-num",
+    "field": {
+      "label": "Acct num"
+    },
+    "sensitive": true,
+    "why": "bank account"
+  },
+  {
+    "id": "client-id",
+    "field": {
+      "label": "Client ID"
+    },
+    "sensitive": true,
+    "why": "benefit id"
+  },
+  {
+    "id": "member-id",
+    "field": {
+      "label": "Member ID"
+    },
+    "sensitive": true,
+    "why": "benefit id"
+  },
+  {
+    "id": "medicare",
+    "field": {
+      "label": "Medicare number"
+    },
+    "sensitive": true,
+    "why": "benefit id"
+  },
+  {
+    "id": "soc-sec-no",
+    "field": {
+      "label": "Soc Sec No"
+    },
+    "sensitive": true,
+    "why": "abbreviated SSN"
+  },
+  {
+    "id": "dotted-ssn",
+    "field": {
+      "label": "S.S.N."
+    },
+    "sensitive": true,
+    "why": "dotted SSN"
+  },
+  {
+    "id": "ssn-placeholder",
+    "field": {
+      "label": "Tax number",
+      "placeholder": "123-45-6789"
+    },
+    "sensitive": true,
+    "why": "value-shaped placeholder"
+  },
+  {
+    "id": "ssn-masked-placeholder",
+    "field": {
+      "label": "Number",
+      "placeholder": "xxx-xx-xxxx"
+    },
+    "sensitive": true,
+    "why": "masked SSN placeholder"
+  },
+  {
+    "id": "card-expiry",
+    "field": {
+      "label": "Expiration date",
+      "name": "card_expiry"
+    },
+    "sensitive": true,
+    "why": "card expiry with card signal"
+  },
+  {
+    "id": "card-expiry-ac",
+    "field": {
+      "label": "Expires MM/YY",
+      "autocomplete": "cc-exp"
+    },
+    "sensitive": true,
+    "why": "card expiry via cc autocomplete"
+  },
+  {
+    "id": "card-expiry-label",
+    "field": {
+      "label": "Credit card expiry"
+    },
+    "sensitive": true,
+    "why": "card expiry label"
+  },
+  {
+    "id": "type-padded",
+    "field": {
+      "inputType": " Password "
+    },
+    "sensitive": true,
+    "why": "input type is trimmed and case-folded"
+  },
+  {
+    "id": "social-worker-2",
+    "field": {
+      "label": "Social worker"
+    },
+    "sensitive": false,
+    "why": "near miss"
+  },
+  {
+    "id": "lease-expiry",
+    "field": {
+      "label": "Expiration date",
+      "description": "Lease end"
+    },
+    "sensitive": false,
+    "why": "expiry of a non-card field"
+  },
+  {
+    "id": "household-count",
+    "field": {
+      "label": "Number of people in household"
+    },
+    "sensitive": false,
+    "why": "count, not an id"
+  },
+  {
+    "id": "card-on-file-2",
+    "field": {
+      "label": "Credit card on file"
+    },
+    "sensitive": false,
+    "why": "near miss: card on file"
+  },
+  {
+    "id": "phone-placeholder",
+    "field": {
+      "label": "Phone",
+      "placeholder": "555-123-4567"
+    },
+    "sensitive": false,
+    "why": "phone is not SSN-shaped"
+  },
+  {
+    "id": "application-number",
+    "field": {
+      "label": "Application number"
+    },
+    "sensitive": false,
+    "why": "ruling P4: not sensitive"
+  },
+  {
+    "id": "customer-id",
+    "field": {
+      "label": "Customer ID"
+    },
+    "sensitive": false,
+    "why": "ruling P4: not sensitive"
   }
 ]

@@ -52,18 +52,23 @@ const PATTERNS: readonly string[] = [
   'ssn',
   'ss #',
   'ss (?:no|num|number)',
-  'social sec(?:urity)?',
+  'soc(?:ial)? sec(?:urity)?',
   'itin',
   'tin',
   'ein',
+  'fein',
+  'employer identification',
+  'federal (?:tax )?id',
   'tax(?:payer)? id(?:entification)?',
   'routing',
   'aba',
   'iban',
-  `acct ${NUM}`,
+  `acct ?${NUM}`,
+  'acct num(?:ber)?',
   `account ${NUM}`,
-  `bank account`,
+  'bank (?:account|acct)',
   `(?:credit |debit )?card ${NUM}`,
+  '(?:credit|debit) card(?! on file)',
   'cc num(?:ber)?',
   'cvv2?',
   'cvc2?',
@@ -72,40 +77,61 @@ const PATTERNS: readonly string[] = [
   'security code',
   'card exp(?:iry|iration)?',
   'password',
+  'pass ?word',
+  'passwd',
+  'pwd',
+  'pass ?phrase',
+  '(?:user|login|account) pass',
   'passcode',
   'pin',
   'security (?:answer|question)',
   'secret (?:answer|question)',
+  'maiden name',
   'otp',
   'one time (?:code|password|passcode)',
   '(?:verification|authentication|auth|2fa|mfa) code',
   'drivers? licen[sc]e',
-  `dl ${NUM}`,
-  `state id(?: ${NUM})?`,
+  `licen[sc]e ${NUM}`,
+  `dl ?${NUM}`,
+  'dl num(?:ber)?',
+  `state id(?:entification)?(?: ${NUM})?`,
+  'dmv id',
   'passport',
   'alien (?:registration|number)',
   'uscis',
   'a number(?! of)',
   'a #',
   'anumber',
+  'medicare',
+  `(?:client|beneficiary|member|participant|recipient) (?:id|${NUM})`,
   `(?:cal ?works|case|benefits?|ebt|medicaid|medi cal) (?:id|${NUM})`,
 ];
 
+// A card expiry label is only sensitive next to another card signal; a lease
+// "Expiration date" is an ordinary field.
+const EXPIRY = '(?:exp(?:iration|iry|ires)?(?: date)?|mm yy)';
+const CARD_SIGNAL = '(?:card|cc|credit|debit|cvv2?|cvc2?|csc)';
+const wrap = (p: string): string => `(?<![a-z])${p}(?![a-z])`;
+const EXPIRY_TEXT = new RegExp(wrap(EXPIRY));
+const CARD_SIGNAL_TEXT = new RegExp(wrap(CARD_SIGNAL));
+
+// Value-shaped placeholders: an SSN-like example or its x/#-masked form.
+const SSN_SHAPED =
+  /(?<!\d)\d{3}-?\d{2}-?\d{4}(?!\d)|(?<![x#*\d])[x#*]{3}[- ]?[x#*]{2}[- ]?[x#*]{4}(?![x#*\d])/i;
+
 const SENSITIVE_TEXT = new RegExp(
-  PATTERNS.map((p) => `(?<![a-z])${p}(?![a-z])`).join('|'),
+  PATTERNS.map(wrap).join('|'),
 );
 
 const normalize = (text: string): string =>
   text
+    .replace(/\b(?:[a-z]\.){2,}/gi, (m) => m.replace(/\./g, ''))
     .replace(/['’]/g, '')
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .replace(/#/g, ' # ')
     .replace(/[^a-z0-9#]+/g, ' ')
     .trim();
-
-const textIsSensitive = (text: string | undefined): boolean =>
-  typeof text === 'string' && SENSITIVE_TEXT.test(normalize(text));
 
 const autocompleteIsSensitive = (autocomplete: string | undefined): boolean =>
   typeof autocomplete === 'string' &&
@@ -120,12 +146,23 @@ const autocompleteIsSensitive = (autocomplete: string | undefined): boolean =>
     );
 
 export function isSensitiveField(field: FieldDescriptor): boolean {
-  if (field.inputType?.toLowerCase() === 'password') return true;
+  if (field.inputType?.trim().toLowerCase() === 'password') return true;
   if (autocompleteIsSensitive(field.autocomplete)) return true;
-  return (
-    textIsSensitive(field.label) ||
-    textIsSensitive(field.name) ||
-    textIsSensitive(field.placeholder) ||
-    textIsSensitive(field.description)
-  );
+  if (
+    typeof field.placeholder === 'string' &&
+    SSN_SHAPED.test(field.placeholder)
+  ) {
+    return true;
+  }
+  const texts = [
+    field.label,
+    field.name,
+    field.placeholder,
+    field.description,
+  ].map((t) => (typeof t === 'string' ? normalize(t) : ''));
+  if (texts.some((t) => SENSITIVE_TEXT.test(t))) return true;
+  const cardish =
+    /(?:^|\s)cc-/i.test(field.autocomplete ?? '') ||
+    texts.some((t) => CARD_SIGNAL_TEXT.test(t));
+  return cardish && texts.some((t) => EXPIRY_TEXT.test(t));
 }
