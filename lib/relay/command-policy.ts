@@ -38,14 +38,16 @@ const SHORT_GLOBAL_FLAGS: ReadonlySet<string> = new Set([
 type Slot =
   /** One of these exact words. */
   | { readonly is: readonly string[] }
-  /** One non-empty word that is not flag-shaped: a ref, selector or key name. */
-  | 'word'
+  /** A snapshot ref, `@e12`: the only way to name an element. */
+  | 'ref'
   /** A non-negative integer. */
   | 'number'
-  /** A URL to open. */
+  /** An http(s) URL to open. */
   | 'url'
-  /** Free text: anything that cannot be mistaken for a CLI flag. */
-  | 'text';
+  /** Free text typed into a field: anything that cannot be a CLI flag. */
+  | 'text'
+  /** A key the agent may press. */
+  | 'key';
 
 /** An argument shape: the slots in order, then optionally any number of text. */
 interface Shape {
@@ -65,97 +67,44 @@ const shape = (slots: readonly Slot[], rest?: 'text'): Shape => ({
   rest,
 });
 
+// Elements are named by snapshot ref only. A CSS or XPath selector, a text
+// match (`wait --text`, `find text`), a URL pattern (`wait --url`) or a count
+// (`get count`) can each be probed with a guess ("does an input whose value
+// starts with 9 exist?") and so read a masked value back one character at a
+// time. Refs name an element without testing its content.
 const DIRECTIONS = lit('up', 'down', 'left', 'right');
 const LOAD_STATES = lit('load', 'domcontentloaded', 'networkidle');
-const LOCATORS = [
-  'role',
-  'label',
-  'placeholder',
-  'alt',
-  'title',
-  'testid',
-  'text',
-];
-// `text`, `html`, `value` and `attr` are the actions that return page content:
-// never in this list.
-const FIND_ACTIONS = ['click', 'hover', 'focus', 'check', 'uncheck'];
-const FIND_TEXT_ACTIONS = ['fill', 'type'];
 
-// `find <locator> <query> <action> [value]`, plus `first <sel>` and
-// `nth <n> <sel>`. Click-like actions take only `--name`/`--exact`; fill and
-// type take the text.
-const findShapes = (): Shape[] => {
-  const prefixes: Slot[][] = [
-    ...LOCATORS.map((l): Slot[] => [lit(l), 'word']),
-    [lit('first', 'last'), 'word'],
-    [lit('nth'), 'number', 'word'],
-  ];
-  const tails: Slot[][] = [
-    [],
-    [lit('--exact')],
-    [lit('--name'), 'text'],
-    [lit('--name'), 'text', lit('--exact')],
-  ];
-  const shapes: Shape[] = [];
-  for (const prefix of prefixes) {
-    for (const tail of tails) {
-      shapes.push(shape([...prefix, lit(...FIND_ACTIONS), ...tail]));
-    }
-    shapes.push(shape([...prefix, lit(...FIND_TEXT_ACTIONS)], 'text'));
-  }
-  return shapes;
-};
-
-const targetOnly = { shapes: [shape(['word'])] };
+const refOnly = { shapes: [shape(['ref'])] };
 const noArgs = { shapes: [shape([])] };
 
 /**
- * The allowlist. Everything the extension-run skill and the measured command
- * list (tests/relay/e2e/allowlist.e2e.test.ts) use is here, and nothing that
- * returns page content or reaches outside the tab.
+ * The allowlist. Nothing that returns page content, tests page content, or
+ * reaches outside the tab.
  */
 const ALLOWED: ReadonlyMap<string, CommandSpec> = new Map<string, CommandSpec>([
   ['open', { shapes: [shape(['url'])] }],
   [
     'snapshot',
-    {
-      flags: {
-        '-i': null,
-        '-c': null,
-        '-u': null,
-        '-d': 'number',
-        '-s': 'word',
-      },
-    },
+    { flags: { '-i': null, '-c': null, '-u': null, '-d': 'number' } },
   ],
-  ['click', targetOnly],
-  ['fill', { shapes: [shape(['word'], 'text')] }],
-  ['type', { shapes: [shape(['word'], 'text')] }],
-  ['press', { shapes: [shape(['text'])] }],
-  ['select', { shapes: [shape(['word', 'text'], 'text')] }],
-  ['check', targetOnly],
-  ['uncheck', targetOnly],
-  ['focus', targetOnly],
-  ['hover', targetOnly],
-  ['scrollintoview', targetOnly],
-  [
-    'scroll',
-    {
-      shapes: [
-        shape([DIRECTIONS]),
-        shape([DIRECTIONS, 'number']),
-        shape([DIRECTIONS, 'number', lit('--selector'), 'word']),
-      ],
-    },
-  ],
+  ['click', refOnly],
+  ['fill', { shapes: [shape(['ref'], 'text')] }],
+  ['type', { shapes: [shape(['ref'], 'text')] }],
+  ['press', { shapes: [shape(['key'])] }],
+  ['select', { shapes: [shape(['ref', 'text'], 'text')] }],
+  ['check', refOnly],
+  ['uncheck', refOnly],
+  ['focus', refOnly],
+  ['hover', refOnly],
+  ['scrollintoview', refOnly],
+  ['scroll', { shapes: [shape([DIRECTIONS]), shape([DIRECTIONS, 'number'])] }],
   [
     'wait',
     {
       shapes: [
-        shape(['word']),
+        shape(['ref']),
         shape(['number']),
-        shape([lit('--text'), 'text']),
-        shape([lit('--url'), 'text']),
         shape([lit('--load'), LOAD_STATES]),
       ],
     },
@@ -165,44 +114,63 @@ const ALLOWED: ReadonlyMap<string, CommandSpec> = new Map<string, CommandSpec>([
   ['forward', noArgs],
   ['reload', noArgs],
   ['screenshot', { shapes: [shape([]), shape([lit('--full')])] }],
-  [
-    'get',
-    {
-      shapes: [
-        shape([lit('url')]),
-        shape([lit('title')]),
-        shape([lit('count'), 'word']),
-      ],
-    },
-  ],
-  ['is', { shapes: [shape([lit('visible', 'enabled', 'checked'), 'word'])] }],
-  ['find', { shapes: findShapes() }],
-  ['frame', targetOnly],
+  ['get', { shapes: [shape([lit('url')]), shape([lit('title')])] }],
+  ['is', { shapes: [shape([lit('visible', 'enabled', 'checked'), 'ref'])] }],
+  ['frame', { shapes: [shape(['ref']), shape([lit('main')])] }],
   [
     'dialog',
-    {
-      shapes: [shape([lit('dismiss')]), shape([lit('accept')], 'text')],
-    },
+    { shapes: [shape([lit('dismiss')]), shape([lit('accept')], 'text')] },
   ],
 ]);
 
-const BLOCKED_URL_SCHEME = /^(?:javascript|data|file|blob|vbscript):/i;
+const NAMED_KEYS = new Set([
+  'Enter',
+  'Tab',
+  'Escape',
+  'Backspace',
+  'Delete',
+  'Space',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'Home',
+  'End',
+  'PageUp',
+  'PageDown',
+  'Control+a',
+  'Meta+a',
+]);
+
+/** http(s) only, no userinfo, bounded. A bare host gets https:// like the CLI. */
+const isOpenableUrl = (arg: string): boolean => {
+  if (arg.length === 0 || arg.length > 2048 || /[\s\\]/.test(arg)) return false;
+  const candidate = arg.includes(':') ? arg : `https://${arg}`;
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return false;
+  }
+  return (
+    (url.protocol === 'http:' || url.protocol === 'https:') &&
+    url.username === '' &&
+    url.password === '' &&
+    url.hostname !== ''
+  );
+};
 
 const matches = (slot: Slot, arg: string): boolean => {
   if (typeof slot === 'object') return slot.is.includes(arg);
   switch (slot) {
-    case 'word':
-      return arg.length > 0 && !arg.startsWith('-');
+    case 'ref':
+      return /^@e\d{1,6}$/.test(arg);
     case 'number':
       return /^\d{1,7}$/.test(arg);
     case 'url':
-      return (
-        arg.length > 0 &&
-        arg.trim() === arg &&
-        // Spaces, tabs and the like inside a scheme can hide it from the match.
-        !/\s/.test(arg) &&
-        !BLOCKED_URL_SCHEME.test(arg)
-      );
+      return isOpenableUrl(arg);
+    case 'key':
+      return NAMED_KEYS.has(arg) || /^[\x21-\x7e]$/.test(arg);
     case 'text':
       return !arg.startsWith('--') && !SHORT_GLOBAL_FLAGS.has(arg);
   }
@@ -232,7 +200,7 @@ const matchesFlags = (
 };
 
 const WELL_FORMED = (arg: unknown): arg is string =>
-  typeof arg === 'string' && !/[\0\n\r]/.test(arg);
+  typeof arg === 'string' && !arg.includes('\0');
 
 /**
  * `COMMAND_REFUSED` when the argv is not on the allowlist, null when it is.

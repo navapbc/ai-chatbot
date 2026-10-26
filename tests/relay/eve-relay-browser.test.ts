@@ -1,5 +1,15 @@
+import { execFileSync } from 'node:child_process';
 import type { ToolContext } from 'eve/tools';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { _resetAgentTokenCache } from '@/lib/relay/agent-token';
 import {
   relayCredentialState,
@@ -89,6 +99,26 @@ describe('relayCredentialState', () => {
         .kind,
     ).toBe('partial');
   });
+});
+
+// Tests below that reach the real CLI (against a relay that is not there) leave
+// an agent-browser daemon behind. A private namespace scopes `close --all` to
+// the daemons this file started.
+const NAMESPACE = `relay-unit-${process.pid}`;
+beforeAll(() => {
+  process.env.AGENT_BROWSER_NAMESPACE = NAMESPACE;
+});
+afterAll(() => {
+  try {
+    execFileSync('agent-browser', ['close', '--all'], {
+      env: process.env,
+      stdio: 'ignore',
+      timeout: 15_000,
+    });
+  } catch {
+    // No daemon to close.
+  }
+  Reflect.deleteProperty(process.env, 'AGENT_BROWSER_NAMESPACE');
 });
 
 const fetchMock = vi.fn();
@@ -540,10 +570,10 @@ describe('recovery after an extension restart', () => {
   it.each([
     [['press', 'Enter']],
     [['open', 'https://benefits.example.gov/next']],
-    [['click', '#submit']],
+    [['click', '@e9']],
     [['reload']],
     [['frame', 'main']],
-    [['snapshot', '-s', '@e3']],
+    [['hover', '@e3']],
   ])('does not run %j again after a lost connection', async (command) => {
     const { run, ctx, base, ran } = await load((argv) =>
       argv[0] === 'close' ? ok() : fail(CLOSED),
@@ -667,6 +697,7 @@ describe('command policy in extension runs', () => {
     [['batch', 'eval 1']],
     [['--cdp', 'ws://evil.example', 'snapshot']],
     [['find', 'role', 'textbox', 'text']],
+    [['wait', '--text', 'SSN: 9']],
     [['wait', '--fn', '1']],
     [[]],
   ])(

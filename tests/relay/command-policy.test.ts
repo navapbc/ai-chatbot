@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 import {
   COMMAND_REFUSED,
@@ -11,6 +12,61 @@ const allowed = (command: readonly string[]) =>
 
 describe('relayCommandRefusal: refused (Review Focus 4)', () => {
   it.each([
+    // value oracles: selectors, text/url matches, counts, find
+    [['get', 'count', 'input[value^="9"]']],
+    [['get', 'count', '@e1']],
+    [['is', 'visible', "xpath=//input[starts-with(@value,'900')]"]],
+    [['is', 'visible', 'input[value^="9"]']],
+    [['is', 'checked', '#agree']],
+    [['wait', '--text', 'SSN: 9']],
+    [['wait', '--url', '**ssn=9*']],
+    [['wait', 'input[value^="9"]']],
+    [['wait', '#plain']],
+    [['find', 'text', '900-12', 'click']],
+    [['find', 'role', 'button', 'click', '--name', 'Plain action']],
+    [['find', 'label', 'First name', 'fill', 'Grace']],
+    [['find', 'first', '.item', 'click']],
+    [['snapshot', '-s', 'form:has(input[value^="9"])']],
+    [['snapshot', '-s', 'form']],
+    [['scroll', 'down', '1', '--selector', 'input[value^="9"]']],
+    [['click', "xpath=//input[starts-with(@value,'9')]"]],
+    [['click', '#submit']],
+    [['click', 'input[value^="9"]']],
+    [['fill', 'input[name=ssn]', 'x']],
+    [['hover', '.a']],
+    [['frame', 'input[value^="9"]']],
+    [['frame', '#child']],
+    [['scrollintoview', '#plain']],
+    [['select', '#state', 'CA']],
+    [['click', '@e']],
+    [['click', '@e1234567']],
+    [['click', '@e1 ']],
+    [['click', '@E1']],
+    [['press', 'Control+c']],
+    [['press', 'Control+v']],
+    [['press', 'Control+x']],
+    [['press', 'Shift+Insert']],
+    [['press', 'Control+Insert']],
+    [['press', 'Meta+c']],
+    [['press', 'Meta+v']],
+    [['press', 'Meta+x']],
+    [['press', 'F12']],
+    [['press', 'ab']],
+    [['press', ' ']],
+    [['press', '']],
+    [['press', 'Enter', 'Tab']],
+    [['open', 'view-source:https://a.example']],
+    [['open', 'chrome://settings']],
+    [['open', 'about:blank']],
+    [['open', 'filesystem:https://a.example/x']],
+    [['open', 'intent://x#Intent;end']],
+    [['open', 'ftp://a.example/x']],
+    [['open', 'ws://a.example/x']],
+    [['open', 'https://user:pw@a.example/']],
+    [['open', 'https://user@a.example/']],
+    [['open', `https://a.example/${'a'.repeat(2100)}`]],
+    [['open', 'java\nscript:alert(1)']],
+    [['open', 'https://a.example/x y']],
     [['eval', 'document.title']],
     [['EVAL', 'document.title']],
     [['Eval', '1']],
@@ -97,7 +153,6 @@ describe('relayCommandRefusal: refused (Review Focus 4)', () => {
     [['eval\n', '1']],
     [['click', '@e1\nget text @e2']],
     [['click', '@e1\0']],
-    [['fill', '@e1', 'a\nb']],
   ])('refuses %j', (command) => {
     expect(relayCommandRefusal(command)).toBe(COMMAND_REFUSED);
   });
@@ -142,26 +197,41 @@ describe('relayCommandRefusal: refused (Review Focus 4)', () => {
 
 describe('relayCommandRefusal: allowed', () => {
   it.each([
-    [['open', 'https://benefits.example.gov/apply?step=1']],
-    [['open', 'benefits.example.gov']],
+    [['open', 'https://example.gov/path?x=1']],
+    [['open', 'http://localhost:3000/apply']],
+    [['open', 'example.gov']],
     [['snapshot']],
     [['snapshot', '-i']],
     [['snapshot', '-i', '-c']],
     [['snapshot', '-c', '-i', '-u']],
     [['snapshot', '-d', '3']],
-    [['snapshot', '-s', 'form']],
-    [['snapshot', '-s', '#main', '-i']],
-    [['snapshot', '-s', '@e3']],
     [['click', '@e1']],
-    [['click', '#submit-nope']],
     [['fill', '@e1', 'Ada']],
     [['fill', '@e1', 'Ada Lovelace']],
     [['fill', '@e1', '']],
     [['fill', '@e1', '-5']],
     [['fill', '@e1', 'a', 'b']],
+    [['fill', '@e1', 'line 1\nline 2']],
+    [['fill', '@e1', 'line 1\r\nline 2']],
     [['type', '@e2', 'Lovelace']],
+    [['press', 'Enter']],
     [['press', 'Tab']],
+    [['press', 'Escape']],
+    [['press', 'Backspace']],
+    [['press', 'Delete']],
+    [['press', 'Space']],
+    [['press', 'ArrowDown']],
+    [['press', 'ArrowUp']],
+    [['press', 'ArrowLeft']],
+    [['press', 'ArrowRight']],
+    [['press', 'Home']],
+    [['press', 'End']],
+    [['press', 'PageUp']],
+    [['press', 'PageDown']],
     [['press', 'Control+a']],
+    [['press', 'Meta+a']],
+    [['press', 'a']],
+    [['press', '7']],
     [['select', '@e3', 'CA']],
     [['select', '@e3', 'a', 'b']],
     [['check', '@e4']],
@@ -174,12 +244,8 @@ describe('relayCommandRefusal: allowed', () => {
     [['scroll', 'up', '300']],
     [['scroll', 'left', '200']],
     [['scroll', 'right', '200']],
-    [['scroll', 'down', '500', '--selector', 'div.content']],
-    [['wait', '@e5']],
-    [['wait', '#plain']],
-    [['wait', '200']],
-    [['wait', '--text', 'Welcome']],
-    [['wait', '--url', '**/dashboard']],
+    [['wait', '@e3']],
+    [['wait', '500']],
     [['wait', '--load', 'networkidle']],
     [['wait', '--load', 'load']],
     [['wait', '--load', 'domcontentloaded']],
@@ -192,23 +258,9 @@ describe('relayCommandRefusal: allowed', () => {
     [['screenshot', '--full']],
     [['get', 'url']],
     [['get', 'title']],
-    [['get', 'count', '.item']],
     [['is', 'visible', '@e1']],
     [['is', 'enabled', '@e1']],
     [['is', 'checked', '@e4']],
-    [['find', 'role', 'textbox', 'click']],
-    [['find', 'role', 'button', 'click', '--name', 'Plain action']],
-    [['find', 'role', 'button', 'click', '--name', 'Go', '--exact']],
-    [['find', 'label', 'First name', 'fill', 'Grace']],
-    [['find', 'placeholder', 'Search', 'type', 'query']],
-    [['find', 'text', 'Sign In', 'click']],
-    [['find', 'text', 'Sign In', 'click', '--exact']],
-    [['find', 'alt', 'Logo', 'hover']],
-    [['find', 'title', 'Close', 'click']],
-    [['find', 'testid', 'submit-btn', 'focus']],
-    [['find', 'first', '.item', 'click']],
-    [['find', 'last', '.item', 'check']],
-    [['find', 'nth', '2', 'a', 'hover']],
     [['frame', '@e7']],
     [['frame', 'main']],
     [['dialog', 'accept']],
@@ -225,21 +277,19 @@ describe('relayCommandRefusal: allowed', () => {
   });
 });
 
-describe('every command the extension-run skill and the measured list use', () => {
-  // tests/relay/e2e/allowlist.e2e.test.ts `driveDocumentedCommands`, minus the
-  // value-returning ones, which must be refused (see below).
-  it('is allowed', () => {
+describe('the measured command list', () => {
+  // tests/relay/e2e/allowlist.e2e.test.ts `driveDocumentedCommands`: the
+  // ref-based and fixed-word commands pass; selector, find, value and batch
+  // forms are refused.
+  it('keeps its ref-based commands', () => {
     for (const command of [
       ['open', 'https://benefits.example.gov/'],
       ['snapshot'],
-      ['snapshot', '-s', 'form'],
       ['snapshot', '-i'],
       ['click', '@e1'],
       ['fill', '@e1', 'Ada'],
       ['type', '@e2', 'Lovelace'],
       ['select', '@e3', 'CA'],
-      ['find', 'label', 'First name', 'fill', 'Grace'],
-      ['find', 'role', 'button', 'click', '--name', 'Plain action'],
       ['press', 'Tab'],
       ['press', 'Control+a'],
       ['hover', '@e5'],
@@ -247,31 +297,32 @@ describe('every command the extension-run skill and the measured list use', () =
       ['uncheck', '@e4'],
       ['scrollintoview', '@e5'],
       ['wait', '@e5'],
-      ['wait', '#plain'],
       ['wait', '200'],
       ['wait', '--load', 'networkidle'],
       ['get', 'url'],
       ['get', 'title'],
       ['scroll', 'down', '500'],
-      ['scroll', 'up', '500'],
       ['screenshot'],
       ['dialog', 'accept'],
       ['dialog', 'dismiss'],
-      ['frame', '#child'],
-      ['frame', 'main'],
       ['frame', '@e7'],
+      ['frame', 'main'],
     ]) {
       expect(allowed(command), JSON.stringify(command)).toBe(true);
     }
   });
 
-  it('refuses the value-returning commands of the measured list', () => {
+  it('refuses its value-returning and selector forms', () => {
     for (const command of [
+      ['snapshot', '-s', 'form'],
+      ['find', 'label', 'First name', 'fill', 'Grace'],
+      ['find', 'role', 'button', 'click', '--name', 'Plain action'],
+      ['wait', '#plain'],
       ['get', 'text', '@e5'],
       ['get', 'value', '@e1'],
       ['eval', 'document.title'],
-      ['eval', 'setTimeout(() => alert("a"), 50); 1'],
       ['batch', '--bail', 'click @e1', 'press 1', 'wait 100', 'press 2'],
+      ['frame', '#child'],
     ]) {
       expect(refused(command), JSON.stringify(command)).toBe(true);
     }
@@ -279,6 +330,15 @@ describe('every command the extension-run skill and the measured list use', () =
 });
 
 describe('top-level commands outside the allowlist', () => {
+  // Pinned to the CLI version below: a new version may add commands, and this
+  // list must be re-derived from `agent-browser --help` before the bump ships.
+  it('is pinned to the agent-browser version the list was taken from', () => {
+    const { version } = createRequire(import.meta.url)(
+      'agent-browser/package.json',
+    ) as { version: string };
+    expect(version).toBe('0.33.2');
+  });
+
   // Every command named by `agent-browser --help` (0.33.2) and its aliases.
   // Only the ones below the allowlist line may be allowed.
   const ALL_CLI_COMMANDS = [
@@ -384,7 +444,6 @@ describe('top-level commands outside the allowlist', () => {
     'screenshot',
     'get',
     'is',
-    'find',
     'frame',
     'dialog',
   ]);
