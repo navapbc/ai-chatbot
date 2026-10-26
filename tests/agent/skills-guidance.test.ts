@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import {
+  COMMAND_REFUSED,
+  relayCommandRefusal,
+} from '@/lib/relay/command-policy';
 
 const root = process.cwd();
 const read = (p: string) => readFileSync(join(root, p), 'utf8');
@@ -44,6 +48,92 @@ describe('extension-run skill', () => {
 
   it('never tells the agent to use a selector frame', () => {
     expect(skill).not.toMatch(/frame\s+["'#]/);
+  });
+});
+
+describe('extension-run skill: masked verification and ref-only commands', () => {
+  const skill = read('agent/skills/extension-run/SKILL.md');
+
+  it.each([
+    '[masked]',
+    'eval',
+    'verify',
+    'snapshot',
+    '@eN',
+    'wait --load',
+    'get url',
+    COMMAND_REFUSED,
+    '`provided`',
+    '`skip`',
+    'allowFreeform: false',
+    'You never type a sensitive value',
+    'The screenshot was refused because sensitive fields could not be masked.',
+    'browser-automation',
+    'benefits-application',
+    'field-patterns',
+    'browser-commands',
+    'get value',
+    '`batch`',
+    'tab new',
+    'wait --text',
+    '#id',
+    '`find`',
+  ])('contains %s', (needle) => {
+    expect(skill).toContain(needle);
+  });
+
+  const isRefusedLine = (line: string) => /^\s*(?:[-*]\s*)?Refused:/.test(line);
+
+  const argvExamples = skill
+    .split('\n')
+    .filter((l) => !isRefusedLine(l))
+    .flatMap((l) => l.match(/\[\s*"[^\]\n]*\]/g) ?? [])
+    .map(
+      (m) =>
+        JSON.parse(
+          m.replaceAll('<current url>', 'https://example.test/'),
+        ) as string[],
+    )
+    .filter((a) => Array.isArray(a) && a.every((x) => typeof x === 'string'));
+
+  it('has argv examples to check', () => {
+    expect(argvExamples.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it.each(argvExamples.map((a) => [JSON.stringify(a), a]))(
+    'example %s is allowed by the command policy',
+    (_n, argv) => {
+      expect(relayCommandRefusal(argv as string[])).toBeNull();
+    },
+  );
+
+  it('marked Refused: examples really are refused', () => {
+    const refused = skill
+      .split('\n')
+      .filter(isRefusedLine)
+      .flatMap((l) => l.match(/\[\s*"[^\]\n]*\]/g) ?? [])
+      .map((m) => JSON.parse(m) as string[]);
+    expect(refused.length).toBeGreaterThan(0);
+    for (const argv of refused) {
+      expect(relayCommandRefusal(argv)).not.toBeNull();
+    }
+  });
+
+  it('never recommends refused commands outside Refused: lines', () => {
+    const live = skill
+      .split('\n')
+      .filter(
+        (l) =>
+          !isRefusedLine(l) && !/\b(refused|never|not|do not|don't)\b/i.test(l),
+      )
+      .join('\n');
+    expect(live).not.toMatch(
+      /get value|`eval|\bfind\b|#id|wait --text|wait --url/,
+    );
+  });
+
+  it('stays concise', () => {
+    expect(skill.split('\n').length).toBeLessThanOrEqual(120);
   });
 });
 
