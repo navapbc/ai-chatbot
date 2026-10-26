@@ -114,6 +114,10 @@ export async function POST(request: Request) {
   // True once this request's answer turn has cleared pending itself, so the
   // session.waiting heal below has nothing to do.
   let pendingCleared = false;
+  // A follow-up's claim and the token Eve returned for it. At this turn's
+  // session.waiting the claim, if still stored (the final swap failed), is
+  // replaced by that token. The stream's own token is never stored.
+  let heal: { claim: string; token: string } | undefined;
   try {
     const existing = await store.get(userId, chatId);
     // What a follow-up forwards to Eve. Decided, and every rejection
@@ -168,7 +172,8 @@ export async function POST(request: Request) {
     if (existing) {
       // Claim the stored token before talking to Eve: only one concurrent
       // turn wins the compare-and-set, so a second turn never sends Eve a
-      // second message on the same (single-use) token. The claim is a random
+      // message while one is in flight (Eve 0.27 keeps one token per session,
+      // so the token alone would not stop it). The claim is a random
       // placeholder; the real token replaces it once Eve answers. A crash
       // between the claim and that final swap leaves the chat on a claim until
       // recovery is built (no stale-claim takeover exists yet).
@@ -197,6 +202,11 @@ export async function POST(request: Request) {
           existing.continuationToken,
           input,
         ));
+        // Eve 0.27's continue response carries no token (`{ ok, sessionId }`)
+        // and the eve channel keeps one token for the whole session, so the
+        // token just sent stays the valid one. Never store an empty token: the
+        // next turn would send it and Eve rejects an empty one with a 400.
+        if (!nextToken) nextToken = existing.continuationToken;
       } catch (err) {
         // Eve never accepted the message, so put the stored token back and the
         // run is unchanged and retryable. A failed continue never falls back to
@@ -216,9 +226,10 @@ export async function POST(request: Request) {
         }
         throw err;
       }
-      // Eve has consumed the old token: from here the stored one must never be
-      // restored. If this swap fails the row keeps the claim, and `advance` at
-      // session.waiting writes the real token and heals it.
+      // From here the claim must never be rolled back: Eve accepted the turn.
+      // If this swap fails the row keeps the claim, and `advance` at this
+      // turn's session.waiting replaces it with nextToken.
+      heal = { claim, token: nextToken };
       if (answering) {
         // Eve accepted the answers. Clear them while the claim is still held,
         // so no other turn can see the real token next to answered questions
@@ -385,13 +396,20 @@ export async function POST(request: Request) {
               await store.setPending(userId, chatId, []);
             }
             if (r.continuationToken) {
-              // Persist the cursor with the token: `consumed` already counts
-              // this `session.waiting`, so the next turn resumes on the event
-              // after it. Only advanced at the turn boundary — a connection
-              // dropped mid-turn replays that turn rather than skipping it.
+              // Persist the cursor: `consumed` already counts this
+              // `session.waiting`, so the next turn resumes on the event after
+              // it. Only advanced at a turn boundary — a connection dropped
+              // mid-turn replays that turn rather than skipping it.
+              //
+              // The event's token is deliberately not stored. A read that
+              // resumes from a stale cursor (an earlier turn's read died
+              // before its session.waiting) reaches that earlier boundary
+              // first, and its token may be one a later turn already used.
+              // Tokens come only from Eve's create/continue responses; the
+              // one write here is healing this turn's own claim.
               await store.advance(userId, chatId, {
-                continuationToken: r.continuationToken,
                 streamIndex: consumed,
+                ...(heal ? { heal } : {}),
               });
             }
             if (r.done) {

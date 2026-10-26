@@ -99,28 +99,90 @@ function runSuite(
     expect((await store.get(owner, chatId))?.continuationToken).toBe('t2');
   });
 
-  it('advance ignores a lower or equal streamIndex and applies a higher one', async () => {
+  it('advance moves only the cursor, only forward, and never writes a token', async () => {
     const store = makeStore();
     const { owner } = users();
     const chatId = randomUUID();
     await store.create(owner, chatId, init('t1'));
 
-    await store.advance(owner, chatId, { continuationToken: 't5', streamIndex: 5 });
+    await store.advance(owner, chatId, { streamIndex: 5 });
     expect(await store.get(owner, chatId)).toMatchObject({
-      continuationToken: 't5',
+      continuationToken: 't1',
       streamIndex: 5,
     });
 
-    await store.advance(owner, chatId, { continuationToken: 't5b', streamIndex: 5 });
-    await store.advance(owner, chatId, { continuationToken: 't3', streamIndex: 3 });
+    await store.advance(owner, chatId, { streamIndex: 5 });
+    await store.advance(owner, chatId, { streamIndex: 3 });
     expect(await store.get(owner, chatId)).toMatchObject({
-      continuationToken: 't5',
+      continuationToken: 't1',
       streamIndex: 5,
     });
 
-    await store.advance(owner, chatId, { continuationToken: 't9', streamIndex: 9 });
+    await store.advance(owner, chatId, { streamIndex: 9 });
     expect(await store.get(owner, chatId)).toMatchObject({
-      continuationToken: 't9',
+      continuationToken: 't1',
+      streamIndex: 9,
+    });
+  });
+
+  it("advance heals the turn's own claim with the turn's token", async () => {
+    const store = makeStore();
+    const { owner } = users();
+    const chatId = randomUUID();
+    await store.create(owner, chatId, init('t1'));
+    await store.swapToken(owner, chatId, 't1', 'claim:a');
+
+    await store.advance(owner, chatId, {
+      streamIndex: 4,
+      heal: { claim: 'claim:a', token: 't2' },
+    });
+    expect(await store.get(owner, chatId)).toMatchObject({
+      continuationToken: 't2',
+      streamIndex: 4,
+    });
+  });
+
+  it('advance heals a claim even on a replayed (lower) boundary, cursor kept', async () => {
+    const store = makeStore();
+    const { owner } = users();
+    const chatId = randomUUID();
+    await store.create(owner, chatId, init('t1'));
+    await store.advance(owner, chatId, { streamIndex: 8 });
+    await store.swapToken(owner, chatId, 't1', 'claim:a');
+
+    await store.advance(owner, chatId, {
+      streamIndex: 6,
+      heal: { claim: 'claim:a', token: 't2' },
+    });
+    expect(await store.get(owner, chatId)).toMatchObject({
+      continuationToken: 't2',
+      streamIndex: 8,
+    });
+  });
+
+  it('advance never replaces a token that is not the given claim', async () => {
+    const store = makeStore();
+    const { owner } = users();
+    const chatId = randomUUID();
+    // The turn's final swap already stored its token: a heal for that turn
+    // must not touch it, whatever index the boundary has.
+    await store.create(owner, chatId, init('t3'));
+    await store.advance(owner, chatId, {
+      streamIndex: 7,
+      heal: { claim: 'claim:a', token: 't2' },
+    });
+    expect(await store.get(owner, chatId)).toMatchObject({
+      continuationToken: 't3',
+      streamIndex: 7,
+    });
+    // Another turn's claim is not this turn's either.
+    await store.swapToken(owner, chatId, 't3', 'claim:b');
+    await store.advance(owner, chatId, {
+      streamIndex: 9,
+      heal: { claim: 'claim:a', token: 't2' },
+    });
+    expect(await store.get(owner, chatId)).toMatchObject({
+      continuationToken: 'claim:b',
       streamIndex: 9,
     });
   });
@@ -172,7 +234,10 @@ function runSuite(
     const chatId = randomUUID();
     await store.setPending(owner, chatId, pending);
     await store.setProgress(owner, chatId, progress);
-    await store.advance(owner, chatId, { continuationToken: 't9', streamIndex: 9 });
+    await store.advance(owner, chatId, {
+      streamIndex: 9,
+      heal: { claim: 't1', token: 't9' },
+    });
     await store.remove(owner, chatId);
     expect(await store.get(owner, chatId)).toBeUndefined();
     expect(await store.getByChatId(chatId)).toBeUndefined();
@@ -181,7 +246,10 @@ function runSuite(
     await store.create(owner, chatId, init('t1'));
     await store.setPending(other, chatId, pending);
     await store.setProgress(other, chatId, progress);
-    await store.advance(other, chatId, { continuationToken: 't9', streamIndex: 9 });
+    await store.advance(other, chatId, {
+      streamIndex: 9,
+      heal: { claim: 't1', token: 't9' },
+    });
     await store.remove(other, chatId);
     expect(await store.get(owner, chatId)).toEqual({
       eveSessionId: 's1',
@@ -267,7 +335,7 @@ describe.skipIf(!TEST_DATABASE_URL)('drizzle run store', () => {
     );
   });
 
-  it('racing advance calls leave the max index and its token', async () => {
+  it('racing advance calls leave the max index and the token untouched', async () => {
     const store = createDbRunStore();
     const chatId = randomUUID();
     await store.create(ids.owner, chatId, {
@@ -278,16 +346,32 @@ describe.skipIf(!TEST_DATABASE_URL)('drizzle run store', () => {
       () => Math.random() - 0.5,
     );
     await Promise.all(
-      indices.map((i) =>
+      indices.map((i) => store.advance(ids.owner, chatId, { streamIndex: i })),
+    );
+    expect(await store.get(ids.owner, chatId)).toMatchObject({
+      streamIndex: 20,
+      continuationToken: 't0',
+    });
+  });
+
+  it('racing heals of one claim: the token is written once, cursor is the max', async () => {
+    const store = createDbRunStore();
+    const chatId = randomUUID();
+    await store.create(ids.owner, chatId, {
+      eveSessionId: 's1',
+      continuationToken: 'claim:x',
+    });
+    await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
         store.advance(ids.owner, chatId, {
-          continuationToken: `t${i}`,
-          streamIndex: i,
+          streamIndex: i + 1,
+          heal: { claim: 'claim:x', token: 'healed' },
         }),
       ),
     );
     expect(await store.get(ids.owner, chatId)).toMatchObject({
-      streamIndex: 20,
-      continuationToken: 't20',
+      streamIndex: 10,
+      continuationToken: 'healed',
     });
   });
 });

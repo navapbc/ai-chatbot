@@ -10,7 +10,9 @@ import {
   gte,
   inArray,
   lt,
+  or,
   type SQL,
+  sql,
 } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
@@ -795,27 +797,43 @@ export async function swapEveRunToken({
   }
 }
 
-/** Moves the cursor and token forward only when streamIndex is higher. */
+/**
+ * Moves the cursor forward (only when streamIndex is higher) and, with
+ * `heal`, replaces the token only while it is still that turn's claim. One
+ * conditional UPDATE, so it cannot interleave with a concurrent swap. Never
+ * writes any other token: see EveRunStore.advance.
+ */
 export async function advanceEveRun({
   userId,
   chatId,
-  continuationToken,
   streamIndex,
+  heal,
 }: {
   userId: string;
   chatId: string;
-  continuationToken: string;
   streamIndex: number;
+  heal?: { claim: string; token: string };
 }): Promise<void> {
   try {
+    const scope = and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId));
+    const forward = lt(eveRun.streamIndex, streamIndex);
     await db
       .update(eveRun)
-      .set({ continuationToken, streamIndex, updatedAt: new Date() })
+      .set({
+        streamIndex: sql`GREATEST(${eveRun.streamIndex}, ${streamIndex})`,
+        ...(heal
+          ? {
+              continuationToken: sql`CASE WHEN ${eveRun.continuationToken} = ${heal.claim} THEN ${heal.token} ELSE ${eveRun.continuationToken} END`,
+            }
+          : {}),
+        updatedAt: new Date(),
+      })
       .where(
         and(
-          eq(eveRun.userId, userId),
-          eq(eveRun.chatId, chatId),
-          lt(eveRun.streamIndex, streamIndex),
+          scope,
+          heal
+            ? or(forward, eq(eveRun.continuationToken, heal.claim))
+            : forward,
         ),
       );
   } catch (error) {

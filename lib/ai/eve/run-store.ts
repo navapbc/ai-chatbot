@@ -54,11 +54,18 @@ export interface EveRunStore {
     expected: string,
     next: string,
   ): Promise<boolean>;
-  /** Applies only when streamIndex is greater than the stored one. */
+  /**
+   * Moves the cursor to streamIndex when that is greater than the stored one.
+   * Never writes a token taken from the stream: a replayed turn boundary can
+   * carry a token Eve already consumed. The only token write is `heal`: when
+   * the stored token is still this turn's claim (its final swap failed), it
+   * becomes the token Eve returned for this turn, whatever the index.
+   * One atomic update.
+   */
   advance(
     userId: string,
     chatId: string,
-    update: { continuationToken: string; streamIndex: number },
+    update: { streamIndex: number; heal?: { claim: string; token: string } },
   ): Promise<void>;
   setPending(
     userId: string,
@@ -115,9 +122,13 @@ export function createMemoryRunStore(): EveRunStore {
     },
     async advance(userId, chatId, update) {
       const row = rows.get(key(userId, chatId));
-      if (!row || update.streamIndex <= row.streamIndex) return;
-      row.streamIndex = update.streamIndex;
-      row.continuationToken = update.continuationToken;
+      if (!row) return;
+      if (update.streamIndex > row.streamIndex) {
+        row.streamIndex = update.streamIndex;
+      }
+      if (update.heal && row.continuationToken === update.heal.claim) {
+        row.continuationToken = update.heal.token;
+      }
     },
     async setPending(userId, chatId, requests) {
       const row = rows.get(key(userId, chatId));
