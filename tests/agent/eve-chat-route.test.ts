@@ -14,6 +14,9 @@ const eve = vi.hoisted(() => ({
 vi.mock('@/lib/ai/eve/eve-client', () => eve);
 
 import { POST } from '@/app/(chat)/api/eve-chat/route';
+import { PARTICIPANTS, buildApplicationPrompt } from '@/lib/data/participants';
+import { WITHHELD } from '@/lib/data/sensitive-record';
+import { extractParticipantFromText } from '@/lib/jev/participant';
 import {
   buildExtensionRunMessage,
   EXTENSION_RUN_MARKER,
@@ -418,13 +421,13 @@ describe('POST /api/eve-chat relay runs', () => {
   const RELAY_CHAT = '3f2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b';
   const ORIGIN = 'https://apply.example.gov';
 
-  const relayTurn = (relay: unknown, id = RELAY_CHAT) =>
+  const relayTurn = (relay: unknown, id = RELAY_CHAT, text = 'hi') =>
     POST(
       new Request('http://localhost/api/eve-chat', {
         method: 'POST',
         body: JSON.stringify({
           id,
-          message: { role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+          message: { role: 'user', parts: [{ type: 'text', text }] },
           relay,
         }),
       }),
@@ -463,6 +466,78 @@ describe('POST /api/eve-chat relay runs', () => {
     const sent = eve.createEveSession.mock.calls[0][0] as string;
     expect(sent.startsWith(EXTENSION_RUN_MARKER)).toBe(true);
     expect(sent.endsWith('hi')).toBe(true);
+  });
+
+  describe('sensitive record values', () => {
+    const SECRET = PARTICIPANTS[0].participant.calworks_id;
+    const opening = () =>
+      buildApplicationPrompt({
+        participant: PARTICIPANTS[0],
+        target: 'a WIC application',
+      });
+
+    it('a relay first turn sends Eve a message whose record has no calworks_id value', async () => {
+      streamEvents({ type: 'turn.started' });
+      await drain(await relayTurn({ origin: ORIGIN }, RELAY_CHAT, opening()));
+      const sent = eve.createEveSession.mock.calls[0][0] as string;
+      expect(sent).not.toContain(SECRET);
+      expect(sent).toContain(WITHHELD);
+      expect(extractParticipantFromText(sent)?.participant.calworks_id).toBe(
+        WITHHELD,
+      );
+    });
+
+    it("the caseworker's own words around the record are unchanged", async () => {
+      streamEvents({ type: 'turn.started' });
+      const text = `Before words.\n${opening()}\nAfter words.`;
+      await drain(await relayTurn({ origin: ORIGIN }, RELAY_CHAT, text));
+      const sent = eve.createEveSession.mock.calls[0][0] as string;
+      expect(sent.startsWith(EXTENSION_RUN_MARKER)).toBe(true);
+      expect(sent).toContain('Before words.\nFill out a WIC application');
+      expect(sent.endsWith('\nAfter words.')).toBe(true);
+    });
+
+    it('a web chat first turn is unchanged', async () => {
+      streamEvents({ type: 'turn.started' });
+      await drain(await turn(opening(), 'web-record-chat'));
+      expect(eve.createEveSession).toHaveBeenCalledWith(opening(), undefined);
+    });
+
+    it('a relay follow-up without a record is not rewritten', async () => {
+      await store.create(USER, RELAY_CHAT, {
+        eveSessionId: 'sess-1',
+        continuationToken: 'tok-0',
+        relayOrigin: ORIGIN,
+      });
+      eve.continueEveSession.mockResolvedValue({
+        continuationToken: 'tok-1',
+        sessionId: 'sess-1',
+      });
+      streamEvents({ type: 'turn.started' });
+      await drain(
+        await relayTurn(undefined, RELAY_CHAT, 'use 123 Main St instead'),
+      );
+      expect(eve.continueEveSession.mock.calls[0][2]).toBe(
+        'use 123 Main St instead',
+      );
+    });
+
+    it('a record pasted into a relay follow-up is stripped too', async () => {
+      await store.create(USER, RELAY_CHAT, {
+        eveSessionId: 'sess-1',
+        continuationToken: 'tok-0',
+        relayOrigin: ORIGIN,
+      });
+      eve.continueEveSession.mockResolvedValue({
+        continuationToken: 'tok-1',
+        sessionId: 'sess-1',
+      });
+      streamEvents({ type: 'turn.started' });
+      await drain(await relayTurn(undefined, RELAY_CHAT, opening()));
+      const sent = eve.continueEveSession.mock.calls[0][2] as string;
+      expect(sent).not.toContain(SECRET);
+      expect(sent).toContain(WITHHELD);
+    });
   });
 
   it('does not add the marker to a follow-up turn', async () => {

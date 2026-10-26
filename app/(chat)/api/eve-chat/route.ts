@@ -18,6 +18,7 @@ import { toVertexModelId } from '@/lib/ai/eve/model-map';
 import { type InputAnswer, validateAnswers } from '@/lib/ai/eve/input-requests';
 import { isProductionEnvironment } from '@/lib/constants';
 import { normalizeOrigin } from '@/lib/relay/policy';
+import { stripSensitiveText } from '@/lib/data/sensitive-record';
 import { buildExtensionRunMessage } from '@/lib/relay/run-prompt';
 import { toRelayWsUrl } from '@/lib/relay/url';
 
@@ -133,6 +134,9 @@ export async function POST(request: Request) {
     let answering = false;
     if (existing && existing.relayOrigin !== null) {
       structuredInput = true;
+      // A relay run never forwards a participant record's sensitive values,
+      // on any turn. Text without a record is returned unchanged.
+      input = stripSensitiveText(text);
       const pending = existing.pendingRequests;
       if (hasAnswers) {
         if (pending.length === 0) {
@@ -315,7 +319,8 @@ export async function POST(request: Request) {
       }
       const created = relayRef
         ? await createEveSession(
-            buildExtensionRunMessage(text),
+            // Stripped BEFORE the marker is added, and before anything is sent.
+            buildExtensionRunMessage(stripSensitiveText(text)),
             model,
             relayRef,
           )

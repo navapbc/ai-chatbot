@@ -137,3 +137,22 @@ describe('participant capture hook', () => {
     expect(messagesSlot()).toEqual([]);
   });
 });
+
+describe('participant capture hook on a stripped relay message', () => {
+  it('stores the record with calworks_id withheld, never the real value', async () => {
+    slots.set(PARTICIPANT_SLOT, null);
+    slots.set(MESSAGES_SLOT, []);
+    const { stripSensitiveText, WITHHELD } = await import(
+      '@/lib/data/sensitive-record'
+    );
+    const onMessage = await loadHook();
+    onMessage(received(stripSensitiveText(opening(PARTICIPANT))));
+    const stored = participantSlot() as {
+      participant: { calworks_id: string };
+    };
+    expect(stored.participant.calworks_id).toBe(WITHHELD);
+    expect(JSON.stringify(slots.get(MESSAGES_SLOT))).not.toContain(
+      PARTICIPANT.participant.calworks_id,
+    );
+  });
+});

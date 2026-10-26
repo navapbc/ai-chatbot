@@ -2,6 +2,8 @@
 // agent/tools/resolve_field_value.ts (Eve), so both offer Jev the same
 // candidate set.
 
+import { WITHHELD } from '@/lib/data/sensitive-record';
+
 /**
  * Flatten the record to `path -> value` leaves.
  *
@@ -18,7 +20,8 @@ export const flattenRecord = (
   if (value === null || value === undefined) return out;
   if (typeof value !== 'object') {
     const s = String(value);
-    if (s !== '') out[prefix] = s;
+    // A withheld value is a placeholder, never something to type.
+    if (s !== '' && s !== WITHHELD) out[prefix] = s;
     return out;
   }
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
