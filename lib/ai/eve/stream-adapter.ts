@@ -3,6 +3,11 @@
 // and safe in a Next route. Chunk shapes match AI SDK v7 (text-start/delta/end,
 // tool-input-available, tool-output-available, data-* transient).
 
+import {
+  type PendingInputRequest,
+  parseInputRequests,
+} from '@/lib/ai/eve/input-requests';
+
 export const EVE_TOOL_NAME_MAP: Record<string, string> = {
   gap_analysis: 'gapAnalysis',
   form_summary: 'formSummary',
@@ -38,6 +43,12 @@ interface Ctx {
    * that omits it keeps the old behavior rather than silently losing inputs.
    */
   emittedToolCallIds?: Set<string>;
+  /**
+   * Relay (extension) runs: emit `input.requested` as one structured
+   * `data-input-request` chunk instead of prose, and return the parsed
+   * requests so the route can persist them for answer validation.
+   */
+  structuredInput?: boolean;
 }
 
 // Render one pending HITL request as readable assistant text. Eve resolves a
@@ -90,12 +101,14 @@ export function translateEveEvent(
   done: boolean;
   continuationToken?: string;
   liveViewUrl?: string;
+  inputRequests?: PendingInputRequest[];
 } {
   let textId = ctx.textId;
   let reasoningId = ctx.reasoningId ?? null;
   // Reported by the browser tool so the chat UI's live panel can find the
   // Kernel browser that `eve dev` created in its own process.
   let liveViewUrl: string | undefined;
+  let inputRequests: PendingInputRequest[] | undefined;
   switch (event?.type) {
     case 'message.appended': {
       const delta = event.data?.messageDelta ?? '';
@@ -160,6 +173,20 @@ export function translateEveEvent(
       // stream — and it would not prevent the throw that guard in
       // `action.result` handles, since that later stream is a different UI
       // message either way.
+      if (ctx.structuredInput) {
+        // The extension panel answers these with `inputResponses`, which the
+        // route validates against exactly what is parsed here. Requests that
+        // do not parse are not shown, since they could never be answered.
+        const parsed = parseInputRequests(event.data?.requests);
+        if (parsed.length > 0) {
+          writer.write({
+            type: 'data-input-request',
+            data: { requests: parsed },
+          });
+          inputRequests = parsed;
+        }
+        break;
+      }
       const requests = event.data?.requests ?? [];
       const text = requests
         .map((r: any) => formatInputRequest(r))
@@ -261,5 +288,5 @@ export function translateEveEvent(
       console.warn('[eve-stream-adapter] unhandled Eve event type:', event?.type, event?.data);
       break;
   }
-  return { textId, reasoningId, done: false, liveViewUrl };
+  return { textId, reasoningId, done: false, liveViewUrl, inputRequests };
 }

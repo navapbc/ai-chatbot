@@ -404,3 +404,361 @@ describe('POST /api/eve-chat relay runs', () => {
     expect(eve.createEveSession).toHaveBeenCalledWith('hello', undefined);
   });
 });
+
+describe('POST /api/eve-chat structured questions (relay runs)', () => {
+  const RELAY_CHAT = '3f2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b';
+  const ORIGIN = 'https://apply.example.gov';
+
+  const nameReq = {
+    requestId: 'call-a',
+    prompt: 'Name?',
+    display: 'text' as const,
+    options: [],
+    allowFreeform: true,
+  };
+  const colorReq = {
+    requestId: 'call-b',
+    prompt: 'Color?',
+    display: 'select' as const,
+    options: [
+      { id: 'red', label: 'Red' },
+      { id: 'green', label: 'Green' },
+    ],
+    allowFreeform: false,
+  };
+  const spikedEvent = {
+    type: 'input.requested',
+    data: {
+      requests: [
+        { ...nameReq, action: { kind: 'tool-call', callId: 'call-a' } },
+        {
+          ...colorReq,
+          action: { kind: 'tool-call', callId: 'call-b' },
+          options: [
+            { id: 'red', label: 'Red', description: 'warm' },
+            { id: 'green', label: 'Green' },
+          ],
+        },
+      ],
+    },
+  };
+  const validAnswers = [
+    { requestId: 'call-a', text: 'Ada' },
+    { requestId: 'call-b', optionId: 'red' },
+  ];
+
+  const post = (body: Record<string, unknown>, id = RELAY_CHAT) =>
+    POST(
+      new Request('http://localhost/api/eve-chat', {
+        method: 'POST',
+        body: JSON.stringify({ id, ...body }),
+      }),
+    );
+  const answer = (inputResponses: unknown, extra = {}) =>
+    post({ inputResponses, ...extra });
+  const say = (text: string) =>
+    post({ message: { role: 'user', parts: [{ type: 'text', text }] } });
+
+  const seedRelay = async (pending = [nameReq, colorReq]) => {
+    await store.create(USER, RELAY_CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+      relayOrigin: ORIGIN,
+    });
+    await store.setPending(USER, RELAY_CHAT, pending);
+  };
+
+  /** Reads the SSE body into parsed chunks. */
+  const readChunks = async (res: Response) => {
+    // The route pipes JSON through JsonToSseTransformStream, which yields
+    // strings rather than bytes, so Response.text() cannot read it.
+    let text = '';
+    const reader = (res.body as unknown as ReadableStream<string>).getReader();
+    for (let r = await reader.read(); !r.done; r = await reader.read()) {
+      text += r.value;
+    }
+    return text
+      .split('\n')
+      .filter((l) => l.startsWith('data: ') && l !== 'data: [DONE]')
+      .map((l) => JSON.parse(l.slice(6)));
+  };
+
+  beforeEach(() => {
+    vi.stubEnv('RELAY_RUNS_ENABLED', '1');
+    vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example.gov');
+    vi.stubEnv('EVE_INTERNAL_SECRET', 'internal-secret-for-tests');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('streams a structured chunk and persists two pending requests on a first relay turn', async () => {
+    streamEvents(spikedEvent, waiting('tok-1'));
+    const res = await post({
+      message: { role: 'user', parts: [{ type: 'text', text: 'go' }] },
+      relay: { origin: ORIGIN },
+    });
+    expect(res.status).toBe(200);
+    const chunks = await readChunks(res);
+
+    expect(chunks.filter((c) => c.type === 'data-input-request')).toEqual([
+      { type: 'data-input-request', data: { requests: [nameReq, colorReq] } },
+    ]);
+    expect(chunks.some((c) => c.type === 'text-delta')).toBe(false);
+    expect((await store.get(USER, RELAY_CHAT))?.pendingRequests).toEqual([
+      nameReq,
+      colorReq,
+    ]);
+  });
+
+  it('persists pending on a follow-up relay turn and survives a fresh read', async () => {
+    await seedRelay([]);
+    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    streamEvents(spikedEvent, waiting('tok-2'));
+    await drain(await say('next'));
+
+    // A restarted process reads the row back from the same store.
+    const fresh = await store.get(USER, RELAY_CHAT);
+    expect(fresh?.pendingRequests).toEqual([nameReq, colorReq]);
+    expect(fresh?.continuationToken).toBe('tok-2');
+  });
+
+  it('forwards only the validated answers and clears pending after Eve accepts', async () => {
+    await seedRelay();
+    const order: string[] = [];
+    eve.continueEveSession.mockImplementation(async () => {
+      order.push('continue');
+      return { continuationToken: 'tok-1' };
+    });
+    const realSetPending = store.setPending.bind(store);
+    const setPending = vi.fn(
+      async (...args: Parameters<EveRunStore['setPending']>) => {
+        order.push(`setPending:${args[2].length}`);
+        return realSetPending(...args);
+      },
+    );
+    store.setPending = setPending;
+    streamEvents({ type: 'turn.started' }, waiting('tok-2'));
+
+    // Extra keys (labels, prompts) and a message are never forwarded.
+    const res = await answer(
+      [
+        { requestId: 'call-a', text: '  Ada  ', label: 'x' },
+        { requestId: 'call-b', optionId: 'red', label: 'Red', text: null },
+      ],
+      { message: { role: 'user', parts: [{ type: 'text', text: 'secret' }] } },
+    );
+    expect(res.status).toBe(200);
+    await drain(res);
+
+    expect(eve.continueEveSession).toHaveBeenCalledTimes(1);
+    const [sid, tok, input] = eve.continueEveSession.mock.calls[0];
+    expect(sid).toBe('sess-1');
+    expect(tok).toBe('tok-0');
+    expect(input).toStrictEqual({
+      inputResponses: [
+        { requestId: 'call-a', text: 'Ada' },
+        { requestId: 'call-b', optionId: 'red' },
+      ],
+    });
+    expect(Object.keys(input)).toEqual(['inputResponses']);
+    expect(order).toEqual(['continue', 'setPending:0']);
+    const row = await store.get(USER, RELAY_CHAT);
+    expect(row?.pendingRequests).toEqual([]);
+    expect(row?.continuationToken).toBe('tok-2');
+
+    // Replaying the same answers finds nothing pending.
+    const replay = await answer(validAnswers);
+    expect(replay.status).toBe(400);
+    expect((await replay.json()).cause).toBe('unknown_request');
+    expect(eve.continueEveSession).toHaveBeenCalledTimes(1);
+  });
+
+  describe('rejections never touch the token or Eve', () => {
+    it.each([
+      ['an unknown requestId', [{ requestId: 'nope', text: 'x' }, ...validAnswers], 'unknown_request'],
+      ['text on an option-only request', [validAnswers[0], { requestId: 'call-b', text: 'red' }], 'text_not_allowed'],
+      ['an unknown option', [validAnswers[0], { requestId: 'call-b', optionId: 'blue' }], 'unknown_option'],
+      ['a missing answer', [validAnswers[0]], 'missing_answer'],
+      ['a duplicate answer', [...validAnswers, validAnswers[0]], 'duplicate_answer'],
+      ['a blank answer', [{ requestId: 'call-a', text: '   ' }, validAnswers[1]], 'empty_answer'],
+      ['a non-array body', { requestId: 'call-a' }, 'missing_answer'],
+    ])('rejects %s', async (_n, inputResponses, cause) => {
+      await seedRelay();
+      const swap = vi.spyOn(store, 'swapToken');
+
+      const res = await answer(inputResponses);
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        code: 'bad_request:api',
+        message: expect.any(String),
+        cause,
+      });
+      expect(eve.continueEveSession).not.toHaveBeenCalled();
+      expect(swap).not.toHaveBeenCalled();
+      const row = await store.get(USER, RELAY_CHAT);
+      expect(row?.continuationToken).toBe('tok-0');
+      expect(row?.pendingRequests).toEqual([nameReq, colorReq]);
+    });
+
+    it('rejects a stale requestId from an earlier batch', async () => {
+      await seedRelay([colorReq]);
+      const swap = vi.spyOn(store, 'swapToken');
+      const res = await answer(validAnswers);
+      expect(res.status).toBe(400);
+      expect((await res.json()).cause).toBe('unknown_request');
+      expect(eve.continueEveSession).not.toHaveBeenCalled();
+      expect(swap).not.toHaveBeenCalled();
+    });
+
+    it('rejects a plain message while questions are pending', async () => {
+      await seedRelay();
+      const swap = vi.spyOn(store, 'swapToken');
+      const res = await say('Ada and red');
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        code: 'bad_request:api',
+        message: expect.any(String),
+        cause: 'answers_pending',
+      });
+      expect(eve.continueEveSession).not.toHaveBeenCalled();
+      expect(swap).not.toHaveBeenCalled();
+    });
+
+    it('rejects answers when nothing is pending', async () => {
+      await seedRelay([]);
+      const swap = vi.spyOn(store, 'swapToken');
+      const res = await answer(validAnswers);
+      expect(res.status).toBe(400);
+      expect((await res.json()).cause).toBe('unknown_request');
+      expect(eve.continueEveSession).not.toHaveBeenCalled();
+      expect(swap).not.toHaveBeenCalled();
+    });
+  });
+
+  it('keeps pending and rolls the token back when Eve rejects the forward', async () => {
+    await seedRelay();
+    eve.continueEveSession.mockRejectedValue(
+      new Error('Eve server responded 500'),
+    );
+    const setPending = vi.spyOn(store, 'setPending');
+
+    const res = await answer(validAnswers);
+
+    expect(res.status).toBe(503);
+    expect((await res.json()).code).toBe('offline:chat');
+    expect(setPending).not.toHaveBeenCalled();
+    const row = await store.get(USER, RELAY_CHAT);
+    expect(row?.pendingRequests).toEqual([nameReq, colorReq]);
+    expect(row?.continuationToken).toBe('tok-0');
+    expect(row?.eveSessionId).toBe('sess-1');
+    expect(row?.relayOrigin).toBe(ORIGIN);
+    expect(eve.createEveSession).not.toHaveBeenCalled();
+  });
+
+  it('forwards exactly once and clears once for two concurrent answer sets', async () => {
+    await seedRelay();
+    eve.continueEveSession.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      return { continuationToken: 'tok-1' };
+    });
+    const setPending = vi.spyOn(store, 'setPending');
+    streamEvents({ type: 'turn.started' });
+    streamEvents({ type: 'turn.started' });
+
+    const [a, b] = await Promise.all([
+      answer(validAnswers),
+      answer(validAnswers),
+    ]);
+
+    expect(eve.continueEveSession).toHaveBeenCalledTimes(1);
+    expect([a.status, b.status].sort()).toEqual([200, 503]);
+    await drain(a.status === 200 ? a : b);
+    expect(setPending.mock.calls.filter((c) => c[2].length === 0)).toHaveLength(
+      1,
+    );
+    expect((await store.get(USER, RELAY_CHAT))?.pendingRequests).toEqual([]);
+  });
+
+  it('clears pending before releasing the claim', async () => {
+    await seedRelay();
+    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    streamEvents({ type: 'turn.started' });
+    const realSetPending = store.setPending.bind(store);
+    let racer: Response | undefined;
+    store.setPending = vi.fn(
+      async (...args: Parameters<EveRunStore['setPending']>) => {
+        // A second valid answer set lands while the clear is in flight.
+        if (args[2].length === 0 && !racer) racer = await answer(validAnswers);
+        return realSetPending(...args);
+      },
+    );
+
+    const res = await answer(validAnswers);
+    expect(res.status).toBe(200);
+    await drain(res);
+
+    expect(racer?.status).toBe(503);
+    expect(eve.continueEveSession).toHaveBeenCalledTimes(1);
+    expect(store.setPending).toHaveBeenCalledTimes(1);
+  });
+
+  it('never logs answer text, labels or prompts', async () => {
+    await seedRelay();
+    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    streamEvents(spikedEvent, waiting('tok-2'));
+    await drain(
+      await answer([
+        { requestId: 'call-a', text: 'Ada-Lovelace-123' },
+        { requestId: 'call-b', optionId: 'red' },
+      ]),
+    );
+    const logged = JSON.stringify([
+      ...vi.mocked(console.log).mock.calls,
+      ...vi.mocked(console.error).mock.calls,
+    ]);
+    for (const s of ['Ada-Lovelace-123', 'Name?', 'Color?', 'Red']) {
+      expect(logged).not.toContain(s);
+    }
+  });
+
+  it('keeps prose and ignores inputResponses on a web chat', async () => {
+    await store.create(USER, CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+    });
+    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    streamEvents(spikedEvent, waiting('tok-2'));
+    const setPending = vi.spyOn(store, 'setPending');
+
+    const res = await post(
+      {
+        message: { role: 'user', parts: [{ type: 'text', text: 'again' }] },
+        inputResponses: validAnswers,
+      },
+      CHAT,
+    );
+    expect(res.status).toBe(200);
+    const chunks = await readChunks(res);
+
+    expect(eve.continueEveSession).toHaveBeenCalledWith(
+      'sess-1',
+      'tok-0',
+      'again',
+    );
+    expect(chunks.some((c) => c.type === 'data-input-request')).toBe(false);
+    expect(chunks.some((c) => c.type === 'text-delta')).toBe(true);
+    expect(setPending).not.toHaveBeenCalled();
+  });
+
+  it('rejects inputResponses without a message on a web chat', async () => {
+    await store.create(USER, CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+    });
+    const res = await post({ inputResponses: validAnswers }, CHAT);
+    expect(res.status).toBe(400);
+    expect(eve.continueEveSession).not.toHaveBeenCalled();
+  });
+});

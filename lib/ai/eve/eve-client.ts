@@ -1,3 +1,4 @@
+import type { InputAnswer } from '@/lib/ai/eve/input-requests';
 import type { RelayRunRef } from '@/lib/relay/eve-relay-browser';
 
 // Eve is mounted on this app's own origin: next.config.ts wraps the config in
@@ -64,14 +65,27 @@ export async function createEveSession(
   return { sessionId, continuationToken };
 }
 
+/**
+ * Continue a session with a plain message (string form) or with structured
+ * answers to pending `ask_question` requests. Only keys that are set are sent,
+ * so an answer turn carries no `message`.
+ */
 export async function continueEveSession(
   sessionId: string,
   continuationToken: string,
-  message: string,
+  input: string | { message?: string; inputResponses?: InputAnswer[] },
 ) {
+  const { message, inputResponses } =
+    typeof input === 'string'
+      ? { message: input, inputResponses: undefined }
+      : input;
   const { continuationToken: next } = await postJson(
     `/eve/v1/session/${sessionId}`,
-    { continuationToken, message },
+    {
+      continuationToken,
+      ...(message !== undefined ? { message } : {}),
+      ...(inputResponses !== undefined ? { inputResponses } : {}),
+    },
   );
   return { continuationToken: next };
 }

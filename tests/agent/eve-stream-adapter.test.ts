@@ -186,6 +186,107 @@ describe('translateEveEvent', () => {
       expect(delta).toContain('Reply with one of: riverside, orange');
     });
 
+    // Guard captured from the pre-structured adapter: web chats must keep this
+    // exact output, chunk for chunk.
+    it('keeps the prose output byte-for-byte when not structured', () => {
+      const { writer, chunks } = collect();
+      const r = translateEveEvent(askQuestion, writer, {
+        textId: null,
+        generateId: gen,
+        emittedToolCallIds: new Set(),
+      });
+      expect(JSON.stringify(chunks)).toBe(
+        JSON.stringify([
+          { type: 'text-start', id: 'txt-1' },
+          {
+            type: 'text-delta',
+            id: 'txt-1',
+            delta:
+              'Which county issued the card?\n\n- `riverside` Riverside\n- `orange` Orange — Orange County\n\nReply with one of: riverside, orange',
+          },
+          { type: 'text-end', id: 'txt-1' },
+        ]),
+      );
+      expect(r.inputRequests).toBeUndefined();
+    });
+
+    describe('structured mode', () => {
+      // The spiked shape: two parallel ask_question calls in one batch.
+      const spiked = {
+        type: 'input.requested',
+        data: {
+          requests: [
+            {
+              requestId: 'call-a',
+              prompt: 'Name?',
+              display: 'text',
+              allowFreeform: true,
+              action: { kind: 'tool-call', callId: 'call-a' },
+            },
+            {
+              requestId: 'call-b',
+              prompt: 'Color?',
+              display: 'select',
+              allowFreeform: false,
+              action: { kind: 'tool-call', callId: 'call-b' },
+              options: [
+                { id: 'red', label: 'Red', description: 'warm' },
+                { id: 'green', label: 'Green' },
+                { id: 'blue', label: 'Blue' },
+              ],
+            },
+          ],
+        },
+      };
+      const parsed = [
+        {
+          requestId: 'call-a',
+          prompt: 'Name?',
+          display: 'text',
+          options: [],
+          allowFreeform: true,
+        },
+        {
+          requestId: 'call-b',
+          prompt: 'Color?',
+          display: 'select',
+          options: [
+            { id: 'red', label: 'Red' },
+            { id: 'green', label: 'Green' },
+            { id: 'blue', label: 'Blue' },
+          ],
+          allowFreeform: false,
+        },
+      ];
+
+      it('emits one data-input-request chunk and no text', () => {
+        const { writer, chunks } = collect();
+        const r = translateEveEvent(spiked, writer, {
+          textId: null,
+          generateId: gen,
+          emittedToolCallIds: new Set(),
+          structuredInput: true,
+        });
+        expect(chunks).toStrictEqual([
+          { type: 'data-input-request', data: { requests: parsed } },
+        ]);
+        expect(r.inputRequests).toStrictEqual(parsed);
+        expect(r.textId).toBeNull();
+        expect(r.done).toBe(false);
+      });
+
+      it('writes nothing and returns no requests for an empty batch', () => {
+        const { writer, chunks } = collect();
+        const r = translateEveEvent(
+          { type: 'input.requested', data: { requests: [] } },
+          writer,
+          { textId: null, generateId: gen, structuredInput: true },
+        );
+        expect(chunks).toEqual([]);
+        expect(r.inputRequests).toBeUndefined();
+      });
+    });
+
     it('closes its text block so it never swallows later deltas', () => {
       const { writer } = collect();
       const r = translateEveEvent(askQuestion, writer, {

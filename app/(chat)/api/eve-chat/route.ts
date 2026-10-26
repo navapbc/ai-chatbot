@@ -15,6 +15,10 @@ import {
   extractLatestUserText,
 } from '@/lib/ai/eve/stream-adapter';
 import { toVertexModelId } from '@/lib/ai/eve/model-map';
+import {
+  type InputAnswer,
+  validateAnswers,
+} from '@/lib/ai/eve/input-requests';
 import { isProductionEnvironment } from '@/lib/constants';
 import { normalizeOrigin } from '@/lib/relay/policy';
 import { toRelayWsUrl } from '@/lib/relay/url';
@@ -73,6 +77,8 @@ export async function POST(request: Request) {
     message?: { role?: string };
     modelOverride?: string;
     relay?: unknown;
+    /** Relay runs only: answers to the pending `ask_question` requests. */
+    inputResponses?: unknown;
   };
   try {
     body = await request.json();
@@ -83,11 +89,12 @@ export async function POST(request: Request) {
   // Defense-in-depth: Eve owns its own agent loop, so only a genuine
   // user-initiated turn may ever be forwarded to it. Never scrape/forward
   // an assistant (or other non-user) message as if it were a new user turn.
-  if (body.message?.role !== 'user') {
-    return new ChatSDKError('bad_request:api').toResponse();
-  }
-  const text = extractLatestUserText(body.message);
-  if (!chatId || !text) {
+  const isUserMessage = body.message?.role === 'user';
+  const text = isUserMessage ? extractLatestUserText(body.message) : '';
+  // A body with `inputResponses` may carry no message: whether it is an
+  // answer turn depends on the stored run, so its checks wait for the row.
+  const hasAnswers = body.inputResponses !== undefined;
+  if (!chatId || (!hasAnswers && (!isUserMessage || !text))) {
     return new ChatSDKError('bad_request:api').toResponse();
   }
 
@@ -104,8 +111,44 @@ export async function POST(request: Request) {
   // Where to resume this chat's durable event stream. A continued session picks
   // up past the previous turn's `session.waiting`; a fresh one starts at 0.
   let startIndex = 0;
+  // Relay runs get structured questions; web chats keep the prose rendering.
+  let structuredInput = false;
   try {
     const existing = await store.get(userId, chatId);
+    // What a follow-up forwards to Eve. Decided, and every rejection
+    // returned, before the token is claimed: a rejected turn never touches
+    // the token or reaches Eve.
+    let input: string | { inputResponses: InputAnswer[] } = text;
+    let answering = false;
+    if (existing && existing.relayOrigin !== null) {
+      structuredInput = true;
+      const pending = existing.pendingRequests;
+      if (hasAnswers) {
+        if (pending.length === 0) {
+          return new ChatSDKError(
+            'bad_request:api',
+            'unknown_request',
+          ).toResponse();
+        }
+        const result = validateAnswers(pending, body.inputResponses);
+        if (!result.ok) {
+          return new ChatSDKError('bad_request:api', result.error).toResponse();
+        }
+        // Only the validated responses go to Eve: never the client's body,
+        // and never a `message` sent alongside the answers.
+        input = { inputResponses: result.responses };
+        answering = true;
+      } else if (pending.length > 0) {
+        return new ChatSDKError(
+          'bad_request:api',
+          'answers_pending',
+        ).toResponse();
+      }
+    }
+    // Web chats and first turns ignore `inputResponses` and need a message.
+    if (!answering && (!isUserMessage || !text)) {
+      return new ChatSDKError('bad_request:api').toResponse();
+    }
     // Session-continuity diagnostic. This is the only place that records
     // whether a turn continued an Eve session or started a new one, and the
     // resume cursor here is what a stream stall has to be read against.
@@ -119,7 +162,7 @@ export async function POST(request: Request) {
     // bug needs the text, read it from the Eve session, which already holds
     // it under access control.
     console.log(
-      `[eve-chat] turn userId=${userId} chatId=${chatId} decision=${existing ? 'CONTINUE' : 'CREATE'} existingSession=${existing?.eveSessionId ?? 'none'} resumeFrom=${existing?.streamIndex ?? 0} msgChars=${text.length}`,
+      `[eve-chat] turn userId=${userId} chatId=${chatId} decision=${existing ? 'CONTINUE' : 'CREATE'} existingSession=${existing?.eveSessionId ?? 'none'} resumeFrom=${existing?.streamIndex ?? 0} ${typeof input === 'string' ? `msgChars=${text.length}` : `answers=${input.inputResponses.length}`}`,
     );
     if (existing) {
       // Claim the stored token before talking to Eve: only one concurrent
@@ -151,7 +194,7 @@ export async function POST(request: Request) {
         ({ continuationToken: nextToken } = await continueEveSession(
           existing.eveSessionId,
           existing.continuationToken,
-          text,
+          input,
         ));
       } catch (err) {
         // Eve never accepted the message, so put the stored token back and the
@@ -175,6 +218,19 @@ export async function POST(request: Request) {
       // Eve has consumed the old token: from here the stored one must never be
       // restored. If this swap fails the row keeps the claim, and `advance` at
       // session.waiting writes the real token and heals it.
+      if (answering) {
+        // Eve accepted the answers. Clear them while the claim is still held,
+        // so no other turn can see the real token next to answered questions
+        // and forward them a second time.
+        try {
+          await store.setPending(userId, chatId, []);
+        } catch (clearErr) {
+          console.error('[eve-chat] pending clear failed', {
+            chatId,
+            clearErr,
+          });
+        }
+      }
       try {
         if (!(await store.swapToken(userId, chatId, claim, nextToken))) {
           console.error('[eve-chat] final token swap returned false', {
@@ -214,6 +270,7 @@ export async function POST(request: Request) {
           return new ChatSDKError('bad_request:api').toResponse();
         }
         relayOrigin = origin;
+        structuredInput = true;
         // The relay run id is the chat id.
         relayRef = { url, runId: chatId };
       }
@@ -268,6 +325,7 @@ export async function POST(request: Request) {
         reasoningId: null as string | null,
         generateId: generateUUID,
         emittedToolCallIds: new Set<string>(),
+        structuredInput,
       };
       // Absolute stream position, counted from where this read started, so the
       // cursor stays meaningful across turns.
@@ -290,6 +348,12 @@ export async function POST(request: Request) {
               // browser artifact polls. It can't come from eve-browser.ts
               // directly: that map lives in the `eve dev` process, not this one.
               setLiveViewUrl(userId, chatId, r.liveViewUrl);
+            }
+            if (r.inputRequests) {
+              // Persisted before session.waiting is handled, so the answer
+              // turn validates against them even after a restart. An answer
+              // sent before this write lands is rejected (nothing pending).
+              await store.setPending(userId, chatId, r.inputRequests);
             }
             if (r.continuationToken) {
               // Persist the cursor with the token: `consumed` already counts
