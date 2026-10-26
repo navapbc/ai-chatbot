@@ -1,6 +1,7 @@
 import { BraintrustExporter } from '@braintrust/otel';
 import { registerOTel } from '@vercel/otel';
 import { defineInstrumentation } from 'eve/instrumentation';
+import { ScrubbingSpanExporter } from '@/lib/observability/scrubbing-exporter';
 import { TRACER_NAME as BROWSER_TRACER } from '@/lib/observability/browser-telemetry';
 import { TRACER_NAME as JEV_TRACER } from '@/lib/jev/telemetry';
 
@@ -46,19 +47,29 @@ export default defineInstrumentation({
       // adds a second, env-configured OTLP exporter whenever
       // OTEL_EXPORTER_OTLP_ENDPOINT is set — every span would ship twice, to
       // two different projects. Keep those vars out of .env.local.
-      traceExporter: new BraintrustExporter({
-        // Destination is BRAINTRUST_PARENT. Do not fall back to `agentName`:
-        // Eve resolves it from the package name (`ai-chatbot`), which is not a
-        // project anyone looks at. Unset, the exporter uses a project literally
-        // named "default-otel-project".
-        //
-        // Keep the AI spans, plus the scopes named in KEEP_SCOPES.
-        filterAISpans: true,
-        customFilter: (span) =>
-          KEEP_SCOPES.has(span.instrumentationScope?.name ?? '')
-            ? true
-            : undefined,
-      }),
+      traceExporter: new ScrubbingSpanExporter(
+        new BraintrustExporter({
+          // Destination is BRAINTRUST_PARENT. Do not fall back to `agentName`:
+          // Eve resolves it from the package name (`ai-chatbot`), which is not a
+          // project anyone looks at. Unset, the exporter uses a project literally
+          // named "default-otel-project".
+          //
+          // Keep the AI spans, plus the scopes named in KEEP_SCOPES.
+          filterAISpans: true,
+          customFilter: (span) =>
+            KEEP_SCOPES.has(span.instrumentationScope?.name ?? '')
+              ? true
+              : undefined,
+        }),
+        // RELAY_RUNS_ENABLED is read on every export, not at startup, so
+        // flipping it takes effect without a restart. It is process-wide:
+        // extension relay runs and web chats share this Eve process and spans
+        // carry no run marker (only opaque agent.session.id, which cannot be
+        // joined to a relay run here), so when the flag is on EVERY Eve span
+        // is reduced to the SAFE_SPAN_ATTRIBUTES allowlist. Per-run scoping is
+        // not attempted.
+        { enabled: () => process.env.RELAY_RUNS_ENABLED === '1' },
+      ),
     });
   },
 });
