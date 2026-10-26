@@ -298,9 +298,10 @@ describe('scopeFrameEvent', () => {
         false,
       );
     }
+    // The agent saw it attach, so it hears of the detach (ids only).
     expect(
       scopeFrameEvent(scope, origins, 'Page.frameDetached', { frameId: 'f' }),
-    ).toBe(false);
+    ).toBe(true);
     expect(scope.frames.has('f')).toBe(false);
   });
 
@@ -539,5 +540,94 @@ describe('scopeFrameEvent alsoKeep', () => {
       );
     expect(event('oopif')).toBe(true);
     expect(event('other')).toBe(false);
+  });
+});
+
+describe('scopeFrameEvent end events follow what the agent was told', () => {
+  const setup = () => {
+    const scope = createFrameScope();
+    scope.frames.set('main', { url: `${RUN}/form` });
+    return scope;
+  };
+  const created = (id: number, frameId: string) => ({
+    context: { id, origin: RUN, name: '', auxData: { frameId } },
+  });
+
+  it('forwards the destroy of an announced context after its frame detached', () => {
+    const scope = setup();
+    scopeFrameEvent(scope, origins, 'Page.frameAttached', {
+      frameId: 'f',
+      parentFrameId: 'main',
+    });
+    expect(
+      scopeFrameEvent(
+        scope,
+        origins,
+        'Runtime.executionContextCreated',
+        created(8, 'f'),
+      ),
+    ).toBe(true);
+    expect(
+      scopeFrameEvent(scope, origins, 'Page.frameDetached', { frameId: 'f' }),
+    ).toBe(true);
+    expect(
+      scopeFrameEvent(scope, origins, 'Runtime.executionContextDestroyed', {
+        executionContextId: 8,
+      }),
+    ).toBe(true);
+  });
+
+  it('forwards the destroy of an announced context after its frame left scope', () => {
+    const scope = setup();
+    scope.frames.set('f', { url: `${RUN}/a`, parentId: 'main' });
+    scopeFrameEvent(
+      scope,
+      origins,
+      'Runtime.executionContextCreated',
+      created(9, 'f'),
+    );
+    expect(
+      scopeFrameEvent(scope, origins, 'Page.frameNavigated', {
+        frame: { id: 'f', parentId: 'main', url: `${OTHER}/x` },
+      }),
+    ).toBe(false);
+    expect(
+      scopeFrameEvent(scope, origins, 'Runtime.executionContextDestroyed', {
+        executionContextId: 9,
+      }),
+    ).toBe(true);
+    // Never told of, never ended: a context of the out-of-scope document.
+    scopeFrameEvent(
+      scope,
+      origins,
+      'Runtime.executionContextCreated',
+      created(10, 'f'),
+    );
+    expect(
+      scopeFrameEvent(scope, origins, 'Runtime.executionContextDestroyed', {
+        executionContextId: 10,
+      }),
+    ).toBe(false);
+  });
+
+  it('forwards the detach of a frame the agent saw attach, wherever it went', () => {
+    const scope = setup();
+    expect(
+      scopeFrameEvent(scope, origins, 'Page.frameAttached', {
+        frameId: 'g',
+        parentFrameId: 'main',
+      }),
+    ).toBe(true);
+    scopeFrameEvent(scope, origins, 'Page.frameNavigated', {
+      frame: { id: 'g', parentId: 'main', url: `${OTHER}/x` },
+    });
+    expect(
+      scopeFrameEvent(scope, origins, 'Page.frameDetached', { frameId: 'g' }),
+    ).toBe(true);
+    // A frame the agent never heard of stays unheard of.
+    scope.frames.set('h', { url: `${OTHER}/y`, parentId: 'main' });
+    expect(
+      scopeFrameEvent(scope, origins, 'Page.frameDetached', { frameId: 'h' }),
+    ).toBe(false);
   });
 });

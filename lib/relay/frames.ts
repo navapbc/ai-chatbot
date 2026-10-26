@@ -21,6 +21,13 @@ export interface FrameScope {
   contexts: Map<number, string>;
   /** Execution context uniqueId -> frameId. */
   uniqueContexts: Map<string, string>;
+  /**
+   * Frames and contexts the agent was told of (their attach, commit or
+   * creation was forwarded), so their end is forwarded too, wherever they
+   * went since: the end events carry ids only.
+   */
+  announcedFrames: Set<string>;
+  announcedContexts: Set<number>;
 }
 
 export interface ScopeOrigins {
@@ -32,6 +39,8 @@ export const createFrameScope = (): FrameScope => ({
   frames: new Map(),
   contexts: new Map(),
   uniqueContexts: new Map(),
+  announcedFrames: new Set(),
+  announcedContexts: new Set(),
 });
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -329,6 +338,11 @@ export function scopeFrameEvent(
       origins.allowedFrameOrigins,
     ) ||
       alsoKeep(frameId));
+  const announceFrame = (frameId: string) => {
+    const forward = keep(frameId);
+    if (forward) scope.announcedFrames.add(frameId);
+    return forward;
+  };
   if (!isObject(params)) return true;
 
   switch (method) {
@@ -342,7 +356,7 @@ export function scopeFrameEvent(
             typeof parentFrameId === 'string' ? parentFrameId : undefined,
         });
       }
-      return keep(frameId);
+      return announceFrame(frameId);
     }
     case 'Page.frameNavigated': {
       const frame = isObject(params.frame) ? params.frame : undefined;
@@ -352,7 +366,7 @@ export function scopeFrameEvent(
         parentId:
           typeof frame.parentId === 'string' ? frame.parentId : undefined,
       });
-      return keep(frame.id);
+      return announceFrame(frame.id);
     }
     case 'Page.navigatedWithinDocument': {
       const { frameId, url } = params;
@@ -363,9 +377,11 @@ export function scopeFrameEvent(
     }
     case 'Page.frameDetached': {
       const { frameId } = params;
-      const kept = keep(frameId);
-      if (typeof frameId === 'string') scope.frames.delete(frameId);
-      return kept;
+      if (typeof frameId !== 'string') return false;
+      const told = scope.announcedFrames.has(frameId) || keep(frameId);
+      scope.frames.delete(frameId);
+      scope.announcedFrames.delete(frameId);
+      return told;
     }
     case 'Runtime.executionContextCreated': {
       const context = isObject(params.context) ? params.context : undefined;
@@ -385,21 +401,30 @@ export function scopeFrameEvent(
         origin === '' ||
         origin === '://' ||
         (typeof origin === 'string' && urlAllowed(origin, origins));
-      return originOk && keep(frameId);
+      const forward = originOk && keep(frameId);
+      if (forward) scope.announcedContexts.add(context.id);
+      return forward;
     }
     case 'Runtime.executionContextDestroyed': {
       const { executionContextId: id, executionContextUniqueId: uniqueId } =
         params;
       const frameId =
         typeof id === 'number' ? scope.contexts.get(id) : undefined;
-      const kept = frameId !== undefined && keep(frameId);
-      if (typeof id === 'number') scope.contexts.delete(id);
+      const told =
+        typeof id === 'number' &&
+        (scope.announcedContexts.has(id) ||
+          (frameId !== undefined && keep(frameId)));
+      if (typeof id === 'number') {
+        scope.contexts.delete(id);
+        scope.announcedContexts.delete(id);
+      }
       if (typeof uniqueId === 'string') scope.uniqueContexts.delete(uniqueId);
-      return kept;
+      return told;
     }
     case 'Runtime.executionContextsCleared':
       scope.contexts.clear();
       scope.uniqueContexts.clear();
+      scope.announcedContexts.clear();
       return true;
     default:
       break;
