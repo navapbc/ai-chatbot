@@ -31,17 +31,11 @@ const FIELD_VALUES = [
   '900-00-1234', // SSN value attribute
   '900-00-5678', // SSN typed by script
   '900-00-2468', // value-shaped placeholder on an empty SSN field
-  '900-55-0001', // aria-label of a bank account field (see ARIA_LABEL)
+  '900-55-0001', // aria-label of a bank account field
   '900-55-0002', // aria-description of a bank account field
   '900-55-0003', // bank account value attribute
   '4000 0000 0000 0002', // card number in the cross-site iframe
 ];
-// Known redactor gap, reported for a redactor fix round: DOM.describeNode
-// keeps a sensitive node's aria-label in clear (it is on the redactor's
-// SENSITIVE_KEEP_ATTRIBUTES list). Excluded only from DOM.describeNode
-// replies and pinned exactly by a test below, which fails once the redactor
-// masks it; then drop this exclusion.
-const ARIA_LABEL = FIELD_VALUES.indexOf('900-55-0001');
 // Echoed in ordinary text; protected only once registered.
 const KNOWN = '900-77-4321';
 
@@ -377,14 +371,12 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
 
     const { describe, rest } = splitDescribeReplies(mark);
     expect(leaked(rest, FIELD_VALUES)).toEqual([]);
-    expect(
-      leaked(describe, FIELD_VALUES).filter((i) => i !== ARIA_LABEL),
-    ).toEqual([]);
+    expect(leaked(describe, FIELD_VALUES)).toEqual([]);
     // Positive control: the ordinary value the agent typed did go up.
     expect(seenSince(mark).some((f) => f.includes('Quinn'))).toBe(true);
   });
 
-  it('pins the redactor gap: only the aria-label leaks, only via DOM.describeNode', async () => {
+  it('DOM.describeNode replies leak no sensitive field value, aria-label included', async () => {
     const { cdp } = await startRun();
     const agent = await rawAgent(cdp);
     const session = await agent.attach();
@@ -393,8 +385,7 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     await agent.close();
     const { describe, rest } = splitDescribeReplies(mark);
     expect(describe.length).toBeGreaterThan(0);
-    // Turns red when the redactor masks it: then drop ARIA_LABEL.
-    expect(leaked(describe, FIELD_VALUES)).toEqual([ARIA_LABEL]);
+    expect(leaked(describe, FIELD_VALUES)).toEqual([]);
     expect(leaked(rest, FIELD_VALUES)).toEqual([]);
   });
 

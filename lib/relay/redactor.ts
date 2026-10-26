@@ -213,23 +213,29 @@ const VALUE_ATTRIBUTES = new Set([
   'aria-valuetext',
   'aria-valuenow',
 ]);
-// The only attributes a sensitive DOM node keeps in clear.
-const SENSITIVE_KEEP_ATTRIBUTES = new Set([
-  'type',
-  'name',
-  'id',
-  'autocomplete',
-  'class',
-  'role',
-  'aria-label',
-  'aria-labelledby',
-  'aria-describedby',
-  'required',
-  'disabled',
-  'readonly',
-  'aria-required',
-  'aria-invalid',
-]);
+// The only attributes a sensitive DOM node keeps; every other page-authored
+// value (aria-label, aria-description, title, role, data-*, ...) is masked,
+// since a page can put the value there. `name`, `id` and `class` are
+// identifiers the agent may need (known values in them are still scrubbed);
+// `type` and `autocomplete` are kept only as well-formed tokens.
+const SENSITIVE_KEEP_ATTRIBUTES: ReadonlyMap<string, (v: string) => boolean> =
+  new Map([
+    ['name', () => true],
+    ['id', () => true],
+    ['class', () => true],
+    ['type', (v: string) => /^[A-Za-z-]{0,32}$/.test(v)],
+    [
+      'autocomplete',
+      // Each token starts with a letter (section-*, shipping, cc-number), so
+      // a number-shaped value cannot pass as a token.
+      (v: string) =>
+        v.length <= 64 &&
+        v
+          .trim()
+          .split(/\s+/)
+          .every((token) => token === '' || /^[a-z][a-z0-9-]*$/i.test(token)),
+    ],
+  ]);
 const DOM_CHILD_KEYS = [
   'children',
   'shadowRoots',
@@ -495,8 +501,10 @@ const maskDomSubtree = (
         if (typeof name !== 'string' || attributes[i + 1] === '') continue;
         const lower = name.toLowerCase();
         if (node === root && keepRootValue && lower === 'value') continue;
+        const value = attributes[i + 1];
+        const keep = SENSITIVE_KEEP_ATTRIBUTES.get(lower);
         const mask = sensitive
-          ? !SENSITIVE_KEEP_ATTRIBUTES.has(lower)
+          ? !keep || typeof value !== 'string' || !keep(value)
           : VALUE_ATTRIBUTES.has(lower);
         if (mask) attributes[i + 1] = MASK;
       }

@@ -378,7 +378,7 @@ describe('createRedactor', () => {
       'type',
       'password',
       'aria-label',
-      'Code',
+      MASK,
       'value',
       MASK,
     ]);
@@ -594,7 +594,7 @@ describe('review regressions', () => {
     expect(out).toContain('Ordinary text');
   });
 
-  it('M3: a sensitive DOM node keeps only allowlisted attributes', async () => {
+  it('M3: a sensitive DOM node keeps only type, name, id, autocomplete and class', async () => {
     const r = createRedactor();
     const out = (await r.redactResult('DOM.describeNode', {
       node: {
@@ -636,7 +636,7 @@ describe('review regressions', () => {
       'class',
       'field',
       'aria-label',
-      'SSN',
+      MASK,
       'title',
       MASK,
       'data-prefill',
@@ -1318,6 +1318,137 @@ describe('review regressions, round 3', () => {
         value: '<p>\n    Hello &amp; welcome\n</p>',
       }),
     ).toEqual({ value: '<p>\n    Hello &amp; welcome\n</p>' });
+  });
+});
+
+describe('review regressions, round 4', () => {
+  const describeAttrs = async (attributes: string[], known?: string) => {
+    const r = createRedactor();
+    if (known) r.addKnownValue(known);
+    const out = (await r.redactResult('DOM.describeNode', {
+      node: { nodeType: 1, nodeName: 'INPUT', attributes },
+    })) as { node: { attributes: string[] } };
+    return Object.fromEntries(
+      out.node.attributes.flatMap((v, i, a) => (i % 2 ? [] : [[v, a[i + 1]]])),
+    );
+  };
+
+  it('masks every page-authored attribute of a sensitive DOM node', async () => {
+    const attrs = await describeAttrs([
+      'name',
+      'bank_account',
+      'aria-label',
+      '900-55-0001',
+      'aria-description',
+      '900-55-0002',
+      'aria-roledescription',
+      '900-55-0003',
+      'aria-placeholder',
+      '900-55-0004',
+      'aria-valuetext',
+      '900-55-0005',
+      'aria-valuenow',
+      '900550006',
+      'aria-labelledby',
+      'lbl 900-55-0007',
+      'aria-describedby',
+      'd900-55-0008',
+      'title',
+      '900-55-0009',
+      'role',
+      '900-55-0010',
+      'data-v',
+      '900-55-0011',
+      'required',
+      '',
+    ]);
+    expect(JSON.stringify(attrs)).not.toMatch(/900-?55/);
+    expect(attrs.name).toBe('bank_account');
+    // Empty stays empty.
+    expect(attrs.required).toBe('');
+  });
+
+  it('keeps type and autocomplete only when they are well-formed tokens', async () => {
+    const good = await describeAttrs([
+      'type',
+      'password',
+      'autocomplete',
+      'section-blue shipping cc-number',
+    ]);
+    expect(good).toEqual({
+      type: 'password',
+      autocomplete: 'section-blue shipping cc-number',
+    });
+    const bad = await describeAttrs([
+      'type',
+      'password 900-55-0001',
+      'autocomplete',
+      '900-55-0001',
+      'name',
+      'pin',
+    ]);
+    expect(bad).toEqual({ type: MASK, autocomplete: MASK, name: 'pin' });
+  });
+
+  it('keeps name, id and class of a sensitive node but scrubs known values in them', async () => {
+    const attrs = await describeAttrs(
+      [
+        'type',
+        'password',
+        'name',
+        'pw-900-55-0001',
+        'id',
+        'x 900-55-0001',
+        'class',
+        'c 900550001',
+      ],
+      '900-55-0001',
+    );
+    expect(attrs).toEqual({
+      type: 'password',
+      name: `pw-${MASK}`,
+      id: `x ${MASK}`,
+      class: `c ${MASK}`,
+    });
+  });
+
+  it('masks aria-derived text of a sensitive AX node', async () => {
+    const r = createRedactor();
+    const node = {
+      nodeId: '1',
+      role: { type: 'role', value: 'textbox' },
+      name: {
+        type: 'computedString',
+        value: 'Bank account 900-55-0001',
+        sources: [
+          {
+            type: 'attribute',
+            attribute: 'aria-label',
+            attributeValue: {
+              type: 'string',
+              value: 'Bank account 900-55-0001',
+            },
+          },
+          {
+            type: 'placeholder',
+            attribute: 'aria-placeholder',
+            attributeValue: { type: 'string', value: '900-55-0004' },
+          },
+        ],
+      },
+      description: { type: 'computedString', value: '900-55-0002' },
+      value: { type: 'string', value: '' },
+      properties: [
+        {
+          name: 'roledescription',
+          value: { type: 'string', value: '900-55-0003' },
+        },
+        { name: 'valuetext', value: { type: 'string', value: '900-55-0005' } },
+      ],
+    };
+    const out = await r.redactResult(AX, tree(node));
+    expect(JSON.stringify(out)).not.toMatch(/900-55/);
+    expect(byId(out, '1').value?.value).toBe('');
   });
 });
 
