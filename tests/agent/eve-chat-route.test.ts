@@ -220,10 +220,12 @@ describe('POST /api/eve-chat run continuity', () => {
       eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
       const real = store.swapToken.bind(store);
       let calls = 0;
-      store.swapToken = vi.fn(async (...args) => {
-        if (++calls === 2) throw new Error('db blip');
-        return real(...args);
-      });
+      store.swapToken = vi.fn(
+        async (...args: Parameters<EveRunStore['swapToken']>) => {
+          if (++calls === 2) throw new Error('db blip');
+          return real(...args);
+        },
+      );
       streamEvents(waiting('tok-2'));
 
       const res = await turn();
@@ -245,8 +247,9 @@ describe('POST /api/eve-chat run continuity', () => {
       eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
       const real = store.swapToken.bind(store);
       let calls = 0;
-      store.swapToken = vi.fn(async (...args) =>
-        ++calls === 2 ? false : real(...args),
+      store.swapToken = vi.fn(
+        async (...args: Parameters<EveRunStore['swapToken']>) =>
+          ++calls === 2 ? false : real(...args),
       );
       streamEvents(waiting('tok-2'));
 
@@ -284,10 +287,12 @@ describe('POST /api/eve-chat run continuity', () => {
       eve.continueEveSession.mockRejectedValue(new Error('eve down'));
       const real = store.swapToken.bind(store);
       let calls = 0;
-      store.swapToken = vi.fn(async (...args) => {
-        if (++calls === 2) throw new Error('db blip');
-        return real(...args);
-      });
+      store.swapToken = vi.fn(
+        async (...args: Parameters<EveRunStore['swapToken']>) => {
+          if (++calls === 2) throw new Error('db blip');
+          return real(...args);
+        },
+      );
 
       const res = await turn();
 
@@ -351,6 +356,10 @@ describe('POST /api/eve-chat relay runs', () => {
     ['a path', 'https://a.gov/x'],
     ['http', 'http://a.gov'],
     ['a trailing slash', 'https://a.gov/'],
+    ['userinfo', 'https://u@a.gov'],
+    ['an uppercase host', 'https://A.gov'],
+    ['an explicit default port', 'https://a.gov:443'],
+    ['an IDN host', 'https://bücher.de'],
     ['a non-string', 5],
   ])('rejects an origin with %s', async (_n, origin) => {
     const res = await relayTurn({ origin });
