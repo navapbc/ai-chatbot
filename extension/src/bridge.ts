@@ -17,7 +17,12 @@ import {
   descriptorFromAttributes,
   type Redactor,
 } from '../../lib/relay/redactor';
-import type { FieldDescriptor } from '../../lib/relay/sensitive-fields';
+import {
+  type Describe,
+  redactErrorMessage,
+  redactEventParams,
+  redactReply,
+} from './redaction';
 
 // Forwards CDP between the relay and chrome.debugger for exactly one tab.
 // Ported from spike/cdp-relay/extension/sw.js. Nothing here may log or echo
@@ -92,7 +97,6 @@ const STORAGE_KEY = 'run';
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost']);
 const OUT_OF_SCOPE = 'tab is outside the allowed origin';
 const FRAME_OUT_OF_SCOPE = 'frame is outside the allowed origins';
-const REDACTION_FAILED = 'response redaction failed';
 const FIRST_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30_000;
 // Relay close codes that end the run: normal (run closed, replaced) and
@@ -417,7 +421,11 @@ function connect(current: Run) {
       send(current, {
         type: 'reply',
         id: msg.id,
-        error: error instanceof Error ? error.message : 'command failed',
+        // A CDP error message can quote page text: scrub known values.
+        error: redactErrorMessage(
+          current.redactor,
+          error instanceof Error ? error.message : 'command failed',
+        ),
       });
     }
   };
@@ -568,7 +576,12 @@ async function forwardCdp(
         method,
         params as Record<string, unknown> | undefined,
       );
-  const result = await redact(current, method, raw, describeVia(debuggee));
+  const result = await redact(
+    current,
+    method,
+    raw,
+    describeVia(debuggee, child),
+  );
   // The redaction may have waited on describe(); a run that ended meanwhile
   // sends nothing more.
   if (current.blocked || current.stopped) throw new Error(OUT_OF_SCOPE);
@@ -579,36 +592,37 @@ async function forwardCdp(
  * Answers the redactor's DOM lookups straight through chrome.debugger, not
  * through the agent's allowlist, so the agent never sees them. Returns
  * undefined (classified as sensitive) for anything but an element node.
+ * A child's lookups are tracked in its `inFlight`, so a frame removed
+ * mid-lookup fails them at once instead of waiting out the redactor's
+ * per-call timeout.
  */
 const describeVia =
-  (debuggee: chrome.debugger.DebuggerSession) =>
-  async (backendNodeId: number): Promise<FieldDescriptor | undefined> => {
-    const described = await chrome.debugger.sendCommand(
-      debuggee,
-      'DOM.describeNode',
-      { backendNodeId },
-    );
+  (debuggee: chrome.debugger.DebuggerSession, child?: Child): Describe =>
+  async (backendNodeId) => {
+    const send = () =>
+      chrome.debugger.sendCommand(debuggee, 'DOM.describeNode', {
+        backendNodeId,
+      });
+    const described = child
+      ? await new Promise<unknown>((resolve, reject) => {
+          child.inFlight.add(reject);
+          send()
+            .then(resolve, reject)
+            .finally(() => child.inFlight.delete(reject));
+        })
+      : await send();
     const node = isObject(described) ? described.node : undefined;
     if (!isObject(node) || !Array.isArray(node.attributes)) return undefined;
     return descriptorFromAttributes(node.attributes);
   };
 
-/**
- * The redacted result, or an error reply: the raw result is never sent,
- * whatever the redactor does.
- */
-async function redact(
+/** The redacted result, or an error reply: never the raw result. */
+const redact = (
   current: Run,
   method: string,
   raw: unknown,
-  describe?: (backendNodeId: number) => Promise<FieldDescriptor | undefined>,
-): Promise<unknown> {
-  try {
-    return await current.redactor.redactResult(method, raw, describe);
-  } catch {
-    throw new Error(REDACTION_FAILED);
-  }
-}
+  describe?: Describe,
+): Promise<unknown> => redactReply(current.redactor, method, raw, describe);
 
 /**
  * Forgets a child session and fails its in-flight commands. chrome.debugger
@@ -770,12 +784,11 @@ export function onDebuggerEvent(
   if (!filtered) return;
   // Routing and scope above used the raw params; only what is sent is
   // redacted. `null` means the event cannot be redacted: drop it.
-  let redacted: unknown;
-  try {
-    redacted = current.redactor.redactEvent(filtered.method, filtered.params);
-  } catch {
-    return;
-  }
+  const redacted = redactEventParams(
+    current.redactor,
+    filtered.method,
+    filtered.params,
+  );
   if (redacted === null) return;
   send(current, {
     type: 'event',
