@@ -973,6 +973,42 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       await page.goto(fixtures.formUrl);
     });
 
+    it("a prompt raised by an out-of-scope frame never takes the agent's text, and the tab stays usable", async () => {
+      await page.goto(`${fixtures.origin}/samesite.html`);
+      const frame = page
+        .frames()
+        .find((f) => f.url().startsWith(fixtures.sameSiteOrigin)) as Frame;
+      await frame.locator('#h').waitFor({ state: 'attached' });
+      const { cdp } = await startRun({ allowedFrameOrigins: [] });
+      expect(
+        (await agentBrowser(['snapshot', '-i'], cdp, 'ss-prompt')).success,
+      ).toBe(true);
+      await frame.evaluate(() => {
+        setTimeout(() => {
+          (window as unknown as { __answer: unknown }).__answer =
+            prompt('question');
+        }, 50);
+      });
+      await new Promise((r) => setTimeout(r, 500));
+      const accept = await agentBrowser(
+        ['dialog', 'accept', 'hello'],
+        cdp,
+        'ss-prompt',
+      );
+      expect(JSON.stringify(accept)).not.toContain('hello');
+      // The bridge dismissed it: the frame got null, not the agent's text.
+      expect(
+        await frame.evaluate(
+          () => (window as unknown as { __answer: unknown }).__answer,
+        ),
+      ).toBeNull();
+      const next = await agentBrowser(['get', 'title'], cdp, 'ss-prompt');
+      expect(next.success, JSON.stringify(next)).toBe(true);
+      await closeAgentSessions();
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await page.goto(fixtures.formUrl);
+    });
+
     it('an alert and a beforeunload prompt are auto-accepted and nothing hangs', async () => {
       const { cdp } = await startRun();
       expect(
@@ -1371,6 +1407,74 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       await page.locator('#top').fill('');
     });
 
+    it('focus is followed through shadow roots: an out-of-scope frame in an open root, a closed root', async () => {
+      const shadowSrc = `${fixtures.sameSiteOrigin}/samesite-frame.html?shadow`;
+      await page.evaluate((src) => {
+        const open = document.createElement('div');
+        open.id = 'open-host';
+        open.attachShadow({
+          mode: 'open',
+        }).innerHTML = `<iframe title="shadow frame" src="${src}"></iframe>`;
+        const closed = document.createElement('div');
+        closed.id = 'closed-host';
+        const root = closed.attachShadow({ mode: 'closed' });
+        root.innerHTML = '<label>Closed field <input></label>';
+        (window as unknown as { __closedInput: Element }).__closedInput =
+          root.querySelector('input') as Element;
+        document.body.append(open, closed);
+      }, shadowSrc);
+      const insert = async (allowed: string[]) => {
+        const { cdp } = await startRun({ allowedFrameOrigins: allowed });
+        const agent = await rawAgent(cdp);
+        const session = await agent.attach();
+        const reply = await agent.call(
+          'Input.insertText',
+          { text: 'k' },
+          session,
+        );
+        await agent.close();
+        return reply.error?.message;
+      };
+      try {
+        await until(
+          () => page.frames().some((f) => f.url() === shadowSrc),
+          5_000,
+        );
+        const shadowFrame = page
+          .frames()
+          .find((f) => f.url() === shadowSrc) as Frame;
+        await shadowFrame.locator('#h').focus();
+        expect(await insert([])).toBe(FRAME_OUT_OF_SCOPE);
+        expect(await shadowFrame.locator('#h').inputValue()).toBe(HIDDEN_VALUE);
+
+        const focusClosed = () =>
+          page.evaluate(() =>
+            (
+              window as unknown as { __closedInput: HTMLInputElement }
+            ).__closedInput.focus(),
+          );
+        await focusClosed();
+        // Its focused element cannot be seen: refused while a frame out of
+        // scope is present...
+        expect(await insert([])).toBe(FRAME_OUT_OF_SCOPE);
+        // ...and typed normally when nothing is out of scope.
+        await focusClosed();
+        expect(await insert([fixtures.sameSiteOrigin])).toBeUndefined();
+        expect(
+          await page.evaluate(
+            () =>
+              (window as unknown as { __closedInput: HTMLInputElement })
+                .__closedInput.value,
+          ),
+        ).toBe('k');
+      } finally {
+        await page.evaluate(() => {
+          document.getElementById('open-host')?.remove();
+          document.getElementById('closed-host')?.remove();
+        });
+      }
+    });
+
     it('with the frame origin allowed, input reaches it and costs no lookups', async () => {
       const hidden = page.frameLocator('#ss').locator('#h');
       // Record what the bridge itself sends to chrome.debugger.
@@ -1737,6 +1841,56 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       await page.evaluate(() => document.getElementById('nesting')?.remove());
       await agent.close();
       await bridgeMessage(browser.sw, { type: 'stopRun' });
+    }
+  });
+
+  it('input cannot reach a disallowed cross-site iframe; with its origin allowed it can', async () => {
+    await page.goto(fixtures.formUrl);
+    const box = await page.locator('#xo').boundingBox();
+    const at = {
+      x: Math.round((box?.x ?? 0) + 30),
+      y: Math.round((box?.y ?? 0) + 20),
+    };
+    const drive = async (allowed: string[]) => {
+      const { cdp } = await startRun({ allowedFrameOrigins: allowed });
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.childSession(session);
+      const clicks = [];
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        clicks.push(
+          (
+            await agent.call(
+              'Input.dispatchMouseEvent',
+              { type, ...at, button: 'left', clickCount: 1 },
+              session,
+            )
+          ).error?.message,
+        );
+      }
+      await crossFrame(page).locator('#x').focus();
+      const typed = (
+        await agent.call('Input.insertText', { text: 'typed' }, session)
+      ).error?.message;
+      await agent.close();
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      return { clicks, typed };
+    };
+    try {
+      expect(await drive([])).toEqual({
+        clicks: [FRAME_OUT_OF_SCOPE, FRAME_OUT_OF_SCOPE],
+        typed: FRAME_OUT_OF_SCOPE,
+      });
+      expect(await crossValue(page)).toBe('');
+      expect(await drive([fixtures.frameOrigin])).toEqual({
+        clicks: [undefined, undefined],
+        typed: undefined,
+      });
+      expect(await crossValue(page)).toBe('typed');
+    } finally {
+      await crossFrame(page).evaluate(() => {
+        (document.querySelector('#x') as HTMLInputElement).value = '';
+      });
     }
   });
 

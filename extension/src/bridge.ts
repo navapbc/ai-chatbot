@@ -139,6 +139,11 @@ interface Run extends RunConfig {
   hasKnownValues: boolean;
   /** The bridge's focus-reading isolated world in the main frame, if made. */
   focusWorld?: number;
+  /**
+   * The dialog showing now, from the raw opening event: whether a frame out
+   * of scope (or a disallowed child) raised it. Cleared when it closes.
+   */
+  dialog?: { outOfScope: boolean };
 }
 
 const STORAGE_KEY = 'run';
@@ -694,6 +699,15 @@ async function forwardCdp(
   if (!session && child && !WORKER_TYPES.has(child.type ?? '')) {
     throw new Error(FRAME_OUT_OF_SCOPE);
   }
+  // A dialog raised by a frame out of scope was already answered by the
+  // bridge; the agent may only dismiss, never accept or type into it.
+  if (
+    method === 'Page.handleJavaScriptDialog' &&
+    current.dialog?.outOfScope &&
+    (!isObject(params) || params.accept !== false || 'promptText' in params)
+  ) {
+    throw new Error(FRAME_OUT_OF_SCOPE);
+  }
   // The lookups run under the tab's shared hold, so no screenshot's mask
   // window opens while they talk to the page.
   let handles: { frameIds: string[]; contextIds: number[] } = {
@@ -705,7 +719,6 @@ async function forwardCdp(
     const releaseLookups = holdShared(lock);
     try {
       if (session) handles = await resolveFrames(current, session, addresses);
-      await checkInputTarget(current, method, params);
     } finally {
       releaseLookups();
     }
@@ -766,9 +779,26 @@ async function forwardCdp(
     const release = holdShared(lock);
     let pending: Promise<unknown>;
     try {
+      // Input is judged under the same hold as its send, and refused if the
+      // set of frames out of scope changed while it was being judged.
+      if (isInputAction(method, params)) {
+        const before = inputGuardSignature(current);
+        if (before !== '') {
+          await checkInputTarget(current, method, params);
+          if (
+            inputGuardSignature(current) !== before ||
+            !framesInScope() ||
+            current.blocked ||
+            current.stopped ||
+            !current.attached
+          ) {
+            throw new Error(FRAME_OUT_OF_SCOPE);
+          }
+        }
+      }
       pending = sendIt();
     } catch (error) {
-      // A synchronous throw must not leak the hold.
+      // A throw before the send must not leak the hold.
       release();
       throw error;
     }
@@ -799,7 +829,7 @@ const FRAME_STEP_MS = 3_000;
 const DISCOVERY_MS = 8_000;
 /** The bridge's isolated world for reading where keyboard focus is. */
 const FOCUS_WORLD = 'relay-focus';
-const FRAME_OWNER_TAGS = /^(IFRAME|FRAME|OBJECT|EMBED)$/;
+const FRAME_OWNER_TAGS = /^(IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME)$/;
 // Mouse actions that act on the page (a move only hovers).
 const MOUSE_ACTIONS = new Set(['mousePressed', 'mouseReleased', 'mouseWheel']);
 const KEY_INPUT_METHODS = new Set([
@@ -1066,11 +1096,64 @@ function outOfScopeFramePresent(current: Run): boolean {
 }
 
 /**
- * The frame id of the frame owner that holds keyboard focus, read in the
- * bridge's own isolated world of the main frame (page script cannot tamper
- * with it): focus is followed into same-origin frames and stops at a frame
- * whose document is not reachable. Null when focus is not on a frame owner;
- * undefined when the owner has no frame id.
+ * The frames input must not reach, as a comparable string: every frame out
+ * of scope in the tab's renderer or an allowed child's, and every frame
+ * child (not a worker) that is itself disallowed. Empty when there is none,
+ * so input on ordinary pages pays no lookup.
+ */
+function inputGuardSignature(current: Run): string {
+  const ids: string[] = [];
+  const collect = (key: string, scope: FrameScope) => {
+    for (const frameId of scope.frames.keys()) {
+      if (!frameAllowedIn(current, scope, frameId))
+        ids.push(`${key}:${frameId}`);
+    }
+  };
+  collect('tab', current.frameScope);
+  for (const [sessionId, child] of current.children) {
+    if (WORKER_TYPES.has(child.type ?? '')) continue;
+    if (!childAllowed(current, child)) {
+      ids.push(`child:${sessionId}`);
+    } else if (child.frameScope) {
+      collect(sessionId, child.frameScope);
+    }
+  }
+  return ids.sort().join(',');
+}
+
+const isInputAction = (method: string, params: unknown) =>
+  KEY_INPUT_METHODS.has(method) ||
+  (method === 'Input.dispatchMouseEvent' &&
+    isObject(params) &&
+    MOUSE_ACTIONS.has(String(params.type)));
+
+/**
+ * Judges a described node as an input target: the frame it shows, when it
+ * is a frame owner (undefined when that cannot be read), undefined for a
+ * host with a closed shadow root (its focused element cannot be seen), else
+ * null (an ordinary element of an in-scope document).
+ */
+function inputTargetFrame(node: Record<string, unknown> | undefined) {
+  if (!node) return undefined;
+  if (typeof node.frameId === 'string') return node.frameId;
+  if (FRAME_OWNER_TAGS.test(String(node.localName ?? '').toUpperCase())) {
+    return undefined;
+  }
+  const roots = Array.isArray(node.shadowRoots) ? node.shadowRoots : [];
+  if (roots.some((r) => isObject(r) && r.shadowRootType === 'closed')) {
+    return undefined;
+  }
+  return null;
+}
+
+/**
+ * The frame that keyboard focus is in, read in the bridge's own isolated
+ * world of the main frame (page script cannot tamper with it): focus is
+ * followed through open shadow roots and into reachable same-origin frames,
+ * and stops at a frame whose document is not reachable (cross-origin or out
+ * of process). Null when focus is on an ordinary element of a reachable
+ * document; undefined when it cannot be classified (a frame owner without a
+ * frame, a closed shadow root).
  */
 async function focusedFrameId(
   current: Run,
@@ -1078,11 +1161,14 @@ async function focusedFrameId(
 ): Promise<string | null | undefined> {
   const expression = `(() => {
     let el = document.activeElement;
-    for (let i = 0; i < 32 && el; i++) {
-      if (!${FRAME_OWNER_TAGS}.test(el.tagName)) return null;
+    for (let i = 0; i < 64 && el; i++) {
+      while (el.shadowRoot && el.shadowRoot.activeElement) {
+        el = el.shadowRoot.activeElement;
+      }
+      if (!${FRAME_OWNER_TAGS}.test(el.tagName)) return el;
       let doc = null;
       try { doc = el.contentDocument; } catch {}
-      if (!doc) return el;
+      if (!doc || !doc.activeElement) return el;
       el = doc.activeElement;
     }
     return el;
@@ -1113,56 +1199,68 @@ async function focusedFrameId(
     }
     const objectId = objectIdOf(evaluated, 'result');
     if (!objectId) return null;
-    const node = describedNode(
-      await sessionSend(tab, 'DOM.describeNode', { objectId }),
+    // Pierced one level: a closed shadow root shows up here.
+    return inputTargetFrame(
+      describedNode(
+        await sessionSend(tab, 'DOM.describeNode', {
+          objectId,
+          depth: 1,
+          pierce: true,
+        }),
+      ),
     );
-    return typeof node?.frameId === 'string' ? node.frameId : undefined;
   } finally {
     await releaseGroup(tab, objectGroup);
   }
 }
 
 /**
- * Refuses input that would land in a frame out of scope: a key or text
- * while focus is in such a frame, a mouse press, release or wheel at a point
- * inside one. Only while such a frame is present, so ordinary pages pay
- * nothing. Input goes to the tab whatever session sends it.
+ * Refuses input that would land outside scope: a key or text while focus is
+ * in a frame out of scope or a disallowed out-of-process frame (or cannot be
+ * placed), a mouse press, release or wheel at a point in one. The caller
+ * runs it only while such a frame exists (see inputGuardSignature), so
+ * ordinary pages pay nothing. Input goes to the tab whatever session sends
+ * it.
  */
 async function checkInputTarget(current: Run, method: string, params: unknown) {
-  const mouse = method === 'Input.dispatchMouseEvent';
-  if (!mouse && !KEY_INPUT_METHODS.has(method)) return;
-  if (mouse && !(isObject(params) && MOUSE_ACTIONS.has(String(params.type)))) {
-    return;
-  }
-  if (!outOfScopeFramePresent(current)) return;
   const tab: FrameSession = {
     scope: current.frameScope,
     debuggee: { tabId: current.tabId },
     rootFrameId: current.mainFrameId,
   };
-  let frameId: string | null | undefined;
-  if (mouse) {
-    const { x, y } = params as Record<string, unknown>;
-    if (typeof x !== 'number' || typeof y !== 'number') {
+  const judge = (frameId: string | null | undefined) => {
+    if (frameId === null) return;
+    // Unknown or unreadable: refuse. A frame id an out-of-process child
+    // owns is judged by that child (frameAllowedIn -> childFrameAllowed).
+    if (frameId === undefined || !frameAllowedIn(current, tab.scope, frameId)) {
       throw new Error(FRAME_OUT_OF_SCOPE);
     }
-    // Hit-tests into in-process frames and names the frame of the node.
-    const hit = await sessionSend(tab, 'DOM.getNodeForLocation', {
-      x: Math.round(x),
-      y: Math.round(y),
-    }).catch(() => undefined);
-    frameId =
-      isObject(hit) && typeof hit.frameId === 'string'
-        ? hit.frameId
-        : undefined;
-  } else {
-    frameId = await focusedFrameId(current, tab);
-    if (frameId === null) return;
+  };
+  if (method !== 'Input.dispatchMouseEvent') {
+    judge(await focusedFrameId(current, tab));
+    return;
   }
-  // No frame to judge (a miss, an owner without a frame): refuse.
-  if (frameId === undefined || !frameAllowedIn(current, tab.scope, frameId)) {
+  const { x, y } = params as Record<string, unknown>;
+  if (typeof x !== 'number' || typeof y !== 'number') {
     throw new Error(FRAME_OUT_OF_SCOPE);
   }
+  // Hit-tests into in-process frames and names the frame of the node; over
+  // an out-of-process frame it stops at the owner element.
+  const hit = await sessionSend(tab, 'DOM.getNodeForLocation', {
+    x: Math.round(x),
+    y: Math.round(y),
+  }).catch(() => undefined);
+  if (!isObject(hit) || typeof hit.frameId !== 'string') {
+    throw new Error(FRAME_OUT_OF_SCOPE);
+  }
+  judge(hit.frameId);
+  // The node hit may itself be a frame owner: judge the frame it shows.
+  const node = describedNode(
+    await sessionSend(tab, 'DOM.describeNode', {
+      backendNodeId: hit.backendNodeId,
+    }).catch(() => undefined),
+  );
+  judge(node ? inputTargetFrame(node) : undefined);
 }
 
 /**
@@ -1369,6 +1467,55 @@ function isMaskWorldEvent(
   }
   return false;
 }
+/**
+ * Tracks the dialog showing now. One raised by a frame out of scope (or a
+ * disallowed child, or a frame it cannot place) is answered by the bridge
+ * at once, so the renderer it freezes (the tab's, for a same-site frame) is
+ * released and no agent-chosen text reaches it: an alert is accepted (its
+ * only answer), anything else dismissed (a beforeunload dismissal keeps the
+ * page). Its opening and closing are then not forwarded. Returns whether the
+ * event may go on.
+ */
+function dialogEventForwarded(
+  current: Run,
+  source: chrome.debugger.DebuggerSession,
+  method: string,
+  params: unknown,
+): boolean {
+  if (method === 'Page.javascriptDialogClosed') {
+    const shown = current.dialog;
+    current.dialog = undefined;
+    return !shown?.outOfScope;
+  }
+  if (method !== 'Page.javascriptDialogOpening') return true;
+  const frameId = isObject(params) ? params.frameId : undefined;
+  let inScope: boolean;
+  if (source.sessionId === undefined) {
+    inScope =
+      typeof frameId === 'string' &&
+      frameAllowedIn(current, current.frameScope, frameId);
+  } else {
+    const child = current.children.get(source.sessionId);
+    inScope =
+      child !== undefined &&
+      childAllowed(current, child) &&
+      (child.frameScope === undefined ||
+        (typeof frameId === 'string' &&
+          frameAllowedIn(current, child.frameScope, frameId)));
+  }
+  current.dialog = { outOfScope: !inScope };
+  if (inScope) return true;
+  const type = isObject(params) ? params.type : undefined;
+  chrome.debugger
+    .sendCommand(source, 'Page.handleJavaScriptDialog', {
+      accept: type === 'alert',
+    })
+    .catch(() => {
+      // Already answered, or the page went away.
+    });
+  return false;
+}
+
 /** Isolated worlds the bridge makes: never shown to, or usable by, the agent. */
 const BRIDGE_WORLDS = new Set([MASK_WORLD, FOCUS_WORLD]);
 
@@ -1753,6 +1900,7 @@ export function onDebuggerEvent(
       ));
   // Nothing leaves the browser unless we hold the tab and it is in scope.
   if (!current.attached) return;
+  if (!dialogEventForwarded(current, source, method, params)) return;
 
   if (source.sessionId === undefined) {
     const navUrl = mainFrameNavigationUrl(current, method, params);
