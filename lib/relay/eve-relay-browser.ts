@@ -3,6 +3,7 @@ import { runCommand } from '@/lib/kernel/cli';
 import { redactText, redactionTargets } from '@/lib/kernel/redact';
 import { browserIdentity } from '@/lib/kernel/session-identity';
 import { cliSessionName } from '@/lib/kernel/session-store';
+import { fetchAgentToken } from '@/lib/relay/agent-token';
 import { LOOPBACK_HOSTS, toRelayWsUrl } from '@/lib/relay/url';
 
 // Drives the caseworker's own browser tab through the relay. This module
@@ -10,13 +11,15 @@ import { LOOPBACK_HOSTS, toRelayWsUrl } from '@/lib/relay/url';
 // Kernel client at load, and Eve's bundler cannot take anything that pulls in
 // `server-only`. Everything imported here is free of both.
 //
-// The relay token is a bearer credential for the run. It arrives only through
-// Eve session auth attributes, and nothing in this file may put it in a log,
-// an error, a tool result or a trace attribute.
+// The relay token is a bearer credential for the run. It is never in Eve
+// session state (Eve persists auth attributes): the session carries only a
+// non-secret run reference, and the token is fetched at call time
+// (lib/relay/agent-token.ts). Nothing in this file may put it in a log, an
+// error, a tool result or a trace attribute.
 
-export interface RelayCredentials {
+export interface RelayRunRef {
   url: string;
-  token: string;
+  runId: string;
 }
 
 export interface RelayCommandResult {
@@ -33,11 +36,11 @@ const asString = (value: unknown): string | null =>
 
 export type RelayCredentialState =
   | { kind: 'none' }
-  | { kind: 'complete'; credentials: RelayCredentials }
+  | { kind: 'complete'; ref: RelayRunRef }
   | { kind: 'partial' };
 
 /**
- * Classifies the session's relay credentials. The first principal carrying
+ * Classifies the session's relay run reference. The first principal carrying
  * either attribute decides (initiator first, it is pinned to the session
  * creator, see `browserIdentity`; then the current caller). Exactly one of the
  * two is `partial`, which callers must treat as a failure, never as "no relay".
@@ -46,25 +49,23 @@ export function relayCredentialState(ctx: ToolContext): RelayCredentialState {
   const { initiator, current } = ctx.session.auth;
   for (const principal of [initiator, current]) {
     const url = asString(principal?.attributes?.relayUrl);
-    const token = asString(principal?.attributes?.relayToken);
-    if (url && token) return { kind: 'complete', credentials: { url, token } };
-    if (url || token) return { kind: 'partial' };
+    const runId = asString(principal?.attributes?.relayRunId);
+    if (url && runId) return { kind: 'complete', ref: { url, runId } };
+    if (url || runId) return { kind: 'partial' };
   }
   return { kind: 'none' };
 }
 
-/** The credentials when complete, otherwise null. */
-export function relayCredentialsFrom(
-  ctx: ToolContext,
-): RelayCredentials | null {
+/** The run reference when complete, otherwise null. */
+export function relayRunRefFrom(ctx: ToolContext): RelayRunRef | null {
   const state = relayCredentialState(ctx);
-  return state.kind === 'complete' ? state.credentials : null;
+  return state.kind === 'complete' ? state.ref : null;
 }
 
 type CdpUrl = { ok: true; value: string } | { ok: false; error: string };
 
 /** `<origin>/cdp?token=<token>`; wss:, or ws: on a local host only. */
-function buildCdpUrl({ url, token }: RelayCredentials): CdpUrl {
+function buildCdpUrl(url: string, token: string): CdpUrl {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -119,15 +120,20 @@ export async function runRelayCommand(
   ctx: ToolContext,
   command: readonly string[],
 ): Promise<RelayCommandResult> {
-  const credentials = relayCredentialsFrom(ctx);
-  if (!credentials) {
+  const ref = relayRunRefFrom(ctx);
+  if (!ref) {
     return {
       success: false,
       error: 'No relay credentials on this session.',
       liveViewUrl: null,
     };
   }
-  const cdp = buildCdpUrl(credentials);
+  const agentToken = await fetchAgentToken(ref.runId);
+  if (!agentToken.ok) {
+    return { success: false, error: agentToken.error, liveViewUrl: null };
+  }
+  const { token } = agentToken;
+  const cdp = buildCdpUrl(ref.url, token);
   if (!cdp.ok) {
     return { success: false, error: cdp.error, liveViewUrl: null };
   }
@@ -140,7 +146,7 @@ export async function runRelayCommand(
         cdpUrl: cdp.value,
         // The URL carries the token; keep it out of the process list.
         cdpViaEnv: true,
-        redact: [credentials.token, cdp.value],
+        redact: [token, cdp.value],
         timeoutMs: COMMAND_TIMEOUT_MS,
       });
       return {
@@ -153,10 +159,7 @@ export async function runRelayCommand(
       const message = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        error: redactText(
-          message,
-          redactionTargets([credentials.token, cdp.value]),
-        ),
+        error: redactText(message, redactionTargets([token, cdp.value])),
         liveViewUrl: null,
       };
     }

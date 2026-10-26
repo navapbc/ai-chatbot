@@ -1,4 +1,4 @@
-import type { RelayCredentials } from '@/lib/relay/eve-relay-browser';
+import type { RelayRunRef } from '@/lib/relay/eve-relay-browser';
 
 // Eve is mounted on this app's own origin: next.config.ts wraps the config in
 // `withEve()`, which rewrites /eve/v1/** to the Eve runtime. So the default
@@ -40,20 +40,21 @@ async function postJson(
 export async function createEveSession(
   message: string,
   model?: string,
-  relay?: RelayCredentials,
+  relay?: RelayRunRef,
 ) {
-  // Credentials travel in headers only (never the body or message text); the
-  // channel auth turns them into session attributes for the browser tool.
+  // The run reference travels in headers only (never the body or message
+  // text); the channel auth turns it into session attributes for the browser
+  // tool. It is not secret: no token is sent, the tool fetches one later.
   const headers: Record<string, string> = {};
   if (model) headers['x-eve-model'] = model;
   if (relay) {
-    // Without the shared secret the channel would ignore the credentials, so
-    // fail here rather than send them anyway.
+    // Without the shared secret the channel would ignore the reference, so
+    // fail here rather than send it anyway.
     const secret = process.env.EVE_INTERNAL_SECRET;
     if (!secret) throw new Error('relay sessions require EVE_INTERNAL_SECRET');
     headers['x-eve-internal-secret'] = secret;
     headers['x-eve-relay-url'] = relay.url;
-    headers['x-eve-relay-token'] = relay.token;
+    headers['x-eve-relay-run'] = relay.runId;
   }
   const { sessionId, continuationToken } = await postJson(
     '/eve/v1/session',

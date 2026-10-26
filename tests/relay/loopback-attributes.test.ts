@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { attributesFromHeaders } from '@/lib/ai/eve/loopback-attributes';
 
 const SECRET = 'internal-secret-for-tests';
+const RUN = '0b6f7c4e-5d1a-4c55-9a53-3f7d2f0c9a11';
 const relay = {
   'x-eve-relay-url': 'wss://relay.example',
-  'x-eve-relay-token': 'tok',
+  'x-eve-relay-run': RUN,
 };
 const h = (o: Record<string, string>) => new Headers(o);
 
@@ -16,7 +17,50 @@ describe('attributesFromHeaders', () => {
         true,
         SECRET,
       ),
-    ).toEqual({ relayUrl: 'wss://relay.example', relayToken: 'tok' });
+    ).toEqual({ relayUrl: 'wss://relay.example', relayRunId: RUN });
+  });
+
+  it('ignores the retired token header entirely', () => {
+    const SENTINEL = 'SENTINEL-RELAY-TOKEN-0123';
+    const result = attributesFromHeaders(
+      h({
+        ...relay,
+        'x-eve-relay-token': SENTINEL,
+        'x-eve-internal-secret': SECRET,
+      }),
+      true,
+      SECRET,
+    );
+    expect(result).toEqual({
+      relayUrl: 'wss://relay.example',
+      relayRunId: RUN,
+    });
+    expect(JSON.stringify(result)).not.toContain(SENTINEL);
+    expect(
+      attributesFromHeaders(
+        h({
+          'x-eve-relay-url': 'wss://relay.example',
+          'x-eve-relay-token': SENTINEL,
+          'x-eve-internal-secret': SECRET,
+        }),
+        true,
+        SECRET,
+      ),
+    ).toBeNull();
+  });
+
+  it('refuses a run header that is not a UUID', () => {
+    expect(
+      attributesFromHeaders(
+        h({
+          ...relay,
+          'x-eve-relay-run': 'not-a-uuid',
+          'x-eve-internal-secret': SECRET,
+        }),
+        true,
+        SECRET,
+      ),
+    ).toBeNull();
   });
 
   it('grants nothing to a non-loopback request, even with the secret', () => {
@@ -58,7 +102,7 @@ describe('attributesFromHeaders', () => {
 
   it.each([
     ['x-eve-relay-url', 'wss://relay.example'],
-    ['x-eve-relay-token', 'tok'],
+    ['x-eve-relay-run', RUN],
   ])('grants nothing for a lone %s', (name, value) => {
     expect(
       attributesFromHeaders(

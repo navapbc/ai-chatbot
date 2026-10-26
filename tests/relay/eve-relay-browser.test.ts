@@ -1,12 +1,14 @@
 import type { ToolContext } from 'eve/tools';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { _resetAgentTokenCache } from '@/lib/relay/agent-token';
 import {
   relayCredentialState,
-  relayCredentialsFrom,
+  relayRunRefFrom,
   runRelayCommand,
 } from '@/lib/relay/eve-relay-browser';
 
 const FAKE_TOKEN = 'FAKE-TOKEN-do-not-use-0123456789abcdef';
+const RUN = '0b6f7c4e-5d1a-4c55-9a53-3f7d2f0c9a11';
 
 type Principal = {
   attributes: Record<string, string | readonly string[]>;
@@ -31,45 +33,43 @@ const ctxWith = (
 ) =>
   ({ session: { id, auth: { initiator, current } } }) as unknown as ToolContext;
 
-describe('relayCredentialsFrom', () => {
+describe('relayRunRefFrom', () => {
   it('returns null with no attributes', () => {
-    expect(relayCredentialsFrom(ctxWith(null))).toBeNull();
-    expect(relayCredentialsFrom(ctxWith(principal({})))).toBeNull();
+    expect(relayRunRefFrom(ctxWith(null))).toBeNull();
+    expect(relayRunRefFrom(ctxWith(principal({})))).toBeNull();
   });
 
-  it('returns the credentials when both attributes are present', () => {
+  it('returns the run reference when both attributes are present', () => {
     const ctx = ctxWith(
-      principal({ relayUrl: 'wss://relay.example', relayToken: FAKE_TOKEN }),
+      principal({ relayUrl: 'wss://relay.example', relayRunId: RUN }),
     );
-    expect(relayCredentialsFrom(ctx)).toEqual({
+    expect(relayRunRefFrom(ctx)).toEqual({
       url: 'wss://relay.example',
-      token: FAKE_TOKEN,
+      runId: RUN,
     });
   });
 
   it('prefers the initiator over the current caller', () => {
     const ctx = ctxWith(
-      principal({ relayUrl: 'wss://a.example', relayToken: 'initiator' }),
-      principal({ relayUrl: 'wss://b.example', relayToken: 'current' }),
+      principal({ relayUrl: 'wss://a.example', relayRunId: 'initiator' }),
+      principal({ relayUrl: 'wss://b.example', relayRunId: 'current' }),
     );
-    expect(relayCredentialsFrom(ctx)?.token).toBe('initiator');
+    expect(relayRunRefFrom(ctx)?.runId).toBe('initiator');
   });
 
   it('falls back to the current caller when the initiator has none', () => {
     const ctx = ctxWith(
       principal({}),
-      principal({ relayUrl: 'wss://b.example', relayToken: 'current' }),
+      principal({ relayUrl: 'wss://b.example', relayRunId: 'current' }),
     );
-    expect(relayCredentialsFrom(ctx)?.token).toBe('current');
+    expect(relayRunRefFrom(ctx)?.runId).toBe('current');
   });
 
   it('returns null when only one of the two is set', () => {
     expect(
-      relayCredentialsFrom(ctxWith(principal({ relayUrl: 'wss://a.example' }))),
+      relayRunRefFrom(ctxWith(principal({ relayUrl: 'wss://a.example' }))),
     ).toBeNull();
-    expect(
-      relayCredentialsFrom(ctxWith(principal({ relayToken: FAKE_TOKEN }))),
-    ).toBeNull();
+    expect(relayRunRefFrom(ctxWith(principal({ relayRunId: RUN })))).toBeNull();
   });
 });
 
@@ -78,11 +78,11 @@ describe('relayCredentialState', () => {
     expect(relayCredentialState(ctxWith(null)).kind).toBe('none');
     expect(
       relayCredentialState(
-        ctxWith(principal({ relayUrl: 'wss://a.example', relayToken: 't' })),
+        ctxWith(principal({ relayUrl: 'wss://a.example', relayRunId: 't' })),
       ).kind,
     ).toBe('complete');
     expect(
-      relayCredentialState(ctxWith(principal({ relayToken: 't' }))).kind,
+      relayCredentialState(ctxWith(principal({ relayRunId: 't' }))).kind,
     ).toBe('partial');
     expect(
       relayCredentialState(ctxWith(principal({ relayUrl: 'wss://a.example' })))
@@ -91,12 +91,31 @@ describe('relayCredentialState', () => {
   });
 });
 
+const fetchMock = vi.fn();
+beforeEach(() => {
+  _resetAgentTokenCache();
+  vi.stubEnv('EVE_INTERNAL_SECRET', 'sekret-value');
+  fetchMock.mockReset();
+  fetchMock.mockImplementation(
+    async () =>
+      new Response(
+        JSON.stringify({ token: FAKE_TOKEN, expiresAt: 4_000_000_000 }),
+        { status: 200 },
+      ),
+  );
+  vi.stubGlobal('fetch', fetchMock);
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
 describe('relay URL allowlist', () => {
   const run = (url: string) =>
-    runRelayCommand(
-      ctxWith(principal({ relayUrl: url, relayToken: FAKE_TOKEN })),
-      ['get', 'url'],
-    );
+    runRelayCommand(ctxWith(principal({ relayUrl: url, relayRunId: RUN })), [
+      'get',
+      'url',
+    ]);
 
   it('refuses another origin when RELAY_PUBLIC_URL is set', async () => {
     vi.stubEnv('RELAY_PUBLIC_URL', 'wss://relay.example');
@@ -178,7 +197,7 @@ describe('runRelayCommand failures', () => {
     ['an unparseable url', 'not a url'],
   ];
   it.each(cases)('refuses %s without echoing the token', async (_n, url) => {
-    const ctx = ctxWith(principal({ relayUrl: url, relayToken: FAKE_TOKEN }));
+    const ctx = ctxWith(principal({ relayUrl: url, relayRunId: RUN }));
     const result = await runRelayCommand(ctx, ['snapshot']);
     expect(result.success).toBe(false);
     expect(result.liveViewUrl).toBeNull();
@@ -190,6 +209,47 @@ describe('runRelayCommand failures', () => {
     const result = await runRelayCommand(ctxWith(null), ['snapshot']);
     expect(result.success).toBe(false);
     expect(result.error).toBeTruthy();
+  });
+});
+
+describe('runRelayCommand with a fetched token', () => {
+  it('fails without starting agent-browser when the token fetch fails', async () => {
+    fetchMock.mockResolvedValue(new Response('no', { status: 500 }));
+    const result = await runRelayCommand(
+      ctxWith(principal({ relayUrl: 'ws://127.0.0.1:9', relayRunId: RUN })),
+      ['snapshot'],
+    );
+    expect(result).toMatchObject({ success: false, liveViewUrl: null });
+    expect(result.error).toBe('The relay token request was refused.');
+    expect(JSON.stringify(result)).not.toContain(FAKE_TOKEN);
+    expect(JSON.stringify(result)).not.toContain('sekret-value');
+    vi.unstubAllEnvs();
+  });
+
+  it('ignores a legacy relayToken attribute and the retired header value', async () => {
+    const SENTINEL = 'SENTINEL-LEGACY-TOKEN';
+    const result = await runRelayCommand(
+      ctxWith(
+        principal({
+          relayUrl: 'ws://127.0.0.1:9',
+          relayRunId: RUN,
+          relayToken: SENTINEL,
+        }),
+      ),
+      ['snapshot'],
+    );
+    expect(JSON.stringify(result)).not.toContain(SENTINEL);
+    expect(JSON.stringify(result)).not.toContain(FAKE_TOKEN);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('redacts the fetched token from a failing command', async () => {
+    const result = await runRelayCommand(
+      ctxWith(principal({ relayUrl: 'ws://127.0.0.1:9', relayRunId: RUN })),
+      ['snapshot'],
+    );
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(FAKE_TOKEN);
   });
 });
 
@@ -205,7 +265,7 @@ describe('browser tool routing', () => {
       }
     ).execute(
       { command: ['snapshot'] },
-      ctxWith(principal({ relayToken: FAKE_TOKEN })),
+      ctxWith(principal({ relayRunId: RUN })),
     );
     expect(result).toMatchObject({
       success: false,
@@ -257,8 +317,8 @@ describe('check_submit_gate routing', () => {
   };
 
   it.each([
-    ['complete', { relayUrl: 'wss://relay.example', relayToken: FAKE_TOKEN }],
-    ['partial', { relayToken: FAKE_TOKEN }],
+    ['complete', { relayUrl: 'wss://relay.example', relayRunId: RUN }],
+    ['partial', { relayRunId: RUN }],
   ])('refuses on %s relay credentials without a browser', async (_n, attrs) => {
     const { runBrowserCommand, execute } = await load();
     const result = await execute(ctxWith(principal(attrs)));
