@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
 
@@ -297,5 +297,101 @@ describe('POST /api/eve-chat run continuity', () => {
         expect.objectContaining({ chatId: CHAT }),
       );
     });
+  });
+});
+
+describe('POST /api/eve-chat relay runs', () => {
+  const RELAY_CHAT = '3f2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b';
+  const ORIGIN = 'https://apply.example.gov';
+
+  const relayTurn = (relay: unknown, id = RELAY_CHAT) =>
+    POST(
+      new Request('http://localhost/api/eve-chat', {
+        method: 'POST',
+        body: JSON.stringify({
+          id,
+          message: { role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+          relay,
+        }),
+      }),
+    );
+
+  beforeEach(() => {
+    vi.stubEnv('RELAY_RUNS_ENABLED', '1');
+    vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example.gov');
+    vi.stubEnv('EVE_INTERNAL_SECRET', 'internal-secret-for-tests');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('creates the run with the origin and sends the run reference to Eve', async () => {
+    streamEvents({ type: 'turn.started' });
+    const res = await relayTurn({ origin: ORIGIN });
+    expect(res.status).toBe(200);
+    await drain(res);
+
+    expect(eve.createEveSession).toHaveBeenCalledWith('hi', undefined, {
+      url: 'wss://relay.example.gov',
+      runId: RELAY_CHAT,
+    });
+    expect((await store.get(USER, RELAY_CHAT))?.relayOrigin).toBe(ORIGIN);
+  });
+
+  it('rejects a relay field with 400 when the flag is off', async () => {
+    vi.stubEnv('RELAY_RUNS_ENABLED', undefined);
+    const res = await relayTurn({ origin: ORIGIN });
+    expect(res.status).toBe(400);
+    expect(eve.createEveSession).not.toHaveBeenCalled();
+    expect(await store.get(USER, RELAY_CHAT)).toBeUndefined();
+  });
+
+  it.each([
+    ['a path', 'https://a.gov/x'],
+    ['http', 'http://a.gov'],
+    ['a trailing slash', 'https://a.gov/'],
+    ['a non-string', 5],
+  ])('rejects an origin with %s', async (_n, origin) => {
+    const res = await relayTurn({ origin });
+    expect(res.status).toBe(400);
+    expect(eve.createEveSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed relay field and a non-UUID chat id', async () => {
+    expect((await relayTurn('https://a.gov')).status).toBe(400);
+    expect((await relayTurn({ origin: ORIGIN }, 'chat-1')).status).toBe(400);
+    expect(eve.createEveSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 400 when RELAY_PUBLIC_URL is unusable', async () => {
+    vi.stubEnv('RELAY_PUBLIC_URL', 'http://relay.example.gov');
+    expect((await relayTurn({ origin: ORIGIN })).status).toBe(400);
+    expect(eve.createEveSession).not.toHaveBeenCalled();
+  });
+
+  it('ignores a relay field on a follow-up turn', async () => {
+    await store.create(USER, RELAY_CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+      relayOrigin: ORIGIN,
+    });
+    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    streamEvents({ type: 'turn.started' });
+
+    // Even an invalid origin is not looked at: the stored origin governs.
+    const res = await relayTurn({ origin: 'https://other.example.gov/x' });
+    expect(res.status).toBe(200);
+    await drain(res);
+
+    expect(eve.createEveSession).not.toHaveBeenCalled();
+    expect(eve.continueEveSession).toHaveBeenCalledTimes(1);
+    expect((await store.get(USER, RELAY_CHAT))?.relayOrigin).toBe(ORIGIN);
+  });
+
+  it('does not touch relay for a plain turn with the flag on', async () => {
+    streamEvents({ type: 'turn.started' });
+    await drain(await turn());
+    expect(eve.createEveSession).toHaveBeenCalledWith('hello', undefined);
   });
 });

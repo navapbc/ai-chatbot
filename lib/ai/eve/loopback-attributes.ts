@@ -8,7 +8,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const digest = (value: string) => createHash('sha256').update(value).digest();
 
 /** Constant-time compare of two secrets via fixed-length digests. */
-function secretMatches(provided: string | null, expected: string | undefined) {
+export function secretMatches(provided: string | null, expected: string | undefined) {
   if (!provided || !expected) return false;
   return timingSafeEqual(digest(provided), digest(expected));
 }

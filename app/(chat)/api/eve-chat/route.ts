@@ -16,6 +16,10 @@ import {
 } from '@/lib/ai/eve/stream-adapter';
 import { toVertexModelId } from '@/lib/ai/eve/model-map';
 import { isProductionEnvironment } from '@/lib/constants';
+import { normalizeOrigin } from '@/lib/relay/policy';
+import { toRelayWsUrl } from '@/lib/relay/url';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Placeholder stored while a follow-up turn is in flight; never sent to Eve. */
 const CLAIM_PREFIX = 'claim:';
@@ -68,6 +72,7 @@ export async function POST(request: Request) {
     id?: string;
     message?: { role?: string };
     modelOverride?: string;
+    relay?: unknown;
   };
   try {
     body = await request.json();
@@ -83,6 +88,13 @@ export async function POST(request: Request) {
   }
   const text = extractLatestUserText(body.message);
   if (!chatId || !text) {
+    return new ChatSDKError('bad_request:api').toResponse();
+  }
+
+  // A relay run is opt-in and flag-gated. With the flag off the field is not
+  // silently dropped: the caller asked for something this server won't do.
+  const relayRunsEnabled = process.env.RELAY_RUNS_ENABLED === '1';
+  if (body.relay !== undefined && !relayRunsEnabled) {
     return new ChatSDKError('bad_request:api').toResponse();
   }
 
@@ -184,12 +196,36 @@ export async function POST(request: Request) {
       const model = isProductionEnvironment
         ? undefined
         : toVertexModelId(body.modelOverride);
-      const created = await createEveSession(text, model);
+      // The relay field is read on the first turn only. A follow-up turn
+      // ignores it (the stored origin governs), so it is never validated there.
+      let relayOrigin: string | null = null;
+      let relayRef: { url: string; runId: string } | undefined;
+      if (body.relay !== undefined) {
+        const origin = (body.relay as { origin?: unknown } | null)?.origin;
+        const url = process.env.RELAY_PUBLIC_URL
+          ? toRelayWsUrl(process.env.RELAY_PUBLIC_URL)
+          : null;
+        if (
+          typeof origin !== 'string' ||
+          normalizeOrigin(origin) !== origin ||
+          !url ||
+          !UUID.test(chatId)
+        ) {
+          return new ChatSDKError('bad_request:api').toResponse();
+        }
+        relayOrigin = origin;
+        // The relay run id is the chat id.
+        relayRef = { url, runId: chatId };
+      }
+      const created = relayRef
+        ? await createEveSession(text, model, relayRef)
+        : await createEveSession(text, model);
       sessionId = created.sessionId;
       try {
         await store.create(userId, chatId, {
           eveSessionId: sessionId,
           continuationToken: created.continuationToken,
+          ...(relayOrigin ? { relayOrigin } : {}),
         });
       } catch (err) {
         if (!(err instanceof EveRunExistsError)) {
