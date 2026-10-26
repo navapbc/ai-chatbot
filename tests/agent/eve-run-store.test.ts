@@ -13,7 +13,11 @@ vi.mock('server-only', () => ({}));
 import postgres from 'postgres';
 import { createDbRunStore } from '@/lib/ai/eve/db-run-store';
 import type { PendingInputRequest } from '@/lib/ai/eve/input-requests';
-import { createMemoryRunStore, type EveRunStore } from '@/lib/ai/eve/run-store';
+import {
+  createMemoryRunStore,
+  EveRunExistsError,
+  type EveRunStore,
+} from '@/lib/ai/eve/run-store';
 import type { RunProgress } from '@/lib/relay/progress';
 
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
@@ -67,12 +71,14 @@ function runSuite(
     expect(await store.get(other, chatId)).toBeUndefined();
   });
 
-  it('create twice throws', async () => {
+  it('create twice rejects with EveRunExistsError', async () => {
     const store = makeStore();
     const { owner } = users();
     const chatId = randomUUID();
     await store.create(owner, chatId, init('t1'));
-    await expect(store.create(owner, chatId, init('t2'))).rejects.toThrow();
+    await expect(store.create(owner, chatId, init('t2'))).rejects.toBeInstanceOf(
+      EveRunExistsError,
+    );
     expect((await store.get(owner, chatId))?.continuationToken).toBe('t1');
   });
 
@@ -160,6 +166,34 @@ function runSuite(
     expect(await store.getByChatId(chatId)).toBeUndefined();
   });
 
+  it('setPending, setProgress, advance and remove are no-ops for a missing run', async () => {
+    const store = makeStore();
+    const { owner, other } = users();
+    const chatId = randomUUID();
+    await store.setPending(owner, chatId, pending);
+    await store.setProgress(owner, chatId, progress);
+    await store.advance(owner, chatId, { continuationToken: 't9', streamIndex: 9 });
+    await store.remove(owner, chatId);
+    expect(await store.get(owner, chatId)).toBeUndefined();
+    expect(await store.getByChatId(chatId)).toBeUndefined();
+
+    // Writes scoped to another user leave the owner's run untouched.
+    await store.create(owner, chatId, init('t1'));
+    await store.setPending(other, chatId, pending);
+    await store.setProgress(other, chatId, progress);
+    await store.advance(other, chatId, { continuationToken: 't9', streamIndex: 9 });
+    await store.remove(other, chatId);
+    expect(await store.get(owner, chatId)).toEqual({
+      eveSessionId: 's1',
+      continuationToken: 't1',
+      streamIndex: 0,
+      relayOrigin: null,
+      pendingRequests: [],
+      progress: null,
+    });
+    expect(await store.get(other, chatId)).toBeUndefined();
+  });
+
   it('remove deletes', async () => {
     const store = makeStore();
     const { owner } = users();
@@ -199,6 +233,21 @@ describe.skipIf(!TEST_DATABASE_URL)('drizzle run store', () => {
   });
 
   runSuite(createDbRunStore, () => ids);
+
+  it('create for a nonexistent user rejects with the FK error, not EveRunExistsError', async () => {
+    const store = createDbRunStore();
+    const error = await store
+      .create(randomUUID(), randomUUID(), {
+        eveSessionId: 's1',
+        continuationToken: 't1',
+      })
+      .catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(EveRunExistsError);
+    expect(error).toMatchObject({
+      code: '23503',
+      constraint_name: 'EveRun_userId_User_id_fk',
+    });
+  });
 
   it('concurrent swapToken with the same expected token: exactly one wins', async () => {
     const store = createDbRunStore();

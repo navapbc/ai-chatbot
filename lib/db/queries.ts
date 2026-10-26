@@ -728,7 +728,11 @@ export async function getEveRunByChatId({
   }
 }
 
-/** Inserts a new run; throws if one already exists for (userId, chatId). */
+/**
+ * Inserts a new run. Errors propagate unwrapped (a duplicate surfaces as the
+ * driver's unique violation, code 23505) so callers can tell a duplicate
+ * apart from an FK violation or an outage.
+ */
 export async function createEveRun({
   userId,
   chatId,
@@ -742,24 +746,20 @@ export async function createEveRun({
   continuationToken: string;
   relayOrigin?: string | null;
 }): Promise<EveRun> {
-  try {
-    const now = new Date();
-    const [row] = await db
-      .insert(eveRun)
-      .values({
-        userId,
-        chatId,
-        eveSessionId,
-        continuationToken,
-        relayOrigin: relayOrigin ?? null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
-    return row;
-  } catch (error) {
-    throw new ChatSDKError('bad_request:database', 'Failed to create eve run');
-  }
+  const now = new Date();
+  const [row] = await db
+    .insert(eveRun)
+    .values({
+      userId,
+      chatId,
+      eveSessionId,
+      continuationToken,
+      relayOrigin: relayOrigin ?? null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
+  return row;
 }
 
 /** Compare-and-set on continuationToken. Returns whether the swap happened. */

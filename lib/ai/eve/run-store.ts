@@ -16,13 +16,28 @@ export interface EveRunRecord {
   progress: RunProgress | null;
 }
 
+/** Thrown by `create` when a run already exists for (userId, chatId). */
+export class EveRunExistsError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super('Eve run already exists for this user and chat', options);
+    this.name = 'EveRunExistsError';
+  }
+}
+
+/**
+ * setPending, setProgress, advance and remove are no-ops when no run exists
+ * for (userId, chatId); they never create a row.
+ */
 export interface EveRunStore {
   get(userId: string, chatId: string): Promise<EveRunRecord | undefined>;
   /** Internal token route only. Undefined when two users hold the chatId. */
   getByChatId(
     chatId: string,
   ): Promise<(EveRunRecord & { userId: string }) | undefined>;
-  /** Throws if a run already exists for (userId, chatId). */
+  /**
+   * Throws EveRunExistsError if a run already exists for (userId, chatId);
+   * any other failure propagates unchanged.
+   */
   create(
     userId: string,
     chatId: string,
@@ -80,7 +95,7 @@ export function createMemoryRunStore(): EveRunStore {
     },
     async create(userId, chatId, init) {
       const k = key(userId, chatId);
-      if (rows.has(k)) throw new Error('Eve run already exists');
+      if (rows.has(k)) throw new EveRunExistsError();
       const record: EveRunRecord = {
         eveSessionId: init.eveSessionId,
         continuationToken: init.continuationToken,

@@ -11,7 +11,26 @@ import {
   swapEveRunToken,
 } from '@/lib/db/queries';
 import type { EveRun } from '@/lib/db/schema';
-import type { EveRunRecord, EveRunStore } from './run-store';
+import {
+  EveRunExistsError,
+  type EveRunRecord,
+  type EveRunStore,
+} from './run-store';
+
+const UNIQUE_CONSTRAINT = 'EveRun_userId_chatId_unique';
+
+/** Postgres unique violation (23505) on the (userId, chatId) constraint. */
+const isDuplicateRun = (error: unknown): boolean => {
+  for (let e = error, depth = 0; e && depth < 3; depth++) {
+    const { code, constraint_name } = e as {
+      code?: unknown;
+      constraint_name?: unknown;
+    };
+    if (code === '23505' && constraint_name === UNIQUE_CONSTRAINT) return true;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
+};
 
 const toRecord = (row: EveRun): EveRunRecord => ({
   eveSessionId: row.eveSessionId,
@@ -34,7 +53,12 @@ export function createDbRunStore(): EveRunStore {
       return row ? { ...toRecord(row), userId: row.userId } : undefined;
     },
     async create(userId, chatId, init) {
-      return toRecord(await createEveRun({ userId, chatId, ...init }));
+      try {
+        return toRecord(await createEveRun({ userId, chatId, ...init }));
+      } catch (error) {
+        if (isDuplicateRun(error)) throw new EveRunExistsError({ cause: error });
+        throw error;
+      }
     },
     swapToken: (userId, chatId, expected, next) =>
       swapEveRunToken({ userId, chatId, expected, next }),
