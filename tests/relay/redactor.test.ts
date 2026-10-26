@@ -696,30 +696,31 @@ describe('review regressions', () => {
     for (const id of ['2', '3', '4']) expect(text(byId(out, id))).toBe(MASK);
   });
 
-  it('I2: structural identifiers and URL hosts are not scrubbed', async () => {
+  it('I2: well-formed protocol identifiers are not scrubbed; URL hosts are', async () => {
     const r = createRedactor();
     r.addKnownValue('1234');
     r.addKnownValue('Example');
-    const out = await r.redactResult('Target.attachToTarget', {
-      sessionId: 'AB1234CD',
-      targetId: 'T1234',
-      frameId: 'F1234',
-      loaderId: 'L1234',
-      objectId: '1234.1.1234',
-      requestId: '1234',
+    const hex = '0123ABCD1234EF5678901234ABCDEF12';
+    const ids = {
+      sessionId: hex,
+      targetId: hex,
+      frameId: hex,
+      loaderId: hex,
+      browserContextId: hex,
+      objectId: '-781234.1.1234',
+      requestId: '1234.56',
+      uniqueId: '-1234.1234',
+      scriptId: '1234',
       executionContextId: 1234,
+    };
+    const out = await r.redactResult('Target.attachToTarget', {
+      ...ids,
       url: 'https://example.test/path/Example?q=1234#Example',
       text: 'PIN 1234 for Example',
     });
     expect(out).toEqual({
-      sessionId: 'AB1234CD',
-      targetId: 'T1234',
-      frameId: 'F1234',
-      loaderId: 'L1234',
-      objectId: '1234.1.1234',
-      requestId: '1234',
-      executionContextId: 1234,
-      url: `https://example.test/path/${MASK}?q=${MASK}#${MASK}`,
+      ...ids,
+      url: `https://${MASK}.test/path/${MASK}?q=${MASK}#${MASK}`,
       text: `PIN ${MASK} for ${MASK}`,
     });
     const ax = await r.redactResult(
@@ -729,22 +730,77 @@ describe('review regressions', () => {
           nodeId: '1234',
           role: { type: 'role', value: 'paragraph' },
           name: str(''),
-          childIds: ['12345'],
+          childIds: ['12345', '-1234'],
           properties: [{ name: 'level', value: { type: 'integer', value: 2 } }],
           backendDOMNodeId: 1234,
-          frameId: 'F1234',
+          frameId: hex,
         },
         staticText('12345', 'plain', '1234'),
       ),
     );
     const root = byId(ax, '1234');
-    expect(root.childIds).toEqual(['12345']);
-    expect(root.frameId).toBe('F1234');
+    expect(root.childIds).toEqual(['12345', '-1234']);
+    expect(root.frameId).toBe(hex);
     expect(root.properties?.[0]).toEqual({
       name: 'level',
       value: { type: 'integer', value: 2 },
     });
     expect(text(byId(ax, '12345'))).toBe('plain');
+  });
+
+  it('I2: Page.getFrameTree frame ids survive a known value', async () => {
+    const r = createRedactor();
+    r.addKnownValue('1234');
+    const id = 'ABCDEF0123456789AB1234CDEF012345';
+    const out = (await r.redactResult('Page.getFrameTree', {
+      frameTree: {
+        frame: {
+          id,
+          loaderId: id,
+          url: 'https://a.test/?pin=1234',
+          securityOrigin: 'https://a.test',
+          mimeType: 'text/html',
+        },
+        childFrames: [
+          { frame: { id, parentId: id, loaderId: id, url: 'about:blank' } },
+        ],
+      },
+    })) as {
+      frameTree: {
+        frame: Record<string, string>;
+        childFrames: Array<{ frame: Record<string, string> }>;
+      };
+    };
+    expect(out.frameTree.frame.id).toBe(id);
+    expect(out.frameTree.frame.loaderId).toBe(id);
+    expect(out.frameTree.frame.url).toBe(`https://a.test/?pin=${MASK}`);
+    expect(out.frameTree.childFrames[0].frame.parentId).toBe(id);
+  });
+
+  it('I2: the structural exemption does not cover page-controlled or malformed positions', async () => {
+    const r = createRedactor();
+    r.addKnownValue('123-45-6789');
+    const out = JSON.stringify(
+      await r.redactResult('DOM.describeNode', {
+        sessionId: 'x 123-45-6789',
+        frameId: '123-45-6789',
+        type: '123-45-6789',
+        node: {
+          nodeType: 1,
+          nodeName: 'X-123-45-6789',
+          localName: 'x-123-45-6789',
+          attributes: ['data-123-45-6789', ''],
+        },
+        doctype: { nodeType: 10, nodeName: '123-45-6789' },
+        ax: {
+          role: { type: 'role', value: '123-45-6789' },
+          properties: [
+            { name: 'x123-45-6789', value: { type: 'token', value: 'a' } },
+          ],
+        },
+      }),
+    );
+    expect(out).not.toMatch(/6789/);
   });
 
   it('I2: page data returned by value gets no structural exemption', async () => {
@@ -974,15 +1030,192 @@ describe('review regressions', () => {
       );
     }
     let calls = 0;
+    let active = 0;
+    let peak = 0;
     const start = performance.now();
     await r.redactResult(AX, { nodes }, async () => {
       calls++;
+      active++;
+      peak = Math.max(peak, active);
       await new Promise((resolve) => setTimeout(resolve, 5));
+      active--;
       return { inputType: 'text' };
     });
     expect(performance.now() - start).toBeLessThan(500);
+    expect(peak).toBeLessThanOrEqual(16);
     // One call per distinct backendDOMNodeId of a filled field-like node.
     expect(calls).toBe(500);
+  });
+});
+
+describe('review regressions, round 2', () => {
+  const text = (node: unknown) =>
+    (node as { name?: { value?: unknown } }).name?.value;
+  const ordinary = async () => ({ inputType: 'text' });
+
+  it('C1: a URL followed by text, or a value inside a host, is scrubbed', async () => {
+    const r = createRedactor();
+    r.addKnownValue('123-45-6789');
+    for (const form of [
+      'https://x 123-45-6789/path',
+      'https://a\\123-45-6789/',
+      'x://123-45-6789',
+      'https://123-45-6789.evil.test/',
+      'https://evil.test:123456789/',
+    ]) {
+      const out = JSON.stringify(
+        await r.redactResult('Runtime.evaluate', { result: { value: form } }),
+      );
+      expect(out, form).not.toMatch(/6789/);
+    }
+    const ax = await r.redactResult(
+      AX,
+      tree(
+        staticText('1', 'https://benefits.test SSN 123-45-6789', '0'),
+        textbox('2', 'Website', 'http://a 123-45-6789', {
+          backendDOMNodeId: 2,
+        }),
+      ),
+      ordinary,
+    );
+    expect(JSON.stringify(ax)).not.toMatch(/6789/);
+    const event = r.redactEvent('Network.requestWillBeSent', {
+      requestId: '1.1',
+      request: { url: 'https://h.test 123-45-6789', method: 'GET' },
+    });
+    expect(JSON.stringify(event)).not.toMatch(/6789/);
+  });
+
+  it('raw-first: a known value equal to a structural word does not disable DOM masking', async () => {
+    const r = createRedactor();
+    r.addKnownValue('password');
+    r.addKnownValue('input');
+    const out = (await r.redactResult('DOM.describeNode', {
+      node: {
+        nodeType: 1,
+        nodeName: 'INPUT',
+        localName: 'input',
+        attributes: ['type', 'password', 'title', 'hint', 'value', 'abcdef'],
+      },
+    })) as { node: { attributes: string[] } };
+    // type=password still classifies it sensitive (title masked by the
+    // allowlist), and INPUT still gets its value masked.
+    expect(out.node.attributes[3]).toBe(MASK);
+    expect(out.node.attributes[5]).toBe(MASK);
+    const plain = (await r.redactResult('DOM.describeNode', {
+      node: {
+        nodeType: 1,
+        nodeName: 'INPUT',
+        attributes: ['type', 'text', 'value', '123-45-6789'],
+      },
+    })) as { node: { attributes: string[] } };
+    expect(plain.node.attributes[3]).toBe(MASK);
+  });
+
+  it('raw-first: a known value equal to a label word does not hide the AX signal', async () => {
+    const r = createRedactor();
+    r.addKnownValue('SSN');
+    const out = await r.redactResult(
+      AX,
+      tree(textbox('1', 'SSN', 'Hopper99', { backendDOMNodeId: 1 })),
+      ordinary,
+    );
+    expect(byId(out, '1').value?.value).toBe(MASK);
+    const dom = (await r.redactResult('DOM.describeNode', {
+      node: {
+        nodeType: 1,
+        nodeName: 'INPUT',
+        attributes: ['name', 'ssn', 'title', 'hint'],
+      },
+    })) as { node: { attributes: string[] } };
+    expect(dom.node.attributes[3]).toBe(MASK);
+  });
+
+  it('I2: descriptorFromAttributes keeps id alongside name, and title', async () => {
+    const d = descriptorFromAttributes([
+      'name',
+      'field_17',
+      'id',
+      'ssn',
+      'title',
+      'Routing number',
+    ]);
+    expect(d.name).toContain('field_17');
+    expect(d.name).toContain('ssn');
+    expect(d.description).toContain('Routing number');
+    const r = createRedactor();
+    const out = (await r.redactResult('DOM.describeNode', {
+      node: {
+        nodeType: 1,
+        nodeName: 'INPUT',
+        attributes: ['name', 'field_17', 'id', 'ssn', 'data-x', 'y'],
+      },
+    })) as { node: { attributes: string[] } };
+    expect(out.node.attributes[5]).toBe(MASK);
+  });
+
+  it('I3: a known value split by markup is masked', async () => {
+    const r = createRedactor();
+    r.addKnownValue('123-45-6789');
+    for (const html of [
+      '<span>123</span>-<span>45</span>-<span>6789</span>',
+      '<td>123</td><td>45</td><td>6789</td>',
+      '123<b>45</b>6789',
+    ]) {
+      for (const method of ['Runtime.callFunctionOn', 'Runtime.evaluate']) {
+        const out = await r.redactResult(method, {
+          result: { type: 'string', value: html },
+        });
+        expect(out, html).toEqual({ result: { type: 'string', value: MASK } });
+      }
+    }
+    expect(
+      await r.redactResult('Runtime.evaluate', { value: '<b>Hello</b>' }),
+    ).toEqual({ value: '<b>Hello</b>' });
+  });
+
+  it('an image input value is masked (only text-labelled buttons keep it)', async () => {
+    const r = createRedactor();
+    const out = (await r.redactResult('DOM.describeNode', {
+      node: {
+        nodeType: 1,
+        nodeName: 'INPUT',
+        attributes: ['type', 'image', 'value', 'Go'],
+      },
+    })) as { node: { attributes: string[] } };
+    expect(out.node.attributes[3]).toBe(MASK);
+  });
+
+  it('a hanging describe() on a 10,000-node tree is bounded by the overall deadline', async () => {
+    const r = createRedactor({
+      describeTimeoutMs: 20,
+      describeDeadlineMs: 100,
+    });
+    const nodes: AXNode[] = [];
+    for (let i = 0; i < 10_000; i++) {
+      nodes.push(
+        i % 10 === 0
+          ? textbox(String(i), `Field ${i}`, `value ${i}`, {
+              backendDOMNodeId: i,
+            })
+          : staticText(String(i), `text ${i}`, '0'),
+      );
+    }
+    let started = 0;
+    const start = performance.now();
+    const out = await r.redactResult(AX, { nodes }, () => {
+      started++;
+      return new Promise(() => {});
+    });
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(400);
+    // 16 workers, each abandoning a call per 20 ms timeout, for 100 ms.
+    expect(started).toBeLessThanOrEqual(16 * 6);
+    // Every filled field that could not be vouched for is masked.
+    for (let i = 0; i < 10_000; i += 10) {
+      expect(byId(out, String(i)).value?.value).toBe(MASK);
+    }
+    expect(text(byId(out, '1'))).toBe('text 1');
   });
 });
 

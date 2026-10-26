@@ -55,20 +55,26 @@ export interface RedactorOptions {
   maxKnownValues?: number;
   /** Per describe() call; a slower call counts as a failure. */
   describeTimeoutMs?: number;
+  /**
+   * For all describe() calls of one tree; calls not finished by then count
+   * as failures (the field is masked).
+   */
+  describeDeadlineMs?: number;
 }
 
 const MIN_KNOWN_LENGTH = 3;
 const MAX_KNOWN_VALUE_LENGTH = 512;
 const DEFAULT_MAX_KNOWN_VALUES = 32;
 const DEFAULT_DESCRIBE_TIMEOUT_MS = 1500;
+const DEFAULT_DESCRIBE_DEADLINE_MS = 5000;
+const DESCRIBE_CONCURRENCY = 16;
 const MAX_DEPTH = 256;
 const SEPARATORS = /[\s\-./]+/;
 const JOINERS = ['', ' ', '-', '.', '/'];
 const INVISIBLE = /(?:\u00ad|\u200b|\u200c|\u200d|\u2060|\ufeff)/g;
 const NON_ASCII = /[\u0080-\uffff]/;
 const BULLETS_ONLY = /^[•●◦■*∗]+$/;
-// scheme://host with no userinfo; a URL with userinfo is scrubbed whole.
-const URL_ORIGIN = /^[a-z][a-z0-9+.-]*:\/\/(?![^/?#]*@)[^/?#]*/i;
+const MARKUP_TAG = /<[^>]*>/g;
 // Between the digits of a known number: whitespace, dashes, dots, slashes,
 // soft hyphen, zero-width characters, and their URL, HTML and JSON escapes.
 const DIGIT_SEPARATOR =
@@ -103,9 +109,10 @@ const BINARY_DATA_METHODS = new Set([
   'Page.captureScreenshot',
   'Page.screencastFrame',
 ]);
-// Browser-generated identifiers and enums. Scrubbing them would break
-// routing and node references (Tasks 4 and 10 route on the raw message).
-const STRUCTURAL_KEYS = new Set([
+// Browser-generated identifiers. Exempt from scrubbing only in a protocol
+// position and only in a browser id format, so routing and node references
+// survive a known value (Tasks 4 and 10 route on the raw message anyway).
+const ID_KEYS = new Set([
   'nodeId',
   'parentId',
   'childIds',
@@ -123,14 +130,26 @@ const STRUCTURAL_KEYS = new Set([
   'executionContextId',
   'uniqueId',
   'scriptId',
+]);
+// 32-hex (targets, sessions, frames, loaders) or dotted integers (node,
+// object, request and context ids).
+const ID_FORMAT = /^(?:[0-9A-Fa-f]{32}|-?\d+(?:\.-?\d+)*)$/;
+const HEX_ID = /^[0-9A-Fa-f]{32}$/;
+// Protocol enums. Exempt only when made of letters; anything else is scrubbed.
+const ENUM_KEYS = new Set([
   'role',
   'chromeRole',
   'type',
   'subtype',
-  'nodeName',
-  'localName',
   'nodeType',
 ]);
+const ENUM_FORMAT = /^[A-Za-z]+$/;
+
+const isProtocolId = (key: string, v: unknown): boolean =>
+  typeof v === 'string' &&
+  ((ID_KEYS.has(key) && ID_FORMAT.test(v)) || (key === 'id' && HEX_ID.test(v)));
+// AXValue types whose `value` is a role enum.
+const ROLE_AX_TYPES = new Set(['role', 'internalRole']);
 
 // Runtime.RemoteObject types; such an object's `value` is page data.
 const REMOTE_OBJECT_TYPES = new Set([
@@ -170,7 +189,7 @@ const NON_TEXT_AX_TYPES = new Set([
 const RELATION_PROPERTIES = new Set(['labelledby', 'describedby']);
 
 const VALUE_ELEMENTS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION']);
-const BUTTON_INPUT_TYPES = new Set(['submit', 'button', 'reset', 'image']);
+const BUTTON_INPUT_TYPES = new Set(['submit', 'button', 'reset']);
 const VALUE_ATTRIBUTES = new Set([
   'value',
   'label',
@@ -361,39 +380,49 @@ export function descriptorFromAttributes(
   };
   set('inputType', a.get('type'));
   set('autocomplete', a.get('autocomplete'));
-  set('name', a.get('name') ?? a.get('id'));
+  const joined = (...values: (string | undefined)[]) => {
+    const present = values.filter((v): v is string => v !== undefined);
+    return present.length === 0 ? undefined : present.join(' ');
+  };
+  // `name` and `id` both carry naming signals (name=field_17 id=ssn).
+  set('name', joined(a.get('name'), a.get('id')));
   set('placeholder', a.get('placeholder') ?? a.get('aria-placeholder'));
   set('label', a.get('aria-label'));
-  set('description', a.get('aria-description'));
+  set('description', joined(a.get('aria-description'), a.get('title')));
   return d;
 }
 
 // ---------------------------------------------------------------- DOM nodes
 
 // Masks value-bearing attributes and text of `root` and everything below it.
-// A sensitive root keeps only allowlisted attributes. `root` is a private copy.
+// A sensitive root keeps only allowlisted attributes. `root` is a private
+// copy; `rawRoot` is its unscrubbed source, walked in parallel so attribute
+// names are read from the page, not from the scrubbed copy.
 const maskDomSubtree = (
   root: Obj,
+  rawRoot: unknown,
   sensitive: boolean,
   keepRootValue: boolean,
 ): void => {
-  const stack: unknown[] = [root];
+  const stack: [unknown, unknown][] = [[root, rawRoot]];
   while (stack.length > 0) {
-    const node = stack.pop();
+    const [node, raw] = stack.pop() as [unknown, unknown];
     if (Array.isArray(node)) {
-      for (const item of node) stack.push(item);
+      const rawItems = Array.isArray(raw) ? raw : [];
+      for (let i = 0; i < node.length; i++) stack.push([node[i], rawItems[i]]);
       continue;
     }
     if (!isObj(node)) continue;
+    const src = isObj(raw) ? raw : node;
     if (typeof node.nodeValue === 'string' && node.nodeValue !== '') {
       node.nodeValue = MASK;
     }
     if (Array.isArray(node.attributes)) {
       const attributes = node.attributes;
+      const names = Array.isArray(src.attributes) ? src.attributes : attributes;
       for (let i = 0; i + 1 < attributes.length; i += 2) {
-        const name = attributes[i];
-        const value = attributes[i + 1];
-        if (typeof name !== 'string' || value === '') continue;
+        const name = names[i];
+        if (typeof name !== 'string' || attributes[i + 1] === '') continue;
         const lower = name.toLowerCase();
         if (node === root && keepRootValue && lower === 'value') continue;
         const mask = sensitive
@@ -403,29 +432,35 @@ const maskDomSubtree = (
       }
     }
     for (const key of DOM_CHILD_KEYS) {
-      if (node[key] !== undefined) stack.push(node[key]);
+      if (node[key] !== undefined) stack.push([node[key], src[key]]);
     }
   }
 };
 
-const maskDomNode = (node: Obj): void => {
-  if (typeof node.nodeName !== 'string' || typeof node.nodeType !== 'number') {
+const isDomFieldSensitive = (attributes: unknown[]): boolean =>
+  isSensitiveField(descriptorFromAttributes(attributes));
+
+// Classifies from the raw source node (tag, type, attributes), then masks the
+// copy: a known value such as 'password' or 'input' must not erase the
+// signal from the scrubbed copy.
+const maskDomNode = (node: Obj, src: Obj): void => {
+  if (typeof src.nodeName !== 'string' || typeof src.nodeType !== 'number') {
     return;
   }
-  const attributes = Array.isArray(node.attributes) ? node.attributes : [];
+  const attributes = Array.isArray(src.attributes) ? src.attributes : [];
   const map = attributeMap(attributes);
-  const tag = node.nodeName.toUpperCase();
+  const tag = src.nodeName.toUpperCase();
   const holdsValue =
     VALUE_ELEMENTS.has(tag) ||
     map.has('contenteditable') ||
     INPUT_ROLES.has(map.get('role') ?? '');
   if (!holdsValue) return;
-  // A button's value attribute is its visible label.
+  // A text button's value attribute is its visible label.
   const keepRootValue =
     tag === 'INPUT' &&
     BUTTON_INPUT_TYPES.has((map.get('type') ?? '').toLowerCase());
-  const sensitive = isSensitiveField(descriptorFromAttributes(attributes));
-  maskDomSubtree(node, sensitive, keepRootValue && !sensitive);
+  const sensitive = isDomFieldSensitive(attributes);
+  maskDomSubtree(node, src, sensitive, keepRootValue && !sensitive);
 };
 
 // ------------------------------------------------------- accessibility tree
@@ -567,21 +602,42 @@ const referencedIds = (x: unknown, out: number[]): void => {
   }
 };
 
+// An AX node copy and its unscrubbed source. Every decision (role, label,
+// relation names, text) reads `src`; every mask writes `node`.
+interface AXPair {
+  node: Obj;
+  src: Obj;
+}
+
+const axPairs = (nodes: Obj[], raw: unknown): AXPair[] => {
+  if (!Array.isArray(raw) || raw.length !== nodes.length) {
+    throw new Error('accessibility source mismatch');
+  }
+  return nodes.map((node, i) => {
+    const src = raw[i];
+    if (!isObj(src)) throw new Error('malformed accessibility node');
+    return { node, src };
+  });
+};
+
 // Applies field masking to a private copy of an AX node list.
-// `sensitive`: nodes classified sensitive. `raw`: the unscrubbed input nodes,
-// index-aligned with `nodes`. `pattern`: the known-value regex, if any.
+// `sensitive`: copies classified sensitive. `pattern`: the known-value regex.
 const maskAXTree = (
-  nodes: Obj[],
+  pairs: AXPair[],
   sensitive: ReadonlySet<Obj>,
-  raw: unknown[],
   pattern: RegExp | null,
 ): void => {
   const byId = new Map<string, Obj>();
-  for (const node of nodes) byId.set(String(node.nodeId), node);
+  const srcOf = new Map<Obj, Obj>();
+  for (const { node, src } of pairs) {
+    byId.set(String(src.nodeId), node);
+    srcOf.set(node, src);
+  }
   const childrenOf = (node: Obj): Obj[] => {
-    if (!Array.isArray(node.childIds)) return [];
+    const src = srcOf.get(node) ?? node;
+    if (!Array.isArray(src.childIds)) return [];
     const out: Obj[] = [];
-    for (const id of node.childIds) {
+    for (const id of src.childIds) {
       const child = byId.get(String(id));
       if (child) out.push(child);
     }
@@ -603,67 +659,69 @@ const maskAXTree = (
   };
 
   // Which nodes had a known value scrubbed out of their own text.
-  const scrubbed: Obj[] = [];
-  if (pattern !== null) {
-    nodes.forEach((node, i) => {
-      if (nodeTexts(node) !== nodeTexts(raw[i])) scrubbed.push(node);
-    });
-  }
+  const scrubbed = pattern
+    ? pairs.filter(({ node, src }) => nodeTexts(node) !== nodeTexts(src))
+    : [];
 
   for (const node of sensitive) maskSubtree(node);
 
   if (pattern !== null) {
     // A node that held a known value: its children carry fragments of it
     // (InlineTextBox runs split mid-value).
-    for (const node of scrubbed) {
-      if (DOCUMENT_ROLES.has(axString(node.role) ?? '')) continue;
+    for (const { node, src } of scrubbed) {
+      if (DOCUMENT_ROLES.has(axString(src.role) ?? '')) continue;
       for (const child of childrenOf(node)) maskSubtree(child);
     }
-    maskSplitValues(nodes, raw, childrenOf, pattern, maskSubtree);
+    maskSplitValues(pairs, childrenOf, pattern, maskSubtree);
   }
 
   // A node labelled or described by a masked node echoes its text.
   const maskedIds = new Set<number>();
   for (const node of masked) {
-    if (typeof node.backendDOMNodeId === 'number') {
-      maskedIds.add(node.backendDOMNodeId);
-    }
+    const id = srcOf.get(node)?.backendDOMNodeId;
+    if (typeof id === 'number') maskedIds.add(id);
   }
   if (maskedIds.size === 0) return;
-  for (const node of nodes) {
+  for (const { node, src } of pairs) {
     if (masked.has(node)) continue;
-    const relations = axProperties(node).filter((p) =>
-      RELATION_PROPERTIES.has(String(p.name)),
-    );
+    const rawProps = Array.isArray(src.properties) ? src.properties : [];
+    const copyProps = Array.isArray(node.properties) ? node.properties : [];
+    const relations: unknown[] = [];
+    const rawRelations: unknown[] = [];
+    rawProps.forEach((p, i) => {
+      if (isObj(p) && RELATION_PROPERTIES.has(String(p.name))) {
+        rawRelations.push(p);
+        const copied = copyProps[i];
+        if (isObj(copied)) relations.push(copied.value);
+      }
+    });
     const ids: number[] = [];
-    referencedIds([node.name, node.description, relations], ids);
+    referencedIds([src.name, src.description, rawRelations], ids);
     if (!ids.some((id) => maskedIds.has(id))) continue;
     maskText(node.name);
     maskText(node.description);
-    for (const relation of relations) maskText(relation.value);
+    for (const relation of relations) maskText(relation);
   }
 };
 
-// Finds known values split across StaticText nodes: the StaticText texts are
-// joined in document order and every node a match spans is masked whole. A
-// match inside a single node is already scrubbed in place.
+// Finds known values split across StaticText nodes: the raw StaticText texts
+// are joined in document order and every node a match spans is masked whole.
+// A match inside a single node is already scrubbed in place.
 const maskSplitValues = (
-  nodes: Obj[],
-  raw: unknown[],
+  pairs: AXPair[],
   childrenOf: (node: Obj) => Obj[],
   pattern: RegExp,
   maskSubtree: (node: Obj) => void,
 ): void => {
   const rawText = new Map<Obj, string>();
-  nodes.forEach((node, i) => {
-    const r = raw[i];
-    if (axString(node.role) === 'StaticText' && isObj(r)) {
-      const t = axString(r.name);
-      if (t) rawText.set(node, t);
-    }
-  });
+  for (const { node, src } of pairs) {
+    if (axString(src.role) !== 'StaticText') continue;
+    const t = axString(src.name);
+    if (t) rawText.set(node, t);
+  }
   if (rawText.size < 2) return;
 
+  const nodes = pairs.map((p) => p.node);
   const isChild = new Set<Obj>();
   for (const node of nodes) for (const c of childrenOf(node)) isChild.add(c);
   const order: Obj[] = [];
@@ -709,6 +767,8 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
   const maxKnownValues = opts?.maxKnownValues ?? DEFAULT_MAX_KNOWN_VALUES;
   const describeTimeoutMs =
     opts?.describeTimeoutMs ?? DEFAULT_DESCRIBE_TIMEOUT_MS;
+  const describeDeadlineMs =
+    opts?.describeDeadlineMs ?? DEFAULT_DESCRIBE_DEADLINE_MS;
   const known = new Map<string, Alternative[]>();
   let pattern: RegExp | null = null;
 
@@ -722,23 +782,30 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
     pattern = sorted.length === 0 ? null : new RegExp(sorted.join('|'), 'gi');
   };
 
-  const scrubText = (s: string): string => {
-    if (pattern === null) return s;
-    const replaced = s.replace(pattern, MASK);
-    if (!NON_ASCII.test(replaced)) return replaced;
-    // Full-width digits, compatibility forms and zero-width characters.
-    const normalized = canonical(replaced);
-    if (normalized === replaced) return replaced;
-    const again = normalized.replace(pattern, MASK);
-    return again === normalized ? replaced : again;
-  };
+  const hasKnownValue = (s: string): boolean =>
+    pattern !== null && s.replace(pattern, MASK) !== s;
 
+  // Scrubs the whole string (URLs included: a value in a host is masked too).
   const scrub = (s: string): string => {
     if (pattern === null) return s;
-    const origin = URL_ORIGIN.exec(s);
-    if (origin === null) return scrubText(s);
-    // A known value in a host is not scrubbed (residual risk).
-    return origin[0] + scrubText(s.slice(origin[0].length));
+    let out = s.replace(pattern, MASK);
+    if (NON_ASCII.test(out)) {
+      // Full-width digits, compatibility forms and zero-width characters.
+      const normalized = canonical(out);
+      if (normalized !== out) {
+        const again = normalized.replace(pattern, MASK);
+        if (again !== normalized) out = again;
+      }
+    }
+    if (out.includes('<')) {
+      // A value split by markup (<td>123</td><td>45</td>...): the string
+      // cannot be scrubbed in place, so it is masked whole.
+      const stripped = out.replace(MARKUP_TAG, '');
+      if (hasKnownValue(stripped) || hasKnownValue(canonical(stripped))) {
+        return MASK;
+      }
+    }
+    return out;
   };
 
   // Deep copy; strings are scrubbed except at structural positions, and DOM
@@ -767,32 +834,56 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
       // An AX property `{ name, value: AXValue }`: the name is an enum.
       const axProperty =
         trusted && isObj(source.value) && typeof source.value.type === 'string';
+      // A role AXValue `{ type: 'role', value: 'textbox' }`.
+      const roleValue = trusted && ROLE_AX_TYPES.has(String(source.type));
       // A RemoteObject's by-value payload is page data: its keys are not
       // protocol fields, so nothing below it is exempt.
       const remoteObject = REMOTE_OBJECT_TYPES.has(String(source.type));
       const o: Obj = {};
       for (const key of Object.keys(source)) {
         const v = source[key];
+        const enumLike =
+          typeof v === 'string' &&
+          ENUM_FORMAT.test(v) &&
+          (ENUM_KEYS.has(key) ||
+            (axProperty && key === 'name') ||
+            (roleValue && key === 'value'));
         const raw =
-          (trusted && STRUCTURAL_KEYS.has(key)) ||
-          (skipData && key === 'data' && typeof v === 'string') ||
-          (axProperty && key === 'name' && typeof v === 'string');
+          (trusted && (enumLike || isProtocolId(key, v))) ||
+          (skipData && key === 'data' && typeof v === 'string');
         const pageData = remoteObject && key === 'value';
-        o[key] = copy(
-          v,
-          ancestors,
-          depth + 1,
-          scrubbing && !raw,
-          false,
-          trusted && !pageData,
-        );
+        o[key] =
+          trusted && ID_KEYS.has(key) && Array.isArray(v)
+            ? copyIdList(v, ancestors, depth + 1, scrubbing)
+            : copy(
+                v,
+                ancestors,
+                depth + 1,
+                scrubbing && !raw,
+                false,
+                trusted && !pageData,
+              );
       }
-      maskDomNode(o);
+      maskDomNode(o, source);
       out = o;
     }
     ancestors.delete(x);
     return out;
   };
+
+  // childIds and similar: each well-formed id is kept, anything else
+  // scrubbed.
+  const copyIdList = (
+    list: unknown[],
+    ancestors: Set<object>,
+    depth: number,
+    scrubbing: boolean,
+  ): unknown[] =>
+    list.map((item) =>
+      typeof item === 'string' && ID_FORMAT.test(item)
+        ? item
+        : copy(item, ancestors, depth, scrubbing, false, false),
+    );
 
   const copyOf = (method: string, x: unknown): unknown =>
     copy(x, new Set(), 0, true, BINARY_DATA_METHODS.has(method), true);
@@ -802,9 +893,10 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
   const describeSafely = (
     describe: Describe,
     id: number,
+    timeoutMs: number,
   ): Promise<FieldDescriptor | undefined> =>
     new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(undefined), describeTimeoutMs);
+      const timer = setTimeout(() => resolve(undefined), timeoutMs);
       Promise.resolve()
         .then(() => describe(id))
         .then(
@@ -817,43 +909,72 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
         });
     });
 
+  // At most DESCRIBE_CONCURRENCY calls in flight, one per distinct id, all
+  // within describeDeadlineMs; an id not answered by then maps to undefined.
+  const describeAll = async (
+    describe: Describe,
+    ids: number[],
+  ): Promise<Map<number, FieldDescriptor | undefined>> => {
+    const results = new Map<number, FieldDescriptor | undefined>();
+    const deadline = Date.now() + describeDeadlineMs;
+    let next = 0;
+    const worker = async () => {
+      while (next < ids.length) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return;
+        const id = ids[next++];
+        results.set(
+          id,
+          await describeSafely(
+            describe,
+            id,
+            Math.min(describeTimeoutMs, remaining),
+          ),
+        );
+      }
+    };
+    const workers: Promise<void>[] = [];
+    for (let i = 0; i < Math.min(DESCRIBE_CONCURRENCY, ids.length); i++) {
+      workers.push(worker());
+    }
+    await Promise.all(workers);
+    return results;
+  };
+
+  // Classifies each node from its raw source; returns the sensitive copies.
   const classify = async (
-    nodes: Obj[],
+    pairs: AXPair[],
     describe: Describe | undefined,
   ): Promise<Set<Obj>> => {
     const sensitive = new Set<Obj>();
-    // One describe() per backendDOMNodeId within this call; never across
-    // calls.
-    const lookups = new Map<number, Promise<FieldDescriptor | undefined>>();
-    const pending: Promise<void>[] = [];
-    for (const node of nodes) {
-      const verdict = classifyAXNode(node);
+    const asking: { pair: AXPair; id: number }[] = [];
+    for (const pair of pairs) {
+      const verdict = classifyAXNode(pair.src);
       if (verdict === 'ordinary') continue;
-      const id = node.backendDOMNodeId;
+      const id = pair.src.backendDOMNodeId;
       if (verdict === 'sensitive' || !describe || typeof id !== 'number') {
         // Fail closed: a filled field nothing can vouch for is sensitive.
-        sensitive.add(node);
+        sensitive.add(pair.node);
         continue;
       }
-      let lookup = lookups.get(id);
-      if (!lookup) {
-        lookup = describeSafely(describe, id);
-        lookups.set(id, lookup);
-      }
-      const fromAX = axDescriptor(node);
-      pending.push(
-        lookup.then((fromDom) => {
-          if (
-            !fromDom ||
-            isSensitiveField(fromDom) ||
-            isSensitiveField({ ...fromAX, ...fromDom })
-          ) {
-            sensitive.add(node);
-          }
-        }),
-      );
+      asking.push({ pair, id });
     }
-    await Promise.all(pending);
+    if (describe && asking.length > 0) {
+      // One describe() per backendDOMNodeId within this call; never across
+      // calls.
+      const ids = [...new Set(asking.map((a) => a.id))];
+      const answers = await describeAll(describe, ids);
+      for (const { pair, id } of asking) {
+        const fromDom = answers.get(id);
+        if (
+          !fromDom ||
+          isSensitiveField(fromDom) ||
+          isSensitiveField({ ...axDescriptor(pair.src), ...fromDom })
+        ) {
+          sensitive.add(pair.node);
+        }
+      }
+    }
     return sensitive;
   };
 
@@ -862,10 +983,9 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
     describe: Describe | undefined,
   ): Promise<unknown> => {
     const tree = copyOf(AX_FULL_TREE, result);
-    const nodes = axNodesOf(tree);
-    const raw = (result as { nodes: unknown[] }).nodes;
-    const sensitive = await classify(nodes, describe);
-    maskAXTree(nodes, sensitive, raw, pattern);
+    const pairs = axPairs(axNodesOf(tree), (result as Obj).nodes);
+    const sensitive = await classify(pairs, describe);
+    maskAXTree(pairs, sensitive, pattern);
     return tree;
   };
 
@@ -902,11 +1022,20 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
         }
         const out = copyOf(method, result);
         if (method === 'DOM.getAttributes') {
-          if (!isObj(out) || !Array.isArray(out.attributes)) return null;
-          const sensitive = isSensitiveField(
-            descriptorFromAttributes(out.attributes),
+          if (
+            !isObj(out) ||
+            !Array.isArray(out.attributes) ||
+            !isObj(result) ||
+            !Array.isArray(result.attributes)
+          ) {
+            return null;
+          }
+          maskDomSubtree(
+            out,
+            result,
+            isDomFieldSensitive(result.attributes),
+            false,
           );
-          maskDomSubtree({ attributes: out.attributes }, sensitive, false);
         }
         return out;
       } catch {
@@ -920,11 +1049,13 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
         const out = copyOf(method, params);
         if (method === 'Accessibility.loadComplete') {
           if (!isObj(out) || !isObj(out.root) || !isObj(params)) return null;
-          const nodes = [out.root];
+          const pairs = axPairs([out.root], [params.root]);
           const sensitive = new Set(
-            nodes.filter((n) => classifyAXNode(n) !== 'ordinary'),
+            pairs
+              .filter((p) => classifyAXNode(p.src) !== 'ordinary')
+              .map((p) => p.node),
           );
-          maskAXTree(nodes, sensitive, [(params as Obj).root], pattern);
+          maskAXTree(pairs, sensitive, pattern);
         } else if (method.startsWith('Accessibility.')) {
           return null;
         }
