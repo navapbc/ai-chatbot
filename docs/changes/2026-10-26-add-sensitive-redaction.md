@@ -14,7 +14,7 @@ Roughly 46 files, 43 commits on top of `browser-extension` (`git diff browser-ex
 - Frames: `lib/relay/frames.ts` scopes same-site cross-origin iframes per session; child session URLs follow navigation events.
 - Events and Page domain: `lib/relay/policy.ts` adds a 24-method event allowlist; the bridge enables the Page domain itself and denies `Page.disable`.
 - Commands: `lib/relay/command-policy.ts`, called first by `lib/relay/eve-relay-browser.ts`, allows only listed commands that name elements by `@eN`. `eval`, value `get`, `find`, `batch`, selectors and global flags are refused. `agent/skills/extension-run/SKILL.md` tells the agent how to verify from masked snapshots.
-- Records: `lib/data/sensitive-record.ts` and `app/(chat)/api/eve-chat/route.ts` strip sensitive fields from the opening message and relay follow-ups, refuse messages over 256 KB (`message_too_large`) and refuse prose that pairs a sensitive label with a value (`sensitive_value_in_message`). `lib/jev/participant.ts` and `lib/jev/flatten.ts` skip withheld fields.
+- Records: `lib/data/sensitive-record.ts` and `app/(chat)/api/eve-chat/route.ts` strip sensitive fields from the opening message and relay follow-ups, refuse messages over 256 KB (`message_too_large`) and refuse prose that pairs a sensitive label with a value (`sensitive_value_in_message`). Free-text answers to `ask_question` get the same size cap and guard, checked with the question's prompt in front, before the token claim and with pending left as it was. `lib/jev/participant.ts` and `lib/jev/flatten.ts` skip withheld fields.
 - Traces: `lib/observability/scrubbing-exporter.ts` and `agent/instrumentation.ts` export only allowlisted span attributes when `RELAY_RUNS_ENABLED=1`.
 - Tests: unit tests under `tests/relay/` and `tests/agent/`, and `tests/relay/e2e/redaction.e2e.test.ts` with fixtures and harness changes (`tests/relay/fixtures/`, `tests/relay/helpers/harness.ts`).
 - Docs: `CLAUDE.md`, `agent/README.md`, `docs/browser-extension-todo.md`.
@@ -25,7 +25,7 @@ Before, the extension sent accessibility trees, `DOM.describeNode` replies, URLs
 
 After, a sensitive field shows as `[masked]` (empty stays empty), so the agent can tell filled from empty but cannot read the value. The end-to-end tests drive the real `agent-browser` through the relay against a fixture with sensitive fields and check that no sensitive string, token or CDP URL appears in any tool result or relay frame, including after a GET-submitted form puts a value in the URL.
 
-Accepted residuals and the rulings behind them are in [the tracker](../browser-extension-todo.md) (see "Known limits (accepted for plan 3)" and "Plan 3 rulings"). Notable ones: values echoed in ordinary page text are not masked unless registered, nothing registers values until the plan 4 panel, and the chat prose guard is best-effort. Running agent-browser end to end also showed that `wait @ref` times out and that `reload` and `screenshot --full` are denied by the bridge.
+Accepted residuals and the rulings behind them are in [the tracker](../browser-extension-todo.md) (see "Known limits (accepted for plan 3)" and "Plan 3 rulings"). Notable ones: values echoed in ordinary page text are not masked unless registered, nothing registers values until the plan 4 panel, and the chat prose guard is best-effort. Running agent-browser end to end showed that `wait @ref` times out and that the bridge denies `reload` and `screenshot --full`, so the command policy refuses all three.
 
 ## How to run / verify
 

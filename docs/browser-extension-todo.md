@@ -150,17 +150,16 @@ Same-site frames:
 
 - Coordinate and key input into an out-of-scope frame is refused (P23), but `Origin-Agent-Cluster: ?0` with `document.domain` is page-level, `about:blank` frames inherit the parent's origin, and sandboxed in-scope frames refuse `fill` and `click`.
 - Scope is per frame origin, not per ancestry.
-- `dialog accept <text>` can write prompt text into an out-of-scope frame's dialog.
 - A screenshot is refused while any out-of-scope same-site frame is present, even an invisible one.
 
 Traces and tooling:
 
-- `RELAY_RUNS_ENABLED` scrubs all Eve spans (process-wide, web chats included). Terraform does not set it, so scrubbing is off until it is set. The Eve process now ignores `OTEL_EXPORTER_OTLP_*` endpoint variables (behavior change).
+- `RELAY_RUNS_ENABLED` scrubs all Eve spans (process-wide, web chats included). Terraform does not set it, so scrubbing is off until it is set. The Eve process ignores `OTEL_EXPORTER_OTLP_*` endpoint variables whatever the flag says (behavior change).
 - The `agent.*`, `eve.*` and `ai.*` allowlist keys are not verified against a real Eve turn. The root exporter does not scrub `kernel.*` events (the relay path never runs there).
 - A test pins agent-browser at 0.33.2; an upgrade must re-run the command-policy review.
 - `agent/instructions.md` has an `evaluate` bullet that contradicts the extension-run skill; the skill overrides it.
 - The classifier misses `cin` and a bare `dl`. The record redactor was frozen after 8 rounds.
-- Policy-allowed commands that do not work end to end in this build: `wait @ref` times out (25 s), `reload` and `screenshot --full` are denied by the bridge (`Page.reload`, `Page.getLayoutMetrics` are not allowlisted), and `frame @ref` into a cross-site iframe cannot snapshot.
+- `wait @ref`, `reload` and `screenshot --full` are refused by the command policy: the first times out through the bridge and the other two are denied by it (`Page.reload`, `Page.getLayoutMetrics` are not allowlisted). `open <url>` covers re-opening a page. `frame @ref` into a cross-site iframe cannot snapshot.
 
 ## Rulings To Confirm
 
@@ -210,7 +209,10 @@ R16. Hub restart minors are deferred (reword the `not attached` comment or rejec
 
 P1. Branched from `browser-extension`; cost: rebase if the base moves.
 P2. Opus for the redactor, bridge, screenshot and frame tasks, cheaper tiers elsewhere; cost: extra review rounds if quality slipped.
-P3. Owner decisions in the plan (categories, no runtime Jev, `calworks_id` stripped, trace allowlist) taken as written; cost: rework if the owner changes them.
+P3a. Sensitive categories are taken as written in the plan; cost: adding or removing a category is a regex change in `lib/relay/sensitive-fields.ts`.
+P3b. No runtime Jev classification from the worker; cost: the semantic second opinion on field sensitivity arrives with plan 4.
+P3c. `calworks_id` is stripped from the record; cost: one extra question per run until the panel exists.
+P3d. Traces keep an attribute allowlist; cost: less debuggability for extension runs while `RELAY_RUNS_ENABLED` is on.
 P4. "Application number" and "Customer ID" are not sensitive, "Client ID" is, card expiry only with a card signal; cost: a leak (first two) or an unreadable field (Client ID).
 P5. Jev descriptors are capped at 200 characters with digits masked to 9; cost: coarser classification context.
 P6. Known values of 3 characters are scrubbed as whole tokens only, under 3 ignored; cost: a 2-character value can show.
@@ -231,3 +233,4 @@ P20. The prose guard is best-effort against accidental pastes and frozen after r
 P21. A registered value in page text refuses the screenshot instead of masking it; cost: more refused screenshots.
 P22. The screenshot mask is frozen after round 5; the residuals listed under Known Limits are accepted; cost: those page shapes can leak in pixels while values are registered.
 P23. Coordinate and key input into out-of-scope same-site frames is refused conservatively, and the screenshot is refused while such a frame exists; cost: legitimate input near such a frame can be refused.
+P24. Frame scope is frozen after three review rounds; cost: a later finding in `lib/relay/frames.ts` needs a new task.
