@@ -51,6 +51,11 @@ Follow-ups:
 - [ ] Restart recovery: reset only agents that attached before the extension went away; `ELEMENT_REF` recognizes only the `@eN` form; add a committed test against real agent-browser error wording.
 - [ ] The stale marker sentence stays in stored caseworker text and reaches Jev corroboration context (harmless noise).
 
+- [ ] Hub restart minors: reword the hub comment that says queued commands fail with `not attached` (a queued browser-level `attach` from the old agent could succeed) or reject queued `attach` waiters on `ext-up` from a resumed socket.
+- [ ] A socket that closes between `register` and promote skips `resumed`; recovery relies on the Eve-side `not attached` rotation.
+- [ ] Cross-hub gap: a hub holding a run with no subscribed agent never receives `ext-up` or `agent-reset` (single instance for now).
+- [ ] `tests/relay/e2e/bridge.e2e.test.ts` teardown: use `Promise.allSettled` so a throwing `browser.stop()` still stops the relay and fixtures.
+
 ## Plan 3: Sensitive-Value Redaction
 
 - [ ] Redaction in the extension worker, the Jev classifier question, and refusal of `eval` and value `get` at the tool layer.
@@ -146,3 +151,4 @@ R12. The relay stream is treated as sensitive; cost: the extension UI cannot sho
 R13. The marker sentence is accepted in stored text; cost: noise in Jev context.
 R14. Post-restart retry only for a read-only allowlist and only on anchored transport errors; cost: some commands fail instead of retrying.
 R15. Restart-recovery minors are deferred; cost: rare wrong resets or missed element refs.
+R16. Hub restart minors are deferred (reword the `not attached` comment or reject queued `attach` waiters; a socket closing between register and promote skips `resumed`; a cross-hub gap for a hub with no subscribed agent; e2e teardown should use `Promise.allSettled`); cost: a rare stale attach and slower recovery.
