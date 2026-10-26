@@ -10,7 +10,7 @@ describe('createEveSession with relay credentials', () => {
   const fetchMock = vi.fn();
   beforeEach(() => {
     fetchMock.mockResolvedValue(
-      new Response('{}', {
+      new Response(JSON.stringify({ continuationToken: 'eve:tok' }), {
         status: 200,
         headers: { 'x-eve-session-id': 's1' },
       }),

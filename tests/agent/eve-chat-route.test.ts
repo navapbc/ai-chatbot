@@ -92,7 +92,10 @@ describe('POST /api/eve-chat run continuity', () => {
       eveSessionId: 'sess-1',
       continuationToken: 'tok-0',
     });
-    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-1',
+      sessionId: 'sess-1',
+    });
     streamEvents({ type: 'turn.started' });
 
     const res = await turn('again');
@@ -115,7 +118,7 @@ describe('POST /api/eve-chat run continuity', () => {
     });
     eve.continueEveSession.mockImplementation(async () => {
       await new Promise((r) => setTimeout(r, 10));
-      return { continuationToken: 'tok-1' };
+      return { continuationToken: 'tok-1', sessionId: 'sess-1' };
     });
     streamEvents({ type: 'turn.started' });
     streamEvents({ type: 'turn.started' });
@@ -189,7 +192,10 @@ describe('POST /api/eve-chat run continuity', () => {
     expect(row?.streamIndex).toBe(2);
     expect(row?.continuationToken).toBe('tok-0');
 
-    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-b' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-b',
+      sessionId: 'sess-1',
+    });
     streamEvents({ type: 'turn.started' }, waiting('tok-b'));
     await drain(await turn('two'));
     expect(eve.openEveStream).toHaveBeenLastCalledWith('sess-1', 2);
@@ -198,7 +204,10 @@ describe('POST /api/eve-chat run continuity', () => {
     expect(row?.continuationToken).toBe('tok-b');
 
     // A replayed boundary (a lower index than what is stored) is ignored.
-    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-d' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-d',
+      sessionId: 'sess-1',
+    });
     eve.parseNdjson.mockImplementationOnce(async function* () {
       await store.advance(USER, CHAT, { streamIndex: 50 });
       yield waiting('tok-stale');
@@ -226,7 +235,10 @@ describe('POST /api/eve-chat run continuity', () => {
 
     // 1. Turn N: Eve accepts it and returns T2, but the read dies before
     //    turn N's session.waiting, so the cursor stays at 2.
-    eve.continueEveSession.mockResolvedValueOnce({ continuationToken: 'T2' });
+    eve.continueEveSession.mockResolvedValueOnce({
+      continuationToken: 'T2',
+      sessionId: 'sess-1',
+    });
     streamEvents({ type: 'turn.started' });
     await drain(await turn('turn N'));
     expect(await store.get(USER, CHAT)).toMatchObject({
@@ -235,7 +247,10 @@ describe('POST /api/eve-chat run continuity', () => {
     });
 
     // 2-3. Turn N+1 claims T2; Eve returns T3; the final swap stores T3.
-    eve.continueEveSession.mockResolvedValueOnce({ continuationToken: 'T3' });
+    eve.continueEveSession.mockResolvedValueOnce({
+      continuationToken: 'T3',
+      sessionId: 'sess-1',
+    });
     // 4. Its read starts at the stale cursor and replays turn N's events,
     //    reaching turn N's session.waiting, which carries the consumed T2.
     streamEvents({ type: 'turn.started' }, waiting('T2'));
@@ -252,7 +267,10 @@ describe('POST /api/eve-chat run continuity', () => {
       continuationToken: 'T3',
       streamIndex: 4,
     });
-    eve.continueEveSession.mockResolvedValueOnce({ continuationToken: 'T4' });
+    eve.continueEveSession.mockResolvedValueOnce({
+      continuationToken: 'T4',
+      sessionId: 'sess-1',
+    });
     streamEvents({ type: 'turn.started' }, waiting('T3'));
     const res = await turn('turn N+2');
     expect(res.status).toBe(200);
@@ -271,7 +289,10 @@ describe('POST /api/eve-chat run continuity', () => {
       eveSessionId: 'sess-1',
       continuationToken: 'eve:tok',
     });
-    eve.continueEveSession.mockResolvedValue({ continuationToken: '' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: '',
+      sessionId: 'sess-1',
+    });
     // The read dies before session.waiting.
     streamEvents({ type: 'turn.started' });
     await drain(await turn('one'));
@@ -297,7 +318,10 @@ describe('POST /api/eve-chat run continuity', () => {
 
     it('streams and does not roll back when the final swap throws', async () => {
       await seed();
-      eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+      eve.continueEveSession.mockResolvedValue({
+        continuationToken: 'tok-1',
+        sessionId: 'sess-1',
+      });
       const real = store.swapToken.bind(store);
       let calls = 0;
       store.swapToken = vi.fn(
@@ -326,7 +350,10 @@ describe('POST /api/eve-chat run continuity', () => {
 
     it('logs and streams when the final swap returns false', async () => {
       await seed();
-      eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+      eve.continueEveSession.mockResolvedValue({
+        continuationToken: 'tok-1',
+        sessionId: 'sess-1',
+      });
       const real = store.swapToken.bind(store);
       let calls = 0;
       store.swapToken = vi.fn(
@@ -444,7 +471,10 @@ describe('POST /api/eve-chat relay runs', () => {
       continuationToken: 'tok-0',
       relayOrigin: ORIGIN,
     });
-    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-1',
+      sessionId: 'sess-1',
+    });
     streamEvents({ type: 'turn.started' });
     await drain(await relayTurn(undefined));
     expect(JSON.stringify(eve.continueEveSession.mock.calls)).not.toContain(
@@ -493,7 +523,10 @@ describe('POST /api/eve-chat relay runs', () => {
       continuationToken: 'tok-0',
       relayOrigin: ORIGIN,
     });
-    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-1',
+      sessionId: 'sess-1',
+    });
     streamEvents({ type: 'turn.started' });
 
     // Even an invalid origin is not looked at: the stored origin governs.
@@ -504,6 +537,54 @@ describe('POST /api/eve-chat relay runs', () => {
     expect(eve.createEveSession).not.toHaveBeenCalled();
     expect(eve.continueEveSession).toHaveBeenCalledTimes(1);
     expect((await store.get(USER, RELAY_CHAT))?.relayOrigin).toBe(ORIGIN);
+  });
+
+  it('fails a follow-up that Eve delivered to a different session', async () => {
+    // Eve's send path starts a fresh session (with the continue request's
+    // auth, no relay attributes) when the old run has ended.
+    await store.create(USER, RELAY_CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+      relayOrigin: ORIGIN,
+    });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: '',
+      sessionId: 'wrun_fresh',
+    });
+    const errors = vi.mocked(console.error);
+
+    const res = await relayTurn(undefined);
+    expect(res.status).toBe(503);
+    expect((await res.json()).code).toBe('offline:chat');
+    expect(eve.openEveStream).not.toHaveBeenCalled();
+    expect(eve.createEveSession).not.toHaveBeenCalled();
+    // The claim is rolled back and the row still names the old session.
+    expect(await store.get(USER, RELAY_CHAT)).toMatchObject({
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+      relayOrigin: ORIGIN,
+    });
+    const line = errors.mock.calls.find((c) =>
+      String(c[0]).includes('landed on another session'),
+    );
+    expect(line).toBeDefined();
+    expect(JSON.stringify(line)).not.toContain('wrun_fresh');
+    expect(JSON.stringify(line)).not.toContain('tok-0');
+  });
+
+  it('keeps the old behavior for a web chat whose continue lands elsewhere', async () => {
+    await store.create(USER, CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+    });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: '',
+      sessionId: 'wrun_fresh',
+    });
+    streamEvents({ type: 'turn.started' });
+    const res = await turn('again');
+    expect(res.status).toBe(200);
+    await drain(res);
   });
 
   it('rejects a relay field on a follow-up of a web chat', async () => {
@@ -638,7 +719,10 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
 
   it('persists pending on a follow-up relay turn and survives a fresh read', async () => {
     await seedRelay([]);
-    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-1',
+      sessionId: 'sess-1',
+    });
     streamEvents(spikedEvent, waiting('tok-1'));
     await drain(await say('next'));
 
@@ -653,7 +737,7 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
     const order: string[] = [];
     eve.continueEveSession.mockImplementation(async () => {
       order.push('continue');
-      return { continuationToken: 'tok-1' };
+      return { continuationToken: 'tok-1', sessionId: 'sess-1' };
     });
     const realSetPending = store.setPending.bind(store);
     const setPending = vi.fn(
@@ -817,7 +901,10 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
   // such a request could never be answered and the run would deadlock.
   it('accepts a text answer to a realistic no-options request', async () => {
     await seedRelay([]);
-    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-1',
+      sessionId: 'sess-1',
+    });
     streamEvents(
       {
         type: 'input.requested',
@@ -838,7 +925,10 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
       },
     ]);
 
-    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-3' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-3',
+      sessionId: 'sess-1',
+    });
     streamEvents({ type: 'turn.started' }, waiting('tok-3'));
     const res = await answer([{ requestId: 'call-n', text: 'Ada' }]);
     expect(res.status).toBe(200);
@@ -852,7 +942,10 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
 
   it('heals stale pending at session.waiting when the clear failed', async () => {
     await seedRelay();
-    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-1',
+      sessionId: 'sess-1',
+    });
     const realSetPending = store.setPending.bind(store);
     let calls = 0;
     store.setPending = vi.fn(
@@ -875,7 +968,10 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
 
   it('keeps new questions at session.waiting rather than healing them away', async () => {
     await seedRelay();
-    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-1',
+      sessionId: 'sess-1',
+    });
     streamEvents(spikedEvent, waiting('tok-1'));
     await drain(await answer(validAnswers));
     expect((await store.get(USER, RELAY_CHAT))?.pendingRequests).toEqual([
@@ -888,7 +984,7 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
     await seedRelay();
     eve.continueEveSession.mockImplementation(async () => {
       await new Promise((r) => setTimeout(r, 10));
-      return { continuationToken: 'tok-1' };
+      return { continuationToken: 'tok-1', sessionId: 'sess-1' };
     });
     const setPending = vi.spyOn(store, 'setPending');
     streamEvents({ type: 'turn.started' });
@@ -910,7 +1006,10 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
 
   it('clears pending before releasing the claim', async () => {
     await seedRelay();
-    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-1',
+      sessionId: 'sess-1',
+    });
     streamEvents({ type: 'turn.started' });
     const realSetPending = store.setPending.bind(store);
     let racer: Response | undefined;
@@ -933,7 +1032,10 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
 
   it('never logs answer text, labels or prompts', async () => {
     await seedRelay();
-    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-1',
+      sessionId: 'sess-1',
+    });
     streamEvents(spikedEvent, waiting('tok-1'));
     await drain(
       await answer([
@@ -955,7 +1057,10 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
       eveSessionId: 'sess-1',
       continuationToken: 'tok-0',
     });
-    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-1',
+      sessionId: 'sess-1',
+    });
     streamEvents(spikedEvent, waiting('tok-1'));
     const setPending = vi.spyOn(store, 'setPending');
 

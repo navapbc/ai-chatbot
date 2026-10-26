@@ -62,6 +62,10 @@ export async function createEveSession(
     { message },
     Object.keys(headers).length > 0 ? headers : undefined,
   );
+  // Both are stored on the run row; an empty one would strand the chat.
+  if (!sessionId || !continuationToken) {
+    throw new Error('Eve create returned no session id or token');
+  }
   return { sessionId, continuationToken };
 }
 
@@ -69,6 +73,10 @@ export async function createEveSession(
  * Continue a session with a plain message (string form) or with structured
  * answers to pending `ask_question` requests. Only keys that are set are sent,
  * so an answer turn carries no `message`.
+ *
+ * Returns the session the turn landed on (`x-eve-session-id`). When the old
+ * run has ended, Eve's send path starts a fresh session instead of failing,
+ * so callers must compare it with the session they meant to continue.
  */
 export async function continueEveSession(
   sessionId: string,
@@ -79,7 +87,7 @@ export async function continueEveSession(
     typeof input === 'string'
       ? { message: input, inputResponses: undefined }
       : input;
-  const { continuationToken: next } = await postJson(
+  const { continuationToken: next, sessionId: landedOn } = await postJson(
     `/eve/v1/session/${sessionId}`,
     {
       continuationToken,
@@ -87,7 +95,8 @@ export async function continueEveSession(
       ...(inputResponses !== undefined ? { inputResponses } : {}),
     },
   );
-  return { continuationToken: next };
+  if (!landedOn) throw new Error('Eve continue returned no session id');
+  return { continuationToken: next, sessionId: landedOn };
 }
 
 /**

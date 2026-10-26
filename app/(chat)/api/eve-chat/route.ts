@@ -203,11 +203,27 @@ export async function POST(request: Request) {
       }
       let nextToken: string;
       try {
-        ({ continuationToken: nextToken } = await continueEveSession(
-          existing.eveSessionId,
-          existing.continuationToken,
-          input,
-        ));
+        let landedOn: string | undefined;
+        ({ continuationToken: nextToken, sessionId: landedOn } =
+          await continueEveSession(
+            existing.eveSessionId,
+            existing.continuationToken,
+            input,
+          ));
+        // When the stored session's run has ended, Eve's send path starts a
+        // fresh session with this request's auth, which carries no relay
+        // attributes: its browser would be Kernel. Fail the turn instead (the
+        // claim is rolled back below, as for any continue failure). Web chats
+        // keep the previous behavior.
+        if (
+          existing.relayOrigin !== null &&
+          landedOn !== existing.eveSessionId
+        ) {
+          console.error('[eve-chat] continue landed on another session', {
+            chatId,
+          });
+          throw new Error('Eve continue landed on a different session');
+        }
         // Eve 0.27's continue response carries no token (`{ ok, sessionId }`)
         // and the eve channel keeps one token for the whole session, so the
         // token just sent stays the valid one. Never store an empty token: the
