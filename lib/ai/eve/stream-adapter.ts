@@ -177,7 +177,16 @@ export function translateEveEvent(
         // The extension panel answers these with `inputResponses`, which the
         // route validates against exactly what is parsed here. Requests that
         // do not parse are not shown, since they could never be answered.
-        const parsed = parseInputRequests(event.data?.requests);
+        const raw = event.data?.requests;
+        const parsed = parseInputRequests(raw);
+        const received = Array.isArray(raw) ? raw.length : 0;
+        if (parsed.length < received) {
+          // Counts only: prompts and options may carry applicant data.
+          console.warn('[eve-stream-adapter] dropped input requests', {
+            received,
+            parsed: parsed.length,
+          });
+        }
         if (parsed.length > 0) {
           writer.write({
             type: 'data-input-request',

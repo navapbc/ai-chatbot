@@ -64,11 +64,36 @@ describe('parseInputRequests', () => {
     expect(parseInputRequests({})).toEqual([]);
   });
 
-  it('treats anything but allowFreeform === true as option-only', () => {
-    const [r] = parseInputRequests([
-      { requestId: 'a', prompt: 'p', display: 'select', options: [] },
+  it('treats anything but allowFreeform === true as option-only when there are options', () => {
+    const options = [{ id: 'yes', label: 'Yes' }];
+    const parsed = parseInputRequests([
+      { requestId: 'a', prompt: 'p', display: 'select', options },
+      { requestId: 'b', prompt: 'p', display: 'select', options, allowFreeform: false },
+      { requestId: 'c', prompt: 'p', display: 'select', options, allowFreeform: 'true' },
+      { requestId: 'd', prompt: 'p', display: 'select', options, allowFreeform: 1 },
     ]);
-    expect(r.allowFreeform).toBe(false);
+    expect(parsed.map((r) => r.allowFreeform)).toEqual([false, false, false, false]);
+    const [t] = parseInputRequests([
+      { requestId: 'e', prompt: 'p', display: 'select', options, allowFreeform: true },
+    ]);
+    expect(t.allowFreeform).toBe(true);
+  });
+
+  // Eve's ask_question omits allowFreeform by default. A request with no
+  // options could not be answered at all unless it accepts text.
+  it('makes a request with no options freeform, even with an explicit false', () => {
+    const parsed = parseInputRequests([
+      { requestId: 'a', prompt: 'Name?', display: 'text' },
+      { requestId: 'b', prompt: 'Name?', display: 'text', allowFreeform: false },
+      { requestId: 'c', prompt: 'p', display: 'select', options: [] },
+      // Options that all fail to parse leave none, so this is freeform too.
+      { requestId: 'd', prompt: 'p', display: 'select', options: [{ id: 1 }] },
+    ]);
+    expect(parsed.map((r) => r.allowFreeform)).toEqual([true, true, true, true]);
+    expect(validateAnswers([parsed[0]], [{ requestId: 'a', text: 'Ada' }])).toEqual({
+      ok: true,
+      responses: [{ requestId: 'a', text: 'Ada' }],
+    });
   });
 });
 

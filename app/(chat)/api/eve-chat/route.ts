@@ -113,6 +113,9 @@ export async function POST(request: Request) {
   let startIndex = 0;
   // Relay runs get structured questions; web chats keep the prose rendering.
   let structuredInput = false;
+  // True once this request's answer turn has cleared pending itself, so the
+  // session.waiting heal below has nothing to do.
+  let pendingCleared = false;
   try {
     const existing = await store.get(userId, chatId);
     // What a follow-up forwards to Eve. Decided, and every rejection
@@ -224,6 +227,7 @@ export async function POST(request: Request) {
         // and forward them a second time.
         try {
           await store.setPending(userId, chatId, []);
+          pendingCleared = true;
         } catch (clearErr) {
           console.error('[eve-chat] pending clear failed', {
             chatId,
@@ -331,6 +335,8 @@ export async function POST(request: Request) {
       // cursor stays meaningful across turns.
       let consumed = startIndex;
       let done = false;
+      // Survives reconnects: whether this turn's stream raised questions.
+      let sawInputRequests = false;
       const deadline = Date.now() + RECONNECT_BUDGET_MS;
       let reconnects = 0;
 
@@ -354,6 +360,17 @@ export async function POST(request: Request) {
               // turn validates against them even after a restart. An answer
               // sent before this write lands is rejected (nothing pending).
               await store.setPending(userId, chatId, r.inputRequests);
+              sawInputRequests = true;
+            }
+            if (
+              r.continuationToken &&
+              structuredInput &&
+              !sawInputRequests &&
+              !pendingCleared
+            ) {
+              // The turn ended without new questions, so nothing may be
+              // pending. Heals a list a failed clear left behind.
+              await store.setPending(userId, chatId, []);
             }
             if (r.continuationToken) {
               // Persist the cursor with the token: `consumed` already counts

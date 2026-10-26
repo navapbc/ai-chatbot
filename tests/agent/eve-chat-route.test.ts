@@ -583,6 +583,9 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
       ['a duplicate answer', [...validAnswers, validAnswers[0]], 'duplicate_answer'],
       ['a blank answer', [{ requestId: 'call-a', text: '   ' }, validAnswers[1]], 'empty_answer'],
       ['a non-array body', { requestId: 'call-a' }, 'missing_answer'],
+      ['an empty answer list', [], 'missing_answer'],
+      ['oversized text', [{ requestId: 'call-a', text: 'x'.repeat(2001) }, validAnswers[1]], 'empty_answer'],
+      ['a numeric optionId', [validAnswers[0], { requestId: 'call-b', optionId: 1 }], 'unknown_option'],
     ])('rejects %s', async (_n, inputResponses, cause) => {
       await seedRelay();
       const swap = vi.spyOn(store, 'swapToken');
@@ -655,6 +658,77 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
     expect(row?.eveSessionId).toBe('sess-1');
     expect(row?.relayOrigin).toBe(ORIGIN);
     expect(eve.createEveSession).not.toHaveBeenCalled();
+  });
+
+  // Eve's ask_question omits allowFreeform by default; parsed as option-only,
+  // such a request could never be answered and the run would deadlock.
+  it('accepts a text answer to a realistic no-options request', async () => {
+    await seedRelay([]);
+    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    streamEvents(
+      {
+        type: 'input.requested',
+        data: {
+          requests: [{ requestId: 'call-n', prompt: 'Name?', display: 'text' }],
+        },
+      },
+      waiting('tok-2'),
+    );
+    await drain(await say('next'));
+    expect((await store.get(USER, RELAY_CHAT))?.pendingRequests).toEqual([
+      {
+        requestId: 'call-n',
+        prompt: 'Name?',
+        display: 'text',
+        options: [],
+        allowFreeform: true,
+      },
+    ]);
+
+    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-3' });
+    streamEvents({ type: 'turn.started' }, waiting('tok-4'));
+    const res = await answer([{ requestId: 'call-n', text: 'Ada' }]);
+    expect(res.status).toBe(200);
+    await drain(res);
+
+    expect(eve.continueEveSession).toHaveBeenLastCalledWith('sess-1', 'tok-2', {
+      inputResponses: [{ requestId: 'call-n', text: 'Ada' }],
+    });
+    expect((await store.get(USER, RELAY_CHAT))?.pendingRequests).toEqual([]);
+  });
+
+  it('heals stale pending at session.waiting when the clear failed', async () => {
+    await seedRelay();
+    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    const realSetPending = store.setPending.bind(store);
+    let calls = 0;
+    store.setPending = vi.fn(
+      async (...args: Parameters<EveRunStore['setPending']>) => {
+        if (++calls === 1) throw new Error('db blip');
+        return realSetPending(...args);
+      },
+    );
+    streamEvents({ type: 'turn.started' }, waiting('tok-2'));
+
+    const res = await answer(validAnswers);
+    expect(res.status).toBe(200);
+    await drain(res);
+
+    expect(calls).toBe(2);
+    const row = await store.get(USER, RELAY_CHAT);
+    expect(row?.pendingRequests).toEqual([]);
+    expect(row?.continuationToken).toBe('tok-2');
+  });
+
+  it('keeps new questions at session.waiting rather than healing them away', async () => {
+    await seedRelay();
+    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    streamEvents(spikedEvent, waiting('tok-2'));
+    await drain(await answer(validAnswers));
+    expect((await store.get(USER, RELAY_CHAT))?.pendingRequests).toEqual([
+      nameReq,
+      colorReq,
+    ]);
   });
 
   it('forwards exactly once and clears once for two concurrent answer sets', async () => {

@@ -57,8 +57,11 @@ export function parseInputRequests(raw: unknown): PendingInputRequest[] {
       prompt,
       display,
       options,
-      // Fail closed: only an explicit true permits free text.
-      allowFreeform: item.allowFreeform === true,
+      // With options, fail closed: only an explicit true permits free text.
+      // With none, text is the only possible answer: Eve's ask_question omits
+      // allowFreeform by default, and an option-only request with no options
+      // could never be answered, deadlocking the run.
+      allowFreeform: options.length === 0 || item.allowFreeform === true,
     });
   }
   return out;

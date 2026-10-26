@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mapToolName, extractLatestUserText, translateEveEvent } from '@/lib/ai/eve/stream-adapter';
 
 function collect() {
@@ -273,6 +273,41 @@ describe('translateEveEvent', () => {
         expect(r.inputRequests).toStrictEqual(parsed);
         expect(r.textId).toBeNull();
         expect(r.done).toBe(false);
+      });
+
+      it('warns with counts only when requests fail to parse', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const { writer, chunks } = collect();
+        const r = translateEveEvent(
+          {
+            type: 'input.requested',
+            data: {
+              requests: [
+                ...spiked.data.requests,
+                { prompt: 'Secret-Prompt-Text', display: 'text' },
+              ],
+            },
+          },
+          writer,
+          { textId: null, generateId: gen, structuredInput: true },
+        );
+        expect(r.inputRequests).toHaveLength(2);
+        expect(chunks).toHaveLength(1);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0][1]).toEqual({ received: 3, parsed: 2 });
+        expect(JSON.stringify(warn.mock.calls)).not.toContain('Secret');
+        warn.mockRestore();
+      });
+
+      it('does not warn when every request parses', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        translateEveEvent(spiked, collect().writer, {
+          textId: null,
+          generateId: gen,
+          structuredInput: true,
+        });
+        expect(warn).not.toHaveBeenCalled();
+        warn.mockRestore();
       });
 
       it('writes nothing and returns no requests for an empty batch', () => {
