@@ -109,6 +109,10 @@ Task 5 prototype using `defineState` from `eve/context` to persist participant/f
 data outside the model's message history so it survives Eve's internal compaction —
 see `docs/eve-spike-findings.md` Q2.
 
+### Extension-run masking
+
+On relay runs the `browser` tool (`lib/relay/eve-relay-browser.ts`) first checks the argv against `lib/relay/command-policy.ts`: elements are named by snapshot ref only, and `eval`, `get value|text|html`, `find`, `batch`, `wait --text|--url`, selectors, `tab new`, `keyboard`, `upload` and global flags are refused with `COMMAND_REFUSED` before any token is fetched. Sensitive fields come back from the extension as `[masked]` (empty fields stay empty), so the agent verifies from snapshots and does not type or request sensitive values; `skills/extension-run/SKILL.md` states this and overrides the `evaluate` bullet in `instructions.md` on relay runs. The opening message reaches Eve with sensitive record fields already stripped by the `eve-chat` route (`lib/data/sensitive-record.ts`), and `agent/instrumentation.ts` exports only allowlisted span attributes through `lib/observability/scrubbing-exporter.ts` when `RELAY_RUNS_ENABLED=1`.
+
 ## Subagents
 
 Two declared subagents each get their own `agent.ts` (description + model) and

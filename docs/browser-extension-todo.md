@@ -66,21 +66,29 @@ Follow-ups:
 
 ## Plan 3: Sensitive-Value Redaction
 
-- [ ] Redaction in the extension worker, the Jev classifier question, and refusal of `eval` and value `get` at the tool layer.
-- [ ] Strip sensitive fields from participant records server-side before the opening message is built.
-- [ ] Frame scope for same-site cross-origin iframes (they share the tab session and are not frame-checked).
-- [ ] Update a child session's URL from navigation events, not only `Target.targetInfoChanged`.
-- [ ] Have the bridge enable the Page domain itself (and deny `Page.disable`) so leave-origin detection does not depend on the agent.
-- [ ] Policy regression tests: `https://a.gov@evil.com`, `javascript:`, `data:`, `blob:`, lowercase method names, non-string params.
-- [ ] Consider an event-method allowlist (23 event methods were measured).
+Landed on `feat/sensitive-redaction-impl`; see `docs/changes/2026-10-26-add-sensitive-redaction.md`.
+
+- [x] Redaction in the extension worker, the sensitive-field classifier, and refusal of `eval` and value `get` (done through the argv allowlist in `lib/relay/command-policy.ts`; Jev classification at run time is under plan 4).
+- [x] Strip sensitive fields from participant records server-side before the opening message is built.
+- [x] Frame scope for same-site cross-origin iframes (`lib/relay/frames.ts`).
+- [x] Update a child session's URL from navigation events, not only `Target.targetInfoChanged`.
+- [x] Have the bridge enable the Page domain itself (and deny `Page.disable`) so leave-origin detection does not depend on the agent.
+- [x] Policy regression tests: `https://a.gov@evil.com`, `javascript:`, `data:`, `blob:`, lowercase method names, non-string params.
+- [x] Event-method allowlist (24 methods, dialog events rebuilt with empty text).
 
 ## Plan 3 And 4: Relay Stream Sensitivity
 
-- [ ] Treat the whole relay stream as sensitive: the extension must not render or log raw tool inputs (browser `fill` values and `ask_question` inputs cross it).
+- [ ] Treat the whole relay stream as sensitive (partly done): the worker redacts replies and events, drops unlisted events, and strips `postData`. Still open for plan 4: the extension must not render or log raw tool inputs (browser `fill` values and `ask_question` inputs cross it), and tool inputs in the client stream are not redacted (see plan 4).
 
 ## Plan 4: Side Panel And App API
 
 - [ ] The six screens, the participant API on Neon, and saved details with the 8-hour limit.
+- [ ] Runtime Jev classification of fields from the worker (needs the authenticated route; build the request with `describeFieldForJev` from `lib/jev/questions.ts`). Update the Jev section of `CLAUDE.md` when the runtime call site lands.
+- [ ] Typing sensitive values from the panel into the page, and registering them with the worker through `addKnownValue`. Values are lost on a worker restart, so the panel re-registers them after each restart.
+- [ ] Server-built opening message: the unstripped participant record currently transits the browser to the Next server before the route strips it.
+- [ ] Adapter redaction of tool inputs (`fill` values and `ask_question` inputs) in the client stream.
+- [ ] The panel must not render or log raw tool inputs.
+- [ ] A `calworks_id`-style panel flow: the field is stripped from the record, so the caseworker supplies it in the panel.
 - [ ] Bind runs to users before enabling the token route: server-created runs, `runId` to `userId`, origin from the stored run, refuse guest sessions, rate limiting, a `sub` claim with a hub peer check. (Token refresh for the agent leg is no longer needed: it fetches on demand.)
 - [ ] The public `app/(chat)/api/relay/token/route.ts` still mints and returns an `agentToken`. Before `RELAY_TOKEN_ENDPOINT_ENABLED` is set anywhere, make it mint only the role its caller needs (the extension token); the agent leg gets its token from the internal agent-token route.
 - [ ] Chat-id squatting on the internal token route: another user who creates an `EveRun` row for the same chat id first makes the route 404 for the real owner, and if a run id leaks, that user can obtain an agent token for the run with an origin they chose (hijack). The session binding (the route mints only for the Eve session stored on the row) narrows this to the squatter's own session but does not stop it; fix with user binding, plus a partial unique index on `EveRun.chatId` where `relayOrigin` is not null, or a relay-only store lookup.
@@ -118,6 +126,41 @@ Follow-ups:
 - A run token can be replayed for its 30-minute lifetime after a run closes.
 - One in-flight command can race a navigation (check-then-send); a short window of events can follow an off-origin navigation if the agent never enabled the Page domain.
 - A relay run row left behind after `RELAY_RUNS_ENABLED` is turned off still continues as a relay run, while the agent-token route returns 404, so its browser calls fail closed.
+
+
+### Known limits (accepted for plan 3)
+
+Redaction and screenshots:
+
+- Text echoed in ordinary page text and not registered (a confirmation page repeating an SSN) is not masked in snapshots or pixels (P11).
+- A value set in a field and reverted before the screenshot verify step is not caught (N7b).
+- Screenshots can still show canvas or bitmap text, `::marker` and `attr()` fallback content, and class or style changes that reveal existing generated content (P22).
+- While values are registered, a screenshot is refused for pages with `<q>`, `counter()` or `url()` generated content, for pages over 20,000 elements per frame, for continuously churning pages, and for any page whose text shows a registered value (P21). Pages nested about 150 levels deep may also refuse (a CBOR limit in `DOM.describeNode`).
+- Phone numbers and other ID-shaped values in fields are masked in screenshots (P14); 9+ digit values are masked in script results, URL query and path (P9b, P10), and host or path segments shaped like values are masked, so some order numbers and timestamps are over-masked.
+- Disallowed cross-site out-of-process iframes still paint in screenshots (plan 1 ruling).
+
+Chat prose guard (best-effort against accidental pastes, P20):
+
+- A contiguous 9-digit value alone is not flagged without a nearby sensitive label; ZIP+4 and phone numbers are not refused.
+- The card-window scan is over-inclusive and can occasionally refuse ordinary digit text.
+- Filler of more than 8 tokens between a label and its value defeats the window.
+- Records at deep brace nesting in unbalanced text may not be parsed (the prose guard still applies).
+
+Same-site frames:
+
+- Coordinate and key input into an out-of-scope frame is refused (P23), but `Origin-Agent-Cluster: ?0` with `document.domain` is page-level, `about:blank` frames inherit the parent's origin, and sandboxed in-scope frames refuse `fill` and `click`.
+- Scope is per frame origin, not per ancestry.
+- `dialog accept <text>` can write prompt text into an out-of-scope frame's dialog.
+- A screenshot is refused while any out-of-scope same-site frame is present, even an invisible one.
+
+Traces and tooling:
+
+- `RELAY_RUNS_ENABLED` scrubs all Eve spans (process-wide, web chats included). Terraform does not set it, so scrubbing is off until it is set. The Eve process now ignores `OTEL_EXPORTER_OTLP_*` endpoint variables (behavior change).
+- The `agent.*`, `eve.*` and `ai.*` allowlist keys are not verified against a real Eve turn. The root exporter does not scrub `kernel.*` events (the relay path never runs there).
+- A test pins agent-browser at 0.33.2; an upgrade must re-run the command-policy review.
+- `agent/instructions.md` has an `evaluate` bullet that contradicts the extension-run skill; the skill overrides it.
+- The classifier misses `cin` and a bare `dl`. The record redactor was frozen after 8 rounds.
+- Policy-allowed commands that do not work end to end in this build: `wait @ref` times out (25 s), `reload` and `screenshot --full` are denied by the bridge (`Page.reload`, `Page.getLayoutMetrics` are not allowlisted), and `frame @ref` into a cross-site iframe cannot snapshot.
 
 ## Rulings To Confirm
 
@@ -162,3 +205,29 @@ R13. The marker sentence is accepted in stored text; cost: noise in Jev context.
 R14. Post-restart retry only for a read-only allowlist and only on anchored transport errors; cost: some commands fail instead of retrying.
 R15. Restart-recovery minors are deferred; cost: rare wrong resets or missed element refs.
 R16. Hub restart minors are deferred (reword the `not attached` comment or reject queued `attach` waiters; a socket closing between register and promote skips `resumed`; a cross-hub gap for a hub with no subscribed agent; e2e teardown should use `Promise.allSettled`); cost: a rare stale attach and slower recovery.
+
+### Plan 3 rulings
+
+P1. Branched from `browser-extension`; cost: rebase if the base moves.
+P2. Opus for the redactor, bridge, screenshot and frame tasks, cheaper tiers elsewhere; cost: extra review rounds if quality slipped.
+P3. Owner decisions in the plan (categories, no runtime Jev, `calworks_id` stripped, trace allowlist) taken as written; cost: rework if the owner changes them.
+P4. "Application number" and "Customer ID" are not sensitive, "Client ID" is, card expiry only with a card signal; cost: a leak (first two) or an unreadable field (Client ID).
+P5. Jev descriptors are capped at 200 characters with digits masked to 9; cost: coarser classification context.
+P6. Known values of 3 characters are scrubbed as whole tokens only, under 3 ignored; cost: a 2-character value can show.
+P7. URL hosts are scrubbed like text in the model's view (routing uses the raw URL); cost: odd hosts in the agent's view.
+P8. Redaction e2e acceptance required redactor round 3; cost: none after landing.
+P9b. A value-shape guard (SSN-like, 9+ digit runs, Luhn 13 to 19) masks `Runtime.*` results and URL query and fragment; cost: long digit runs such as order numbers and timestamps are masked.
+P10. Value-shaped path segments and userinfo are masked in the agent's view; cost: some URLs look odd to the agent.
+P11. An unregistered value echoed in ordinary page text is not masked (documented); cost: a confirmation page can show a value.
+P12. The redactor is frozen after round 8 (body masking is whole-body, defense in depth); cost: new redactor findings need an owner decision.
+P13. A read-only `Redactor.hasKnownValue` was added for the screenshot mask; cost: none beyond one more method.
+P14. Fields with a sensitive-shaped or registered value are masked in pixels; cost: phone numbers are masked in screenshots.
+P15. A closed shadow root holding fields or text refuses the screenshot; cost: such pages cannot be screenshotted while values are registered.
+P16. One mask queue per tab; cost: a screenshot waits for the tab's other commands.
+P17. Commands name elements by `@eN` only; `get count`, `snapshot -s`, `scroll --selector`, `wait --text|--url` and `find` are removed and `press` takes an allowlist; cost: agents lose selector-based shortcuts and need more snapshots.
+P18. Relay turns whose prose pairs a sensitive label with a value are refused, cap 256 KB; cost: false refusals such as "pin 1234".
+P19. The chat value-shape guard is narrower than the redactor's (strict 3-2-4 SSN grouping, Luhn) so phones and ZIP+4 pass; cost: a bare 9-digit value can pass.
+P20. The prose guard is best-effort against accidental pastes and frozen after round 5; cost: a determined paste can get through.
+P21. A registered value in page text refuses the screenshot instead of masking it; cost: more refused screenshots.
+P22. The screenshot mask is frozen after round 5; the residuals listed under Known Limits are accepted; cost: those page shapes can leak in pixels while values are registered.
+P23. Coordinate and key input into out-of-scope same-site frames is refused conservatively, and the screenshot is refused while such a frame exists; cost: legitimate input near such a frame can be refused.
