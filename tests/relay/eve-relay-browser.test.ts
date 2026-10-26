@@ -571,7 +571,7 @@ describe('recovery after an extension restart', () => {
     [['press', 'Enter']],
     [['open', 'https://benefits.example.gov/next']],
     [['click', '@e9']],
-    [['reload']],
+    [['back']],
     [['frame', 'main']],
     [['hover', '@e3']],
   ])('does not run %j again after a lost connection', async (command) => {

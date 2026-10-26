@@ -355,6 +355,9 @@ export async function stopRun(
       new Promise((resolve) => setTimeout(resolve, STOP_WAIT_MS)),
     ]);
     dropChildren(current);
+    // The mask's worlds die with the run's debugger session; a newer run (if
+    // one started meanwhile) tracks its own.
+    if (run === undefined) maskContexts.clear();
     current.attached = false;
     // Always let go: a blocked run has already cleared `attached`.
     try {

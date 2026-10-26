@@ -11,7 +11,7 @@ This run drives the caseworker's own browser tab, and a side panel shows them wh
 - Where they say to stop at `formSummary` and hand off, stop at the final review page on the site instead, and tell the caseworker to submit there themselves.
 - Where they say to run `gapAnalysis`, call `formSummary`, or use `checkSubmitGate`, do not. Find gaps by walking the form (see below), ask with `ask_question`, and report with `report_progress`.
 - The Submit ban in `agent/instructions.md` stays in full force.
-- Where `browser-automation`, `field-patterns`, or `browser-commands` tell you to verify with `get value`, run an `eval` snippet, name an element by `#id` or a selector, use `find`, use `wait --text` or `wait --url`, group steps with `batch`, or open `tab new`, do not: those commands are refused on extension runs.
+- Where `browser-automation`, `field-patterns`, or `browser-commands` tell you to verify with `get value`, run an `eval` snippet, name an element by `#id` or a selector, use `find`, use `wait --text` or `wait --url`, group steps with `batch`, or open `tab new`, use `reload`, use `wait @ref` or take a `screenshot --full`, do not: those commands are refused on extension runs.
 
 ## Commands You May Use
 
@@ -22,10 +22,10 @@ Name every element by its snapshot ref (`@eN`) only. Take a `["snapshot", "-i"]`
 - Look: `["snapshot", "-i"]`, `["get", "url"]`, `["get", "title"]`, `["is", "visible", "@e3"]`, `["screenshot"]`
 - Act: `["click", "@e3"]`, `["fill", "@e4", "text"]`, `["type", "@e4", "text"]`, `["select", "@e5", "Option"]`, `["check", "@e6"]`, `["focus", "@e4"]`, `["scrollintoview", "@e7"]`
 - Keys: `["press", "Enter"]`. Only named keys (Enter, Tab, Escape, Backspace, Delete, Space, arrows, Home, End, PageUp, PageDown), one printable character, `Control+a`, and `Meta+a`.
-- Wait: `["wait", "@e3"]`, `["wait", "1000"]`, `["wait", "--load", "networkidle"]`
+- Wait: `["wait", "1000"]`, `["wait", "--load", "networkidle"]`
 - Move: `["scroll", "down"]`, `["frame", "@e8"]`, `["frame", "main"]`
 
-Refused: `["eval", "x"]`, `["get", "value", "@e4"]`, `["find", "label", "Name"]`, `["batch", "x"]`, `["wait", "--text", "x"]`, `["wait", "--url", "x"]`, `["tab", "new"]`, `["click", "#id"]`, `["keyboard", "x"]`, `["dblclick", "@e3"]`, `["upload", "@e3", "x"]`.
+Refused: `["eval", "x"]`, `["get", "value", "@e4"]`, `["find", "label", "Name"]`, `["batch", "x"]`, `["wait", "--text", "x"]`, `["wait", "--url", "x"]`, `["tab", "new"]`, `["click", "#id"]`, `["keyboard", "x"]`, `["dblclick", "@e3"]`, `["upload", "@e3", "x"]`, `["reload"]`, `["wait", "@e3"]`, `["screenshot", "--full"]`.
 
 Also refused: `get text|html|attr|styles|count`, `snapshot -s`, `scroll --selector`, `drag`, `clipboard`, `screenshot --annotate`, a screenshot path, and every global flag. The caseworker does file uploads. Type into fields with `fill` or `type` on the ref, never with `batch` or key-by-key presses.
 

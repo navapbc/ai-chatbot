@@ -173,6 +173,31 @@ export async function POST(request: Request) {
         if (!result.ok) {
           return new ChatSDKError('bad_request:api', result.error).toResponse();
         }
+        // A free-text answer is caseworker prose like any other relay text:
+        // it gets the same size cap and sensitive-value guard, with the
+        // question's prompt in front so its label counts. Rejected before the
+        // token claim, and pending stays as it was.
+        let answerChars = 0;
+        for (const response of result.responses) {
+          if (response.text === undefined) continue;
+          answerChars += response.text.length;
+          const prompt =
+            pending.find((p) => p.requestId === response.requestId)?.prompt ??
+            '';
+          const checked = relayText(`${prompt}: ${response.text}`);
+          if (answerChars > MAX_RELAY_TEXT_CHARS) {
+            return new ChatSDKError(
+              'bad_request:api',
+              'message_too_large',
+            ).toResponse();
+          }
+          if (!checked.ok) {
+            return new ChatSDKError(
+              'bad_request:api',
+              checked.reason,
+            ).toResponse();
+          }
+        }
         // Only the validated responses go to Eve: never the client's body,
         // and never a `message` sent alongside the answers.
         input = { inputResponses: result.responses };

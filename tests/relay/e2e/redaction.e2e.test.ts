@@ -2252,11 +2252,13 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
 
         // A dialog the page opens while the agent drives: its text is
         // blanked on the way up, and accept or dismiss still works.
+        let opened = false;
         let release: () => void = () => {};
         const held = new Promise<void>((resolve) => {
           release = resolve;
         });
         page.once('dialog', async (dialog) => {
+          opened = true;
           await held;
           await dialog.dismiss().catch(() => {});
         });
@@ -2271,7 +2273,6 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
           ['focus', middle as string],
           ['hover', middle as string],
           ['scrollintoview', middle as string],
-          ['wait', middle as string],
           ['fill', middle as string, 'typed-ok'],
           ['type', middle as string, '-more'],
           ['click', middle as string],
@@ -2292,7 +2293,6 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
           ['wait', '100'],
           ['wait', '--load', 'load'],
           ['screenshot'],
-          ['screenshot', '--full'],
           ['tab'],
           ['tab', 'list'],
           ['get', 'url'],
@@ -2307,7 +2307,7 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
         await page.evaluate(() => {
           setTimeout(() => prompt('Re-enter 900-00-1234', '900-00-5678'), 0);
         });
-        await new Promise((r) => setTimeout(r, 300));
+        await until(() => opened);
         await drive(['dialog', 'accept', 'typed-ok']);
         await drive(['dialog', 'dismiss']);
         release();
@@ -2317,7 +2317,6 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
           ['open', `${fixtures.origin}/page2.html`],
           ['back'],
           ['forward'],
-          ['reload'],
           ['open', sensitiveUrl],
           ['snapshot', '-i'],
         ]) {
@@ -2328,10 +2327,9 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
       await waitForSensitivePage();
     }
     expect(failures).toEqual([]);
-    // Not every command succeeds here: `wait @ref` times out, `reload` and
-    // `screenshot --full` are denied by the bridge, `dialog dismiss` finds no
-    // dialog and a cross-site frame has no snapshot. Each still goes through
-    // the leak checks above; the sweep must have run.
+    // Not every command succeeds here: `dialog dismiss` finds no dialog once
+    // accept has closed it and a cross-site frame has no snapshot. Each still
+    // goes through the leak checks above; the sweep must have run.
     expect(outcomes.filter((o) => o.endsWith(': ok')).length).toBeGreaterThan(
       30,
     );
@@ -2348,6 +2346,9 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
       ['get', 'count', 'input'],
       ['find', 'text', 'Springfield', 'click'],
       ['wait', '--text', 'Springfield'],
+      ['wait', '@e1'],
+      ['reload'],
+      ['screenshot', '--full'],
       ['wait', '--url', '**/sensitive.html'],
       ['snapshot', '-s', '#ssn'],
       ['click', '#ssn'],
@@ -2430,6 +2431,35 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
       await waitForSensitivePage();
     }
     expect(leaked(seenSince(mark), values)).toEqual([]);
+  });
+
+  it('a short value under a sensitive parameter name is masked in the URL the agent sees', async () => {
+    const getUrl = `${fixtures.origin}/get-submit.html`;
+    const shorts = ['hunter2', 'pin=1234'];
+    const mark = relay.frames.length;
+    try {
+      await withRelayTool([fixtures.frameOrigin], async (tool) => {
+        // As a GET form with these field names would put them in the URL.
+        await page.goto(`${getUrl}?password=hunter2&pin=1234`);
+        expect(shorts.every((v) => page.url().includes(v))).toBe(true);
+
+        const url = await tool.run(['get', 'url']);
+        const tabs = await tool.run(['tab', 'list']);
+        const snap = await tool.run(['snapshot', '-i']);
+        const seen = [url, tabs, snap].map((r) => {
+          expect(r.success).toBe(true);
+          return JSON.stringify(r);
+        });
+        expect(shorts.some((v) => seen.some((t) => t.includes(v)))).toBe(false);
+        expect((url.data as { url: string }).url).toContain(getUrl);
+        expect(seen[1]).toContain(getUrl);
+      });
+    } finally {
+      await waitForSensitivePage();
+    }
+    expect(seenSince(mark).some((t) => shorts.some((v) => t.includes(v)))).toBe(
+      false,
+    );
   });
 
   it("after the run the relay frames contain none of the fixture's sensitive strings, the token or the CDP URL", () => {

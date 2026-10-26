@@ -75,6 +75,11 @@ const shape = (slots: readonly Slot[], rest?: 'text'): Shape => ({
 const DIRECTIONS = lit('up', 'down', 'left', 'right');
 const LOAD_STATES = lit('load', 'domcontentloaded', 'networkidle');
 
+// Not allowed although the CLI has them: `reload` and `screenshot --full` are
+// denied by the extension bridge (Page.reload, Page.getLayoutMetrics are not
+// on its allowlist) and `wait @ref` never succeeds through it (it times out).
+// Allowing them would only advertise commands that cannot work; `open <url>`
+// covers re-opening a page.
 const refOnly = { shapes: [shape(['ref'])] };
 const noArgs = { shapes: [shape([])] };
 
@@ -102,18 +107,13 @@ const ALLOWED: ReadonlyMap<string, CommandSpec> = new Map<string, CommandSpec>([
   [
     'wait',
     {
-      shapes: [
-        shape(['ref']),
-        shape(['number']),
-        shape([lit('--load'), LOAD_STATES]),
-      ],
+      shapes: [shape(['number']), shape([lit('--load'), LOAD_STATES])],
     },
   ],
   ['tab', { shapes: [shape([]), shape([lit('list')])] }],
   ['back', noArgs],
   ['forward', noArgs],
-  ['reload', noArgs],
-  ['screenshot', { shapes: [shape([]), shape([lit('--full')])] }],
+  ['screenshot', noArgs],
   ['get', { shapes: [shape([lit('url')]), shape([lit('title')])] }],
   ['is', { shapes: [shape([lit('visible', 'enabled', 'checked'), 'ref'])] }],
   ['frame', { shapes: [shape(['ref']), shape([lit('main')])] }],

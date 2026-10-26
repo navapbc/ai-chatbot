@@ -11,6 +11,8 @@ export default defineTool({
 
 Pass the command as an argv array, exactly as the agent-browser CLI takes it — the first element is the command, the rest are its arguments and flags. Values are passed through as-is, so never quote or shell-escape them. See the browser-automation skill for snapshot discipline, selector strategy, and workflow rules. Snapshot before interacting; re-snapshot after every DOM change. NEVER navigate away from the target application domain and NEVER click the final submit button.
 
+On extension runs only the commands listed in the extension-run skill are allowed: eval, get value/text/html, find, batch, CSS or text selectors (use @eN refs from the snapshot), wait --text/--url, reload and tab new are refused.
+
 Common commands:
 - ["open", "<url>"] - Navigate to URL (waits for load; no separate wait needed)
 - ["snapshot"] - Full accessibility tree (ALWAYS do this first)

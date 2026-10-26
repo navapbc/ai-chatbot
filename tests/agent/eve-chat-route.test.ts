@@ -952,6 +952,82 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
     });
   });
 
+  describe('free-text answers get the prose guard', () => {
+    const phoneReq = {
+      requestId: 'call-p',
+      prompt: 'Phone number?',
+      display: 'text' as const,
+      options: [],
+      allowFreeform: true,
+    };
+    const refRequest = {
+      requestId: 'call-r',
+      prompt: 'Reference',
+      display: 'text' as const,
+      options: [],
+      allowFreeform: true,
+    };
+
+    it.each([
+      ['an SSN-shaped answer', 'call-a', '123-45-6789'],
+      ['a label and value answer', 'call-r', 'case number 1234567890'],
+    ])(
+      'refuses %s without touching Eve, the token or pending',
+      async (_n, requestId, text) => {
+        await seedRelay([nameReq, refRequest]);
+        const swap = vi.spyOn(store, 'swapToken');
+        const res = await answer([
+          { requestId: 'call-a', text: requestId === 'call-a' ? text : 'Ada' },
+          { requestId: 'call-r', text: requestId === 'call-r' ? text : 'x' },
+        ]);
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.cause).toBe('sensitive_value_in_message');
+        expect(JSON.stringify(body)).not.toContain(text);
+        expect(eve.continueEveSession).not.toHaveBeenCalled();
+        expect(swap).not.toHaveBeenCalled();
+        const row = await store.get(USER, RELAY_CHAT);
+        expect(row?.continuationToken).toBe('tok-0');
+        expect(row?.pendingRequests).toEqual([nameReq, refRequest]);
+      },
+    );
+
+    it('refuses answers whose total length is over the cap', async () => {
+      const many = Array.from({ length: 200 }, (_, i) => ({
+        ...nameReq,
+        requestId: `call-${i}`,
+      }));
+      await seedRelay(many);
+      const res = await answer(
+        many.map((m) => ({ requestId: m.requestId, text: 'a'.repeat(1900) })),
+      );
+      expect(res.status).toBe(400);
+      expect((await res.json()).cause).toBe('message_too_large');
+      expect(eve.continueEveSession).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['yes', 'Yes'],
+      ['a name', 'Ada Lovelace'],
+      ['a phone number', '555-123-4567'],
+      ['a ZIP+4', '94110-1234'],
+    ])('accepts %s', async (_n, text) => {
+      await seedRelay([phoneReq, colorReq]);
+      eve.continueEveSession.mockResolvedValue({
+        continuationToken: 'tok-1',
+        sessionId: 'sess-1',
+      });
+      streamEvents({ type: 'turn.started' }, waiting('tok-1'));
+      const res = await answer([
+        { requestId: 'call-p', text },
+        { requestId: 'call-b', optionId: 'red' },
+      ]);
+      expect(res.status).toBe(200);
+      await drain(res);
+      expect(eve.continueEveSession).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('keeps pending and rolls the token back when Eve rejects the forward', async () => {
     await seedRelay();
     eve.continueEveSession.mockRejectedValue(
