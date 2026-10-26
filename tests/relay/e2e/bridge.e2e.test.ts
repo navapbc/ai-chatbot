@@ -411,8 +411,18 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
 
     it('tab new is refused', async () => {
       const pages = browser.context.pages().length;
+      const logs = relay.logs.length;
       const result = await agentBrowser(['tab', 'new'], cdp);
       expect(result.success).toBe(false);
+      // Refused by the relay for scope, not by a timeout somewhere.
+      expect(relay.logs.slice(logs)).toContainEqual(
+        expect.objectContaining({
+          event: 'command-denied',
+          method: 'Target.createTarget',
+          level: 'browser',
+          reason: 'scope',
+        }),
+      );
       expect(browser.context.pages().length).toBe(pages);
     });
   });
@@ -548,6 +558,76 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       await crossFrame(page).evaluate(() => {
         (document.querySelector('#x') as HTMLInputElement).value = '';
       });
+      await agent.close();
+    });
+
+    it('fails a child command in flight when the page removes its frame', async () => {
+      const { cdp } = await startRun();
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      const { child: cross } = await agent.childSession(session);
+
+      const src = `${fixtures.frameOrigin}/oopif.html?removed`;
+      await page.evaluate((url) => {
+        const frame = document.createElement('iframe');
+        frame.id = 'removed';
+        frame.src = url;
+        document.body.append(frame);
+      }, src);
+      await until(() => page.frames().some((f) => f.url() === src), 5_000);
+      const frame = page.frames().find((f) => f.url() === src) as Frame;
+      await frame.waitForSelector('#x', { timeout: 3_000 });
+      // Earlier tests can leave other iframe sessions; find this frame's by
+      // asking each one where it is. A successful reply also shows the child
+      // is in scope and driven, so a later error is not a refusal.
+      const hrefOf = async (sessionId: string) => {
+        const reply = await agent.call(
+          'Runtime.evaluate',
+          { expression: 'location.href', returnByValue: true },
+          sessionId,
+        );
+        return (reply.result?.result as { value?: string })?.value;
+      };
+      let child = '';
+      await until(async () => {
+        const candidates = agent.events
+          .filter(
+            (m) =>
+              m.method === 'Target.attachedToTarget' &&
+              (m.params?.targetInfo as { type?: string })?.type === 'iframe' &&
+              m.params?.sessionId !== cross,
+          )
+          .map((m) => m.params?.sessionId as string);
+        for (const candidate of candidates) {
+          if ((await hrefOf(candidate)) === src) child = candidate;
+        }
+        return child !== '';
+      }, 5_000);
+
+      // Never settles by itself; the flag shows Chrome is running it.
+      const inFlight = agent.call(
+        'Runtime.evaluate',
+        {
+          expression: 'window.inFlight = 1; new Promise(() => {})',
+          awaitPromise: true,
+        },
+        child,
+      );
+      await frame.waitForFunction(
+        () => (window as unknown as { inFlight?: number }).inFlight === 1,
+        undefined,
+        // Interval polling: an offscreen iframe gets no animation frames.
+        { polling: 100, timeout: 3_000 },
+      );
+      await page.evaluate(() => document.getElementById('removed')?.remove());
+
+      // Well under the relay's 30 s command timeout, which used to answer it.
+      const reply = await Promise.race([
+        inFlight,
+        new Promise<'pending'>((r) => setTimeout(() => r('pending'), 5_000)),
+      ]);
+      expect(reply).not.toBe('pending');
+      expect((reply as CdpMessage).error?.message).toBe('session detached');
       await agent.close();
     });
   });

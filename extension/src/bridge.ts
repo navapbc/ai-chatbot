@@ -39,6 +39,8 @@ interface RunConfig {
 interface Child {
   targetId?: string;
   url: string;
+  /** Rejects this child's in-flight commands; see dropChild. */
+  inFlight: Set<(error: Error) => void>;
 }
 
 interface Run extends RunConfig {
@@ -264,7 +266,7 @@ export async function stopRun(
     } catch {
       // Already closed.
     }
-    current.children.clear();
+    dropChildren(current);
     current.attached = false;
     // Always let go: a blocked run has already cleared `attached`.
     try {
@@ -448,7 +450,7 @@ async function handleCommand(
       // Start clean so a new relay client sees every child session announced
       // afresh (the spike's re-attach fix).
       current.attached = false;
-      current.children.clear();
+      dropChildren(current);
       try {
         await chrome.debugger.detach({ tabId: current.tabId });
       } catch {
@@ -510,14 +512,44 @@ async function forwardCdp(
   }
   if (!current.attached) throw new Error('not attached');
 
-  const debuggee: chrome.debugger.DebuggerSession = isTab
-    ? { tabId: current.tabId }
-    : { tabId: current.tabId, sessionId };
-  return chrome.debugger.sendCommand(
-    debuggee,
-    method,
-    params as Record<string, unknown> | undefined,
-  );
+  if (!child) {
+    return chrome.debugger.sendCommand(
+      { tabId: current.tabId },
+      method,
+      params as Record<string, unknown> | undefined,
+    );
+  }
+  return new Promise((resolve, reject) => {
+    child.inFlight.add(reject);
+    chrome.debugger
+      .sendCommand(
+        { tabId: current.tabId, sessionId },
+        method,
+        params as Record<string, unknown> | undefined,
+      )
+      .then(resolve, reject)
+      .finally(() => child.inFlight.delete(reject));
+  });
+}
+
+/**
+ * Forgets a child session and fails its in-flight commands. chrome.debugger
+ * never settles a command whose child session detaches first (a page removing
+ * an iframe while the agent sets it up), so without this the relay only
+ * answers at its command timeout and the agent stalls behind it.
+ */
+function dropChild(current: Run, sessionId: string) {
+  const child = current.children.get(sessionId);
+  if (!child) return;
+  current.children.delete(sessionId);
+  for (const reject of child.inFlight) reject(new Error('session detached'));
+  child.inFlight.clear();
+}
+
+function dropChildren(current: Run) {
+  for (const sessionId of [...current.children.keys()]) {
+    dropChild(current, sessionId);
+  }
 }
 
 // --- browser events ----------------------------------------------------------
@@ -531,10 +563,11 @@ function trackChildren(current: Run, method: string, params: unknown) {
       targetId: typeof info?.targetId === 'string' ? info.targetId : undefined,
       // An unknown URL is treated as out of scope.
       url: typeof info?.url === 'string' ? info.url : '',
+      inFlight: current.children.get(params.sessionId)?.inFlight ?? new Set(),
     });
   } else if (method === 'Target.detachedFromTarget') {
     if (typeof params.sessionId === 'string') {
-      current.children.delete(params.sessionId);
+      dropChild(current, params.sessionId);
     }
   } else if (method === 'Target.targetInfoChanged') {
     if (!info || typeof info.targetId !== 'string') return;
@@ -678,7 +711,7 @@ export function onDebuggerDetach(
     return;
   }
   current.attached = false;
-  current.children.clear();
+  dropChildren(current);
   send(current, {
     type: 'event',
     method: 'Target.detachedFromTarget',
