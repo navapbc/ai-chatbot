@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
-import type { Frame, Page } from 'playwright';
+import type { Dialog, Frame, Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
 import {
@@ -786,6 +786,24 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
   });
 
   it('leaving the origin ends the run even when the agent never sent Page.enable', async () => {
+    // Record every command the extension sends to chrome.debugger, so the
+    // test shows that the bridge itself enabled Page (the agent never does):
+    // tabs.onUpdated alone would end the run, so the log is what makes this
+    // test sensitive to the bridge skipping Page.enable.
+    await browser.sw.evaluate(() => {
+      const w = globalThis as unknown as { __cdpLog?: string[] };
+      w.__cdpLog = [];
+      const dbg = chrome.debugger as unknown as {
+        sendCommand: (...a: unknown[]) => unknown;
+        __orig?: (...a: unknown[]) => unknown;
+      };
+      dbg.__orig ??= dbg.sendCommand;
+      dbg.sendCommand = (...a: unknown[]) => {
+        const d = a[0] as { tabId: number; sessionId?: string };
+        w.__cdpLog?.push(`${d.sessionId ? 'child' : 'tab'}:${String(a[1])}`);
+        return (dbg.__orig as (...x: unknown[]) => unknown)(...a);
+      };
+    });
     const { cdp, runId } = await startRun();
     const agent = await rawAgent(cdp);
     const session = await agent.attach();
@@ -795,6 +813,21 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
         undefined,
       );
     }
+    const log = (await browser.sw.evaluate(
+      () => (globalThis as unknown as { __cdpLog: string[] }).__cdpLog,
+    )) as string[];
+    // Exactly one Page.enable, sent before the agent's first command.
+    expect(log.filter((m) => m === 'tab:Page.enable')).toHaveLength(1);
+    expect(log.indexOf('tab:Page.enable')).toBeLessThan(
+      log.indexOf('tab:Runtime.enable'),
+    );
+    await browser.sw.evaluate(() => {
+      const dbg = chrome.debugger as unknown as {
+        sendCommand: unknown;
+        __orig?: unknown;
+      };
+      if (dbg.__orig) dbg.sendCommand = dbg.__orig;
+    });
     const away = `${fixtures.frameOrigin}/away.html`;
     const started = Date.now();
     await page.goto(away);
@@ -843,6 +876,112 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     );
     await agent.close();
     await bridgeMessage(browser.sw, { type: 'stopRun' });
+  });
+
+  it('history.pushState and a failed request still reach the agent', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.call('Page.enable', {}, session);
+    await agent.call('Network.enable', {}, session);
+    await page.evaluate(() => {
+      history.pushState({}, '', '/pushed');
+      fetch('https://localhost:1/unreachable').catch(() => {});
+    });
+    await agent.waitFor((m) => m.method === 'Page.navigatedWithinDocument');
+    await agent.waitFor((m) => m.method === 'Network.loadingFailed');
+    await agent.close();
+    await bridgeMessage(browser.sw, { type: 'stopRun' });
+    await page.goto(fixtures.formUrl);
+  });
+
+  describe('dialogs without AGENT_BROWSER_NO_AUTO_DIALOG', () => {
+    const open: Dialog[] = [];
+    const keepOpen = (d: Dialog) => {
+      open.push(d);
+    };
+    let savedNoAuto: string | undefined;
+    beforeAll(() => {
+      savedNoAuto = process.env.AGENT_BROWSER_NO_AUTO_DIALOG;
+      Reflect.deleteProperty(process.env, 'AGENT_BROWSER_NO_AUTO_DIALOG');
+      // Playwright dismisses dialogs nobody listens for; leave them open.
+      page.on('dialog', keepOpen);
+    });
+    afterAll(async () => {
+      page.off('dialog', keepOpen);
+      // Settle what Playwright still tracks (agent-browser may have answered).
+      await Promise.all(open.splice(0).map((d) => d.dismiss().catch(() => {})));
+      if (savedNoAuto !== undefined) {
+        process.env.AGENT_BROWSER_NO_AUTO_DIALOG = savedNoAuto;
+      }
+      await page.goto(fixtures.formUrl);
+    });
+
+    it('the agent hears of a dialog with an empty message', async () => {
+      const { cdp } = await startRun();
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.call('Page.enable', {}, session);
+      const opened = agent.waitFor(
+        (m) => m.method === 'Page.javascriptDialogOpening',
+      );
+      await page.evaluate(() => {
+        setTimeout(() => alert('dialog-sentinel-9'), 0);
+      });
+      expect((await opened).params).toEqual({
+        type: 'alert',
+        hasBrowserHandler: true, // Playwright's page listener handles it
+        url: '',
+        message: '',
+        defaultPrompt: '',
+      });
+      expect(
+        agent.frames.filter((f) => f.includes('dialog-sentinel-9')),
+      ).toEqual([]);
+      // Let the page move on: close the raw agent first, then the dialog.
+      await agent.close();
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await page.reload();
+    });
+
+    it('an alert and a beforeunload prompt are auto-accepted and nothing hangs', async () => {
+      const { cdp } = await startRun();
+      expect(
+        (await agentBrowser(['snapshot', '-i'], cdp, 'dialogs')).success,
+      ).toBe(true);
+      await page.evaluate(() => {
+        setTimeout(() => alert('auto-sentinel'), 50);
+      });
+      await new Promise((r) => setTimeout(r, 500));
+      const next = await agentBrowser(['get', 'title'], cdp, 'dialogs');
+      expect(next.success, JSON.stringify(next)).toBe(true);
+
+      // beforeunload needs a user gesture on the page.
+      await page.evaluate(() => {
+        window.onbeforeunload = () => 'leave?';
+      });
+      await page.click('body');
+      await page.evaluate(() => {
+        setTimeout(() => {
+          location.href = '/page2.html';
+        }, 50);
+      });
+      await new Promise((r) => setTimeout(r, 800));
+      const url = await agentBrowser(['get', 'url'], cdp, 'dialogs');
+      expect(url.success, JSON.stringify(url)).toBe(true);
+      expect(JSON.stringify(url.data)).toContain('page2.html');
+      expect(
+        relay.frames.some(
+          (f) =>
+            f.includes('"Page.javascriptDialogOpening"') &&
+            f.includes('beforeunload'),
+        ),
+      ).toBe(true);
+      expect(relay.frames.filter((f) => f.includes('auto-sentinel'))).toEqual(
+        [],
+      );
+      await closeAgentSessions();
+    });
   });
 
   it('an unlisted event never reaches the agent', async () => {

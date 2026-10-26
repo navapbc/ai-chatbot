@@ -277,6 +277,70 @@ describe('event allowlist', () => {
     }
   });
 
+  it('dialog events pass a whitelist transform: no message, prompt, url or input', () => {
+    const opening = filterEvent('Page.javascriptDialogOpening', {
+      type: 'prompt',
+      hasBrowserHandler: true,
+      url: 'https://a.gov/secret-url',
+      message: 'message-sentinel',
+      defaultPrompt: 'prompt-sentinel',
+      extra: 'extra-sentinel',
+    });
+    expect(opening).toEqual({
+      method: 'Page.javascriptDialogOpening',
+      params: {
+        type: 'prompt',
+        hasBrowserHandler: true,
+        url: '',
+        message: '',
+        defaultPrompt: '',
+      },
+    });
+    const closed = filterEvent('Page.javascriptDialogClosed', {
+      result: true,
+      userInput: 'input-sentinel',
+      extra: 'extra-sentinel',
+    });
+    expect(closed).toEqual({
+      method: 'Page.javascriptDialogClosed',
+      params: { result: true, userInput: '' },
+    });
+    expect(JSON.stringify([opening, closed])).not.toMatch(/sentinel|secret/);
+  });
+
+  it('a dialog event with malformed params is dropped', () => {
+    for (const params of [
+      undefined,
+      null,
+      'x',
+      5,
+      [],
+      {},
+      { type: 'weird', hasBrowserHandler: false },
+      { type: 'alert' },
+      { type: 'alert', hasBrowserHandler: 'no' },
+    ]) {
+      expect(filterEvent('Page.javascriptDialogOpening', params)).toBeNull();
+    }
+    for (const params of [undefined, null, 'x', {}, { result: 'yes' }]) {
+      expect(filterEvent('Page.javascriptDialogClosed', params)).toBeNull();
+    }
+  });
+
+  it('forwards exactly the Network events on the allowlist', () => {
+    for (const method of ALLOWED_EVENT_METHODS) {
+      if (!method.startsWith('Network.')) continue;
+      expect(filterEvent(method, { requestId: '1' }), method).not.toBeNull();
+    }
+  });
+
+  it('accepts empty params for the domain enables', () => {
+    for (const method of ['Page.enable', 'Runtime.enable', 'DOM.enable']) {
+      expect(checkCommand({ method, params: {} }, ctx)).toEqual({ ok: true });
+      expect(checkCommand({ method }, ctx)).toEqual({ ok: true });
+    }
+  });
+
   it('keeps the events agent-browser waits on', () => {
     for (const method of [
       'Page.frameNavigated',

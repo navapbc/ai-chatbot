@@ -101,6 +101,8 @@ interface Run extends RunConfig {
    * stopRun, and empty on a run rebuilt after a worker restart.
    */
   redactor: Redactor;
+  /** True once a known value was registered; see addKnownValue. */
+  hasKnownValues: boolean;
 }
 
 const STORAGE_KEY = 'run';
@@ -295,6 +297,7 @@ export async function stopRun(
     current.stopped = true;
     current.blocked = true;
     current.redactor.clear();
+    current.hasKnownValues = false;
     clearTimeout(current.reconnectTimer);
     clearTimeout(current.expiryTimer);
     send(current, { type: 'stop', reason });
@@ -369,6 +372,7 @@ function begin(
     reconnectDelayMs: FIRST_RECONNECT_MS,
     announceResume: resumed,
     redactor: createRedactor(),
+    hasKnownValues: false,
   };
   run = current;
   current.expiryTimer = setTimeout(
@@ -917,6 +921,7 @@ async function captureMasked(
     isCoveredFrame,
     isSensitiveValue,
     hasKnownValue,
+    knownValuesRegistered: () => current.hasKnownValues,
   };
   const masks = [
     createMaskSession({
@@ -1196,8 +1201,11 @@ export function onDebuggerDetach(
     void stopRun('debugger-canceled');
     return;
   }
+  const announced = current.attached;
   current.attached = false;
   dropChildren(current);
+  // The agent was never given this session (a failed attach): say nothing.
+  if (!announced) return;
   send(current, {
     type: 'event',
     method: 'Target.detachedFromTarget',
@@ -1233,6 +1241,7 @@ function addKnownValue(value: unknown): BridgeResponse {
   if (typeof value !== 'string' || !current.redactor.addKnownValue(value)) {
     return { ok: false, error: 'known value not registered' };
   }
+  current.hasKnownValues = true;
   return { ok: true };
 }
 
