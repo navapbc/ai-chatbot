@@ -1207,8 +1207,76 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       expect(ownerNode.localName).toBe('iframe');
       expect(ownerNode.frameId).toBeUndefined();
       expect(ownerNode.contentDocument).toBeUndefined();
+
+      // Several handles at once: an in-scope one cannot cover another.
+      const innerBody = (await direct('Runtime.evaluate', {
+        expression: 'document.body',
+        contextId: innerContext,
+      })) as { result: { objectId: string } };
+      for (const [method, params] of [
+        [
+          'Runtime.callFunctionOn',
+          {
+            objectId: innerBody.result.objectId,
+            executionContextId: ssContext,
+            functionDeclaration: 'function () { return 1 }',
+          },
+        ],
+        [
+          'DOM.describeNode',
+          {
+            objectId: innerBody.result.objectId,
+            backendNodeId: node.backendNodeId,
+          },
+        ],
+        [
+          'Runtime.evaluate',
+          { expression: '1', contextId: innerContext, uniqueContextId: 'x' },
+        ],
+      ] as const) {
+        refused(await agent.call(method, params, session));
+      }
       seenNothingHidden(agent.frames);
       await agent.close();
+    });
+
+    it('a context of a frame that has since moved to another origin is refused', async () => {
+      const { cdp } = await startRun({ allowedFrameOrigins: [] });
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.call('Runtime.enable', {}, session);
+      try {
+        const inner = await frameIdFor(`${fixtures.origin}/inner.html`);
+        const oldContext = await mainWorldOf(inner);
+        const before = await agent.call(
+          'Runtime.evaluate',
+          { expression: 'document.title', contextId: oldContext },
+          session,
+        );
+        expect(before.error).toBeUndefined();
+        const moved = `${fixtures.sameSiteOrigin}/samesite-frame.html?moved`;
+        await page.evaluate((url) => {
+          const frame = document.getElementById('inner') as HTMLIFrameElement;
+          (frame.contentWindow as Window).location.href = url;
+        }, moved);
+        await until(() => page.frames().some((f) => f.url() === moved), 5_000);
+        const after = await agent.call(
+          'Runtime.evaluate',
+          { expression: 'document.title', contextId: oldContext },
+          session,
+        );
+        // Refused by the bridge, not answered by Chrome.
+        expect(after.error?.message).toBe(FRAME_OUT_OF_SCOPE);
+        seenNothingHidden(agent.frames);
+      } finally {
+        await agent.close();
+        await bridgeMessage(browser.sw, { type: 'stopRun' });
+        await page.goto(sameSiteUrl());
+        await page
+          .frameLocator('#ss')
+          .locator('#h')
+          .waitFor({ state: 'attached' });
+      }
     });
 
     it('its fields do not appear in a snapshot, nor its URL in the frame tree', async () => {
@@ -1384,6 +1452,140 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       seenNothingHidden(agent.frames);
       await page.goto(sameSiteUrl());
     });
+  });
+
+  it('a same-site frame inside an allowed out-of-process frame is scoped on the child session', async () => {
+    await page.goto(fixtures.formUrl);
+    const { cdp } = await startRun({
+      allowedFrameOrigins: [fixtures.frameOrigin],
+    });
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    const nesting = `${fixtures.frameOrigin}/oopif-nested.html`;
+    const nestedOrigin = fixtures.sameSiteOrigin.replace(
+      'localhost',
+      '127.0.0.1',
+    );
+    await agent.call(
+      'Target.setAutoAttach',
+      { autoAttach: true, flatten: true, waitForDebuggerOnStart: false },
+      session,
+    );
+    try {
+      await page.evaluate((url) => {
+        const frame = document.createElement('iframe');
+        frame.id = 'nesting';
+        frame.src = url;
+        document.body.append(frame);
+      }, nesting);
+      await until(
+        () => page.frames().some((f) => f.url().startsWith(nestedOrigin)),
+        5_000,
+      );
+      const nestedFrame = page
+        .frames()
+        .find((f) => f.url().startsWith(nestedOrigin));
+      await nestedFrame?.locator('#h').waitFor({ state: 'attached' });
+      // Find this frame's child session by asking each where it is.
+      let child = '';
+      await until(async () => {
+        const sessions = agent.events
+          .filter(
+            (m) =>
+              m.method === 'Target.attachedToTarget' &&
+              (m.params?.targetInfo as { type?: string })?.type === 'iframe',
+          )
+          .map((m) => m.params?.sessionId as string);
+        for (const candidate of sessions) {
+          const reply = await agent.call(
+            'Runtime.evaluate',
+            { expression: 'location.href', returnByValue: true },
+            candidate,
+          );
+          if ((reply.result?.result as { value?: string })?.value === nesting) {
+            child = candidate;
+          }
+        }
+        return child !== '';
+      }, 5_000);
+      await agent.call('Runtime.enable', {}, child);
+
+      // Past the bridge: the nested frame's id, context and field node, all
+      // in the child's renderer.
+      const directChild = (method: string, params: Record<string, unknown>) =>
+        browser.sw.evaluate(
+          ({ tab, sessionId, method, params }) =>
+            chrome.debugger.sendCommand(
+              { tabId: tab, sessionId },
+              method,
+              params,
+            ),
+          { tab: tabId, sessionId: child, method, params },
+        ) as Promise<Record<string, unknown>>;
+      const { frameTree } = (await directChild('Page.getFrameTree', {})) as {
+        frameTree: FrameTree;
+      };
+      const nestedId = frameTree.childFrames?.find((c) =>
+        c.frame.url.startsWith(nestedOrigin),
+      )?.frame.id as string;
+      expect(nestedId).toBeDefined();
+      const owner = await directChild('DOM.getFrameOwner', {
+        frameId: nestedId,
+      });
+      const described = (await directChild('DOM.describeNode', {
+        backendNodeId: owner.backendNodeId,
+      })) as { node: { contentDocument: { backendNodeId: number } } };
+      const doc = (await directChild('DOM.resolveNode', {
+        backendNodeId: described.node.contentDocument.backendNodeId,
+      })) as { object: { objectId: string } };
+      const nestedContext = Number(doc.object.objectId.split('.')[1]);
+      const field = (await directChild('Runtime.evaluate', {
+        expression: 'document.querySelector("#h")',
+        contextId: nestedContext,
+      })) as { result: { objectId: string } };
+      const { node } = (await directChild('DOM.describeNode', {
+        objectId: field.result.objectId,
+      })) as { node: { backendNodeId: number } };
+
+      // The child's own document still works.
+      const own = await agent.call(
+        'Runtime.evaluate',
+        { expression: 'document.title', returnByValue: true },
+        child,
+      );
+      expect((own.result?.result as { value: string }).value).toBe(
+        'Nesting frame',
+      );
+      for (const [method, params] of [
+        [
+          'Runtime.evaluate',
+          { expression: 'document.title', contextId: nestedContext },
+        ],
+        ['Accessibility.getFullAXTree', { frameId: nestedId }],
+        ['DOM.describeNode', { backendNodeId: node.backendNodeId }],
+        [
+          'Runtime.callFunctionOn',
+          {
+            objectId: field.result.objectId,
+            functionDeclaration: 'function () { return this.value }',
+          },
+        ],
+      ] as const) {
+        const reply = await agent.call(method, params, child);
+        expect(reply.error?.message).toBe(FRAME_OUT_OF_SCOPE);
+      }
+      const tree = await agent.call('Page.getFrameTree', {}, child);
+      expect(tree.error).toBeUndefined();
+      expect(JSON.stringify(tree.result)).not.toContain(nestedOrigin);
+      const all = agent.frames.join('\n');
+      expect(all).not.toContain('ss-value-7f3a9c');
+      expect(all).not.toContain('Hidden frame field');
+      expect(all).not.toContain(nestedOrigin);
+    } finally {
+      await page.evaluate(() => document.getElementById('nesting')?.remove());
+      await agent.close();
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+    }
   });
 
   it('a child session whose frame navigates cross-origin stops being allowed within the same event loop turn', async () => {

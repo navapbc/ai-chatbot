@@ -1,4 +1,4 @@
-import { inScope, isJavascriptUrl } from './policy';
+import { inScope, isJavascriptUrl, normalizeOrigin } from './policy';
 
 // Pure module: bundled into the extension service worker, so no node: or
 // server-only imports.
@@ -19,8 +19,15 @@ export interface FrameScope {
   frames: Map<string, FrameInfo>;
   /** executionContextId -> frameId. */
   contexts: Map<number, string>;
-  /** Execution context uniqueId -> frameId. */
-  uniqueContexts: Map<string, string>;
+  /** Execution context uniqueId -> executionContextId. */
+  uniqueContexts: Map<string, number>;
+  /**
+   * executionContextId -> the origin of the document it was created for (as
+   * Chrome reported it, or as discovery read it), or REFUSED_ORIGIN once
+   * its frame committed a document of another origin. Isolated worlds and
+   * inheriting documents have no entry and follow their frame.
+   */
+  contextOrigins: Map<number, string>;
   /**
    * Frames and contexts the agent was told of (their attach, commit or
    * creation was forwarded), so their end is forwarded too, wherever they
@@ -39,6 +46,7 @@ export const createFrameScope = (): FrameScope => ({
   frames: new Map(),
   contexts: new Map(),
   uniqueContexts: new Map(),
+  contextOrigins: new Map(),
   announcedFrames: new Set(),
   announcedContexts: new Set(),
 });
@@ -62,6 +70,19 @@ function inheritsScope(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Marks a context that can no longer be trusted to its frame's verdict. */
+export const REFUSED_ORIGIN = 'refused';
+
+/**
+ * The origin a document's URL gives its contexts: undefined when the
+ * document inherits it (about:blank, about:srcdoc), REFUSED_ORIGIN when it
+ * has no https origin.
+ */
+export function documentOrigin(url: string): string | undefined {
+  if (inheritsScope(url)) return undefined;
+  return normalizeOrigin(url) ?? REFUSED_ORIGIN;
 }
 
 const urlAllowed = (url: string, o: ScopeOrigins) =>
@@ -138,11 +159,12 @@ export function commandAddresses(params: unknown): Addresses {
       if (isObject(arg) && 'objectId' in arg) out.objectIds.push(arg.objectId);
     }
   }
+  // Every handle present is collected and resolved: a command naming an
+  // in-scope node and an out-of-scope one is refused.
   if ('backendNodeId' in params) {
     out.nodes.push({ backendNodeId: params.backendNodeId });
-  } else if ('nodeId' in params) {
-    out.nodes.push({ nodeId: params.nodeId });
   }
+  if ('nodeId' in params) out.nodes.push({ nodeId: params.nodeId });
   return out;
 }
 
@@ -361,11 +383,23 @@ export function scopeFrameEvent(
     case 'Page.frameNavigated': {
       const frame = isObject(params.frame) ? params.frame : undefined;
       if (typeof frame?.id !== 'string') return false;
+      const url = typeof frame.url === 'string' ? frame.url : '';
       scope.frames.set(frame.id, {
-        url: typeof frame.url === 'string' ? frame.url : '',
+        url,
         parentId:
           typeof frame.parentId === 'string' ? frame.parentId : undefined,
       });
+      // The frame's contexts that belong to a document of another origin
+      // (the one it left) never pass again, whatever the frame does next.
+      const committed = documentOrigin(url);
+      if (committed !== undefined) {
+        for (const [id, frameId] of scope.contexts) {
+          if (frameId !== frame.id) continue;
+          if (scope.contextOrigins.get(id) !== committed) {
+            scope.contextOrigins.set(id, REFUSED_ORIGIN);
+          }
+        }
+      }
       return announceFrame(frame.id);
     }
     case 'Page.navigatedWithinDocument': {
@@ -392,16 +426,23 @@ export function scopeFrameEvent(
       }
       scope.contexts.set(context.id, frameId);
       if (typeof context.uniqueId === 'string') {
-        scope.uniqueContexts.set(context.uniqueId, frameId);
+        scope.uniqueContexts.set(context.uniqueId, context.id);
       }
       // The context can be created before its frame's frameNavigated: its
       // own origin must be in scope too (isolated worlds report none).
       const origin = context.origin;
-      const originOk =
-        origin === '' ||
-        origin === '://' ||
-        (typeof origin === 'string' && urlAllowed(origin, origins));
-      const forward = originOk && keep(frameId);
+      if (origin !== '' && origin !== '://') {
+        scope.contextOrigins.set(
+          context.id,
+          typeof origin === 'string'
+            ? (normalizeOrigin(origin) ?? REFUSED_ORIGIN)
+            : REFUSED_ORIGIN,
+        );
+      } else {
+        scope.contextOrigins.delete(context.id);
+      }
+      const forward =
+        contextInScope(scope, origins, context.id, alsoKeep) && keep(frameId);
       if (forward) scope.announcedContexts.add(context.id);
       return forward;
     }
@@ -416,6 +457,7 @@ export function scopeFrameEvent(
           (frameId !== undefined && keep(frameId)));
       if (typeof id === 'number') {
         scope.contexts.delete(id);
+        scope.contextOrigins.delete(id);
         scope.announcedContexts.delete(id);
       }
       if (typeof uniqueId === 'string') scope.uniqueContexts.delete(uniqueId);
@@ -424,6 +466,7 @@ export function scopeFrameEvent(
     case 'Runtime.executionContextsCleared':
       scope.contexts.clear();
       scope.uniqueContexts.clear();
+      scope.contextOrigins.clear();
       scope.announcedContexts.clear();
       return true;
     default:
@@ -434,4 +477,28 @@ export function scopeFrameEvent(
   if (!keep(params.frameId)) return false;
   const destination = navigationDestination(method, params);
   return destination === undefined || destinationAllowed(destination, origins);
+}
+
+/**
+ * True when a context may be used: its frame is in scope and its own
+ * recorded origin (if any) is allowed. Unknown contexts are refused.
+ */
+export function contextInScope(
+  scope: FrameScope,
+  origins: ScopeOrigins,
+  contextId: number,
+  alsoKeep: (frameId: string) => boolean = () => false,
+): boolean {
+  const frameId = scope.contexts.get(contextId);
+  if (frameId === undefined) return false;
+  const origin = scope.contextOrigins.get(contextId);
+  if (origin !== undefined && !urlAllowed(origin, origins)) return false;
+  return (
+    frameInScope(
+      scope.frames,
+      frameId,
+      origins.origin,
+      origins.allowedFrameOrigins,
+    ) || alsoKeep(frameId)
+  );
 }

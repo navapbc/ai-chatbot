@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   commandAddresses,
   contextIdFromObjectId,
+  contextInScope,
   createFrameScope,
+  documentOrigin,
   destinationAllowed,
   type FrameInfo,
   frameInScope,
@@ -418,7 +420,7 @@ describe('scopeFrameEvent', () => {
     ).toBe(false);
     expect(scope.contexts.get(3)).toBe('main');
     expect(scope.contexts.get(4)).toBe('f');
-    expect(scope.uniqueContexts.get('u4')).toBe('f');
+    expect(scope.uniqueContexts.get('u4')).toBe(4);
     // A context whose origin is foreign is dropped even when its frame looks
     // in scope (the context can be created before frameNavigated).
     scope.frames.set('late', { url: '', parentId: 'main' });
@@ -629,5 +631,118 @@ describe('scopeFrameEvent end events follow what the agent was told', () => {
     expect(
       scopeFrameEvent(scope, origins, 'Page.frameDetached', { frameId: 'h' }),
     ).toBe(false);
+  });
+});
+
+describe('commandAddresses with several handles', () => {
+  it('collects every node handle, not only the first', () => {
+    expect(commandAddresses({ backendNodeId: 1, nodeId: 2 }).nodes).toEqual([
+      { backendNodeId: 1 },
+      { nodeId: 2 },
+    ]);
+  });
+
+  it('collects every handle kind together', () => {
+    const a = commandAddresses({
+      objectId: '1.3.1',
+      executionContextId: 4,
+      backendNodeId: 5,
+      frameId: 'f',
+    });
+    expect(a.objectIds).toEqual(['1.3.1']);
+    expect(a.contextIds).toEqual([4]);
+    expect(a.nodes).toEqual([{ backendNodeId: 5 }]);
+    expect(a.frameIds).toEqual(['f']);
+  });
+});
+
+describe('contextInScope', () => {
+  const setup = () => {
+    const scope = createFrameScope();
+    scope.frames.set('main', { url: `${RUN}/form` });
+    scope.frames.set('f', { url: `${RUN}/inner`, parentId: 'main' });
+    return scope;
+  };
+  const created = (id: number, frameId: string, origin: string) => ({
+    context: { id, origin, name: '', auxData: { frameId } },
+  });
+
+  it('is false for an unknown context and true for an in-scope one', () => {
+    const scope = setup();
+    scopeFrameEvent(
+      scope,
+      origins,
+      'Runtime.executionContextCreated',
+      created(3, 'f', RUN),
+    );
+    expect(contextInScope(scope, origins, 3)).toBe(true);
+    expect(contextInScope(scope, origins, 99)).toBe(false);
+  });
+
+  it('refuses a context created in scope after its frame navigates cross-origin', () => {
+    const scope = setup();
+    scopeFrameEvent(
+      scope,
+      origins,
+      'Runtime.executionContextCreated',
+      created(3, 'f', RUN),
+    );
+    scopeFrameEvent(scope, origins, 'Page.frameNavigated', {
+      frame: { id: 'f', parentId: 'main', url: `${OTHER}/x` },
+    });
+    expect(contextInScope(scope, origins, 3)).toBe(false);
+    // Even if the frame comes back in scope later, the old context stays
+    // refused: it belonged to a document of another origin's era.
+    scopeFrameEvent(scope, origins, 'Page.frameNavigated', {
+      frame: { id: 'f', parentId: 'main', url: `${RUN}/back` },
+    });
+    expect(contextInScope(scope, origins, 3)).toBe(false);
+  });
+
+  it('refuses a context whose own origin is out of scope while its frame still looks in scope', () => {
+    const scope = setup();
+    scopeFrameEvent(
+      scope,
+      origins,
+      'Runtime.executionContextCreated',
+      created(4, 'f', OTHER),
+    );
+    expect(frameInScope(scope.frames, 'f', RUN, [])).toBe(true);
+    expect(contextInScope(scope, origins, 4)).toBe(false);
+  });
+
+  it('keeps an isolated world (no origin) on its frame verdict', () => {
+    const scope = setup();
+    scopeFrameEvent(
+      scope,
+      origins,
+      'Runtime.executionContextCreated',
+      created(5, 'f', ''),
+    );
+    expect(contextInScope(scope, origins, 5)).toBe(true);
+  });
+
+  it('honours an origin recorded by discovery', () => {
+    const scope = setup();
+    scope.contexts.set(6, 'f');
+    scope.contextOrigins.set(6, documentOrigin(`${OTHER}/x`) as string);
+    expect(contextInScope(scope, origins, 6)).toBe(false);
+    scope.contexts.set(7, 'f');
+    expect(contextInScope(scope, origins, 7)).toBe(true);
+  });
+});
+
+describe('documentOrigin', () => {
+  it('is the https origin, undefined when inherited, a refusal otherwise', () => {
+    expect(documentOrigin(`${RUN}/x?y`)).toBe(RUN);
+    expect(documentOrigin('about:srcdoc')).toBeUndefined();
+    expect(documentOrigin('about:blank')).toBeUndefined();
+    const refused = documentOrigin('data:text/html,x');
+    expect(refused).toBeDefined();
+    const scope = createFrameScope();
+    scope.frames.set('main', { url: `${RUN}/form` });
+    scope.contexts.set(1, 'main');
+    scope.contextOrigins.set(1, refused as string);
+    expect(contextInScope(scope, origins, 1)).toBe(false);
   });
 });

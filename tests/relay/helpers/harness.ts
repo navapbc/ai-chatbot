@@ -155,6 +155,14 @@ export async function serveFixtures(): Promise<Fixtures> {
       sendHtml(res, oopif);
     } else if (url.pathname === '/oopif-sensitive.html') {
       sendHtml(res, oopifSensitive);
+    } else if (url.pathname === '/oopif-nested.html') {
+      // Nests a frame of the same site (127.0.0.1) but another origin, so it
+      // shares this out-of-process frame's session.
+      const nested = sameSiteOrigin.replace('localhost', '127.0.0.1');
+      sendHtml(
+        res,
+        `<!doctype html><html lang="en"><title>Nesting frame</title><iframe id="nested" title="nested" src="${nested}/samesite-frame.html"></iframe></html>`,
+      );
     } else {
       sendHtml(
         res,
