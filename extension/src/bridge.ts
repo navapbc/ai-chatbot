@@ -12,6 +12,12 @@ import type {
   RelayToExtension,
   StopReason,
 } from '../../lib/relay/protocol';
+import {
+  createRedactor,
+  descriptorFromAttributes,
+  type Redactor,
+} from '../../lib/relay/redactor';
+import type { FieldDescriptor } from '../../lib/relay/sensitive-fields';
 
 // Forwards CDP between the relay and chrome.debugger for exactly one tab.
 // Ported from spike/cdp-relay/extension/sw.js. Nothing here may log or echo
@@ -25,7 +31,8 @@ export type BridgeMessage =
       tabId: number;
       allowedFrameOrigins?: string[];
     }
-  | { type: 'stopRun' };
+  | { type: 'stopRun' }
+  | { type: 'addKnownValue'; value: string };
 
 export type BridgeResponse = { ok: true } | { ok: false; error: string };
 
@@ -73,12 +80,19 @@ interface Run extends RunConfig {
    * agent-browser session on that error instead.
    */
   announceResume: boolean;
+  /**
+   * Masks sensitive values in everything sent up the socket. Its known
+   * values live in worker memory only: never in chrome.storage, cleared in
+   * stopRun, and empty on a run rebuilt after a worker restart.
+   */
+  redactor: Redactor;
 }
 
 const STORAGE_KEY = 'run';
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost']);
 const OUT_OF_SCOPE = 'tab is outside the allowed origin';
 const FRAME_OUT_OF_SCOPE = 'frame is outside the allowed origins';
+const REDACTION_FAILED = 'response redaction failed';
 const FIRST_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30_000;
 // Relay close codes that end the run: normal (run closed, replaced) and
@@ -266,6 +280,7 @@ export async function stopRun(
   if (current) {
     current.stopped = true;
     current.blocked = true;
+    current.redactor.clear();
     clearTimeout(current.reconnectTimer);
     clearTimeout(current.expiryTimer);
     send(current, { type: 'stop', reason });
@@ -332,6 +347,7 @@ function begin(
     children: new Map(),
     reconnectDelayMs: FIRST_RECONNECT_MS,
     announceResume: resumed,
+    redactor: createRedactor(),
   };
   run = current;
   current.expiryTimer = setTimeout(
@@ -455,7 +471,9 @@ async function handleCommand(
     case 'listTargets': {
       await requireTabInScope(current);
       const target = await tabTarget(current.tabId);
-      return { targetInfos: target ? [targetInfo(target)] : [] };
+      return redact(current, 'Target.getTargets', {
+        targetInfos: target ? [targetInfo(target)] : [],
+      });
     }
     case 'attach': {
       const target = await tabTarget(current.tabId);
@@ -481,10 +499,10 @@ async function handleCommand(
       }
       current.attached = true;
       current.mainFrameId = target.id;
-      return {
+      return redact(current, 'Target.attachToTarget', {
         sessionId: tabSessionId(current.tabId),
         targetInfo: targetInfo({ ...target, attached: true }),
-      };
+      });
     }
     case 'createTarget': {
       const check = checkCommand(
@@ -528,24 +546,68 @@ async function forwardCdp(
   }
   if (!current.attached) throw new Error('not attached');
 
-  if (!child) {
-    return chrome.debugger.sendCommand(
-      { tabId: current.tabId },
-      method,
-      params as Record<string, unknown> | undefined,
-    );
-  }
-  return new Promise((resolve, reject) => {
-    child.inFlight.add(reject);
-    chrome.debugger
-      .sendCommand(
-        { tabId: current.tabId, sessionId },
+  // describe() below is answered by the same session that produced the
+  // result: backend node ids are only meaningful within their own renderer.
+  const debuggee: chrome.debugger.DebuggerSession = child
+    ? { tabId: current.tabId, sessionId }
+    : { tabId: current.tabId };
+  const raw = child
+    ? await new Promise<unknown>((resolve, reject) => {
+        child.inFlight.add(reject);
+        chrome.debugger
+          .sendCommand(
+            debuggee,
+            method,
+            params as Record<string, unknown> | undefined,
+          )
+          .then(resolve, reject)
+          .finally(() => child.inFlight.delete(reject));
+      })
+    : await chrome.debugger.sendCommand(
+        debuggee,
         method,
         params as Record<string, unknown> | undefined,
-      )
-      .then(resolve, reject)
-      .finally(() => child.inFlight.delete(reject));
-  });
+      );
+  const result = await redact(current, method, raw, describeVia(debuggee));
+  // The redaction may have waited on describe(); a run that ended meanwhile
+  // sends nothing more.
+  if (current.blocked || current.stopped) throw new Error(OUT_OF_SCOPE);
+  return result;
+}
+
+/**
+ * Answers the redactor's DOM lookups straight through chrome.debugger, not
+ * through the agent's allowlist, so the agent never sees them. Returns
+ * undefined (classified as sensitive) for anything but an element node.
+ */
+const describeVia =
+  (debuggee: chrome.debugger.DebuggerSession) =>
+  async (backendNodeId: number): Promise<FieldDescriptor | undefined> => {
+    const described = await chrome.debugger.sendCommand(
+      debuggee,
+      'DOM.describeNode',
+      { backendNodeId },
+    );
+    const node = isObject(described) ? described.node : undefined;
+    if (!isObject(node) || !Array.isArray(node.attributes)) return undefined;
+    return descriptorFromAttributes(node.attributes);
+  };
+
+/**
+ * The redacted result, or an error reply: the raw result is never sent,
+ * whatever the redactor does.
+ */
+async function redact(
+  current: Run,
+  method: string,
+  raw: unknown,
+  describe?: (backendNodeId: number) => Promise<FieldDescriptor | undefined>,
+): Promise<unknown> {
+  try {
+    return await current.redactor.redactResult(method, raw, describe);
+  } catch {
+    throw new Error(REDACTION_FAILED);
+  }
 }
 
 /**
@@ -706,11 +768,20 @@ export function onDebuggerEvent(
 
   const filtered = filterEvent(method, forwarded);
   if (!filtered) return;
+  // Routing and scope above used the raw params; only what is sent is
+  // redacted. `null` means the event cannot be redacted: drop it.
+  let redacted: unknown;
+  try {
+    redacted = current.redactor.redactEvent(filtered.method, filtered.params);
+  } catch {
+    return;
+  }
+  if (redacted === null) return;
   send(current, {
     type: 'event',
     sessionId: source.sessionId ?? tabSessionId(current.tabId),
     method: filtered.method,
-    params: filtered.params,
+    params: redacted,
   });
 }
 
@@ -751,11 +822,27 @@ export function onTabRemoved(tabId: number) {
 
 // --- messages ----------------------------------------------------------------
 
+/**
+ * Registers a value the caseworker typed into a sensitive field, so it is
+ * scrubbed wherever it is echoed. The service worker only passes on messages
+ * from this extension. A value that cannot be registered is refused, and the
+ * caller must not type it. Never logs or echoes the value.
+ */
+function addKnownValue(value: unknown): BridgeResponse {
+  const current = run;
+  if (!current || current.stopped) return { ok: false, error: 'no active run' };
+  if (typeof value !== 'string' || !current.redactor.addKnownValue(value)) {
+    return { ok: false, error: 'known value not registered' };
+  }
+  return { ok: true };
+}
+
 export async function handleMessage(message: unknown): Promise<BridgeResponse> {
   if (!isObject(message)) return { ok: false, error: 'invalid message' };
   if (message.type === 'startRun') {
     return startRun(message as Extract<BridgeMessage, { type: 'startRun' }>);
   }
   if (message.type === 'stopRun') return stopRun('user');
+  if (message.type === 'addKnownValue') return addKnownValue(message.value);
   return { ok: false, error: 'unknown message type' };
 }

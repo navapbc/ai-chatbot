@@ -86,6 +86,11 @@ export async function serveFixtures(): Promise<Fixtures> {
   const cookieSentinel = `cookie-${randomBytes(12).toString('hex')}`;
   const form = readFileSync(path.join(FIXTURES, 'form.html'), 'utf8');
   const oopif = readFileSync(path.join(FIXTURES, 'oopif.html'), 'utf8');
+  const sensitive = readFileSync(path.join(FIXTURES, 'sensitive.html'), 'utf8');
+  const oopifSensitive = readFileSync(
+    path.join(FIXTURES, 'oopif-sensitive.html'),
+    'utf8',
+  );
   let frameOrigin = '';
 
   const sendHtml = (res: ServerResponse, body: string) =>
@@ -97,6 +102,8 @@ export async function serveFixtures(): Promise<Fixtures> {
     const url = new URL(req.url ?? '/', 'https://localhost');
     if (url.pathname === '/form.html') {
       sendHtml(res, form.replaceAll('{{FRAME_ORIGIN}}', frameOrigin));
+    } else if (url.pathname === '/sensitive.html') {
+      sendHtml(res, sensitive.replaceAll('{{FRAME_ORIGIN}}', frameOrigin));
     } else if (url.pathname === '/set-cookie') {
       res
         .writeHead(200, {
@@ -125,12 +132,16 @@ export async function serveFixtures(): Promise<Fixtures> {
   });
   const frame = createHttpsServer(tls, (req, res) => {
     const url = new URL(req.url ?? '/', 'https://127.0.0.1');
-    sendHtml(
-      res,
-      url.pathname === '/oopif.html'
-        ? oopif
-        : '<!doctype html><html lang="en"><title>Away</title><p>Away</p></html>',
-    );
+    if (url.pathname === '/oopif.html') {
+      sendHtml(res, oopif);
+    } else if (url.pathname === '/oopif-sensitive.html') {
+      sendHtml(res, oopifSensitive);
+    } else {
+      sendHtml(
+        res,
+        '<!doctype html><html lang="en"><title>Away</title><p>Away</p></html>',
+      );
+    }
   });
 
   const mainPort = await listen(main as unknown as Server);
