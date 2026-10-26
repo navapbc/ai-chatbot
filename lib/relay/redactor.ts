@@ -468,6 +468,123 @@ export function descriptorFromAttributes(
   return d;
 }
 
+// ------------------------------------------------------------ value shapes
+
+// A run of 9 or more digits, single separators (space, dot, dashes) allowed
+// between them: SSNs in any common format, account and card numbers. It
+// subsumes the SSN shape and a Luhn check (every 13 to 19 digit card number
+// is such a run), so a non-Luhn 16-digit number is masked too.
+const DIGIT_RUN = /\d(?:[ .‐-―−-]?\d){8,}/g;
+const PLAIN_DECIMAL = /^(\d+)\.\d+$/;
+
+/**
+ * True when `text` holds a value-shaped number (see DIGIT_RUN). A plain
+ * decimal such as a coordinate (412.3333435058594) counts only when its
+ * integer part alone has 9 or more digits.
+ */
+export function hasSensitiveShape(text: string): boolean {
+  const normalized = canonical(text);
+  for (const match of normalized.match(DIGIT_RUN) ?? []) {
+    const decimal = PLAIN_DECIMAL.exec(match);
+    if (!decimal || decimal[1].length >= 9) return true;
+  }
+  return false;
+}
+
+const decodeParam = (s: string): string => {
+  try {
+    return decodeURIComponent(s.replace(/\+/g, ' '));
+  } catch {
+    return s;
+  }
+};
+
+// Masks the value of each `name=value` pair whose name is sensitive or
+// whose value is value-shaped; a bare value-shaped item is masked whole.
+const maskParams = (params: string): string =>
+  params
+    .split('&')
+    .map((part) => {
+      const eq = part.indexOf('=');
+      if (eq < 0) return hasSensitiveShape(decodeParam(part)) ? MASK : part;
+      const name = decodeParam(part.slice(0, eq));
+      const value = part.slice(eq + 1);
+      if (value === '') return part;
+      const sensitive =
+        isSensitiveField({ name, label: name }) ||
+        hasSensitiveShape(decodeParam(value));
+      return sensitive ? `${part.slice(0, eq)}=${MASK}` : part;
+    })
+    .join('&');
+
+// Masks sensitive query and fragment parameters of one URL; scheme, host and
+// path are kept.
+const maskUrl = (url: string): string => {
+  const hashAt = url.indexOf('#');
+  const end = hashAt < 0 ? url.length : hashAt;
+  const queryAt = url.slice(0, end).indexOf('?');
+  let out = url.slice(0, queryAt < 0 ? end : queryAt);
+  if (queryAt >= 0) out += `?${maskParams(url.slice(queryAt + 1, end))}`;
+  if (hashAt >= 0) {
+    const fragment = url.slice(hashAt + 1);
+    out += `#${
+      fragment.includes('=')
+        ? maskParams(fragment)
+        : hasSensitiveShape(decodeParam(fragment))
+          ? MASK
+          : fragment
+    }`;
+  }
+  return out;
+};
+
+const URL_IN_TEXT = /[a-z][a-z0-9+.-]*:\/\/[^\s"'<>`]+/gi;
+
+// Every absolute URL in a string, whole or embedded in text.
+const maskUrls = (s: string): string =>
+  s.includes('://') ? s.replace(URL_IN_TEXT, maskUrl) : s;
+
+// A form-urlencoded request body (Network postData).
+const FORM_BODY = /^[^=&{}\s<>]+=[^&]*(?:&[^=&]+=[^&]*)*$/;
+const maskFormBody = (s: string): string =>
+  FORM_BODY.test(s) ? maskParams(s) : s;
+
+// Script results whose page data gets the value-shape guard.
+const SCRIPT_RESULT_METHODS = new Set([
+  'Runtime.evaluate',
+  'Runtime.callFunctionOn',
+  'Runtime.getProperties',
+  'Runtime.awaitPromise',
+]);
+
+// Masks value-shaped strings, and 9+ digit integers in by-value page data,
+// in a script result copy. Handles (objectId and other protocol ids) and
+// type tags are left alone outside page data; booleans, null, small numbers
+// and decimals are never touched.
+const maskShapes = (x: unknown, pageData: boolean): unknown => {
+  if (typeof x === 'string') return hasSensitiveShape(x) ? MASK : x;
+  if (typeof x === 'number') {
+    return pageData && Number.isInteger(x) && Math.abs(x) >= 1e8 ? MASK : x;
+  }
+  if (Array.isArray(x)) {
+    for (let i = 0; i < x.length; i++) x[i] = maskShapes(x[i], pageData);
+    return x;
+  }
+  if (!isObj(x)) return x;
+  const remoteObject = REMOTE_OBJECT_TYPES.has(String(x.type));
+  for (const key of Object.keys(x)) {
+    const v = x[key];
+    if (
+      !pageData &&
+      (key === 'type' || key === 'subtype' || isProtocolId(key, v))
+    ) {
+      continue;
+    }
+    x[key] = maskShapes(v, pageData || (remoteObject && key === 'value'));
+  }
+  return x;
+};
+
 // ---------------------------------------------------------------- DOM nodes
 
 // Masks value-bearing attributes and text of `root` and everything below it.
@@ -864,7 +981,13 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
     pattern !== null && s.replace(pattern, MASK) !== s;
 
   // Scrubs the whole string (URLs included: a value in a host is masked too).
+  // Known values first, then URL parameters (with or without known values).
   const scrub = (s: string): string => {
+    const out = scrubKnown(s);
+    return out === MASK ? out : maskUrls(out);
+  };
+
+  const scrubKnown = (s: string): string => {
     if (pattern === null) return s;
     let out = s.replace(pattern, MASK);
     if (NON_ASCII.test(out)) {
@@ -946,9 +1069,7 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
           (trusted && (enumLike || isProtocolId(key, v))) ||
           (skipData && key === 'data' && typeof v === 'string');
         const pageData = remoteObject && key === 'value';
-        setOwn(
-          o,
-          name,
+        let copied =
           trusted && ID_KEYS.has(key) && Array.isArray(v)
             ? copyIdList(v, ancestors, depth + 1, scrubbing)
             : copy(
@@ -959,8 +1080,11 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
                 false,
                 trusted && !pageData,
                 trusted && HEADER_KEYS.has(key),
-              ),
-        );
+              );
+        if (key === 'postData' && typeof copied === 'string' && scrubbing) {
+          copied = maskFormBody(copied);
+        }
+        setOwn(o, name, copied);
       }
       maskDomNode(o, source);
       out = o;
@@ -1118,7 +1242,9 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
         ) {
           return null;
         }
-        const out = copyOf(method, result);
+        const out = SCRIPT_RESULT_METHODS.has(method)
+          ? maskShapes(copyOf(method, result), false)
+          : copyOf(method, result);
         if (method === 'DOM.getAttributes') {
           if (
             !isObj(out) ||

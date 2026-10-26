@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createRedactor,
   descriptorFromAttributes,
+  hasSensitiveShape,
   valueVariants,
 } from '@/lib/relay/redactor';
 import { type FieldDescriptor, MASK } from '@/lib/relay/sensitive-fields';
@@ -441,7 +442,7 @@ describe('createRedactor', () => {
     const r = createRedactor({ maxKnownValues: 1 });
     r.addKnownValue('123-45-6789');
     r.clear();
-    const out = await r.redactResult('Runtime.evaluate', {
+    const out = await r.redactResult('Page.getNavigationHistory', {
       value: '123-45-6789',
     });
     expect(out).toEqual({ value: '123-45-6789' });
@@ -943,9 +944,11 @@ describe('review regressions', () => {
       expect(out, form).toContain(MASK);
       expect(out, form).not.toMatch(/6789|６７８９/);
     }
-    // A longer number is not the value.
+    // A longer number is not the value (no shape guard on this method).
     expect(
-      await r.redactResult('Runtime.evaluate', { value: '1234567890' }),
+      await r.redactResult('Page.getNavigationHistory', {
+        value: '1234567890',
+      }),
     ).toEqual({ value: '1234567890' });
   });
 
@@ -1244,11 +1247,11 @@ describe('review regressions, round 3', () => {
     expect(
       await r.redactResult('Runtime.callFunctionOn', {
         executionContextId: 123456789,
-        result: { type: 'object', value: { count: 42, big: 1234567890 } },
+        result: { type: 'object', value: { count: 42, small: 12345678 } },
       }),
     ).toEqual({
       executionContextId: 123456789,
-      result: { type: 'object', value: { count: 42, big: 1234567890 } },
+      result: { type: 'object', value: { count: 42, small: 12345678 } },
     });
   });
 
@@ -1449,6 +1452,226 @@ describe('review regressions, round 4', () => {
     const out = await r.redactResult(AX, tree(node));
     expect(JSON.stringify(out)).not.toMatch(/900-55/);
     expect(byId(out, '1').value?.value).toBe('');
+  });
+});
+
+describe('review regressions, round 5: value shapes (nothing registered)', () => {
+  it('hasSensitiveShape: SSN-like, 9+ digit runs and cards, not decimals or short numbers', () => {
+    for (const yes of [
+      '900-00-1234',
+      'SSN 900 00 1234 on file',
+      '900.00.1234',
+      '900001234',
+      '１２３-４５-６７８９',
+      'Order 1234567890',
+      '4111 1111 1111 1111',
+      '4111111111111112',
+      '123456789.5',
+    ]) {
+      expect(hasSensitiveShape(yes), yes).toBe(true);
+    }
+    for (const no of [
+      '12345678',
+      '412.3333435058594',
+      'Page 2 of 3',
+      '(555) 123-4567',
+      '2026-10-26',
+      '',
+    ]) {
+      expect(hasSensitiveShape(no), no).toBe(false);
+    }
+  });
+
+  it('masks sensitive query and fragment parameter values in URLs, keeps paths and hosts', () => {
+    const r = createRedactor();
+    const event = r.redactEvent('Network.requestWillBeSent', {
+      requestId: '1.1',
+      documentURL: 'https://b.test/apply?ssn=900-00-1234&page=2',
+      request: {
+        url: 'https://b.test/apply?x=900001234&sort=name#pin=4321&tab=2',
+        method: 'POST',
+        postData: 'ssn=900-00-1234&first=Ada',
+        headers: { Referer: 'https://b.test/form?ssn=900-00-1234' },
+      },
+    }) as {
+      documentURL: string;
+      request: { url: string; postData: string; headers: { Referer: string } };
+    };
+    expect(event.documentURL).toBe(`https://b.test/apply?ssn=${MASK}&page=2`);
+    expect(event.request.url).toBe(
+      `https://b.test/apply?x=${MASK}&sort=name#pin=${MASK}&tab=2`,
+    );
+    expect(event.request.postData).toBe(`ssn=${MASK}&first=Ada`);
+    expect(event.request.headers.Referer).toBe(
+      `https://b.test/form?ssn=${MASK}`,
+    );
+  });
+
+  it('leaves an ordinary URL unchanged', () => {
+    const r = createRedactor();
+    const url = 'https://b.test/list/2?page=2&sort=name#top';
+    expect(r.redactEvent('Page.navigatedWithinDocument', { url })).toEqual({
+      url,
+    });
+  });
+
+  it('masks URL values in frame, navigation and target payloads', async () => {
+    const r = createRedactor();
+    const url = 'https://b.test/done?case_id=A12&v=900-00-1234';
+    const masked = `https://b.test/done?case_id=${MASK}&v=${MASK}`;
+    const frame = { id: 'ABCDEF0123456789AB1234CDEF012345', url };
+    expect(r.redactEvent('Page.frameNavigated', { frame })).toEqual({
+      frame: { ...frame, url: masked },
+    });
+    expect(
+      await r.redactResult('Page.getFrameTree', { frameTree: { frame } }),
+    ).toEqual({ frameTree: { frame: { ...frame, url: masked } } });
+    expect(r.redactEvent('Page.navigatedWithinDocument', { url })).toEqual({
+      url: masked,
+    });
+    for (const method of [
+      'Target.targetInfoChanged',
+      'Target.attachedToTarget',
+    ]) {
+      expect(
+        JSON.stringify(
+          r.redactEvent(method, { targetInfo: { url, title: 't' } }),
+        ),
+      ).not.toMatch(/1234|A12/);
+    }
+    const text = (await r.redactResult('Runtime.evaluate', {
+      result: { type: 'string', value: 'see https://b.test/?pin=4321 now' },
+    })) as { result: { value: string } };
+    expect(text.result.value).toBe(`see https://b.test/?pin=${MASK} now`);
+  });
+
+  it('masks value-shaped script results: strings, by-value leaves, numbers, exceptions', async () => {
+    const r = createRedactor();
+    expect(
+      await r.redactResult('Runtime.evaluate', {
+        result: { type: 'string', value: '900-00-1234' },
+      }),
+    ).toEqual({ result: { type: 'string', value: MASK } });
+    expect(
+      await r.redactResult('Runtime.callFunctionOn', {
+        result: { type: 'object', value: { a: { b: '900-00-1234', c: 'ok' } } },
+      }),
+    ).toEqual({
+      result: { type: 'object', value: { a: { b: MASK, c: 'ok' } } },
+    });
+    expect(
+      await r.redactResult('Runtime.evaluate', {
+        result: { type: 'number', value: 900001234, description: '900001234' },
+      }),
+    ).toEqual({ result: { type: 'number', value: MASK, description: MASK } });
+    for (const card of ['4111111111111111', '4111111111111112']) {
+      expect(
+        await r.redactResult('Runtime.evaluate', {
+          result: { type: 'string', value: card },
+        }),
+      ).toEqual({ result: { type: 'string', value: MASK } });
+    }
+    // Documented over-mask: a 10-digit run in a title.
+    expect(
+      await r.redactResult('Runtime.evaluate', {
+        result: { type: 'string', value: 'Order 1234567890 confirmed' },
+      }),
+    ).toEqual({ result: { type: 'string', value: MASK } });
+    const thrown = JSON.stringify(
+      await r.redactResult('Runtime.evaluate', {
+        result: {
+          type: 'object',
+          subtype: 'error',
+          description: 'Error: 900-00-1234',
+        },
+        exceptionDetails: {
+          exceptionId: 1,
+          text: 'Uncaught 900-00-1234',
+          lineNumber: 0,
+          columnNumber: 5,
+          exception: { type: 'object', description: 'Error: 900001234' },
+        },
+      }),
+    );
+    expect(thrown).not.toMatch(/1234/);
+    const props = JSON.stringify(
+      await r.redactResult('Runtime.getProperties', {
+        result: [
+          { name: 'ssn', value: { type: 'string', value: '900001234' } },
+          { name: 'n', value: { type: 'number', value: 3, description: '3' } },
+        ],
+      }),
+    );
+    expect(props).not.toMatch(/900001234/);
+    expect(props).toContain('"description":"3"');
+  });
+
+  it('leaves booleans, null, undefined, handles, counts, coordinates, ids and box models unchanged', async () => {
+    const r = createRedactor();
+    const unchanged: Array<[string, unknown]> = [
+      ['Runtime.evaluate', { result: { type: 'boolean', value: true } }],
+      [
+        'Runtime.evaluate',
+        { result: { type: 'object', subtype: 'null', value: null } },
+      ],
+      ['Runtime.evaluate', { result: { type: 'undefined' } }],
+      [
+        'Runtime.callFunctionOn',
+        {
+          result: {
+            type: 'object',
+            subtype: 'node',
+            className: 'HTMLInputElement',
+            description: 'input#ssn',
+            objectId: '-7812345678901234567.1.2',
+          },
+        },
+      ],
+      [
+        'Runtime.evaluate',
+        { result: { type: 'number', value: 3, description: '3' } },
+      ],
+      [
+        'Runtime.callFunctionOn',
+        {
+          result: {
+            type: 'object',
+            value: { x: 412.3333435058594, y: 128.5, width: 300, height: 40 },
+          },
+        },
+      ],
+      [
+        'DOM.getBoxModel',
+        {
+          model: {
+            content: [
+              412.3333435058594, 10, 712.3333435058594, 10, 712, 50, 412, 50,
+            ],
+            width: 300,
+            height: 40,
+          },
+        },
+      ],
+      [
+        'DOM.describeNode',
+        {
+          node: {
+            nodeId: 0,
+            backendNodeId: 123456789,
+            nodeType: 1,
+            nodeName: 'DIV',
+            attributes: [],
+          },
+        },
+      ],
+      [
+        'Target.attachToTarget',
+        { sessionId: '0123ABCD1234EF5678901234ABCDEF12' },
+      ],
+    ];
+    for (const [method, result] of unchanged) {
+      expect(await r.redactResult(method, result), method).toEqual(result);
+    }
   });
 });
 
