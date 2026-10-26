@@ -75,6 +75,23 @@ const INVISIBLE = /(?:\u00ad|\u200b|\u200c|\u200d|\u2060|\ufeff)/g;
 const NON_ASCII = /[\u0080-\uffff]/;
 const BULLETS_ONLY = /^[•●◦■*∗]+$/;
 const MARKUP_TAG = /<[^>]*>/g;
+const MARKUP_COMMENT = /<!--[\s\S]*?-->/g;
+const ANGLE_BRACKETS = /[<>]/g;
+const WHITESPACE_RUN = /\s+/g;
+const HAS_WHITESPACE_RUN = /\s\s/;
+const HAS_MARKUP = /[<>&]/;
+const HTML_ENTITY =
+  /&(?:(lt|gt|amp|quot|apos|nbsp)|#(\d{1,7})|#x([0-9a-f]{1,6}));/gi;
+const NAMED_ENTITIES: Record<string, string> = {
+  lt: '<',
+  gt: '>',
+  amp: '&',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+};
+// Network header maps: their keys are page or server data, not fields.
+const HEADER_KEYS = new Set(['headers', 'requestHeaders', 'responseHeaders']);
 // Between the digits of a known number: whitespace, dashes, dots, slashes,
 // soft hyphen, zero-width characters, and their URL, HTML and JSON escapes.
 const DIGIT_SEPARATOR =
@@ -242,6 +259,59 @@ const group = (digits: string, sizes: number[]): string[] => {
     at += size;
   }
   return parts;
+};
+
+const decodeEntities = (s: string): string =>
+  s.replace(
+    HTML_ENTITY,
+    (
+      match,
+      name: string | undefined,
+      dec: string | undefined,
+      hex?: string,
+    ) => {
+      if (name) return NAMED_ENTITIES[name.toLowerCase()] ?? match;
+      const code = Number.parseInt(dec ?? hex ?? '', dec ? 10 : 16);
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return match;
+      }
+    },
+  );
+
+// Forms of a string in which a known value may hide without being
+// replaceable in place: whitespace collapsed, and markup (entities decoded,
+// comments, tags or stray angle brackets removed). A match in any of them
+// masks the whole string.
+const wholeMaskForms = (s: string): string[] => {
+  const forms: string[] = [];
+  const collapse = (t: string) => t.replace(WHITESPACE_RUN, ' ');
+  if (HAS_WHITESPACE_RUN.test(s)) forms.push(collapse(s));
+  if (HAS_MARKUP.test(s)) {
+    const text = decodeEntities(s).replace(MARKUP_COMMENT, '');
+    forms.push(collapse(text.replace(MARKUP_TAG, '')));
+    forms.push(collapse(text.replace(ANGLE_BRACKETS, '')));
+  }
+  return forms;
+};
+
+const numberForm = (n: number): string =>
+  Number.isInteger(n) && Math.abs(n) >= 1e21 ? BigInt(n).toString() : String(n);
+
+// Sets a property without the `__proto__` setter turning data into a
+// prototype.
+const setOwn = (o: Obj, key: string, value: unknown): void => {
+  if (key === '__proto__') {
+    Object.defineProperty(o, key, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  } else {
+    o[key] = value;
+  }
 };
 
 const htmlEscape = (s: string): string =>
@@ -797,16 +867,17 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
         if (again !== normalized) out = again;
       }
     }
-    if (out.includes('<')) {
-      // A value split by markup (<td>123</td><td>45</td>...): the string
-      // cannot be scrubbed in place, so it is masked whole.
-      const stripped = out.replace(MARKUP_TAG, '');
-      if (hasKnownValue(stripped) || hasKnownValue(canonical(stripped))) {
-        return MASK;
-      }
+    // A value split by markup or long whitespace (<td>123</td> <td>45</td>)
+    // cannot be scrubbed in place, so the string is masked whole.
+    for (const form of wholeMaskForms(out)) {
+      if (hasKnownValue(form) || hasKnownValue(canonical(form))) return MASK;
     }
     return out;
   };
+
+  // A number in page data that spells a known value becomes MASK.
+  const scrubNumber = (n: number): unknown =>
+    Number.isFinite(n) && hasKnownValue(numberForm(n)) ? MASK : n;
 
   // Deep copy; strings are scrubbed except at structural positions, and DOM
   // nodes are masked. Throws on a cycle or excessive depth.
@@ -817,8 +888,12 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
     scrubbing: boolean,
     skipData: boolean,
     trusted: boolean,
+    pageKeys = false,
   ): unknown => {
     if (typeof x === 'string') return scrubbing ? scrub(x) : x;
+    if (typeof x === 'number') {
+      return scrubbing && !trusted && pattern !== null ? scrubNumber(x) : x;
+    }
     if (typeof x !== 'object' || x === null) return x;
     if (depth > MAX_DEPTH || ancestors.has(x)) {
       throw new Error('unredactable structure');
@@ -839,9 +914,20 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
       // A RemoteObject's by-value payload is page data: its keys are not
       // protocol fields, so nothing below it is exempt.
       const remoteObject = REMOTE_OBJECT_TYPES.has(String(source.type));
+      // Keys of page data and header maps are data; protocol field names in
+      // trusted positions are never renamed.
+      const scrubKeys = scrubbing && pattern !== null && (!trusted || pageKeys);
       const o: Obj = {};
       for (const key of Object.keys(source)) {
         const v = source[key];
+        let name = key;
+        if (scrubKeys) {
+          const scrubbed = scrub(key);
+          name = scrubbed;
+          // Two keys can scrub to the same name: number the later ones.
+          for (let n = 2; Object.hasOwn(o, name); n++)
+            name = `${scrubbed}#${n}`;
+        }
         const enumLike =
           typeof v === 'string' &&
           ENUM_FORMAT.test(v) &&
@@ -852,7 +938,9 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
           (trusted && (enumLike || isProtocolId(key, v))) ||
           (skipData && key === 'data' && typeof v === 'string');
         const pageData = remoteObject && key === 'value';
-        o[key] =
+        setOwn(
+          o,
+          name,
           trusted && ID_KEYS.has(key) && Array.isArray(v)
             ? copyIdList(v, ancestors, depth + 1, scrubbing)
             : copy(
@@ -862,7 +950,9 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
                 scrubbing && !raw,
                 false,
                 trusted && !pageData,
-              );
+                trusted && HEADER_KEYS.has(key),
+              ),
+        );
       }
       maskDomNode(o, source);
       out = o;

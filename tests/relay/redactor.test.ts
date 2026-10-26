@@ -1219,6 +1219,108 @@ describe('review regressions, round 2', () => {
   });
 });
 
+describe('review regressions, round 3', () => {
+  const known = () => {
+    const r = createRedactor();
+    r.addKnownValue('123-45-6789');
+    return r;
+  };
+
+  it('masks numbers in page data returned by value', async () => {
+    const r = known();
+    expect(
+      await r.redactResult('Runtime.evaluate', {
+        result: { type: 'number', value: 123456789 },
+      }),
+    ).toEqual({ result: { type: 'number', value: MASK } });
+    expect(
+      await r.redactResult('Runtime.callFunctionOn', {
+        result: { type: 'object', value: { ssn: 123456789, n: [123456789] } },
+      }),
+    ).toEqual({
+      result: { type: 'object', value: { ssn: MASK, n: [MASK] } },
+    });
+    // Ordinary numbers and trusted numeric fields are untouched.
+    expect(
+      await r.redactResult('Runtime.callFunctionOn', {
+        executionContextId: 123456789,
+        result: { type: 'object', value: { count: 42, big: 1234567890 } },
+      }),
+    ).toEqual({
+      executionContextId: 123456789,
+      result: { type: 'object', value: { count: 42, big: 1234567890 } },
+    });
+  });
+
+  it('scrubs keys of page data and header maps, uniquely, but not protocol field names', async () => {
+    const r = known();
+    r.addKnownValue('url');
+    r.addKnownValue('name');
+    const out = await r.redactResult('Runtime.callFunctionOn', {
+      result: {
+        type: 'object',
+        value: { 'ssn 123-45-6789': true, 'ssn 123456789': 2, ok: 1 },
+      },
+    });
+    expect(out).toEqual({
+      result: {
+        type: 'object',
+        value: { [`ssn ${MASK}`]: true, [`ssn ${MASK}#2`]: 2, ok: 1 },
+      },
+    });
+    const event = r.redactEvent('Network.requestWillBeSent', {
+      requestId: '1.1',
+      request: {
+        url: 'https://h.test/',
+        method: 'GET',
+        headers: { 'X-SSN-123-45-6789': 'a', Accept: 'text/html' },
+      },
+      name: 'kept',
+    }) as { request: Record<string, unknown>; name: string };
+    expect(JSON.stringify(event)).not.toMatch(/6789/);
+    expect(Object.keys(event.request)).toEqual(['url', 'method', 'headers']);
+    expect(event.request.headers).toEqual({
+      [`X-SSN-${MASK}`]: 'a',
+      Accept: 'text/html',
+    });
+    expect(event.name).toBe('kept');
+  });
+
+  it('keeps a __proto__ key of page data as data', async () => {
+    const r = known();
+    const out = (await r.redactResult('Runtime.evaluate', {
+      result: {
+        type: 'object',
+        value: JSON.parse('{"__proto__": "123-45-6789"}'),
+      },
+    })) as { result: { value: object } };
+    expect(JSON.stringify(out)).not.toMatch(/6789/);
+    expect(Object.getPrototypeOf(out.result.value)).toBe(Object.prototype);
+    expect(Object.keys(out.result.value)).toEqual(['__proto__']);
+  });
+
+  it('masks a value split by pretty-printed markup, comments, entities or a lone <', async () => {
+    const r = known();
+    for (const form of [
+      '<table>\n        <td>123</td>\n        <td>45</td>\n        <td>6789</td>',
+      '123<!-- a > b -->45-6789',
+      '123&lt;/b&gt;45&lt;b&gt;6789',
+      '123<45-6789',
+      '123\n                45-6789',
+    ]) {
+      const out = await r.redactResult('Runtime.evaluate', {
+        result: { type: 'string', value: form },
+      });
+      expect(out, form).toEqual({ result: { type: 'string', value: MASK } });
+    }
+    expect(
+      await r.redactResult('Runtime.evaluate', {
+        value: '<p>\n    Hello &amp; welcome\n</p>',
+      }),
+    ).toEqual({ value: '<p>\n    Hello &amp; welcome\n</p>' });
+  });
+});
+
 describe('descriptorFromAttributes', () => {
   it('maps DOM attributes to a field descriptor', () => {
     const d: FieldDescriptor = descriptorFromAttributes([
