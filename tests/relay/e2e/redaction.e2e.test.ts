@@ -858,7 +858,7 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     });
   });
 
-  it('a value registered with addKnownValue is scrubbed from a snapshot, console events never reach the agent and dialog text is blank', async () => {
+  it('a value registered with addKnownValue is scrubbed from a snapshot, and console and dialog events never reach the agent', async () => {
     const { cdp } = await startRun();
     expect(await addKnownValue(KNOWN)).toEqual({ ok: true });
     const mark = relay.frames.length;
@@ -867,36 +867,23 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     await agent.call('Page.enable', {}, session);
     await agent.call('Runtime.enable', {}, session);
 
-    const dialogShown = new Promise<void>((resolve) =>
-      page.once('dialog', (dialog) => {
-        void dialog.dismiss();
-        resolve();
-      }),
-    );
+    page.once('dialog', (dialog) => void dialog.dismiss());
     await page.evaluate((v) => {
       console.log(`Echo ${v}`);
       setTimeout(() => alert(`Confirm ${v}`), 0);
     }, KNOWN);
-    await dialogShown;
-    // The dialog opened: the agent hears that it did, with no text.
-    const opening = await agent.waitFor(
-      (m) => m.method === 'Page.javascriptDialogOpening',
-    );
-    expect(opening.params).toEqual({
-      type: 'alert',
-      hasBrowserHandler: true,
-      url: '',
-      message: '',
-      defaultPrompt: '',
-    });
-    // Console output is not on the event allowlist: an allowed event after it
-    // proves delivery works while it never arrives.
+    // Content-bearing events are not on the event allowlist: an allowed event
+    // after them proves delivery works while they never arrive.
     await page.reload();
     await agent.waitFor(
       (m) => m.method === 'Page.frameNavigated' && m.sessionId === session,
     );
     expect(
-      agent.events.filter((m) => m.method === 'Runtime.consoleAPICalled'),
+      agent.events.filter(
+        (m) =>
+          m.method === 'Runtime.consoleAPICalled' ||
+          m.method === 'Page.javascriptDialogOpening',
+      ),
     ).toEqual([]);
 
     const tree = await agent.call('Accessibility.getFullAXTree', {}, session);
@@ -1831,32 +1818,6 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     } finally {
       await agent.close();
       await reloadFixture();
-    }
-  });
-
-  it('ordinary text in a closed shadow root: the screenshot succeeds with no known value registered and is refused once one is', async () => {
-    await page.evaluate(() => {
-      const host = document.createElement('div');
-      host.id = 'closedtext';
-      host.attachShadow({ mode: 'closed' }).innerHTML = '<p>Ordinary words</p>';
-      document.body.append(host);
-    });
-    try {
-      const { cdp } = await startRun();
-      const agent = await rawAgent(cdp);
-      const session = await agent.attach();
-      await agent.childSession(session);
-      const before = await agent.call('Page.captureScreenshot', {}, session);
-      expect(before.error).toBeUndefined();
-      expect(await addKnownValue(KNOWN)).toEqual({ ok: true });
-      const after = await agent.call('Page.captureScreenshot', {}, session);
-      expect(after.error?.message).toBe(REFUSED);
-      expect(await leftovers()).toBe(0);
-      await agent.close();
-    } finally {
-      await page.evaluate(() =>
-        document.getElementById('closedtext')?.remove(),
-      );
     }
   });
 

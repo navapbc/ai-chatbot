@@ -414,9 +414,44 @@ export const PAGE_SOURCE = `(() => {
   const ELEMENT_CAP = 20000;
   const PAINTED_INPUTS = new Set(['button', 'submit', 'reset', 'image']);
   const ATTR_TEXT = ['alt', 'title', 'aria-label', 'placeholder'];
-  const generated = (el, pseudo) => {
+  // A pseudo-element's computed content, as text: quoted strings unquoted
+  // and joined, attr(name) resolved. A part it cannot resolve (counter(),
+  // url(), quotes, an unknown function) makes it inconclusive. Every
+  // attribute of an element with generated content is scanned too.
+  const CONTENT_PART = /\\s*("(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*'|attr\\(\\s*([^\\s),]+)[^)]*\\)|\\/|[a-z-]+(?:\\([^)]*\\))?)/giy;
+  const generated = (el, pseudo, out) => {
     const c = getComputedStyle(el, pseudo).content;
-    return !c || c === 'none' || c === 'normal' ? '' : c;
+    if (!c || c === 'none' || c === 'normal') return;
+    let text = '';
+    CONTENT_PART.lastIndex = 0;
+    let at = 0;
+    for (let m = CONTENT_PART.exec(c); m; m = CONTENT_PART.exec(c)) {
+      at = CONTENT_PART.lastIndex;
+      const part = m[1];
+      if (part[0] === '"' || part[0] === "'") {
+        text += part.slice(1, -1).replace(/\\\\(.)/g, '$1');
+      } else if (m[2] !== undefined) {
+        text += el.getAttribute(m[2]) || '';
+      } else if (part !== '/') {
+        out.inconclusive = true;
+      }
+    }
+    if (c.slice(at).trim() !== '') out.inconclusive = true;
+    out.texts.push(text);
+    for (const name of el.getAttributeNames()) out.texts.push(el.getAttribute(name));
+  };
+  /** Painted text an element carries besides its text nodes. */
+  const paintedOf = (el, out) => {
+    for (const name of ATTR_TEXT) {
+      const v = el.getAttribute(name);
+      if (v !== null) out.texts.push(v);
+    }
+    if (el.localName === 'input' &&
+        PAINTED_INPUTS.has((el.getAttribute('type') || '').trim().toLowerCase())) {
+      out.texts.push(String(el.value));
+    }
+    generated(el, '::before', out);
+    generated(el, '::after', out);
   };
   const texts = () => {
     const parents = new Map();
@@ -431,7 +466,8 @@ export const PAGE_SOURCE = `(() => {
       chunks.push([id, text]);
       return true;
     };
-    const over = { over: true, chunks: [] };
+    const over = { over: true, chunks: [], inconclusive: false };
+    const painted = { texts: [], inconclusive: false };
     for (const root of enumerate().roots) {
       // From the root element: <title> and <head> text count too.
       const start = root.nodeType === 9 ? root.documentElement : root;
@@ -450,24 +486,43 @@ export const PAGE_SOURCE = `(() => {
       for (const el of root.querySelectorAll('*')) {
         elements += 1;
         if (elements > ELEMENT_CAP) return over;
-        for (const name of ATTR_TEXT) {
-          const v = el.getAttribute(name);
-          if (v !== null && !add('a' + group++, v)) return over;
-        }
-        if (el.localName === 'input' &&
-            PAINTED_INPUTS.has((el.getAttribute('type') || '').trim().toLowerCase()) &&
-            !add('a' + group++, String(el.value))) return over;
-        if (!add('a' + group++, generated(el, '::before'))) return over;
-        if (!add('a' + group++, generated(el, '::after'))) return over;
+        painted.texts = [];
+        paintedOf(el, painted);
+        for (const t of painted.texts) if (!add('a' + group++, t)) return over;
       }
     }
-    return { over: false, chunks };
+    return { over: false, chunks, inconclusive: painted.inconclusive };
   };
   // Text that appeared during the window, recorded as it appears, so a
   // transient toast added and removed before verify still counts.
   const seen = [];
   let seenTotal = 0;
+  let seenElements = 0;
   let seenOver = false;
+  const seenPainted = { texts: [], inconclusive: false };
+  const keep = (text) => {
+    if (!text || !text.trim()) return;
+    seenTotal += text.length;
+    if (seenTotal > TEXT_CAP) {
+      seenOver = true;
+      return;
+    }
+    seen.push(text);
+  };
+  // Painted text of an added element and its subtree.
+  const seeSubtree = (el) => {
+    for (const e of [el, ...el.querySelectorAll('*')]) {
+      seenElements += 1;
+      if (seenElements > ELEMENT_CAP) {
+        seenOver = true;
+        return;
+      }
+      seenPainted.texts = [];
+      paintedOf(e, seenPainted);
+      for (const t of seenPainted.texts) keep(t);
+    }
+  };
+  const PAINTED_ATTRS = new Set(ATTR_TEXT);
   const see = (node, text) => {
     if (!text || !text.trim()) return;
     const el = node.nodeType === 1 ? node : node.parentElement;
@@ -485,9 +540,19 @@ export const PAGE_SOURCE = `(() => {
       if (m.type === 'childList') {
         for (const n of m.addedNodes) {
           if (n.nodeType === 3 || n.nodeType === 1) see(n, n.textContent);
+          if (n.nodeType === 1) seeSubtree(n);
         }
       } else if (m.type === 'characterData') {
         see(m.target, m.target.data);
+      } else if (PAINTED_ATTRS.has(m.attributeName)) {
+        keep(m.target.getAttribute(m.attributeName));
+      } else if (m.attributeName === 'value') {
+        // A button's label; a field's value is judged by field masking.
+        const t = m.target;
+        if (t.localName === 'input' &&
+            PAINTED_INPUTS.has((t.getAttribute('type') || '').trim().toLowerCase())) {
+          keep(t.getAttribute('value'));
+        }
       }
     }
   };
@@ -549,7 +614,8 @@ export const PAGE_SOURCE = `(() => {
           childList: true,
           characterData: true,
           attributes: true,
-          attributeFilter: ['style', 'type', 'contenteditable', 'role', 'hidden', 'class', MARK],
+          attributeFilter: ['style', 'type', 'contenteditable', 'role', 'hidden', 'class',
+            'alt', 'title', 'aria-label', 'placeholder', 'value', MARK],
         });
         observers.push(o);
       }
@@ -616,7 +682,12 @@ export const PAGE_SOURCE = `(() => {
       found.fields.forEach((el, i) => {
         if (!masked.has(i)) values.push(valueOf(el));
       });
-      return { ok: true, values, seen: seen.splice(0) };
+      return {
+        ok: true,
+        values,
+        seen: seen.splice(0),
+        inconclusive: seenPainted.inconclusive,
+      };
     },
     restore,
   };
@@ -777,22 +848,17 @@ export function hasClosedShadowField(
   return scan(node);
 }
 
-const AX_FIELD_ROLES = new Set([
-  'textbox',
-  'searchbox',
-  'combobox',
-  'spinbutton',
-  'listbox',
-]);
-
 /**
  * True when any accessible name in an Accessibility.getFullAXTree node list
- * (StaticText included) shows a registered value, other than inside a
- * field (a field's own value is judged by field masking).
+ * (StaticText included) shows a registered value, other than below an
+ * element the mask hides (`masked`: backend node ids of masked fields; a
+ * field's own value is judged by field masking). Anything else, a listbox's
+ * options included, counts as page text.
  */
 export function axShowsKnownValue(
   axNodes: unknown[],
   hasKnownValue: (text: string) => boolean,
+  masked: ReadonlySet<number> = new Set(),
 ): boolean {
   const byId = new Map<string, Record<string, unknown>>();
   for (const n of axNodes) {
@@ -801,8 +867,8 @@ export function axShowsKnownValue(
   const insideField = (n: Record<string, unknown>) => {
     let at = typeof n.parentId === 'string' ? byId.get(n.parentId) : undefined;
     for (let depth = 0; at && depth < 1024; depth++) {
-      const role = isObject(at.role) ? at.role.value : undefined;
-      if (typeof role === 'string' && AX_FIELD_ROLES.has(role)) return true;
+      const backend = at.backendDOMNodeId;
+      if (typeof backend === 'number' && masked.has(backend)) return true;
       at = typeof at.parentId === 'string' ? byId.get(at.parentId) : undefined;
     }
     return false;
@@ -937,7 +1003,6 @@ export function createMaskSession(
     open();
     const ax = await send('Accessibility.getFullAXTree', { frameId });
     const axNodes = isObject(ax) && Array.isArray(ax.nodes) ? ax.nodes : fail();
-    if (axShowsKnownValue(axNodes as unknown[], hasKnownValue)) fail();
     const names = new Map<number, string>();
     for (const n of axNodes as unknown[]) {
       if (!isObject(n) || typeof n.backendDOMNodeId !== 'number') continue;
@@ -971,8 +1036,11 @@ export function createMaskSession(
       const described = await send('DOM.describeNode', { objectId });
       const node = isObject(described) ? described.node : undefined;
       const backend = isObject(node) ? node.backendNodeId : undefined;
-      return typeof backend === 'number' ? names.get(backend) : undefined;
+      if (typeof backend !== 'number') return undefined;
+      backends.set(i, backend);
+      return names.get(backend);
     };
+    const backends = new Map<number, number>();
     const indices: number[] = [];
     for (let start = 0; start < fields.length; start += DESCRIBE_PARALLEL) {
       open();
@@ -993,6 +1061,18 @@ export function createMaskSession(
           isSensitiveValue(f.value);
         if (sensitive) indices.push(start + k);
       });
+    }
+    // Accessible names outside the fields being masked.
+    const maskedBackends = new Set(
+      indices.flatMap((i) => {
+        const b = backends.get(i);
+        return b === undefined ? [] : [b];
+      }),
+    );
+    if (
+      axShowsKnownValue(axNodes as unknown[], hasKnownValue, maskedBackends)
+    ) {
+      fail();
     }
 
     open();
@@ -1019,6 +1099,9 @@ export function createMaskSession(
     const result = (await call(holder, 'function () { return this.texts(); }'))
       .value;
     if (!isObject(result) || result.over !== false) return true;
+    // Generated content it could not resolve: fail closed once values are
+    // registered.
+    if (result.inconclusive === true && knownValuesRegistered()) return true;
     const chunks = Array.isArray(result.chunks) ? result.chunks : [];
     const byParent = new Map<unknown, string[]>();
     const all: string[] = [];
@@ -1131,6 +1214,9 @@ export function createMaskSession(
         }
         // Text that appeared during the window, even if gone again (a
         // transient toast): final.
+        if (result.inconclusive === true && knownValuesRegistered()) {
+          throw new ScreenshotMaskError();
+        }
         const seen = Array.isArray(result.seen) ? result.seen : [];
         if (
           seen.some((t) => typeof t !== 'string' || hasKnownValue(t)) ||

@@ -741,6 +741,16 @@ describe('page side', { timeout: 30_000 }, () => {
       [KNOWN],
     ],
     [
+      'content: attr(data-x)',
+      `<style>.x::before { content: 'Ref ' attr(data-x); }</style><p class="x" data-x="${KNOWN}"></p>`,
+      [KNOWN],
+    ],
+    [
+      'a registered value inside a listbox',
+      `<div role="listbox" aria-label="Choices"><div role="option">${KNOWN}</div></div>`,
+      [KNOWN],
+    ],
+    [
       'text in <title>',
       `<script>document.title = '${KNOWN}'</script>`,
       [KNOWN],
@@ -849,6 +859,101 @@ describe('page side', { timeout: 30_000 }, () => {
     await none.apply();
     await none.restore();
   });
+
+  it('generated content with counter() refuses only while values are registered', async () => {
+    await load(`<!doctype html><html lang="en"><head><style>
+      .n { counter-increment: item; }
+      .n::before { content: counter(item) '. '; }
+    </style></head><body><p class="n">First</p></body></html>`);
+    const registered = maskSession({ knownValuesRegistered: () => true });
+    await expect(registered.apply()).rejects.toThrow();
+    await registered.restore();
+    const none = maskSession({ knownValuesRegistered: () => false });
+    await none.apply();
+    await none.restore();
+  });
+
+  it('a registered value only inside a masked textbox does not refuse', async () => {
+    await load(`<!doctype html><html lang="en"><body>
+      <span id="l">Notes</span>
+      <div id="tb" role="textbox" contenteditable aria-labelledby="l">${KNOWN}</div>
+    </body></html>`);
+    const session = maskSession();
+    await session.apply();
+    expect(await fill('#tb')).toBe(TRANSPARENT);
+    await session.verify();
+    await session.restore();
+  });
+
+  for (const [name, html, change] of [
+    ['alt', '<img id="t" alt="x" src="data:,">', `t.setAttribute('alt', V)`],
+    ['title', '<p id="t" title="x">p</p>', `t.setAttribute('title', V)`],
+    [
+      'aria-label',
+      '<p id="t" aria-label="x">p</p>',
+      `t.setAttribute('aria-label', V)`,
+    ],
+    [
+      'placeholder',
+      '<label for="t">Pet</label><input id="t" placeholder="x">',
+      `t.setAttribute('placeholder', V)`,
+    ],
+    [
+      'a button value',
+      '<input id="t" type="button" value="x">',
+      `t.setAttribute('value', V)`,
+    ],
+    [
+      'an added <img alt>',
+      '<p id="t"></p>',
+      `const i = document.createElement('img'); i.alt = V; t.append(i)`,
+    ],
+    [
+      'an added button value',
+      '<p id="t"></p>',
+      `const i = document.createElement('input'); i.type = 'submit'; i.value = V; t.append(i)`,
+    ],
+    [
+      'an added ::before attr(data-x)',
+      '<style>.g::before { content: attr(data-x); }</style><p id="t"></p>',
+      `const d = document.createElement('div'); d.className = 'g'; d.dataset.x = V; t.append(d)`,
+    ],
+  ] as const) {
+    it(`verify refuses ${name} showing a registered value transiently during the window`, async () => {
+      await load(`<!doctype html><html lang="en"><body>${html}</body></html>`);
+      const session = maskSession();
+      await session.apply();
+      // Shown, then put back before verify: only the observer saw it.
+      const before = await page.evaluate(() =>
+        document.body.innerHTML.replace(/\s+/g, ' '),
+      );
+      await page.evaluate(
+        ([code, value]) => {
+          const t = document.getElementById('t') as HTMLElement;
+          const attrs = t
+            .getAttributeNames()
+            .map((n) => [n, t.getAttribute(n)]);
+          const children = t.childNodes.length;
+          new Function('t', 'V', code)(t, value);
+          setTimeout(() => {
+            for (const [n, v] of attrs)
+              t.setAttribute(n as string, v as string);
+            while (t.childNodes.length > children) t.lastChild?.remove();
+          }, 0);
+        },
+        [change, KNOWN] as const,
+      );
+      await page.waitForTimeout(50);
+      expect(
+        await page.evaluate(() => document.body.innerHTML.replace(/\s+/g, ' ')),
+      ).not.toContain(KNOWN);
+      expect(before).not.toContain(KNOWN);
+      await expect(session.verify()).rejects.toBeInstanceOf(
+        ScreenshotMaskError,
+      );
+      await session.restore();
+    });
+  }
 
   it('text churn without a registered value does not refuse', async () => {
     await load(`${FORM}<p id="clock">12:00</p>`);
