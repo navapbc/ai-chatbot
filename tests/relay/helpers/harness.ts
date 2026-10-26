@@ -27,6 +27,13 @@ export const EXTENSION_ID = readFileSync(
 /** Isolates this run's agent-browser daemons from any the user has running. */
 const NAMESPACE = `relay-e2e-${process.pid}-${randomBytes(3).toString('hex')}`;
 
+/**
+ * The namespace of this run's agent-browser daemons. A test that drives the
+ * CLI through the tool (which reads AGENT_BROWSER_NAMESPACE) sets that
+ * variable to this, so `closeAgentSessions` stops those daemons too.
+ */
+export const AGENT_NAMESPACE = NAMESPACE;
+
 const listen = (server: Server, port = 0) =>
   new Promise<number>((resolve, reject) => {
     server.once('error', reject);
@@ -113,6 +120,8 @@ export async function serveFixtures(): Promise<Fixtures> {
       sendHtml(res, form.replaceAll('{{FRAME_ORIGIN}}', frameOrigin));
     } else if (url.pathname === '/sensitive.html') {
       sendHtml(res, sensitive.replaceAll('{{FRAME_ORIGIN}}', frameOrigin));
+    } else if (url.pathname === '/get-submit.html') {
+      sendHtml(res, fixture('get-submit.html'));
     } else if (url.pathname === '/samesite.html') {
       sendHtml(
         res,

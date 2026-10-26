@@ -2,10 +2,15 @@ import { once } from 'node:events';
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type { ToolContext } from 'eve/tools';
 import type { Page } from 'playwright';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
+import { _resetAgentTokenCache } from '@/lib/relay/agent-token';
+import { COMMAND_REFUSED } from '@/lib/relay/command-policy';
+import { runRelayCommand } from '@/lib/relay/eve-relay-browser';
 import {
+  AGENT_NAMESPACE,
   agentBrowser,
   bridgeMessage,
   cdpUrl,
@@ -111,15 +116,22 @@ async function until(check: () => boolean | Promise<boolean>, ms = 10_000) {
   }
 }
 
-async function startRun(): Promise<{ cdp: string; runId: string }> {
+/** Every credential this file minted: no relay frame or log may carry one. */
+const credentials: string[] = [];
+
+async function startRun(
+  allowedFrameOrigins: string[] = [fixtures.frameOrigin],
+): Promise<{ cdp: string; runId: string }> {
   const tokens = mintRunTokens(relay.secret, fixtures.origin);
+  const cdp = cdpUrl(relay, tokens.agent);
+  credentials.push(tokens.extension, tokens.agent, cdp);
   const registered = relay.logs.length;
   const started = await bridgeMessage(browser.sw, {
     type: 'startRun',
     relayUrl: relay.url,
     token: tokens.extension,
     tabId,
-    allowedFrameOrigins: [fixtures.frameOrigin],
+    allowedFrameOrigins,
   });
   expect(started).toEqual({ ok: true });
   await until(() =>
@@ -127,7 +139,7 @@ async function startRun(): Promise<{ cdp: string; runId: string }> {
       .slice(registered)
       .some((l) => l.event === 'registered' && l.runId === tokens.runId),
   );
-  return { cdp: cdpUrl(relay, tokens.agent), runId: tokens.runId };
+  return { cdp, runId: tokens.runId };
 }
 
 const addKnownValue = (value: unknown) =>
@@ -672,6 +684,134 @@ const unpatchSendCommand = () =>
     }
   });
 
+// --- driving the real agent-browser through the tool -----------------------------
+
+interface RelayTool {
+  ctx: ToolContext;
+  /** How many times the tool asked the app for an agent token. */
+  tokenFetches: () => number;
+  run: (command: string[]) => ReturnType<typeof runRelayCommand>;
+}
+
+/**
+ * Starts a run and returns the Eve tool's view of it: `runRelayCommand` with a
+ * session carrying only the run reference, and the agent-token route stubbed
+ * (it mints only for the run's own session, like the real one). The real
+ * agent-browser CLI runs underneath.
+ */
+async function withRelayTool<T>(
+  allowedFrameOrigins: string[],
+  body: (tool: RelayTool) => Promise<T>,
+): Promise<T> {
+  const { cdp, runId } = await startRun(allowedFrameOrigins);
+  const token = new URL(cdp).searchParams.get('token') ?? '';
+  const sessionId = `wrun_red_${runId}`;
+  const priorSecret = process.env.EVE_INTERNAL_SECRET;
+  const priorNamespace = process.env.AGENT_BROWSER_NAMESPACE;
+  process.env.EVE_INTERNAL_SECRET = 'e2e-internal-secret';
+  process.env.AGENT_BROWSER_NAMESPACE = AGENT_NAMESPACE;
+  let fetches = 0;
+  vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+    fetches += 1;
+    const asked = JSON.parse(String(init.body)) as {
+      runId: string;
+      sessionId: string;
+    };
+    if (asked.runId !== runId || asked.sessionId !== sessionId) {
+      return new Response(null, { status: 404 });
+    }
+    return Response.json({ token, expiresAt: 4_000_000_000 });
+  });
+  _resetAgentTokenCache();
+  // The CLI wrapper logs one JSON line per command (errors on stderr).
+  const quiet = [
+    vi.spyOn(console, 'log').mockImplementation(() => {}),
+    vi.spyOn(console, 'error').mockImplementation(() => {}),
+  ];
+  const ctx = {
+    session: {
+      id: sessionId,
+      auth: {
+        initiator: {
+          attributes: { relayUrl: `${relay.url}/`, relayRunId: runId },
+          authenticator: 'test',
+          principalId: 'p',
+          principalType: 'user',
+          subject: 's',
+        },
+        current: null,
+      },
+    },
+  } as unknown as ToolContext;
+  try {
+    return await body({
+      ctx,
+      tokenFetches: () => fetches,
+      run: (command) => runRelayCommand(ctx, command),
+    });
+  } finally {
+    for (const spy of quiet) spy.mockRestore();
+    vi.unstubAllGlobals();
+    _resetAgentTokenCache();
+    await closeAgentSessions();
+    if (priorSecret === undefined)
+      Reflect.deleteProperty(process.env, 'EVE_INTERNAL_SECRET');
+    else process.env.EVE_INTERNAL_SECRET = priorSecret;
+    if (priorNamespace === undefined)
+      Reflect.deleteProperty(process.env, 'AGENT_BROWSER_NAMESPACE');
+    else process.env.AGENT_BROWSER_NAMESPACE = priorNamespace;
+  }
+}
+
+type RefMap = Record<string, { role: string; name: string }>;
+
+/** `@eN` for the first snapshot ref matching `match`, or null. */
+const refIn = (
+  snapshot: { data?: unknown },
+  match: (r: { role: string; name: string }) => boolean,
+) => {
+  const refs = (snapshot.data as { refs?: RefMap }).refs ?? {};
+  const hit = Object.entries(refs).find(([, r]) => match(r));
+  return hit ? `@${hit[0]}` : null;
+};
+
+/** Frames that carried a command from the agent to the extension. */
+const commandFrames = (mark: number) =>
+  relay.frames.slice(mark).filter((f) => {
+    try {
+      return (JSON.parse(f) as { t?: string }).t === 'cmd';
+    } catch {
+      return false;
+    }
+  });
+
+const waitForSensitivePage = async () => {
+  await page.goto(sensitiveUrl);
+  await page
+    .frameLocator('#xo')
+    .locator('#cc')
+    .waitFor({ state: 'attached', timeout: 10_000 });
+};
+
+// An ordinary checkbox, a select and a sensitive select, added to the page so
+// check, uncheck and select have something to act on.
+const addControls = () =>
+  page.evaluate(() => {
+    const box = document.createElement('div');
+    box.id = 'controls';
+    box.innerHTML = `
+      <label><input type="checkbox" id="agree"> I agree</label>
+      <label for="pick">Pick one</label>
+      <select id="pick"><option>Red</option><option>Blue</option></select>
+      <label for="sid">State ID number</label>
+      <select id="sid"><option>D1234567</option><option>D7654321</option></select>`;
+    document.body.append(box);
+  });
+
+/** Values the controls above hold, tracked as sensitive in the sweep. */
+const CONTROL_VALUES = ['D1234567', 'D7654321'];
+const SENSITIVE_STRINGS = [...FIELD_VALUES, ...CONTROL_VALUES];
+
 beforeAll(async () => {
   fixtures = await serveFixtures();
   sensitiveUrl = `${fixtures.origin}/sensitive.html`;
@@ -1111,7 +1251,10 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     try {
       const inner = page.frameLocator('#samesite').locator('#cc');
       await inner.waitFor({ state: 'attached', timeout: 10_000 });
-      const { cdp } = await startRun();
+      const { cdp } = await startRun([
+        fixtures.frameOrigin,
+        `https://localhost:${framePort}`,
+      ]);
       const agent = await rawAgent(cdp);
       const session = await agent.attach();
       await agent.childSession(session);
@@ -1134,6 +1277,34 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     expect(await styleAttributes()).toEqual(before);
     expect(await leftovers()).toBe(0);
     await agent.close();
+  });
+
+  it('a screenshot of a page with a same-site frame outside allowedFrameOrigins is refused', async () => {
+    const framePort = new URL(fixtures.frameOrigin).port;
+    await page.evaluate((src) => {
+      const frame = document.createElement('iframe');
+      frame.id = 'samesite';
+      frame.src = src;
+      document.body.append(frame);
+    }, `https://localhost:${framePort}/oopif-sensitive.html`);
+    try {
+      await page
+        .frameLocator('#samesite')
+        .locator('#cc')
+        .waitFor({ state: 'attached', timeout: 10_000 });
+      // Only the cross-site origin is allowed: the localhost frame is out of
+      // scope, so the bridge refuses to paint it.
+      const { cdp } = await startRun([fixtures.frameOrigin]);
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.childSession(session);
+      const shot = await agent.call('Page.captureScreenshot', {}, session);
+      expect(shot.error).toBeDefined();
+      expect(shot.result?.data).toBeUndefined();
+      await agent.close();
+    } finally {
+      await page.evaluate(() => document.getElementById('samesite')?.remove());
+    }
   });
 
   it('an <object> and an <embed> holding an SSN field are masked (P2)', async () => {
@@ -1164,7 +1335,10 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
           ).then((c) => c.every((n) => n === 1)),
       );
       const frames = page.frames().filter((f) => f.url() === src);
-      const { cdp } = await startRun();
+      const { cdp } = await startRun([
+        fixtures.frameOrigin,
+        `https://localhost:${framePort}`,
+      ]);
       const agent = await rawAgent(cdp);
       const session = await agent.attach();
       await agent.childSession(session);
@@ -1962,6 +2136,311 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
         document.getElementById('r5list')?.remove();
       });
     }
+  });
+
+  it('a snapshot never contains a sensitive value', async () => {
+    const framePort = new URL(fixtures.frameOrigin).port;
+    const sameSite = `https://localhost:${framePort}`;
+    await page.evaluate((src) => {
+      const frame = document.createElement('iframe');
+      frame.id = 'samesite';
+      frame.title = 'same-site card frame';
+      frame.src = src;
+      document.body.append(frame);
+    }, `${sameSite}/oopif-sensitive.html`);
+    const mark = relay.frames.length;
+    try {
+      await page
+        .frameLocator('#samesite')
+        .locator('#cc')
+        .waitFor({ state: 'attached', timeout: 10_000 });
+      await withRelayTool([fixtures.frameOrigin, sameSite], async (tool) => {
+        const snapshots: string[] = [];
+        for (const command of [
+          ['snapshot', '-i'],
+          ['snapshot', '-c'],
+          ['snapshot'],
+        ]) {
+          const result = await tool.run(command);
+          expect(result.success).toBe(true);
+          snapshots.push(JSON.stringify(result));
+        }
+        // The same-site frame is in scope: its field is in the snapshot above
+        // already; enter it and snapshot again for the frame-scoped view.
+        const full = await tool.run(['snapshot', '-i']);
+        const frameRef = refIn(
+          full,
+          (r) => r.role === 'Iframe' && r.name === 'same-site card frame',
+        );
+        expect(frameRef).not.toBeNull();
+        const entered = await tool.run(['frame', frameRef as string]);
+        expect(entered.success).toBe(true);
+        const inFrame = await tool.run(['snapshot', '-i']);
+        expect(inFrame.success).toBe(true);
+        await tool.run(['frame', 'main']);
+        const texts = [
+          ...snapshots,
+          JSON.stringify(full),
+          JSON.stringify(entered),
+          JSON.stringify(inFrame),
+        ];
+        expect(leaked(texts, SENSITIVE_STRINGS)).toEqual([]);
+        expect(texts.some((t) => credentials.some((c) => t.includes(c)))).toBe(
+          false,
+        );
+        // Positive control: the snapshots show masked fields and the
+        // ordinary one.
+        expect(snapshots.every((t) => t.includes(MASK))).toBe(true);
+        expect(texts.some((t) => t.includes('Springfield'))).toBe(true);
+      });
+    } finally {
+      await page.evaluate(() => document.getElementById('samesite')?.remove());
+    }
+    expect(leaked(seenSince(mark), SENSITIVE_STRINGS)).toEqual([]);
+    for (const frame of relay.frames.slice(mark)) {
+      expect(credentials.some((c) => frame.includes(c))).toBe(false);
+    }
+  });
+
+  it('every allowed command can be driven against the sensitive fixture without leaking', async () => {
+    await addControls();
+    const mark = relay.frames.length;
+    let cursor = mark;
+    const failures: string[] = [];
+    const outcomes: string[] = [];
+    try {
+      await withRelayTool([fixtures.frameOrigin], async (tool) => {
+        // Runs one command and checks everything it and the relay carried
+        // since the last one: no sensitive string, token or CDP URL.
+        const drive = async (command: string[]) => {
+          const result = await tool.run(command);
+          const label = command.slice(0, 2).join(' ');
+          const carried = [
+            JSON.stringify(result),
+            ...relay.frames.slice(cursor),
+            ...relay.logs.map((l) => JSON.stringify(l)),
+          ];
+          cursor = relay.frames.length;
+          if (leaked(carried, SENSITIVE_STRINGS).length > 0) {
+            failures.push(`${label}: sensitive value`);
+          }
+          if (carried.some((t) => credentials.some((c) => t.includes(c)))) {
+            failures.push(`${label}: credential`);
+          }
+          outcomes.push(`${label}: ${result.success ? 'ok' : 'failed'}`);
+          return result;
+        };
+
+        const first = await drive(['snapshot', '-i']);
+        const ref = (name: string, role?: string) =>
+          refIn(
+            first,
+            (r) => r.name.trim() === name && (!role || r.role === role),
+          );
+        const middle = ref('Middle name', 'textbox');
+        const agree = ref('I agree');
+        const pick = ref('Pick one');
+        const card = ref('card frame');
+        // Masked textboxes in page order: code, ssn, ssn2, spouse (empty), acct.
+        const refs = (first.data as { refs: RefMap }).refs;
+        const masked = Object.entries(refs)
+          .filter(([, r]) => r.name === MASK && r.role === 'textbox')
+          .map(([id]) => `@${id}`)
+          .sort((a, b) => Number(a.slice(2)) - Number(b.slice(2)));
+        expect([middle, agree, pick, card].every(Boolean)).toBe(true);
+        expect(masked.length).toBeGreaterThanOrEqual(5);
+
+        // A dialog the page opens while the agent drives: its text is
+        // blanked on the way up, and accept or dismiss still works.
+        let release: () => void = () => {};
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        page.once('dialog', async (dialog) => {
+          await held;
+          await dialog.dismiss().catch(() => {});
+        });
+
+        const commands: string[][] = [
+          ['snapshot', '-c'],
+          ['snapshot', '-d', '3'],
+          ['snapshot', '-u'],
+          ['is', 'visible', middle as string],
+          ['is', 'enabled', middle as string],
+          ['is', 'checked', agree as string],
+          ['focus', middle as string],
+          ['hover', middle as string],
+          ['scrollintoview', middle as string],
+          ['wait', middle as string],
+          ['fill', middle as string, 'typed-ok'],
+          ['type', middle as string, '-more'],
+          ['click', middle as string],
+          ['press', 'Enter'],
+          ['press', 'Tab'],
+          ['press', 'Control+a'],
+          ['click', masked[0]],
+          ['focus', masked[1]],
+          ['hover', masked[2]],
+          ['fill', masked[3], 'typed-ok'],
+          ['type', masked[3], '-more'],
+          ['select', pick as string, 'Blue'],
+          ['check', agree as string],
+          ['uncheck', agree as string],
+          ['scroll', 'down'],
+          ['scroll', 'down', '200'],
+          ['scroll', 'up'],
+          ['wait', '100'],
+          ['wait', '--load', 'load'],
+          ['screenshot'],
+          ['screenshot', '--full'],
+          ['tab'],
+          ['tab', 'list'],
+          ['get', 'url'],
+          ['get', 'title'],
+          ['frame', card as string],
+          ['snapshot', '-i'],
+          ['frame', 'main'],
+        ];
+        for (const command of commands) await drive(command);
+
+        // Dialogs: one is open now.
+        await page.evaluate(() => {
+          setTimeout(() => prompt('Re-enter 900-00-1234', '900-00-5678'), 0);
+        });
+        await new Promise((r) => setTimeout(r, 300));
+        await drive(['dialog', 'accept', 'typed-ok']);
+        await drive(['dialog', 'dismiss']);
+        release();
+
+        // Navigation, last: it voids every ref.
+        for (const command of [
+          ['open', `${fixtures.origin}/page2.html`],
+          ['back'],
+          ['forward'],
+          ['reload'],
+          ['open', sensitiveUrl],
+          ['snapshot', '-i'],
+        ]) {
+          await drive(command);
+        }
+      });
+    } finally {
+      await waitForSensitivePage();
+    }
+    expect(failures).toEqual([]);
+    // Not every command succeeds here: `wait @ref` times out, `reload` and
+    // `screenshot --full` are denied by the bridge, `dialog dismiss` finds no
+    // dialog and a cross-site frame has no snapshot. Each still goes through
+    // the leak checks above; the sweep must have run.
+    expect(outcomes.filter((o) => o.endsWith(': ok')).length).toBeGreaterThan(
+      30,
+    );
+    expect(commandFrames(mark).length).toBeGreaterThan(30);
+  }, 120_000);
+
+  it('refused commands never reach the relay', async () => {
+    const refused: string[][] = [
+      ['eval', 'document.title'],
+      ['batch', 'snapshot'],
+      ['get', 'value', '@e1'],
+      ['get', 'text', '@e1'],
+      ['get', 'html', '@e1'],
+      ['get', 'count', 'input'],
+      ['find', 'text', 'Springfield', 'click'],
+      ['wait', '--text', 'Springfield'],
+      ['wait', '--url', '**/sensitive.html'],
+      ['snapshot', '-s', '#ssn'],
+      ['click', '#ssn'],
+      ['click', 'xpath=//input'],
+      ['click', 'text=Springfield'],
+      ['is', 'visible', '#ssn'],
+      ['scroll', 'down', '--selector', '#ssn'],
+      ['open', 'javascript:alert(1)'],
+      ['open', 'data:text/html,hello'],
+      ['open', 'file:///etc/hosts'],
+      ['press', 'Control+c'],
+      ['tab', 'new'],
+      ['keyboard', 'type', 'hello'],
+      ['upload', '@e1', '/etc/hosts'],
+      ['--cdp', 'ws://127.0.0.1:1/cdp', 'snapshot'],
+      ['fill', '@e1', '--cdp', 'x'],
+    ];
+    await withRelayTool([fixtures.frameOrigin], async (tool) => {
+      const logged = relay.logs.length;
+      const mark = relay.frames.length;
+      const unexpected: string[] = [];
+      for (const command of refused) {
+        const result = await tool.run(command);
+        const label = command.slice(0, 2).join(' ');
+        if (result.success || result.error !== COMMAND_REFUSED) {
+          unexpected.push(label);
+        }
+      }
+      expect(unexpected).toEqual([]);
+      // Nothing was asked of the app or sent to the extension, and no agent
+      // ever connected to the relay.
+      expect(tool.tokenFetches()).toBe(0);
+      expect(commandFrames(mark)).toEqual([]);
+      expect(
+        relay.logs.slice(logged).filter((l) => l.event === 'agent-attached'),
+      ).toEqual([]);
+
+      // Positive control: an allowed command does all of that.
+      const allowed = await tool.run(['get', 'url']);
+      expect(allowed.success).toBe(true);
+      expect(tool.tokenFetches()).toBeGreaterThan(0);
+      expect(commandFrames(mark).length).toBeGreaterThan(0);
+    });
+  });
+
+  it('a GET-submitted form puts no sensitive value in a URL the agent sees', async () => {
+    const getUrl = `${fixtures.origin}/get-submit.html`;
+    const values = ['900-00-1234', '900001234'];
+    const mark = relay.frames.length;
+    try {
+      await withRelayTool([fixtures.frameOrigin], async (tool) => {
+        // The harness submits the form: the agent never does in production.
+        await page.goto(getUrl);
+        await page.fill('#ssn', values[0]);
+        await page.fill('#note', values[1]);
+        await Promise.all([
+          page.waitForURL((u) => u.search.includes('ssn=')),
+          page.click('button[type=submit]'),
+        ]);
+        // The real URL carries both values.
+        expect(values.every((v) => page.url().includes(v))).toBe(true);
+
+        const seen: string[] = [];
+        const url = await tool.run(['get', 'url']);
+        const tabs = await tool.run(['tab', 'list']);
+        const snap = await tool.run(['snapshot', '-i']);
+        for (const result of [url, tabs, snap]) {
+          expect(result.success).toBe(true);
+          seen.push(JSON.stringify(result));
+        }
+        expect(leaked(seen, values)).toEqual([]);
+        // Origin and path survive, so the agent can still tell where it is,
+        // and the run is still in scope (the snapshot worked).
+        expect(typeof (url.data as { url?: string }).url).toBe('string');
+        expect((url.data as { url: string }).url).toContain(getUrl);
+        expect(seen[1]).toContain(getUrl);
+        expect(JSON.stringify(snap)).toContain('Look up');
+      });
+    } finally {
+      await waitForSensitivePage();
+    }
+    expect(leaked(seenSince(mark), values)).toEqual([]);
+  });
+
+  it("after the run the relay frames contain none of the fixture's sensitive strings, the token or the CDP URL", () => {
+    // Both directions, every frame and log since the relay started: the
+    // sensitive strings the fixtures hold, and every credential minted.
+    expect(leaked(seenSince(0), SENSITIVE_STRINGS)).toEqual([]);
+    expect(
+      seenSince(0).some((t) => credentials.some((c) => t.includes(c))),
+    ).toBe(false);
+    expect(relay.frames.length).toBeGreaterThan(0);
+    expect(credentials.length).toBeGreaterThan(0);
   });
 
   // Kept last: Playwright reports no handle for the restarted worker, so
