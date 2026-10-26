@@ -376,3 +376,50 @@ describe('prose guard: boundaries, escapes and unicode digits', () => {
     }
   });
 });
+
+describe('ZIP+4, phones and dates stay out of the prose guard', () => {
+  const refuses = (text: string) =>
+    mustRefuseRelayText(stripSensitiveText(text));
+
+  it.each([
+    'Send mail to 123 Main St, Oakland, CA 94110-1234 please',
+    '941101234',
+    'zip 94110-1234',
+    '(555) 123-4567',
+    '555-123-4567',
+    '555.123.4567',
+    '+1 555 123 4567',
+    '5551234567',
+    '2026-10-26',
+    '2026/10/26 10:30',
+    '1234 5678 9012 3456',
+  ])('does not refuse %j', (text) => {
+    expect(refuses(text)).toBe(false);
+  });
+
+  it('does not refuse ZIP+4 inside a record JSON string value', () => {
+    const rec = structuredClone(PARTICIPANTS[0]);
+    rec.participant.name.last = 'Lee, 123 Main St, CA 94110-1234';
+    expect(refuses(opening(rec))).toBe(false);
+  });
+
+  it.each([
+    'SSN 941101234',
+    'ssn: 941101234',
+    '900-00-1234',
+    '900 00 1234',
+    '900.00.1234',
+    '٩٠٠-٠٠-١٢٣٤',
+    '900–00–1234',
+    '900 00 1234',
+  ])('still refuses %j', (text) => {
+    expect(refuses(text)).toBe(true);
+  });
+
+  it.each(PARTICIPANTS.map((p) => [p.record_id, p] as const))(
+    'never refuses the normal opening message for %s',
+    (_id, p) => {
+      expect(refuses(opening(p))).toBe(false);
+    },
+  );
+});

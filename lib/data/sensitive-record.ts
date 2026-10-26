@@ -9,7 +9,7 @@
 // Pure and dependency-light: no `server-only`, so Eve code can import it.
 
 import { scanJsonBlocks, scanJsonObjects } from '@/lib/jev/participant';
-import { SSN_SHAPED, isSensitiveField } from '@/lib/relay/sensitive-fields';
+import { isSensitiveField } from '@/lib/relay/sensitive-fields';
 
 export const WITHHELD = '[withheld: ask the caseworker]';
 
@@ -85,7 +85,12 @@ const CLASSIFY_BUDGET = 20_000;
 const TOKEN_WINDOW = 8;
 const WORD = /[A-Za-z][A-Za-z0-9'\u2019]*/g;
 const ZERO_WIDTH = /\u200b|\u200c|\u200d|\u2060|\ufeff|\u00ad/g;
-const SSN_SEPARATED = /(?<!\d)\d{3}[\s.\-\u2013]\d{2}[\s.\-\u2013]\d{4}(?!\d)/;
+// SSN grouping 3-2-4 with a separator between the groups. Guard-local: the
+// shared SSN_SHAPED accepts missing separators and so also matches ZIP+4
+// (5-4). A contiguous 9-digit number is not flagged on its own; it is caught
+// when a sensitive label sits within the token window.
+const SSN_GROUPED =
+  /(?<!\d)\d{3}[^\p{L}\p{N}]{1,3}\d{2}[^\p{L}\p{N}]{1,3}\d{4}(?!\d)/u;
 const CARD_RUN = /(?<!\d)\d(?:[^\p{L}\p{N}]{0,3}\d){12,18}(?!\d)/gu;
 
 // Every Unicode decimal digit (Arabic-Indic, full-width, mathematical...) to
@@ -122,9 +127,9 @@ const luhnValid = (digits: string): boolean => {
   return sum % 10 === 0;
 };
 
-/** An SSN-shaped token or a Luhn-valid 13-19 digit number, anywhere. */
+/** An SSN-grouped (3-2-4) token or a Luhn-valid 13-19 digit number, anywhere. */
 const hasValueShape = (text: string): boolean => {
-  if (SSN_SHAPED.test(text) || SSN_SEPARATED.test(text)) return true;
+  if (SSN_GROUPED.test(text)) return true;
   for (const m of text.matchAll(CARD_RUN)) {
     const digits = m[0].replace(/\D/g, '');
     if (digits.length >= 13 && digits.length <= 19 && luhnValid(digits)) {
