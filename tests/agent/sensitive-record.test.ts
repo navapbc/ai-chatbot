@@ -320,3 +320,59 @@ describe('fail closed on unparsed blocks and padded values', () => {
     },
   );
 });
+
+describe('prose guard: boundaries, escapes and unicode digits', () => {
+  const refuses = (text: string) =>
+    mustRefuseRelayText(stripSensitiveText(text));
+
+  it.each([
+    ['nullable 123-45-6789', 'ssn: nullable 123-45-6789'],
+    ['trueSSN 123...', 'trueSSN 123-45-6789'],
+    ['a value after a null value', 'ssn: null 123-45-6789'],
+    ['a value after a withheld value', `ssn: ${WITHHELD} 123-45-6789`],
+    ['escaped key', '{"\\u0073sn": "x1y2z3", oops}'],
+    ['escaped slash key', '{"tax\\/id": "x1y2z3", oops}'],
+    ['malformed escape in an unparsed block', '{"a\\q": 1, oops}'],
+    ['Arabic-Indic digits', 'ssn ١٢٣-٤٥-٦٧٨٩'],
+    ['full-width digits and dashes', '１２３－４５－６７８９'],
+    ['en-dash separators', '123–45–6789'],
+    ['NBSP separators', '123 45 6789'],
+    ['card with odd separators', '4111 / 1111 / 1111 / 1111'],
+    ['card with dots', '4111.1111.1111.1111'],
+    [
+      'escaped digits in a parsed block',
+      '{"note": "\\u0031\\u0032\\u0033-45-6789"}',
+    ],
+    ['digits in a key of a parsed block', '{"123-45-6789": "x"}'],
+  ])('refuses %s', (_n, text) => {
+    expect(refuses(text)).toBe(true);
+  });
+
+  it.each([
+    '(555) 123-4567',
+    'call 555-123-4567 or +1 (555) 123 4567',
+    'appointment 2026-10-26 at 10:30',
+    'dob 10/26/1990',
+    'ssn: null',
+    'ssn is "" for now',
+    '{"ssn": null, "ok": true}',
+    '{"calworks_id": "[withheld: ask the caseworker]"}',
+  ])('does not refuse %j', (text) => {
+    expect(refuses(text)).toBe(false);
+  });
+
+  it.each(PARTICIPANTS.map((p) => [p.record_id, p] as const))(
+    'still never refuses the normal opening message for %s',
+    (_id, p) => {
+      expect(refuses(opening(p))).toBe(false);
+    },
+  );
+
+  it('stays fast on 200 KB of digits and separators', () => {
+    for (const text of ['1 '.repeat(100_000), '12-'.repeat(70_000)]) {
+      const t = performance.now();
+      mustRefuseRelayText(text);
+      expect(performance.now() - t).toBeLessThan(1500);
+    }
+  });
+});

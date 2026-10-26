@@ -86,11 +86,28 @@ const TOKEN_WINDOW = 8;
 const WORD = /[A-Za-z][A-Za-z0-9'\u2019]*/g;
 const ZERO_WIDTH = /\u200b|\u200c|\u200d|\u2060|\ufeff|\u00ad/g;
 const SSN_SEPARATED = /(?<!\d)\d{3}[\s.\-\u2013]\d{2}[\s.\-\u2013]\d{4}(?!\d)/;
-const CARD_RUN = /(?<!\d)\d(?:[ -]?\d){12,18}(?!\d)/g;
+const CARD_RUN = /(?<!\d)\d(?:[^\p{L}\p{N}]{0,3}\d){12,18}(?!\d)/gu;
 
-/** NFKC, zero-width characters removed, whitespace collapsed. */
+// Every Unicode decimal digit (Arabic-Indic, full-width, mathematical...) to
+// ASCII. Decimal digits sit in contiguous runs starting at a zero, so the
+// value is the offset from the start of the run, modulo 10.
+const toAsciiDigit = (c: string): string => {
+  const cp = c.codePointAt(0) as number;
+  let start = cp;
+  for (let n = 0; n < 100; n++) {
+    if (!/^\p{Nd}$/u.test(String.fromCodePoint(start - 1))) break;
+    start--;
+  }
+  return String((cp - start) % 10);
+};
+
+/** NFKC, zero-width removed, non-ASCII digits mapped, whitespace collapsed. */
 const normalizeText = (text: string): string =>
-  text.normalize('NFKC').replace(ZERO_WIDTH, '').replace(/\s+/g, ' ');
+  text
+    .normalize('NFKC')
+    .replace(ZERO_WIDTH, '')
+    .replace(/(?![0-9])\p{Nd}/gu, toAsciiDigit)
+    .replace(/\s+/g, ' ');
 
 const luhnValid = (digits: string): boolean => {
   let sum = 0;
@@ -139,10 +156,16 @@ const makeClassifier = () => {
   };
 };
 
-const startsWithEmpty = (rest: string): boolean =>
-  rest.startsWith(WITHHELD) ||
-  rest.startsWith(`"${WITHHELD}`) ||
-  /^(?:null|true|false|""|'')/.test(rest);
+// The withheld placeholder is swapped for this mark before label scanning, so
+// its own words ("ask the caseworker") never form part of a label window.
+const EMPTY_MARK = '\u0001';
+const EMPTY_VALUE = new RegExp(
+  `^(?:"?${EMPTY_MARK}"?|"?${WITHHELD.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}"?|null|true|false|""|'')(?=$|[\\s,}\\]])`,
+);
+
+/** Length of an empty/withheld value token at the start of `rest`, else 0. */
+const emptyLength = (rest: string): number =>
+  EMPTY_VALUE.exec(rest)?.[0].length ?? 0;
 
 /**
  * True when the text still has a sensitive value: a value-shaped token (SSN or
@@ -153,7 +176,7 @@ const startsWithEmpty = (rest: string): boolean =>
  * collapsed) so padding cannot push a value out of the window.
  */
 export function hasSensitiveValueInProse(raw: string): boolean {
-  const text = normalizeText(raw);
+  const text = normalizeText(raw).split(WITHHELD).join(EMPTY_MARK);
   if (hasValueShape(text)) return true;
   const classifier = makeClassifier();
   const words = [...text.matchAll(WORD)];
@@ -169,21 +192,27 @@ export function hasSensitiveValueInProse(raw: string): boolean {
       if (!classifier.sensitive(label)) continue;
       const labelEnd = (last.index ?? 0) + last[0].length;
       const rest = text.slice(labelEnd, labelEnd + 400);
+      // An empty or withheld value is skipped, but the tokens after it are
+      // still scanned ('ssn: null 123-45-6789' must not pass).
       const afterLabel = rest.replace(/^[\s"':=]+/, '');
-      if (!startsWithEmpty(afterLabel)) {
-        const isKey = /^["']?\s*[:=]/.test(rest);
-        const next = rest.split(' ').filter(Boolean).slice(0, TOKEN_WINDOW);
-        if (hasValueLike(next)) return true;
-        if (!isKey) {
-          const from = Math.max(0, (first.index ?? 0) - 400);
-          const prev = text
-            .slice(from, first.index ?? 0)
-            .split(' ')
-            .filter(Boolean)
-            .slice(-TOKEN_WINDOW);
-          if (hasValueLike(prev)) return true;
-        }
+      const skip = emptyLength(afterLabel);
+      const next = afterLabel
+        .slice(skip)
+        .split(' ')
+        .filter(Boolean)
+        .slice(0, TOKEN_WINDOW);
+      if (hasValueLike(next)) return true;
+      const isKey = /^["']?\s*[:=]/.test(rest);
+      if (!isKey) {
+        const from = Math.max(0, (first.index ?? 0) - 400);
+        const prev = text
+          .slice(from, first.index ?? 0)
+          .split(' ')
+          .filter(Boolean)
+          .slice(-TOKEN_WINDOW);
+        if (hasValueLike(prev)) return true;
       }
+      // The shortest sensitive window is the label; longer ones add words.
       break;
     }
   }
@@ -219,8 +248,7 @@ const blockHasSensitiveKey = (
         .join(' ');
       if (!classifier.sensitive(label)) continue;
       const value = block.slice(at + 1).replace(/^\s+/, '');
-      if (!startsWithEmpty(value)) return true;
-      break;
+      if (emptyLength(value) === 0) return true;
     }
   }
   return false;
@@ -236,11 +264,67 @@ export function hasUnparsedSensitiveBlock(raw: string): boolean {
   const scan = scanJsonBlocks(text);
   if (scan.overBudget) return true;
   const classifier = makeClassifier();
-  return scan.unparsed.some((r) =>
-    blockHasSensitiveKey(text.slice(r.start, r.end), classifier),
-  );
+  return scan.unparsed.some((r) => {
+    const decoded = decodeEscapes(text.slice(r.start, r.end));
+    // An escape that does not decode is hiding something: fail closed.
+    return (
+      decoded === null ||
+      blockHasSensitiveKey(normalizeText(decoded), classifier)
+    );
+  });
 }
+
+const SIMPLE_ESCAPES: Record<string, string> = {
+  '"': '"',
+  '\\': '\\',
+  '/': '/',
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+};
+
+/** Decode JSON string escapes; null when one is malformed. */
+const decodeEscapes = (block: string): string | null => {
+  let bad = false;
+  const out = block.replace(
+    /\\(u[0-9a-fA-F]{4}|[\s\S])/g,
+    (_m, esc: string) => {
+      if (esc.length === 5)
+        return String.fromCharCode(Number.parseInt(esc.slice(1), 16));
+      const simple = SIMPLE_ESCAPES[esc];
+      if (simple === undefined) bad = true;
+      return simple ?? '';
+    },
+  );
+  return bad ? null : out;
+};
+
+const MAX_VALUE_NODES = 50_000;
+
+/** True when a decoded string value or key of a parsed block has a value shape. */
+const parsedBlocksHaveValueShape = (raw: string): boolean => {
+  const scan = scanJsonBlocks(normalizeText(raw));
+  const todo: unknown[] = scan.blocks.map((b) => b.value);
+  for (let n = 0; todo.length > 0 && n < MAX_VALUE_NODES; n++) {
+    const v = todo.pop();
+    if (typeof v === 'string') {
+      if (hasValueShape(normalizeText(v))) return true;
+    } else if (typeof v === 'number') {
+      if (hasValueShape(normalizeText(String(v)))) return true;
+    } else if (v && typeof v === 'object') {
+      for (const [k, c] of Object.entries(v)) {
+        if (hasValueShape(normalizeText(k))) return true;
+        todo.push(c);
+      }
+    }
+  }
+  return todo.length > 0;
+};
 
 /** Whether a relay turn must be refused, given the already-stripped text. */
 export const mustRefuseRelayText = (stripped: string): boolean =>
-  hasUnparsedSensitiveBlock(stripped) || hasSensitiveValueInProse(stripped);
+  hasUnparsedSensitiveBlock(stripped) ||
+  hasSensitiveValueInProse(stripped) ||
+  parsedBlocksHaveValueShape(stripped);
