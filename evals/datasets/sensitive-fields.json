@@ -810,5 +810,37 @@
     },
     "sensitive": false,
     "why": "ruling P4: not sensitive"
+  },
+  {
+    "id": "ssn-underscore-placeholder",
+    "field": {
+      "placeholder": "___-__-____"
+    },
+    "sensitive": true,
+    "why": "underscore-masked SSN placeholder"
+  },
+  {
+    "id": "ssn-bullet-placeholder",
+    "field": {
+      "placeholder": "•••-••-••••"
+    },
+    "sensitive": true,
+    "why": "bullet-masked SSN placeholder"
+  },
+  {
+    "id": "date-underscore-placeholder",
+    "field": {
+      "placeholder": "__/__/____"
+    },
+    "sensitive": false,
+    "why": "date placeholder, not SSN-shaped"
+  },
+  {
+    "id": "phone-underscore-placeholder",
+    "field": {
+      "placeholder": "(___) ___-____"
+    },
+    "sensitive": false,
+    "why": "phone placeholder, not SSN-shaped"
   }
 ]

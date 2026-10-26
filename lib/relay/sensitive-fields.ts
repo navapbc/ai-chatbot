@@ -115,9 +115,11 @@ const wrap = (p: string): string => `(?<![a-z])${p}(?![a-z])`;
 const EXPIRY_TEXT = new RegExp(wrap(EXPIRY));
 const CARD_SIGNAL_TEXT = new RegExp(wrap(CARD_SIGNAL));
 
-// Value-shaped placeholders: an SSN-like example or its x/#-masked form.
+// Value-shaped placeholders: an SSN-like example or its masked form (x, #, *,
+// underscore or bullet). A date (__/__/____) or phone ((___) ___-____) mask
+// has a different shape and does not match.
 const SSN_SHAPED =
-  /(?<!\d)\d{3}-?\d{2}-?\d{4}(?!\d)|(?<![x#*\d])[x#*]{3}[- ]?[x#*]{2}[- ]?[x#*]{4}(?![x#*\d])/i;
+  /(?<!\d)\d{3}-?\d{2}-?\d{4}(?!\d)|(?<![x#*_•●\d])[x#*_•●]{3}[- ]?[x#*_•●]{2}[- ]?[x#*_•●]{4}(?![x#*_•●\d])/i;
 
 const SENSITIVE_TEXT = new RegExp(
   PATTERNS.map(wrap).join('|'),
