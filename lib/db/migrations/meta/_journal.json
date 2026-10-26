@@ -57,6 +57,13 @@
       "when": 1781282233474,
       "tag": "0006_greedy_william_stryker",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793023195791,
+      "tag": "0007_zippy_magik",
+      "breakpoints": true
     }
   ]
 }

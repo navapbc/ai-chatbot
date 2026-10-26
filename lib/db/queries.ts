@@ -28,12 +28,16 @@ import {
   type Chat,
   stream,
   sessionMapping,
+  eveRun,
+  type EveRun,
 } from './schema';
 import type { ArtifactKind } from '@/components/artifact';
 import { generateUUID } from '../utils';
 import { generateHashedPassword } from './utils';
 import type { VisibilityType } from '@/components/visibility-selector';
 import { ChatSDKError } from '../errors';
+import type { PendingInputRequest } from '../ai/eve/input-requests';
+import type { RunProgress } from '../relay/progress';
 
 // Optionally, if not using email/pass login, you can
 // use the Drizzle adapter for Auth.js / NextAuth
@@ -679,5 +683,199 @@ export async function upsertSessionMapping({
       'bad_request:database',
       'Failed to upsert session mapping',
     );
+  }
+}
+
+// EveRun: per-(user, chat) Eve run state. Every query that takes a userId is
+// scoped by it. swapToken and advance are single conditional UPDATEs so
+// concurrent writers cannot interleave a read and a write.
+
+export async function getEveRun({
+  userId,
+  chatId,
+}: { userId: string; chatId: string }): Promise<EveRun | undefined> {
+  try {
+    const [row] = await db
+      .select()
+      .from(eveRun)
+      .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
+    return row;
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to get eve run');
+  }
+}
+
+/**
+ * Looks a run up by chatId alone, for the internal token route. chatId is
+ * only unique per user, so if two users hold the same chatId this fails
+ * closed and returns undefined rather than picking one.
+ */
+export async function getEveRunByChatId({
+  chatId,
+}: { chatId: string }): Promise<EveRun | undefined> {
+  try {
+    const rows = await db
+      .select()
+      .from(eveRun)
+      .where(eq(eveRun.chatId, chatId))
+      .limit(2);
+    return rows.length === 1 ? rows[0] : undefined;
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to get eve run by chat id',
+    );
+  }
+}
+
+/** Inserts a new run; throws if one already exists for (userId, chatId). */
+export async function createEveRun({
+  userId,
+  chatId,
+  eveSessionId,
+  continuationToken,
+  relayOrigin,
+}: {
+  userId: string;
+  chatId: string;
+  eveSessionId: string;
+  continuationToken: string;
+  relayOrigin?: string | null;
+}): Promise<EveRun> {
+  try {
+    const now = new Date();
+    const [row] = await db
+      .insert(eveRun)
+      .values({
+        userId,
+        chatId,
+        eveSessionId,
+        continuationToken,
+        relayOrigin: relayOrigin ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+    return row;
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to create eve run');
+  }
+}
+
+/** Compare-and-set on continuationToken. Returns whether the swap happened. */
+export async function swapEveRunToken({
+  userId,
+  chatId,
+  expected,
+  next,
+}: {
+  userId: string;
+  chatId: string;
+  expected: string;
+  next: string;
+}): Promise<boolean> {
+  try {
+    const rows = await db
+      .update(eveRun)
+      .set({ continuationToken: next, updatedAt: new Date() })
+      .where(
+        and(
+          eq(eveRun.userId, userId),
+          eq(eveRun.chatId, chatId),
+          eq(eveRun.continuationToken, expected),
+        ),
+      )
+      .returning({ id: eveRun.id });
+    return rows.length === 1;
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to swap eve run token',
+    );
+  }
+}
+
+/** Moves the cursor and token forward only when streamIndex is higher. */
+export async function advanceEveRun({
+  userId,
+  chatId,
+  continuationToken,
+  streamIndex,
+}: {
+  userId: string;
+  chatId: string;
+  continuationToken: string;
+  streamIndex: number;
+}): Promise<void> {
+  try {
+    await db
+      .update(eveRun)
+      .set({ continuationToken, streamIndex, updatedAt: new Date() })
+      .where(
+        and(
+          eq(eveRun.userId, userId),
+          eq(eveRun.chatId, chatId),
+          lt(eveRun.streamIndex, streamIndex),
+        ),
+      );
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to advance eve run');
+  }
+}
+
+export async function setEveRunPending({
+  userId,
+  chatId,
+  pendingRequests,
+}: {
+  userId: string;
+  chatId: string;
+  pendingRequests: PendingInputRequest[];
+}): Promise<void> {
+  try {
+    await db
+      .update(eveRun)
+      .set({ pendingRequests, updatedAt: new Date() })
+      .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to set eve run pending requests',
+    );
+  }
+}
+
+export async function setEveRunProgress({
+  userId,
+  chatId,
+  progress,
+}: {
+  userId: string;
+  chatId: string;
+  progress: RunProgress;
+}): Promise<void> {
+  try {
+    await db
+      .update(eveRun)
+      .set({ progress, updatedAt: new Date() })
+      .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to set eve run progress',
+    );
+  }
+}
+
+export async function deleteEveRun({
+  userId,
+  chatId,
+}: { userId: string; chatId: string }): Promise<void> {
+  try {
+    await db
+      .delete(eveRun)
+      .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to delete eve run');
   }
 }
