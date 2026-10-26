@@ -586,6 +586,7 @@ describe('recovery after an extension restart', () => {
   it.each([
     'CDP error (Runtime.evaluate): Error: the dialog was closed',
     'Element is not attached to the DOM',
+    'CDP error (DOM.focus): not attached to the DOM',
     'CDP error (DOM.focus): Node is detached, socket closed',
     'Navigation failed: net::ERR_CONNECTION_CLOSED',
     'page said: ECONNRESET',

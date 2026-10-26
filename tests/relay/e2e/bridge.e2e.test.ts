@@ -256,11 +256,21 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  await closeAgentSessions();
-  await bridgeMessage(browser.sw, { type: 'stopRun' }).catch(() => {});
-  await browser?.stop();
-  await relay?.stop();
-  await fixtures?.stop();
+  try {
+    await closeAgentSessions();
+    // The service-worker restart test leaves `browser.sw` dead; an evaluate
+    // on it may reject or never settle, so bound it.
+    if (browser) {
+      await Promise.race([
+        bridgeMessage(browser.sw, { type: 'stopRun' }).catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, 3_000)),
+      ]);
+    }
+  } finally {
+    await browser?.stop();
+    await relay?.stop();
+    await fixtures?.stop();
+  }
 }, 60_000);
 
 describe('bridge e2e', { timeout: 30_000 }, () => {
@@ -989,11 +999,12 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     // Restart again: a ref from the snapshot taken before it is not reused.
     // The daemon re-dials on its next command but has dropped its refs.
     const firstRef = refFor(snap, 'textbox', 'First name');
+    const count = (event: string) =>
+      relay.logs.filter((l) => l.event === event && l.runId === runId).length;
+    const restarts = () => count('extension-restarted');
+    const detachedBefore = count('extension-detached');
     await devtools.send('ServiceWorker.stopAllWorkers');
-    const restarts = () =>
-      relay.logs.filter(
-        (l) => l.event === 'extension-restarted' && l.runId === runId,
-      ).length;
+    await until(() => count('extension-detached') > detachedBefore);
     const waker2 = await browser.context.newPage();
     await waker2.goto('about:blank');
     await until(() => restarts() === 2);
@@ -1003,6 +1014,9 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       'restarted',
     );
     expect(stale.success).toBe(false);
+    // The measured agent-browser 0.33.2 wording: the re-dialed daemon has
+    // dropped its refs, rather than failing for some other reason.
+    expect(stale.error).toMatch(/Unknown ref/);
     await expect(page.locator('#first').inputValue()).resolves.toBe('Grace');
     await waker2.close();
 

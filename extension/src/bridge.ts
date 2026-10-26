@@ -66,8 +66,11 @@ interface Run extends RunConfig {
   expiryTimer?: ReturnType<typeof setTimeout>;
   reconnectDelayMs: number;
   /**
-   * Set on a run rebuilt from storage after a service worker restart, until
-   * its first `register` is followed by `resumed`.
+   * Set on a run rebuilt from storage after a service worker restart. Cleared
+   * on the first socket open, right after `register` and `resumed` are sent,
+   * so a later reconnect never repeats it. If that `resumed` is lost, the
+   * agent's commands fail with `not attached` and the Eve tool rotates its
+   * agent-browser session on that error instead.
    */
   announceResume: boolean;
 }

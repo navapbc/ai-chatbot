@@ -349,8 +349,10 @@ export class RunHub {
         }
         side.resumed = true;
         this.log({ event: 'extension-restarted', runId, role: 'extension' });
-        // Before `ext-up` the reset waits, so a hub holding the agent clears
-        // its hold first (see promote).
+        // Not announced yet: promote publishes the reset ahead of `ext-up`.
+        // Already announced: `ext-up` may have flushed queued commands to
+        // this socket; they fail there (`not attached`), and the Eve tool
+        // rotates on that error.
         if (side.announced)
           this.publish(runId, 'to-agent', { t: 'agent-reset' });
         return;
@@ -420,9 +422,12 @@ export class RunHub {
           by: this.instanceId,
           origin: side.origin,
         });
+        // A restarted extension's agent is reset before `ext-up`, so the
+        // commands it queued while the worker was down are failed, never
+        // flushed to an extension that holds none of its sessions.
+        if (side.resumed) this.publish(runId, 'to-agent', { t: 'agent-reset' });
         this.publish(runId, 'to-agent', { t: 'ext-up', origin: side.origin });
         side.announced = true;
-        if (side.resumed) this.publish(runId, 'to-agent', { t: 'agent-reset' });
         this.clearHold(runId, current);
       },
       () => this.closeExtensionSocket(runId, side, 'relay bus unavailable'),
@@ -711,6 +716,9 @@ export class RunHub {
       this.closeAgent(agent, EXTENSION_RESTARTED);
       if (run?.agent === agent) {
         run.agent = undefined;
+        // The extension is back (the reset follows its registration): a
+        // hold left on this hub must not expire and close the run.
+        this.clearHold(runId, run);
         this.forgetIfEmpty(runId, run);
       }
       this.log({ event: 'agent-reset', runId, role: 'agent' });

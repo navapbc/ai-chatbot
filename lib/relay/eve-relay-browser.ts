@@ -170,7 +170,11 @@ const RETRY_SAFE: Readonly<Record<string, readonly string[] | null>> = {
   tab: ['list'],
 };
 
-/** Restarts seen per run id, in this process only. */
+/**
+ * Restarts seen per run id. Like the session queue above, this and
+ * `needsSnapshot` assume one Eve process drives a run (single instance), and
+ * neither is ever pruned: one small entry per run for the process lifetime.
+ */
 const restarts = new Map<string, number>();
 /** Runs whose refs are void: set on rotation, cleared by a snapshot. */
 const needsSnapshot = new Set<string>();
