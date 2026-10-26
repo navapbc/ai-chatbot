@@ -21,6 +21,7 @@ import {
 } from '@/lib/ai/eve/input-requests';
 import { isProductionEnvironment } from '@/lib/constants';
 import { normalizeOrigin } from '@/lib/relay/policy';
+import { buildExtensionRunMessage } from '@/lib/relay/run-prompt';
 import { toRelayWsUrl } from '@/lib/relay/url';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -279,7 +280,11 @@ export async function POST(request: Request) {
         relayRef = { url, runId: chatId };
       }
       const created = relayRef
-        ? await createEveSession(text, model, relayRef)
+        ? await createEveSession(
+            buildExtensionRunMessage(text),
+            model,
+            relayRef,
+          )
         : await createEveSession(text, model);
       sessionId = created.sessionId;
       try {

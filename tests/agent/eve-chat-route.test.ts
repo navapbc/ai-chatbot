@@ -15,6 +15,10 @@ vi.mock('@/lib/ai/eve/eve-client', () => eve);
 
 import { POST } from '@/app/(chat)/api/eve-chat/route';
 import {
+  buildExtensionRunMessage,
+  EXTENSION_RUN_MARKER,
+} from '@/lib/relay/run-prompt';
+import {
   createMemoryRunStore,
   EveRunExistsError,
   type EveRunStore,
@@ -337,11 +341,37 @@ describe('POST /api/eve-chat relay runs', () => {
     expect(res.status).toBe(200);
     await drain(res);
 
-    expect(eve.createEveSession).toHaveBeenCalledWith('hi', undefined, {
-      url: 'wss://relay.example.gov',
-      runId: RELAY_CHAT,
-    });
+    expect(eve.createEveSession).toHaveBeenCalledWith(
+      buildExtensionRunMessage('hi'),
+      undefined,
+      {
+        url: 'wss://relay.example.gov',
+        runId: RELAY_CHAT,
+      },
+    );
     expect((await store.get(USER, RELAY_CHAT))?.relayOrigin).toBe(ORIGIN);
+  });
+
+  it('keeps the caseworker text verbatim at the end of the first message', async () => {
+    streamEvents({ type: 'turn.started' });
+    await drain(await relayTurn({ origin: ORIGIN }));
+    const sent = eve.createEveSession.mock.calls[0][0] as string;
+    expect(sent.startsWith(EXTENSION_RUN_MARKER)).toBe(true);
+    expect(sent.endsWith('hi')).toBe(true);
+  });
+
+  it('does not add the marker to a follow-up turn', async () => {
+    await store.create(USER, RELAY_CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+      relayOrigin: ORIGIN,
+    });
+    eve.continueEveSession.mockResolvedValue({ continuationToken: 'tok-1' });
+    streamEvents({ type: 'turn.started' });
+    await drain(await relayTurn(undefined));
+    expect(JSON.stringify(eve.continueEveSession.mock.calls)).not.toContain(
+      EXTENSION_RUN_MARKER,
+    );
   });
 
   it('rejects a relay field with 400 when the flag is off', async () => {
