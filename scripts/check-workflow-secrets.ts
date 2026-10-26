@@ -14,6 +14,11 @@
 import zlib from 'node:zlib';
 import { Client } from 'pg';
 
+// Node 24 has zstd in zlib; the repo's @types/node 22 does not declare it.
+const zstd = zlib as typeof zlib & {
+  zstdDecompressSync(buffer: Buffer): Buffer;
+};
+
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 const MAX_DEPTH = 4;
 
@@ -29,7 +34,7 @@ export function expandFrames(buffer: Buffer, depth = 0): Buffer[] {
   let at = buffer.indexOf(ZSTD_MAGIC);
   while (at !== -1) {
     try {
-      const frame = zlib.zstdDecompressSync(buffer.subarray(at));
+      const frame = zstd.zstdDecompressSync(buffer.subarray(at));
       out.push(...expandFrames(frame, depth + 1));
     } catch {
       // not a valid frame: keep scanning past it

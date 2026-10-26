@@ -2,6 +2,11 @@ import zlib from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { scanBuffer } from '@/scripts/check-workflow-secrets';
 
+// Node 24 has zstd in zlib; the repo's @types/node 22 does not declare it.
+const zstd = zlib as typeof zlib & {
+  zstdCompressSync(buffer: Buffer): Buffer;
+};
+
 const NEEDLE = 'TOKEN-needle-1234';
 const CONTROL = 'control-string-5678';
 const payload = `{"a":"${NEEDLE}","b":"${CONTROL}"}`;
@@ -16,7 +21,7 @@ describe('scanBuffer', () => {
 
   it('finds needles inside a zstd-compressed buffer', () => {
     const found = scanBuffer(
-      zlib.zstdCompressSync(Buffer.from(payload)),
+      zstd.zstdCompressSync(Buffer.from(payload)),
       needles,
     );
     expect(found.get(NEEDLE)).toBe(1);
@@ -26,7 +31,7 @@ describe('scanBuffer', () => {
   it('finds needles in a compressed frame that follows a header', () => {
     const buf = Buffer.concat([
       Buffer.from('zstd('),
-      zlib.zstdCompressSync(Buffer.from(payload)),
+      zstd.zstdCompressSync(Buffer.from(payload)),
     ]);
     const found = scanBuffer(buf, needles);
     expect(found.get(NEEDLE)).toBe(1);
@@ -34,8 +39,8 @@ describe('scanBuffer', () => {
   });
 
   it('finds needles in a frame nested inside another frame', () => {
-    const inner = zlib.zstdCompressSync(Buffer.from(payload));
-    const outer = zlib.zstdCompressSync(
+    const inner = zstd.zstdCompressSync(Buffer.from(payload));
+    const outer = zstd.zstdCompressSync(
       Buffer.concat([Buffer.from('h'), inner]),
     );
     expect(scanBuffer(outer, needles).get(NEEDLE)).toBe(1);
