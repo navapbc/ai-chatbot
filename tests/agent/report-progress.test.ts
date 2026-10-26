@@ -69,9 +69,14 @@ describe('report_progress tool', () => {
 });
 
 describe.each([
-  ['gap_analysis', { formName: 'F', missingFields: [{ field: 'a' }] }],
-  ['form_summary', { fields: [{ field: 'a', source: 'missing' }] }],
-])('%s on relay sessions', (name, input) => {
+  ['gap_analysis', 'tools/gap_analysis', { formName: 'F', missingFields: [{ field: 'a' }] }],
+  ['form_summary', 'tools/form_summary', { fields: [{ field: 'a', source: 'missing' }] }],
+  [
+    'form_review form_summary',
+    'subagents/form_review/tools/form_summary',
+    { fields: [{ field: 'a', source: 'missing' }] },
+  ],
+])('%s on relay sessions', (_name, path, input) => {
   afterEach(() => {
     vi.doUnmock('@/lib/jev/enrich');
     vi.doUnmock('@/agent/lib/jev');
@@ -90,7 +95,7 @@ describe.each([
       currentParticipant: participant,
       currentCaseworkerMessages: () => [],
     }));
-    const { default: tool } = await import(`@/agent/tools/${name}`);
+    const { default: tool } = await import(`@/agent/${path}`);
     return { tool: tool as unknown as Tool, annotate, participant };
   };
 

@@ -478,6 +478,20 @@ describe('report_progress', () => {
     });
   });
 
+  it('streams the sanitized input on a relay run', () => {
+    const { writer, chunks } = collect();
+    translateEveEvent(call(good), writer, {
+      textId: null,
+      generateId: gen,
+      structuredInput: true,
+    });
+    expect(chunks[0].input).toStrictEqual({
+      sections: [{ name: 'Name', status: 'done', filled: 2 }],
+      current: 'Address',
+    });
+    expect(JSON.stringify(chunks)).not.toContain('ssn');
+  });
+
   it('ignores invalid progress input', () => {
     const { writer } = collect();
     const r = translateEveEvent(call({ sections: 'nope' }), writer, {

@@ -867,6 +867,29 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
       });
     });
 
+    it('survives a failing progress write and never logs the report', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const SENTINEL = 'SENTINEL-4f9c';
+      vi.spyOn(store, 'setProgress').mockRejectedValue(new Error('db down'));
+      streamEvents(
+        progressEvent({
+          sections: [{ name: 'Name', status: 'done', filled: 1, v: SENTINEL }],
+          current: 'x',
+        }),
+        waiting('tok-1'),
+      );
+      const chunks = await readChunks(await post(first));
+      expect(chunks.some((c) => c.type === 'error')).toBe(false);
+      expect((await store.get(USER, RELAY_CHAT))?.continuationToken).toBe(
+        'tok-1',
+      );
+      for (const spy of [errSpy, logSpy, warnSpy]) {
+        expect(JSON.stringify(spy.mock.calls)).not.toContain(SENTINEL);
+      }
+    });
+
     it('does not store invalid progress', async () => {
       const setProgress = vi.spyOn(store, 'setProgress');
       streamEvents(progressEvent({ sections: 'nope' }), waiting('tok-1'));

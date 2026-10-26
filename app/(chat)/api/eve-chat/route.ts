@@ -355,9 +355,15 @@ export async function POST(request: Request) {
               // directly: that map lives in the `eve dev` process, not this one.
               setLiveViewUrl(userId, chatId, r.liveViewUrl);
             }
-            if (r.progress && structuredInput) {
-              // Relay runs only; the adapter has already sanitized it.
-              await store.setProgress(userId, chatId, r.progress);
+            if (r.progress) {
+              // The adapter only returns progress on relay runs, already
+              // sanitized. Best-effort status: a failed write must not kill
+              // the stream. Log the error only, never the progress.
+              try {
+                await store.setProgress(userId, chatId, r.progress);
+              } catch (err) {
+                console.error('[eve-chat] setProgress failed', err);
+              }
             }
             if (r.inputRequests) {
               // Persisted before session.waiting is handled, so the answer

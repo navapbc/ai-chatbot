@@ -155,18 +155,22 @@ export function translateEveEvent(
     case 'actions.requested': {
       for (const a of event.data?.actions ?? []) {
         if (a?.kind !== 'tool-call') continue;
+        let input = a.input ?? {};
+        if (ctx.structuredInput && a.toolName === 'report_progress') {
+          // Invalid input is ignored, never stored. Nothing is logged: the
+          // input is applicant-adjacent. The streamed chunk carries the
+          // sanitized copy too, so stray keys never reach the client.
+          const clean = sanitizeProgress(a.input);
+          progress = clean ?? progress;
+          input = clean ?? {};
+        }
         writer.write({
           type: 'tool-input-available',
           toolCallId: a.callId,
           toolName: mapToolName(a.toolName),
-          input: a.input ?? {},
+          input,
         });
         ctx.emittedToolCallIds?.add(a.callId);
-        if (ctx.structuredInput && a.toolName === 'report_progress') {
-          // Invalid input is ignored, never stored. Nothing is logged: the
-          // input is applicant-adjacent.
-          progress = sanitizeProgress(a.input) ?? progress;
-        }
       }
       break;
     }
