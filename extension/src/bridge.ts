@@ -1,5 +1,19 @@
 /// <reference types="chrome" />
 import {
+  commandAddresses,
+  contextIdFromObjectId,
+  createFrameScope,
+  destinationAllowed,
+  type FrameScope,
+  frameInScope,
+  framesOfTree,
+  navigationDestination,
+  pruneAXTree,
+  pruneDescribedNode,
+  pruneFrameTree,
+  scopeFrameEvent,
+} from '../../lib/relay/frames';
+import {
   checkCommand,
   filterEvent,
   inScope,
@@ -63,6 +77,13 @@ interface Child {
   url: string;
   /** Rejects this child's in-flight commands; see dropChild. */
   inFlight: Set<(error: Error) => void>;
+  /**
+   * Settles once the bridge has enabled the child's Page domain (its own
+   * navigation events keep `url` current): true on success, false when it
+   * failed, which leaves the child unverifiable and so out of scope.
+   */
+  pageReady: Promise<boolean>;
+  pageEnabled?: boolean;
 }
 
 interface Run extends RunConfig {
@@ -84,6 +105,11 @@ interface Run extends RunConfig {
   mainFrameId?: string;
   /** Child (iframe, worker) sessions of the tab, keyed by CDP sessionId. */
   children: Map<string, Child>;
+  /**
+   * Frames and execution contexts of the tab session itself (same-origin,
+   * srcdoc and same-site cross-origin iframes share it), from raw events.
+   */
+  frameScope: FrameScope;
   reconnectTimer?: ReturnType<typeof setTimeout>;
   expiryTimer?: ReturnType<typeof setTimeout>;
   reconnectDelayMs: number;
@@ -369,6 +395,7 @@ function begin(
     attached: false,
     blocked: false,
     children: new Map(),
+    frameScope: createFrameScope(),
     reconnectDelayMs: FIRST_RECONNECT_MS,
     announceResume: resumed,
     redactor: createRedactor(),
@@ -484,12 +511,41 @@ async function requireTabInScope(current: Run) {
   }
 }
 
-// Known gap (R17): this checks out-of-process child sessions only. A
-// cross-origin but same-site iframe shares the tab's renderer and session, so
-// commands reaching it through the tab session are not frame-checked.
+// Out-of-process frames have their own child session, judged by its URL
+// here. Frames that share the tab's session (same-origin, srcdoc and
+// same-site cross-origin iframes) are judged per command and per event
+// through `frameScope`; see resolveTabFrames.
 const frameAllowed = (current: Run, url: string) =>
   inScope(url, current.origin) ||
   current.allowedFrameOrigins.some((origin) => inScope(url, origin));
+
+/** A child is in scope by its URL, once its Page domain is enabled. */
+const childAllowed = (current: Run, child: Child) =>
+  child.pageEnabled !== false && frameAllowed(current, child.url);
+
+/**
+ * True when an out-of-process frame (its child's target id is its frame id)
+ * is in scope by its child session.
+ */
+const childFrameAllowed = (current: Run, frameId: string) => {
+  for (const child of current.children.values()) {
+    if (child.targetId === frameId) return childAllowed(current, child);
+  }
+  return false;
+};
+
+/**
+ * True when a frame the tab session names is in scope: one of its own
+ * frames by URL (about:blank and srcdoc by their parent's), or an
+ * out-of-process frame by its child session. Unknown: false.
+ */
+const tabFrameAllowed = (current: Run, frameId: string) =>
+  frameInScope(
+    current.frameScope.frames,
+    frameId,
+    current.origin,
+    current.allowedFrameOrigins,
+  ) || childFrameAllowed(current, frameId);
 
 async function handleCommand(
   current: Run,
@@ -514,6 +570,7 @@ async function handleCommand(
       // afresh (the spike's re-attach fix).
       current.attached = false;
       dropChildren(current);
+      current.frameScope = createFrameScope();
       try {
         await chrome.debugger.detach({ tabId: current.tabId });
       } catch {
@@ -540,6 +597,22 @@ async function handleCommand(
         console.warn('relay: Page.enable failed; refusing attach');
         await chrome.debugger.detach({ tabId: current.tabId }).catch(() => {});
         throw new Error('could not enable page events');
+      }
+      // Frame scope starts from the current tree; Page events keep it
+      // current from here (events that raced the reply were applied first,
+      // and the tree supersedes them). Fail closed like Page.enable.
+      try {
+        const tree = await chrome.debugger.sendCommand(
+          { tabId: current.tabId },
+          'Page.getFrameTree',
+        );
+        const seeded = framesOfTree(tree);
+        if (seeded.length === 0) throw new Error('empty frame tree');
+        current.frameScope.frames = new Map(seeded);
+      } catch {
+        console.warn('relay: Page.getFrameTree failed; refusing attach');
+        await chrome.debugger.detach({ tabId: current.tabId }).catch(() => {});
+        throw new Error('could not read the frame tree');
       }
       if (current.blocked || current.stopped) {
         await chrome.debugger.detach({ tabId: current.tabId }).catch(() => {});
@@ -590,15 +663,29 @@ async function forwardCdp(
   const child = isTab ? undefined : current.children.get(sessionId);
   if (!isTab && !child) throw new Error('unknown session');
 
+  // Frame scope: a child must have its Page domain on; a tab command's
+  // frame, context, object and node handles are resolved to frames now
+  // (this may ask Chrome) and re-checked synchronously below.
+  if (child && !(await withTimeout(child.pageReady, MASK_STEP_MS, 'frame'))) {
+    throw new Error(FRAME_OUT_OF_SCOPE);
+  }
+  // The lookups are not sent inside a screenshot's mask window either.
+  if (isTab && !screenshot) await untilNoScreenshot(lock);
+  const tabFrames = isTab
+    ? await resolveTabFrames(current, commandAddresses(params))
+    : undefined;
+  const framesInScope = () =>
+    child
+      ? childAllowed(current, child)
+      : (tabFrames ?? []).every((frameId) => tabFrameAllowed(current, frameId));
+
   // The tab's current URL is checked on every command, child or not. An
   // ordinary command waits out a screenshot's mask window first, and takes
   // its shared hold right after these checks (see the send below).
   for (;;) {
     if (!screenshot) await untilNoScreenshot(lock);
     await requireTabInScope(current);
-    if (child && !frameAllowed(current, child.url)) {
-      throw new Error(FRAME_OUT_OF_SCOPE);
-    }
+    if (!framesInScope()) throw new Error(FRAME_OUT_OF_SCOPE);
     if (!current.attached) throw new Error('not attached');
     if (screenshot || !lock.writer) break;
   }
@@ -637,16 +724,181 @@ async function forwardCdp(
     pending.then(release, release);
     raw = await pending;
   }
+  // A frame that left scope while the command ran gets nothing back.
+  if (!framesInScope()) throw new Error(FRAME_OUT_OF_SCOPE);
   const result = await redact(
     current,
     method,
-    raw,
+    isTab ? pruneTabResult(current, method, raw) : raw,
     describeVia(debuggee, child),
   );
   // The redaction may have waited on describe(); a run that ended meanwhile
   // sends nothing more.
   if (current.blocked || current.stopped) throw new Error(OUT_OF_SCOPE);
+  if (!framesInScope()) throw new Error(FRAME_OUT_OF_SCOPE);
   return result;
+}
+
+// --- frame scope of the tab session -------------------------------------------
+
+const FRAME_CHECK_GROUP = 'relay-frame-check';
+// Each lookup step is bounded; a lookup that fails or times out refuses.
+const FRAME_STEP_MS = 3_000;
+
+const tabSend = (current: Run, method: string, params?: object) =>
+  withTimeout(
+    chrome.debugger.sendCommand(
+      { tabId: current.tabId },
+      method,
+      params as Record<string, unknown> | undefined,
+    ),
+    FRAME_STEP_MS,
+    'frame check',
+  );
+
+const objectIdOf = (result: unknown, key: 'object' | 'result') => {
+  const object = isObject(result) ? result[key] : undefined;
+  return isObject(object) && typeof object.objectId === 'string'
+    ? object.objectId
+    : undefined;
+};
+
+/**
+ * Learns the main-world context of every frame of the tab, straight through
+ * chrome.debugger: for an agent that never enabled Runtime (so no context
+ * events were seen). The root frame's context is where `document` evaluates
+ * (`document` is unforgeable, so the page cannot redirect it); a subframe's
+ * is where its owner's content document resolves.
+ */
+async function discoverTabContexts(current: Run) {
+  const scope = current.frameScope;
+  try {
+    for (const [frameId, frame] of [...scope.frames]) {
+      let objectId: string | undefined;
+      if (frame.parentId === undefined) {
+        const evaluated = await tabSend(current, 'Runtime.evaluate', {
+          expression: 'document',
+          objectGroup: FRAME_CHECK_GROUP,
+        });
+        objectId = objectIdOf(evaluated, 'result');
+      } else {
+        const owner = await tabSend(current, 'DOM.getFrameOwner', {
+          frameId,
+        }).catch(() => undefined);
+        const ownerId = isObject(owner) ? owner.backendNodeId : undefined;
+        if (typeof ownerId !== 'number') continue;
+        const described = await tabSend(current, 'DOM.describeNode', {
+          backendNodeId: ownerId,
+        });
+        const node = isObject(described) ? described.node : undefined;
+        if (!isObject(node) || node.frameId !== frameId) continue;
+        const document = node.contentDocument;
+        if (!isObject(document)) continue;
+        const resolved = await tabSend(current, 'DOM.resolveNode', {
+          backendNodeId: document.backendNodeId,
+          objectGroup: FRAME_CHECK_GROUP,
+        }).catch(() => undefined);
+        objectId = objectIdOf(resolved, 'object');
+      }
+      const contextId = objectId ? contextIdFromObjectId(objectId) : undefined;
+      if (contextId !== undefined && !scope.contexts.has(contextId)) {
+        scope.contexts.set(contextId, frameId);
+      }
+    }
+  } finally {
+    void tabSend(current, 'Runtime.releaseObjectGroup', {
+      objectGroup: FRAME_CHECK_GROUP,
+    }).catch(() => {});
+  }
+}
+
+/** The frame a DOM node lives in, through its main-world context. */
+async function nodeContext(
+  current: Run,
+  node: { backendNodeId?: unknown; nodeId?: unknown },
+): Promise<number | undefined> {
+  // Resolved without a context param, so the node lands in its own frame's
+  // main world. A CDP error (a stale node id) is passed on as the reply.
+  const resolved = await tabSend(current, 'DOM.resolveNode', {
+    ...node,
+    objectGroup: FRAME_CHECK_GROUP,
+  });
+  void tabSend(current, 'Runtime.releaseObjectGroup', {
+    objectGroup: FRAME_CHECK_GROUP,
+  }).catch(() => {});
+  const objectId = objectIdOf(resolved, 'object');
+  return objectId ? contextIdFromObjectId(objectId) : undefined;
+}
+
+/**
+ * The tab frames a command addresses, through its frameId, context ids,
+ * object ids and DOM node ids. Throws FRAME_OUT_OF_SCOPE for a malformed or
+ * unknown handle (an unknown context is looked up once through the DOM
+ * first); the caller checks each frame's scope, again right before sending.
+ */
+async function resolveTabFrames(
+  current: Run,
+  addresses: ReturnType<typeof commandAddresses>,
+): Promise<string[]> {
+  const scope = current.frameScope;
+  const frameIds: string[] = [];
+  for (const frameId of addresses.frameIds) {
+    if (typeof frameId !== 'string') throw new Error(FRAME_OUT_OF_SCOPE);
+    frameIds.push(frameId);
+  }
+  for (const uniqueId of addresses.uniqueContextIds) {
+    const frameId =
+      typeof uniqueId === 'string'
+        ? scope.uniqueContexts.get(uniqueId)
+        : undefined;
+    if (frameId === undefined) throw new Error(FRAME_OUT_OF_SCOPE);
+    frameIds.push(frameId);
+  }
+  const contextIds: unknown[] = [...addresses.contextIds];
+  for (const objectId of addresses.objectIds) {
+    contextIds.push(
+      typeof objectId === 'string' ? contextIdFromObjectId(objectId) : null,
+    );
+  }
+  for (const node of addresses.nodes) {
+    contextIds.push(await nodeContext(current, node));
+  }
+  let discovered = false;
+  for (const contextId of contextIds) {
+    if (typeof contextId !== 'number') throw new Error(FRAME_OUT_OF_SCOPE);
+    if (!scope.contexts.has(contextId) && !discovered) {
+      discovered = true;
+      await discoverTabContexts(current);
+    }
+    const frameId = scope.contexts.get(contextId);
+    if (frameId === undefined) throw new Error(FRAME_OUT_OF_SCOPE);
+    frameIds.push(frameId);
+  }
+  return frameIds;
+}
+
+/**
+ * Removes out-of-scope frames from a tab-session result before it is
+ * redacted: their AX nodes, their frame-tree subtrees and their documents
+ * inside a described node.
+ */
+function pruneTabResult(current: Run, method: string, raw: unknown): unknown {
+  const keep = (frameId: string) => tabFrameAllowed(current, frameId);
+  switch (method) {
+    case 'Accessibility.getFullAXTree':
+      return pruneAXTree(raw, keep);
+    case 'DOM.describeNode':
+      return pruneDescribedNode(raw, keep);
+    case 'Page.getFrameTree': {
+      // Judged by the scope the events built: a frame it does not know is
+      // left out.
+      const pruned = pruneFrameTree(raw, keep);
+      if (pruned === null) throw new Error(FRAME_OUT_OF_SCOPE);
+      return pruned;
+    }
+    default:
+      return raw;
+  }
 }
 
 /**
@@ -853,6 +1105,12 @@ function isMaskWorldEvent(
   }
   return false;
 }
+const isMaskWorldCreated = (method: string, params: unknown) =>
+  method === 'Runtime.executionContextCreated' &&
+  isObject(params) &&
+  isObject(params.context) &&
+  params.context.name === MASK_WORLD;
+
 // Child targets with no document to mask (and nothing painted on screen).
 const WORKER_TYPES = new Set([
   'worker',
@@ -1034,18 +1292,76 @@ function dropChildren(current: Run) {
 
 // --- browser events ----------------------------------------------------------
 
-function trackChildren(current: Run, method: string, params: unknown) {
+/**
+ * Enables the Page domain on a frame child, straight through chrome.debugger,
+ * so the child's own navigation events keep its URL current. Workers have no
+ * Page domain. Fails closed: a child whose Page domain cannot be enabled is
+ * out of scope.
+ */
+function enableChildPage(current: Run, sessionId: string, child: Child) {
+  if (WORKER_TYPES.has(child.type ?? '')) {
+    child.pageEnabled = true;
+    return Promise.resolve(true);
+  }
+  return chrome.debugger
+    .sendCommand({ tabId: current.tabId, sessionId }, 'Page.enable')
+    .then(
+      () => true,
+      () => false,
+    )
+    .then((ok) => {
+      child.pageEnabled = ok;
+      return ok;
+    });
+}
+
+/**
+ * Keeps a child's URL current from its own main-frame navigation (an
+ * out-of-process frame's target id is its frame id), in the same turn as
+ * the event, so the event that moves it out of scope is itself dropped and
+ * the next command is refused. Target.targetInfoChanged also updates it.
+ */
+function trackChildNavigation(
+  child: Child,
+  method: string,
+  params: Record<string, unknown>,
+) {
+  if (method === 'Page.frameNavigated') {
+    const frame = isObject(params.frame) ? params.frame : undefined;
+    if (frame && frame.id === child.targetId) {
+      child.url = typeof frame.url === 'string' ? frame.url : '';
+    }
+  } else if (method === 'Page.navigatedWithinDocument') {
+    if (params.frameId === child.targetId) {
+      child.url = typeof params.url === 'string' ? params.url : '';
+    }
+  }
+}
+
+function trackChildren(
+  current: Run,
+  method: string,
+  params: unknown,
+  sessionId?: string,
+) {
   if (!isObject(params)) return;
+  if (sessionId !== undefined) {
+    const from = current.children.get(sessionId);
+    if (from) trackChildNavigation(from, method, params);
+  }
   const info = isObject(params.targetInfo) ? params.targetInfo : undefined;
   if (method === 'Target.attachedToTarget') {
     if (typeof params.sessionId !== 'string') return;
-    current.children.set(params.sessionId, {
+    const child: Child = {
       targetId: typeof info?.targetId === 'string' ? info.targetId : undefined,
       type: typeof info?.type === 'string' ? info.type : undefined,
       // An unknown URL is treated as out of scope.
       url: typeof info?.url === 'string' ? info.url : '',
       inFlight: current.children.get(params.sessionId)?.inFlight ?? new Set(),
-    });
+      pageReady: Promise.resolve(false),
+    };
+    current.children.set(params.sessionId, child);
+    child.pageReady = enableChildPage(current, params.sessionId, child);
   } else if (method === 'Target.detachedFromTarget') {
     if (typeof params.sessionId === 'string') {
       dropChild(current, params.sessionId);
@@ -1139,8 +1455,20 @@ export function onDebuggerEvent(
 ) {
   const current = run;
   if (!current || source.tabId !== current.tabId) return;
+  if (current.blocked) return;
+  // Frame scope is kept from every raw tab event, sent on or not, even
+  // between chrome.debugger.attach and the end of the attach (the frame
+  // tree read there then supersedes it).
+  // The mask's isolated worlds are never recorded, so a command naming one
+  // is refused as an unknown context.
+  const tabFrameEventAllowed =
+    source.sessionId === undefined &&
+    !isMaskWorldCreated(method, params) &&
+    scopeFrameEvent(current.frameScope, current, method, params, (frameId) =>
+      childFrameAllowed(current, frameId),
+    );
   // Nothing leaves the browser unless we hold the tab and it is in scope.
-  if (!current.attached || current.blocked) return;
+  if (!current.attached) return;
 
   if (source.sessionId === undefined) {
     const navUrl = mainFrameNavigationUrl(current, method, params);
@@ -1151,7 +1479,7 @@ export function onDebuggerEvent(
     }
   }
 
-  trackChildren(current, method, params);
+  trackChildren(current, method, params, source.sessionId);
   resumeIfPaused(current, method, params);
 
   const lifecycle = LIFECYCLE_EVENTS.has(method);
@@ -1159,17 +1487,29 @@ export function onDebuggerEvent(
   if (source.sessionId !== undefined) {
     // An event from a child session: only allowed frames speak.
     const from = current.children.get(source.sessionId);
-    const fromAllowed = from !== undefined && frameAllowed(current, from.url);
+    const fromAllowed = from !== undefined && childAllowed(current, from);
     if (!fromAllowed && !lifecycle) return;
+    // A navigation inside the child heading out of scope names its
+    // destination before it commits: drop it.
+    const destination = navigationDestination(method, params);
+    if (
+      destination !== undefined &&
+      !destinationAllowed(destination, current)
+    ) {
+      return;
+    }
   }
   if (lifecycle) {
     const subject = lifecycleSubject(current, params);
-    if (subject && !frameAllowed(current, subject.url)) {
+    if (subject && !childAllowed(current, subject)) {
       forwarded = withoutTargetUrl(params);
     }
   }
 
   if (isMaskWorldEvent(source.sessionId, method, params)) return;
+  // A tab event about a frame (or context) out of scope, or a navigation
+  // heading out of scope, is dropped.
+  if (source.sessionId === undefined && !tabFrameEventAllowed) return;
 
   const filtered = filterEvent(method, forwarded);
   if (!filtered) return;

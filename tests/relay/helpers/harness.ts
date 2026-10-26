@@ -45,6 +45,12 @@ export interface Fixtures {
   origin: string;
   /** https://127.0.0.1:<port>, cross-site, so its iframe is out of process. */
   frameOrigin: string;
+  /**
+   * https://localhost:<port>, same site as `origin` but another origin, so
+   * its iframe shares the tab's renderer (and CDP session). The same server
+   * also answers as https://127.0.0.1:<port>, same site as `frameOrigin`.
+   */
+  sameSiteOrigin: string;
   formUrl: string;
   /** Value of the HttpOnly cookie set by `/set-cookie`. */
   cookieSentinel: string;
@@ -91,7 +97,10 @@ export async function serveFixtures(): Promise<Fixtures> {
     path.join(FIXTURES, 'oopif-sensitive.html'),
     'utf8',
   );
+  const fixture = (name: string) =>
+    readFileSync(path.join(FIXTURES, name), 'utf8');
   let frameOrigin = '';
+  let sameSiteOrigin = '';
 
   const sendHtml = (res: ServerResponse, body: string) =>
     res
@@ -104,6 +113,16 @@ export async function serveFixtures(): Promise<Fixtures> {
       sendHtml(res, form.replaceAll('{{FRAME_ORIGIN}}', frameOrigin));
     } else if (url.pathname === '/sensitive.html') {
       sendHtml(res, sensitive.replaceAll('{{FRAME_ORIGIN}}', frameOrigin));
+    } else if (url.pathname === '/samesite.html') {
+      sendHtml(
+        res,
+        fixture('samesite.html').replaceAll(
+          '{{SAME_SITE_ORIGIN}}',
+          sameSiteOrigin,
+        ),
+      );
+    } else if (url.pathname === '/inner.html') {
+      sendHtml(res, fixture('inner.html'));
     } else if (url.pathname === '/set-cookie') {
       res
         .writeHead(200, {
@@ -144,21 +163,36 @@ export async function serveFixtures(): Promise<Fixtures> {
     }
   });
 
+  const sameSite = createHttpsServer(tls, (req, res) => {
+    const url = new URL(req.url ?? '/', 'https://localhost');
+    sendHtml(
+      res,
+      url.pathname === '/samesite-frame.html'
+        ? fixture('samesite-frame.html')
+        : '<!doctype html><html lang="en"><title>Elsewhere</title></html>',
+    );
+  });
+
   const mainPort = await listen(main as unknown as Server);
   const framePort = await listen(frame as unknown as Server);
+  const sameSitePort = await listen(sameSite as unknown as Server);
   frameOrigin = `https://127.0.0.1:${framePort}`;
+  sameSiteOrigin = `https://localhost:${sameSitePort}`;
   const origin = `https://localhost:${mainPort}`;
   return {
     origin,
     frameOrigin,
+    sameSiteOrigin,
     formUrl: `${origin}/form.html`,
     cookieSentinel,
     async stop() {
       main.closeAllConnections();
       frame.closeAllConnections();
+      sameSite.closeAllConnections();
       await Promise.all([
         closeServer(main as unknown as Server),
         closeServer(frame as unknown as Server),
+        closeServer(sameSite as unknown as Server),
       ]);
     },
   };
