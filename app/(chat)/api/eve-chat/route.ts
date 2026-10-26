@@ -120,6 +120,12 @@ export async function POST(request: Request) {
   let heal: { claim: string; token: string } | undefined;
   try {
     const existing = await store.get(userId, chatId);
+    // A web chat never becomes a relay run: a relay field on its follow-up is
+    // refused rather than ignored. On a relay run's follow-up it is ignored
+    // (the stored origin governs).
+    if (existing && existing.relayOrigin === null && body.relay !== undefined) {
+      return new ChatSDKError('bad_request:api').toResponse();
+    }
     // What a follow-up forwards to Eve. Decided, and every rejection
     // returned, before the token is claimed: a rejected turn never touches
     // the token or reaches Eve.

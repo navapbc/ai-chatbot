@@ -506,6 +506,23 @@ describe('POST /api/eve-chat relay runs', () => {
     expect((await store.get(USER, RELAY_CHAT))?.relayOrigin).toBe(ORIGIN);
   });
 
+  it('rejects a relay field on a follow-up of a web chat', async () => {
+    await store.create(USER, RELAY_CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+    });
+
+    const res = await relayTurn({ origin: ORIGIN });
+    expect(res.status).toBe(400);
+    expect(eve.continueEveSession).not.toHaveBeenCalled();
+    expect(eve.createEveSession).not.toHaveBeenCalled();
+    // The row is untouched: still a web chat, token not claimed.
+    expect(await store.get(USER, RELAY_CHAT)).toMatchObject({
+      relayOrigin: null,
+      continuationToken: 'tok-0',
+    });
+  });
+
   it('does not touch relay for a plain turn with the flag on', async () => {
     streamEvents({ type: 'turn.started' });
     await drain(await turn());
