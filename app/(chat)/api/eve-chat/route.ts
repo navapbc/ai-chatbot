@@ -190,7 +190,12 @@ export async function POST(request: Request) {
               'message_too_large',
             ).toResponse();
           }
-          const checked = relayText(`${prompt}: ${response.text}`);
+          // Two views of the answer are checked, because the prompt prefix can
+          // change what the scanners see: with the prompt (so the question's
+          // label counts) and on its own (what Eve actually receives).
+          const withPrompt = relayText(`${prompt}: ${response.text}`);
+          const alone = relayText(response.text);
+          const checked = withPrompt.ok ? alone : withPrompt;
           // The raw answer is what Eve receives, so it must equal what was
           // checked: an answer that stripping would change (a pasted record
           // with sensitive keys) is refused, never forwarded or rewritten.
