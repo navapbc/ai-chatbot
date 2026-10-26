@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   _resetAgentTokenCache,
   fetchAgentToken,
@@ -13,6 +13,10 @@ const ok = (token = TOKEN, expiresAt = 2_000) =>
   new Response(JSON.stringify({ token, expiresAt }), { status: 200 });
 
 describe('fetchAgentToken', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   beforeEach(() => {
     _resetAgentTokenCache();
     vi.stubEnv('EVE_INTERNAL_SECRET', SECRET);
@@ -98,6 +102,99 @@ describe('fetchAgentToken', () => {
       .mockResolvedValueOnce(ok());
     const opts = { fetchImpl, baseUrl: BASE, now: () => 1_000 };
     expect((await fetchAgentToken(RUN, opts)).ok).toBe(false);
+    expect((await fetchAgentToken(RUN, opts)).ok).toBe(true);
+  });
+
+  it('passes an abort signal, refuses redirects, and the 5 s timeout aborts', async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const fetchImpl = vi.fn().mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            signal = init.signal as AbortSignal;
+            signal.addEventListener('abort', () => reject(signal?.reason));
+          }),
+      );
+      const pending = fetchAgentToken(RUN, { fetchImpl, baseUrl: BASE });
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect((fetchImpl.mock.calls[0][1] as RequestInit).redirect).toBe(
+        'error',
+      );
+      expect(signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(signal?.aborted).toBe(true);
+      await expect(pending).resolves.toEqual({
+        ok: false,
+        error: 'The relay token service is unavailable.',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['a non-string token', { token: 5, expiresAt: 2_000 }],
+    ['an empty token', { token: '', expiresAt: 2_000 }],
+    ['a missing token', { expiresAt: 2_000 }],
+    ['a string expiresAt', { token: TOKEN, expiresAt: '2000' }],
+    ['a missing expiresAt', { token: TOKEN }],
+    ['a null expiresAt', { token: TOKEN, expiresAt: null }],
+    ['a millisecond expiresAt', { token: TOKEN, expiresAt: 1.8e12 }],
+    ['a non-object body', 'nope'],
+    ['a null body', null],
+  ])(
+    'rejects %s as an invalid response and does not cache it',
+    async (_n, body) => {
+      const fetchImpl = vi
+        .fn()
+        .mockImplementation(
+          async () => new Response(JSON.stringify(body), { status: 200 }),
+        );
+      const opts = { fetchImpl, baseUrl: BASE, now: () => 1_000 };
+      const result = await fetchAgentToken(RUN, opts);
+      expect(result).toEqual({
+        ok: false,
+        error: 'The relay token response was invalid.',
+      });
+      expect(JSON.stringify(result)).not.toContain(TOKEN);
+      await fetchAgentToken(RUN, opts);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('treats a non-finite expiresAt as invalid', async () => {
+    // JSON cannot carry Infinity; a raw body that parses to a huge number is
+    // the closest wire form, and a stubbed json() covers NaN.
+    const res = new Response('{}', { status: 200 });
+    vi.spyOn(res, 'json').mockResolvedValue({
+      token: TOKEN,
+      expiresAt: Number.NaN,
+    });
+    const result = await fetchAgentToken(RUN, {
+      fetchImpl: vi.fn().mockResolvedValue(res),
+      baseUrl: BASE,
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: 'The relay token response was invalid.',
+    });
+  });
+
+  it('survives a fetchImpl that throws synchronously, without caching', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error(`sync ${SECRET} ${TOKEN}`);
+      })
+      .mockImplementationOnce(async () => ok());
+    const opts = { fetchImpl, baseUrl: BASE, now: () => 1_000 };
+    const first = await fetchAgentToken(RUN, opts);
+    expect(first).toEqual({
+      ok: false,
+      error: 'The relay token service is unavailable.',
+    });
+    expect(JSON.stringify(first)).not.toContain(SECRET);
     expect((await fetchAgentToken(RUN, opts)).ok).toBe(true);
   });
 });

@@ -20,6 +20,8 @@ export interface AgentTokenOptions {
 
 const REQUEST_TIMEOUT_MS = 5_000;
 const REFRESH_MARGIN_SECONDS = 60;
+// Epoch seconds stay below this until the year 5138; milliseconds do not.
+const MAX_PLAUSIBLE_EXPIRES_AT = 1e11;
 
 const ERR_UNAVAILABLE = 'The relay token service is unavailable.';
 const ERR_REFUSED = 'The relay token request was refused.';
@@ -53,18 +55,24 @@ export async function fetchAgentToken(
     const fetchImpl = opts.fetchImpl ?? fetch;
 
     let response: Response;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
       response = await fetchImpl(`${baseUrl}/api/relay/agent-token`, {
         method: 'POST',
+        // A redirect would replay the secret header to another location.
+        redirect: 'error',
         headers: {
           'content-type': 'application/json',
           'x-eve-internal-secret': secret,
         },
         body: JSON.stringify({ runId }),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: controller.signal,
       });
     } catch {
       return { ok: false, error: ERR_UNAVAILABLE };
+    } finally {
+      clearTimeout(timer);
     }
     if (!response.ok) return { ok: false, error: ERR_REFUSED };
 
@@ -79,7 +87,8 @@ export async function fetchAgentToken(
       typeof token !== 'string' ||
       token.length === 0 ||
       typeof expiresAt !== 'number' ||
-      !Number.isFinite(expiresAt)
+      !Number.isFinite(expiresAt) ||
+      expiresAt > MAX_PLAUSIBLE_EXPIRES_AT
     ) {
       return { ok: false, error: ERR_INVALID };
     }

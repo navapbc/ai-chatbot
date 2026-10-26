@@ -63,9 +63,14 @@ export function relayRunRefFrom(ctx: ToolContext): RelayRunRef | null {
 }
 
 type CdpUrl = { ok: true; value: string } | { ok: false; error: string };
+type RelayOrigin = { ok: true; origin: string } | { ok: false; error: string };
 
-/** `<origin>/cdp?token=<token>`; wss:, or ws: on a local host only. */
-function buildCdpUrl(url: string, token: string): CdpUrl {
+/**
+ * Policy check on the relay URL: wss:, or ws: on a local host only, and the
+ * configured relay when the deployment names one. Runs before any token is
+ * fetched, so a refused URL never causes a mint.
+ */
+function checkRelayUrl(url: string): RelayOrigin {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -93,10 +98,19 @@ function buildCdpUrl(url: string, token: string): CdpUrl {
       error: 'The relay URL must use wss:// (ws:// is allowed for localhost).',
     };
   }
-  return {
-    ok: true,
-    value: `${parsed.origin}/cdp?token=${encodeURIComponent(token)}`,
-  };
+  return { ok: true, origin: parsed.origin };
+}
+
+/** `<origin>/cdp?token=<token>`. Never throws, never echoes the token. */
+function buildCdpUrl(origin: string, token: string): CdpUrl {
+  try {
+    return {
+      ok: true,
+      value: `${origin}/cdp?token=${encodeURIComponent(token)}`,
+    };
+  } catch {
+    return { ok: false, error: 'The relay token could not be used.' };
+  }
 }
 
 // Per-session serialization, same discipline as the Kernel path: a snapshot's
@@ -128,12 +142,16 @@ export async function runRelayCommand(
       liveViewUrl: null,
     };
   }
+  const checked = checkRelayUrl(ref.url);
+  if (!checked.ok) {
+    return { success: false, error: checked.error, liveViewUrl: null };
+  }
   const agentToken = await fetchAgentToken(ref.runId);
   if (!agentToken.ok) {
     return { success: false, error: agentToken.error, liveViewUrl: null };
   }
   const { token } = agentToken;
-  const cdp = buildCdpUrl(ref.url, token);
+  const cdp = buildCdpUrl(checked.origin, token);
   if (!cdp.ok) {
     return { success: false, error: cdp.error, liveViewUrl: null };
   }

@@ -44,6 +44,7 @@ describe('runRelayCommand end to end', { timeout: 60_000 }, () => {
   let page: Page;
   let ctx: ToolContext;
   let agentToken: string;
+  let priorSecret: string | undefined;
 
   beforeAll(async () => {
     process.env.AGENT_BROWSER_NAMESPACE = `eve-relay-${process.pid}`;
@@ -78,6 +79,7 @@ describe('runRelayCommand end to end', { timeout: 60_000 }, () => {
     // The session carries only the run reference; the tool fetches the token
     // from the app's agent-token route, which this stands in for.
     agentToken = tokens.agent;
+    priorSecret = process.env.EVE_INTERNAL_SECRET;
     process.env.EVE_INTERNAL_SECRET = 'e2e-internal-secret';
     vi.stubGlobal('fetch', async () =>
       Response.json({ token: tokens.agent, expiresAt: 4_000_000_000 }),
@@ -91,6 +93,9 @@ describe('runRelayCommand end to end', { timeout: 60_000 }, () => {
 
   afterAll(async () => {
     vi.unstubAllGlobals();
+    if (priorSecret === undefined)
+      Reflect.deleteProperty(process.env, 'EVE_INTERNAL_SECRET');
+    else process.env.EVE_INTERNAL_SECRET = priorSecret;
     await runRelayCommand(ctx, ['close']).catch(() => {});
     await bridgeMessage(browser.sw, { type: 'stopRun' }).catch(() => {});
     await browser?.stop();
