@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PARTICIPANTS, buildApplicationPrompt } from '@/lib/data/participants';
 import {
   SENSITIVE_RECORD_PATHS,
+  hasSensitiveValueInProse,
   WITHHELD,
   stripSensitiveFields,
   stripSensitiveText,
@@ -121,4 +122,124 @@ describe('a withheld value is never a candidate to type', () => {
     expect(leaves['participant.calworks_id']).toBeUndefined();
     expect(leaves.record_id).toBe(record.record_id);
   });
+});
+
+describe('linear scanning', () => {
+  const timed = (fn: () => unknown) => {
+    const t = performance.now();
+    fn();
+    return performance.now() - t;
+  };
+
+  it('200 KB of "{" completes quickly', () => {
+    const text = '{'.repeat(200_000);
+    expect(timed(() => stripSensitiveText(text))).toBeLessThan(100);
+    expect(timed(() => extractParticipantFromText(text))).toBeLessThan(100);
+  });
+
+  it('200 KB of \'{"a":\' completes quickly', () => {
+    const text = '{"a":'.repeat(40_000);
+    expect(timed(() => stripSensitiveText(text))).toBeLessThan(100);
+    expect(timed(() => hasSensitiveValueInProse(text))).toBeLessThan(500);
+  });
+
+  it('200 KB of "{}" and of nested braces completes quickly', () => {
+    expect(timed(() => stripSensitiveText('{}'.repeat(100_000)))).toBeLessThan(
+      300,
+    );
+    expect(
+      timed(() =>
+        stripSensitiveText('{'.repeat(100_000) + '}'.repeat(100_000)),
+      ),
+    ).toBeLessThan(300);
+  });
+
+  it('finds a valid record with 1000 braces inside string values', () => {
+    const rec = structuredClone(record);
+    rec.participant.name.first = '{'.repeat(1000);
+    rec.participant.name.last = '}'.repeat(1000);
+    const text = `before ${JSON.stringify(rec, null, 2)} after`;
+    expect(extractParticipantFromText(text)?.record_id).toBe(rec.record_id);
+    expect(stripSensitiveText(text)).not.toContain(
+      record.participant.calworks_id,
+    );
+  });
+
+  it('finds a record nested inside another JSON object', () => {
+    const text = JSON.stringify({ wrapper: record });
+    expect(extractParticipantFromText(text)?.record_id).toBe(record.record_id);
+    expect(stripSensitiveText(text)).not.toContain(
+      record.participant.calworks_id,
+    );
+  });
+
+  it('a stray quote before a record does not hide it', () => {
+    const text = `he said " then ${JSON.stringify(record)}`;
+    expect(extractParticipantFromText(text)?.record_id).toBe(record.record_id);
+  });
+});
+
+describe('records of an unrecognized shape', () => {
+  it.each([
+    [
+      'name as a string',
+      { record_id: 'r1', participant: { name: 'Ann Lee', ssn: '123-45-6789' } },
+    ],
+    [
+      'missing record_id',
+      { participant: { name: { first: 'A' }, ssn: '123-45-6789' } },
+    ],
+    [
+      'numeric record_id',
+      { record_id: 5, participant: { name: {}, calworks_id: 'A100103' } },
+    ],
+    [
+      'no participant at all',
+      { person: { social_security_number: '123456789' } },
+    ],
+  ])('%s is stripped', (_n, obj) => {
+    const out = stripSensitiveText(`Do this: ${JSON.stringify(obj)} thanks`);
+    expect(out).not.toMatch(/123-45-6789|123456789|A100103/);
+    expect(out).toContain(WITHHELD);
+    expect(out.startsWith('Do this: ')).toBe(true);
+    expect(out.endsWith(' thanks')).toBe(true);
+  });
+
+  it('an object with nothing sensitive keeps its exact text, even a big number', () => {
+    const text = 'x {"n":12345678901234567890,  "a":1} y';
+    expect(stripSensitiveText(text)).toBe(text);
+  });
+});
+
+describe('hasSensitiveValueInProse', () => {
+  it.each([
+    'CalWORKs ID: 12345 SSN 123-45-6789',
+    'my social security number is 123456789',
+    'password = hunter22',
+    'card number 4111111111111111 exp soon',
+    '{"ssn": "123-45-6789",}',
+    '{"record_id": "r1", // note\n "calworks_id": "A100103"}',
+    '{"participant": {"tax_id": "98-7654321",},}',
+  ])('flags %j', (text) => {
+    expect(hasSensitiveValueInProse(stripSensitiveText(text))).toBe(true);
+  });
+
+  it.each([
+    'the participant has no SSN on file',
+    "ask for the social worker's name",
+    'Please use the home address and check the second page',
+    'Fill in the PIN field later, then click next',
+    'the appointment is on 10/26/2026 at 9am',
+  ])('does not flag %j', (text) => {
+    expect(hasSensitiveValueInProse(stripSensitiveText(text))).toBe(false);
+  });
+
+  it.each(PARTICIPANTS.map((p) => [p.record_id, p] as const))(
+    'does not flag the normal opening message for %s',
+    (_id, p) => {
+      expect(hasSensitiveValueInProse(stripSensitiveText(opening(p)))).toBe(
+        false,
+      );
+    },
+  );
 });

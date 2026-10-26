@@ -46,6 +46,77 @@ const looksLikeParticipant = (value: unknown): value is Participant => {
   return Boolean(name && typeof name === 'object');
 };
 
+/** Deepest brace nesting at which a balanced block is parsed. */
+const MAX_PARSE_DEPTH = 4;
+
+/**
+ * Every balanced `{...}` block of `text` that parses as a JSON object,
+ * outermost first, in text order, none inside another one.
+ *
+ * Linear: one pass with string/escape state and a stack of open-brace
+ * indexes. A block is parsed once, when its closing brace arrives, and only
+ * for the first MAX_PARSE_DEPTH nesting levels, so the slices parsed at one
+ * level are disjoint and the total parse work is bounded by
+ * MAX_PARSE_DEPTH x the text length. (The previous scan restarted at every
+ * `{`, which made a long run of braces quadratic.) Quote state is tracked
+ * only inside an open brace, so a stray `"` in prose before a record does
+ * not hide it.
+ */
+const scanAllJsonObjects = (
+  text: string,
+): { value: unknown; start: number; end: number }[] => {
+  const found: { value: unknown; start: number; end: number }[] = [];
+  const stack: number[] = [];
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (stack.length === 0) {
+      if (ch === '{') stack.push(i);
+      continue;
+    }
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      stack.push(i);
+    } else if (ch === '}') {
+      const start = stack.pop() as number;
+      if (stack.length < MAX_PARSE_DEPTH) {
+        try {
+          found.push({
+            value: JSON.parse(text.slice(start, i + 1)),
+            start,
+            end: i + 1,
+          });
+        } catch {
+          // Not JSON; a block around it may still be.
+        }
+      }
+    }
+  }
+  // Closing order puts inner blocks first: text order, outer before inner.
+  return found.sort((x, y) => x.start - y.start || y.end - x.end);
+};
+
+/** The outermost parsed blocks only: none lies inside another. */
+export const scanJsonObjects = (
+  text: string,
+): { value: unknown; start: number; end: number }[] => {
+  const out = [];
+  let lastEnd = -1;
+  for (const f of scanAllJsonObjects(text)) {
+    if (f.start >= lastEnd) {
+      out.push(f);
+      lastEnd = f.end;
+    }
+  }
+  return out;
+};
+
 /**
  * Pull the first participant-shaped JSON object out of a message's text.
  *
@@ -68,38 +139,9 @@ export const extractParticipantFromText = (text: string): Participant | null =>
 export const findParticipantSpan = (
   text: string,
 ): { participant: Participant; start: number; end: number } | null => {
-  for (
-    let start = text.indexOf('{');
-    start !== -1;
-    start = text.indexOf('{', start + 1)
-  ) {
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < text.length; i++) {
-      const ch = text[i];
-      if (escaped) {
-        escaped = false;
-      } else if (ch === '\\') {
-        escaped = true;
-      } else if (ch === '"') {
-        inString = !inString;
-      } else if (!inString && ch === '{') {
-        depth++;
-      } else if (!inString && ch === '}') {
-        depth--;
-        if (depth === 0) {
-          try {
-            const parsed = JSON.parse(text.slice(start, i + 1));
-            if (looksLikeParticipant(parsed)) {
-              return { participant: parsed, start, end: i + 1 };
-            }
-          } catch {
-            // Not JSON, or not complete — try the next `{`.
-          }
-          break;
-        }
-      }
+  for (const span of scanAllJsonObjects(text)) {
+    if (looksLikeParticipant(span.value)) {
+      return { participant: span.value, start: span.start, end: span.end };
     }
   }
   return null;

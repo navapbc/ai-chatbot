@@ -18,7 +18,11 @@ import { toVertexModelId } from '@/lib/ai/eve/model-map';
 import { type InputAnswer, validateAnswers } from '@/lib/ai/eve/input-requests';
 import { isProductionEnvironment } from '@/lib/constants';
 import { normalizeOrigin } from '@/lib/relay/policy';
-import { stripSensitiveText } from '@/lib/data/sensitive-record';
+import {
+  MAX_RELAY_TEXT_CHARS,
+  hasSensitiveValueInProse,
+  stripSensitiveText,
+} from '@/lib/data/sensitive-record';
 import { buildExtensionRunMessage } from '@/lib/relay/run-prompt';
 import { toRelayWsUrl } from '@/lib/relay/url';
 
@@ -63,6 +67,23 @@ function isBodyTimeout(err: unknown): boolean {
     'UND_ERR_BODY_TIMEOUT'
   );
 }
+
+// The text of a relay turn, made safe to forward. Size first: the scanners
+// are linear but their input is attacker-controlled. Then strip, then refuse
+// what is still a sensitive label followed by a value (nothing is echoed).
+type RelayText =
+  | { ok: true; text: string }
+  | { ok: false; reason: 'message_too_large' | 'sensitive_value_in_message' };
+const relayText = (text: string): RelayText => {
+  if (text.length > MAX_RELAY_TEXT_CHARS) {
+    return { ok: false, reason: 'message_too_large' };
+  }
+  const stripped = stripSensitiveText(text);
+  if (hasSensitiveValueInProse(stripped)) {
+    return { ok: false, reason: 'sensitive_value_in_message' };
+  }
+  return { ok: true, text: stripped };
+};
 
 export async function POST(request: Request) {
   const session = await auth();
@@ -136,7 +157,10 @@ export async function POST(request: Request) {
       structuredInput = true;
       // A relay run never forwards a participant record's sensitive values,
       // on any turn. Text without a record is returned unchanged.
-      input = stripSensitiveText(text);
+      const safe = relayText(text);
+      if (!safe.ok)
+        return new ChatSDKError('bad_request:api', safe.reason).toResponse();
+      input = safe.text;
       const pending = existing.pendingRequests;
       if (hasAnswers) {
         if (pending.length === 0) {
@@ -317,10 +341,14 @@ export async function POST(request: Request) {
         // The relay run id is the chat id.
         relayRef = { url, runId: chatId };
       }
+      let safe: ReturnType<typeof relayText> = { ok: true, text };
+      if (relayRef) safe = relayText(text);
+      if (!safe.ok)
+        return new ChatSDKError('bad_request:api', safe.reason).toResponse();
       const created = relayRef
         ? await createEveSession(
             // Stripped BEFORE the marker is added, and before anything is sent.
-            buildExtensionRunMessage(stripSensitiveText(text)),
+            buildExtensionRunMessage(safe.text),
             model,
             relayRef,
           )
