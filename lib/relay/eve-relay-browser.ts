@@ -213,7 +213,9 @@ export async function runRelayCommand(
   if (!checked.ok) {
     return { success: false, error: checked.error, liveViewUrl: null };
   }
-  const agentToken = await fetchAgentToken(ref.runId);
+  // Bound to this Eve session: the route refuses any session other than the
+  // one the run was created with (a fixed, credential-free error here).
+  const agentToken = await fetchAgentToken(ref.runId, ctx.session.id);
   if (!agentToken.ok) {
     return { success: false, error: agentToken.error, liveViewUrl: null };
   }

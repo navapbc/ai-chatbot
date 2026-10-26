@@ -27,22 +27,33 @@ const ERR_UNAVAILABLE = 'The relay token service is unavailable.';
 const ERR_REFUSED = 'The relay token request was refused.';
 const ERR_INVALID = 'The relay token response was invalid.';
 
-// Per run id, in this process only.
+// Per (run id, Eve session id), in this process only: the route grants a
+// token to the session the run was created with, so a token cached for one
+// session must never be handed to another.
 const cache = new Map<string, { token: string; expiresAt: number }>();
+const cacheKey = (runId: string, sessionId: string) =>
+  JSON.stringify([runId, sessionId]);
 
 /** Test hook. */
 export function _resetAgentTokenCache(): void {
   cache.clear();
 }
 
-/** Never throws. Errors are fixed strings, free of any credential. */
+/**
+ * Never throws. Errors are fixed strings, free of any credential.
+ * `sessionId` is the calling Eve session (`ctx.session.id`); the route only
+ * mints for the session the run was created with.
+ */
 export async function fetchAgentToken(
   runId: string,
+  sessionId: string,
   opts: AgentTokenOptions = {},
 ): Promise<AgentTokenResult> {
   try {
+    if (!sessionId) return { ok: false, error: ERR_REFUSED };
+    const key = cacheKey(runId, sessionId);
     const now = opts.now ?? (() => Math.floor(Date.now() / 1000));
-    const cached = cache.get(runId);
+    const cached = cache.get(key);
     if (cached && cached.expiresAt - REFRESH_MARGIN_SECONDS > now()) {
       return { ok: true, ...cached };
     }
@@ -66,7 +77,7 @@ export async function fetchAgentToken(
           'content-type': 'application/json',
           'x-eve-internal-secret': secret,
         },
-        body: JSON.stringify({ runId }),
+        body: JSON.stringify({ runId, sessionId }),
         signal: controller.signal,
       });
     } catch {
@@ -92,7 +103,7 @@ export async function fetchAgentToken(
     ) {
       return { ok: false, error: ERR_INVALID };
     }
-    cache.set(runId, { token, expiresAt });
+    cache.set(key, { token, expiresAt });
     return { ok: true, token, expiresAt };
   } catch {
     return { ok: false, error: ERR_UNAVAILABLE };

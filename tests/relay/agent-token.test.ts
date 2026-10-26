@@ -8,6 +8,7 @@ const RUN = '0b6f7c4e-5d1a-4c55-9a53-3f7d2f0c9a11';
 const TOKEN = 'AGENT-TOKEN-do-not-leak-abcdef0123456789';
 const SECRET = 'internal-secret-do-not-leak';
 const BASE = 'http://127.0.0.1:3999';
+const SESSION = 'wrun_01SESSIONIDFORTESTS';
 
 const ok = (token = TOKEN, expiresAt = 2_000) =>
   new Response(JSON.stringify({ token, expiresAt }), { status: 200 });
@@ -22,9 +23,9 @@ describe('fetchAgentToken', () => {
     vi.stubEnv('EVE_INTERNAL_SECRET', SECRET);
   });
 
-  it('returns the token from a 200 and posts the run id with the secret', async () => {
+  it('returns the token from a 200 and posts the run and session ids with the secret', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(ok());
-    const result = await fetchAgentToken(RUN, {
+    const result = await fetchAgentToken(RUN, SESSION, {
       fetchImpl,
       baseUrl: BASE,
       now: () => 1_000,
@@ -34,23 +35,33 @@ describe('fetchAgentToken', () => {
     expect(url).toBe(`${BASE}/api/relay/agent-token`);
     expect(init.method).toBe('POST');
     expect(init.headers).toMatchObject({ 'x-eve-internal-secret': SECRET });
-    expect(init.body).toBe(JSON.stringify({ runId: RUN }));
+    expect(init.body).toBe(JSON.stringify({ runId: RUN, sessionId: SESSION }));
   });
 
-  it('caches per run id until 60 s before expiry, then refetches', async () => {
+  it('caches per run and session id until 60 s before expiry, then refetches', async () => {
     let t = 1_000;
     const fetchImpl = vi
       .fn()
       .mockImplementation(async () => ok(TOKEN, t + 300));
     const opts = { fetchImpl, baseUrl: BASE, now: () => t };
-    await fetchAgentToken(RUN, opts);
-    await fetchAgentToken(RUN, opts);
+    await fetchAgentToken(RUN, SESSION, opts);
+    await fetchAgentToken(RUN, SESSION, opts);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    await fetchAgentToken('11111111-1111-4111-8111-111111111111', opts);
+    await fetchAgentToken(
+      '11111111-1111-4111-8111-111111111111',
+      SESSION,
+      opts,
+    );
     expect(fetchImpl).toHaveBeenCalledTimes(2);
-    t = 1_000 + 241; // inside the 60 s window before expiry (1_300)
-    await fetchAgentToken(RUN, opts);
+    // Another Eve session on the same run gets no cached token: the route
+    // decides per session.
+    await fetchAgentToken(RUN, 'wrun_01OTHERSESSION', opts);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+    await fetchAgentToken(RUN, SESSION, opts);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    t = 1_000 + 241; // inside the 60 s window before expiry (1_300)
+    await fetchAgentToken(RUN, SESSION, opts);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
   it('returns fixed errors without credentials for each failure', async () => {
@@ -76,7 +87,7 @@ describe('fetchAgentToken', () => {
     ];
     for (const [expected, impl] of cases) {
       _resetAgentTokenCache();
-      const result = await fetchAgentToken(RUN, {
+      const result = await fetchAgentToken(RUN, SESSION, {
         fetchImpl: vi.fn().mockImplementation(impl),
         baseUrl: BASE,
         now: () => 1_000,
@@ -90,8 +101,21 @@ describe('fetchAgentToken', () => {
   it('fails without a request when there is no internal secret', async () => {
     vi.stubEnv('EVE_INTERNAL_SECRET', '');
     const fetchImpl = vi.fn();
-    const result = await fetchAgentToken(RUN, { fetchImpl, baseUrl: BASE });
+    const result = await fetchAgentToken(RUN, SESSION, {
+      fetchImpl,
+      baseUrl: BASE,
+    });
     expect(result.ok).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('fails without a request when there is no session id', async () => {
+    const fetchImpl = vi.fn();
+    const result = await fetchAgentToken(RUN, '', { fetchImpl, baseUrl: BASE });
+    expect(result).toEqual({
+      ok: false,
+      error: 'The relay token request was refused.',
+    });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -101,8 +125,8 @@ describe('fetchAgentToken', () => {
       .mockResolvedValueOnce(new Response('x', { status: 500 }))
       .mockResolvedValueOnce(ok());
     const opts = { fetchImpl, baseUrl: BASE, now: () => 1_000 };
-    expect((await fetchAgentToken(RUN, opts)).ok).toBe(false);
-    expect((await fetchAgentToken(RUN, opts)).ok).toBe(true);
+    expect((await fetchAgentToken(RUN, SESSION, opts)).ok).toBe(false);
+    expect((await fetchAgentToken(RUN, SESSION, opts)).ok).toBe(true);
   });
 
   it('passes an abort signal, refuses redirects, and the 5 s timeout aborts', async () => {
@@ -116,7 +140,10 @@ describe('fetchAgentToken', () => {
             signal.addEventListener('abort', () => reject(signal?.reason));
           }),
       );
-      const pending = fetchAgentToken(RUN, { fetchImpl, baseUrl: BASE });
+      const pending = fetchAgentToken(RUN, SESSION, {
+        fetchImpl,
+        baseUrl: BASE,
+      });
       expect(signal).toBeInstanceOf(AbortSignal);
       expect((fetchImpl.mock.calls[0][1] as RequestInit).redirect).toBe(
         'error',
@@ -152,13 +179,13 @@ describe('fetchAgentToken', () => {
           async () => new Response(JSON.stringify(body), { status: 200 }),
         );
       const opts = { fetchImpl, baseUrl: BASE, now: () => 1_000 };
-      const result = await fetchAgentToken(RUN, opts);
+      const result = await fetchAgentToken(RUN, SESSION, opts);
       expect(result).toEqual({
         ok: false,
         error: 'The relay token response was invalid.',
       });
       expect(JSON.stringify(result)).not.toContain(TOKEN);
-      await fetchAgentToken(RUN, opts);
+      await fetchAgentToken(RUN, SESSION, opts);
       expect(fetchImpl).toHaveBeenCalledTimes(2);
     },
   );
@@ -171,7 +198,7 @@ describe('fetchAgentToken', () => {
       token: TOKEN,
       expiresAt: Number.NaN,
     });
-    const result = await fetchAgentToken(RUN, {
+    const result = await fetchAgentToken(RUN, SESSION, {
       fetchImpl: vi.fn().mockResolvedValue(res),
       baseUrl: BASE,
     });
@@ -189,12 +216,12 @@ describe('fetchAgentToken', () => {
       })
       .mockImplementationOnce(async () => ok());
     const opts = { fetchImpl, baseUrl: BASE, now: () => 1_000 };
-    const first = await fetchAgentToken(RUN, opts);
+    const first = await fetchAgentToken(RUN, SESSION, opts);
     expect(first).toEqual({
       ok: false,
       error: 'The relay token service is unavailable.',
     });
     expect(JSON.stringify(first)).not.toContain(SECRET);
-    expect((await fetchAgentToken(RUN, opts)).ok).toBe(true);
+    expect((await fetchAgentToken(RUN, SESSION, opts)).ok).toBe(true);
   });
 });

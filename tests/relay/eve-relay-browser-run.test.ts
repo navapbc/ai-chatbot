@@ -94,6 +94,44 @@ describe('runRelayCommand transport', () => {
     expect(text).not.toContain(LEGACY);
   });
 
+  it("asks for the token with the run id and this Eve session's id", async () => {
+    runCommand.mockResolvedValue({ success: true, data: 'ok' });
+    await runRelayCommand(ctx(), ['snapshot']);
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({
+      runId: RUN,
+      sessionId: 'wrun_relay_run',
+    });
+  });
+
+  it('returns a fixed refusal without spawning when the route refuses this session', async () => {
+    // The route's bodyless 404: an orphan session, or the short window before
+    // the run row lands.
+    fetchMock.mockImplementation(
+      async () => new Response(null, { status: 404 }),
+    );
+    const result = await runRelayCommand(ctx(), ['snapshot']);
+    expect(result).toEqual({
+      success: false,
+      error: 'The relay token request was refused.',
+      liveViewUrl: null,
+    });
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+    // Refusals are not cached: the next call asks again.
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({ token: TOKEN, expiresAt: 4_000_000_000 }),
+          {
+            status: 200,
+          },
+        ),
+    );
+    runCommand.mockResolvedValue({ success: true, data: 'ok' });
+    expect((await runRelayCommand(ctx(), ['snapshot'])).success).toBe(true);
+  });
+
   it('fails closed without spawning when EVE_INTERNAL_SECRET is missing', async () => {
     vi.stubEnv('EVE_INTERNAL_SECRET', '');
     const result = await runRelayCommand(ctx(), ['snapshot']);

@@ -81,9 +81,14 @@ describe('runRelayCommand end to end', { timeout: 60_000 }, () => {
     agentToken = tokens.agent;
     priorSecret = process.env.EVE_INTERNAL_SECRET;
     process.env.EVE_INTERNAL_SECRET = 'e2e-internal-secret';
-    vi.stubGlobal('fetch', async () =>
-      Response.json({ token: tokens.agent, expiresAt: 4_000_000_000 }),
-    );
+    // Like the route, it mints only for the run's own Eve session.
+    vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+      const { runId, sessionId } = JSON.parse(String(init.body));
+      if (runId !== tokens.runId || sessionId !== 'wrun_relay_e2e') {
+        return new Response(null, { status: 404 });
+      }
+      return Response.json({ token: tokens.agent, expiresAt: 4_000_000_000 });
+    });
     ctx = ctxWith(
       principal({ relayUrl: `${relay.url}/`, relayRunId: tokens.runId }),
       null,
