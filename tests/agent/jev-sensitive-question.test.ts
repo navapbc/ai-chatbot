@@ -1,18 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isJevEnabled } from '@/lib/jev/client';
 import {
+  describeFieldForJev,
   NOUL_THRESHOLD,
   sensitiveFieldIsSensitive,
   sensitiveFieldQuestions,
 } from '@/lib/jev/questions';
 
-const noulOutcome = (noul: number) =>
-  ({
-    ok: true,
-    answers: { sensitive: { noul } },
-    model: 'm',
-    usage: { inputTokens: 1, outputTokens: 1 },
-  }) as never;
+type Outcome = Parameters<typeof sensitiveFieldIsSensitive>[0];
+
+const noulOutcome = (noul: number): Outcome => ({
+  ok: true,
+  answers: { sensitive: { type: 'noul', noul } },
+  model: 'm',
+  usage: { inputTokens: 1, outputTokens: 1 },
+});
 
 describe('sensitiveFieldQuestions', () => {
   it('state carries only the descriptor keys that are present', () => {
@@ -34,6 +36,32 @@ describe('sensitiveFieldQuestions', () => {
       name: undefined,
     });
     expect(Object.keys(state)).toEqual(['label']);
+  });
+});
+
+describe('describeFieldForJev', () => {
+  it('drops keys outside the allowlist', () => {
+    const field = {
+      label: 'SSN',
+      value: 'secret',
+      url: 'https://x.test',
+      text: 'page',
+    };
+    const state = describeFieldForJev(field);
+    expect(Object.keys(state)).toEqual(['label']);
+    expect(Object.keys(sensitiveFieldQuestions(field).state)).toEqual([
+      'label',
+    ]);
+  });
+  it('caps each string at 200 characters', () => {
+    expect(describeFieldForJev({ label: 'a'.repeat(500) }).label).toHaveLength(
+      200,
+    );
+  });
+  it('replaces every digit with 9 and keeps the shape', () => {
+    expect(
+      describeFieldForJev({ placeholder: '123-45-6789 / 0' }).placeholder,
+    ).toBe('999-99-9999 / 9');
   });
 });
 

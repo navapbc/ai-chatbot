@@ -3,6 +3,7 @@ import { askJev, isJevEnabled } from '@/lib/jev/client';
 import {
   gapFieldQuestions,
   NOUL_THRESHOLD,
+  sanitizeFieldText,
   sensitiveFieldQuestions,
   summaryFieldQuestions,
 } from '@/lib/jev/questions';
@@ -48,14 +49,25 @@ if (!participant) {
 // { ok: false }, which would score every row 0 and read as a total regression
 // rather than "this did not run". Detect it once here and return null scores
 // instead — the same non-applicable convention regression-scenarios uses.
-const ENABLED =
-  isJevEnabled('summary-check') &&
-  isJevEnabled('gap-triage') &&
-  isJevEnabled('sensitive-field');
-if (!ENABLED) {
+const HAS_KEY = Boolean(process.env.TYPESAFE_API_KEY);
+const CLASSIC_ENABLED =
+  isJevEnabled('summary-check') && isJevEnabled('gap-triage');
+const SENSITIVE_ENABLED = isJevEnabled('sensitive-field');
+if (!HAS_KEY) {
   console.warn(
-    '::warning::jev-questions eval skipped — needs TYPESAFE_API_KEY and JEV_FEATURES to include summary-check, gap-triage and sensitive-field. Scores will be null, NOT zero.',
+    '::warning::jev-questions eval skipped — needs TYPESAFE_API_KEY. Scores will be null, NOT zero.',
   );
+} else {
+  if (!CLASSIC_ENABLED) {
+    console.warn(
+      '::warning::jev-questions gap/summary rows skipped — JEV_FEATURES must include summary-check and gap-triage. Their scores will be null, NOT zero.',
+    );
+  }
+  if (!SENSITIVE_ENABLED) {
+    console.warn(
+      '::warning::jev-questions sensitive-field rows skipped — JEV_FEATURES must include sensitive-field. Their scores will be null, NOT zero.',
+    );
+  }
 }
 
 type SummaryCase = (typeof cases.summary)[number];
@@ -111,7 +123,7 @@ Eval('labs-asp', {
     rows.flatMap((c) =>
       Array.from({ length: REPEATS }, (_, i) => ({
         input: { ...c, repeat: i },
-        // Sensitive rows have no verdict; their verdict scorers return null.
+        // Typed as string by the scorer args; sensitive rows have no verdict.
         expected: isSensitive(c) ? '' : c.expectVerdict,
         metadata: { id: c.id, kind: c.kind, why: c.why, repeat: i },
       })),
@@ -121,7 +133,9 @@ Eval('labs-asp', {
     input: AnyCase & { repeat: number },
     { span },
   ): Promise<Outcome> => {
-    if (!ENABLED) return { ran: false };
+    if (isSensitive(input) ? !SENSITIVE_ENABLED : !CLASSIC_ENABLED) {
+      return { ran: false };
+    }
 
     if (isSensitive(input)) {
       const { state, questions } = sensitiveFieldQuestions(input.field);
@@ -129,7 +143,7 @@ Eval('labs-asp', {
         state,
         questions,
         feature: 'sensitive-field',
-        field: input.field.label ?? input.field.name,
+        field: sanitizeFieldText(input.field.label ?? input.field.name ?? ''),
       });
       if (!result.ok) return { ran: false };
       logJevUsageAndCost(span, result.model, result.usage);
@@ -190,7 +204,7 @@ Eval('labs-asp', {
         return { name: 'expected_verdict_probability', score: null };
       return {
         name: 'expected_verdict_probability',
-        score: output.expectedVerdictP ?? 0,
+        score: output.expectedVerdictP,
       };
     },
 

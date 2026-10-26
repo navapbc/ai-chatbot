@@ -142,17 +142,52 @@ export const fieldValueQuestions = (
 /** Where a noul counts as "high". A noul is a probability in [0,1]. */
 export const NOUL_THRESHOLD = 0.5;
 
+const DESCRIPTOR_KEYS = [
+  'role',
+  'inputType',
+  'autocomplete',
+  'name',
+  'label',
+  'placeholder',
+  'description',
+] as const satisfies readonly (keyof FieldDescriptor)[];
+
+const MAX_DESCRIPTOR_CHARS = 200;
+
+/**
+ * Descriptor strings come from the live page and can echo what the user typed
+ * (a label that mirrors the value, a placeholder prefilled with it). Cap the
+ * length and turn every ASCII digit into `9`: the shape cue (`999-99-9999`)
+ * survives, the digits do not. Use this for anything derived from a field that
+ * leaves the process (state, telemetry spans, eval metadata).
+ */
+export const sanitizeFieldText = (text: string): string =>
+  text.slice(0, MAX_DESCRIPTOR_CHARS).replace(/[0-9]/g, '9');
+
+/**
+ * The only form of a field descriptor that may be sent to Jev: an explicit key
+ * allowlist (extra runtime keys such as `value`, `url` or `text` are dropped)
+ * with every string sanitized.
+ */
+export const describeFieldForJev = (
+  field: FieldDescriptor,
+): Partial<FieldDescriptor> => {
+  const out: Partial<FieldDescriptor> = {};
+  for (const key of DESCRIPTOR_KEYS) {
+    const v = field[key];
+    if (typeof v === 'string') out[key] = sanitizeFieldText(v);
+  }
+  return out;
+};
+
 /**
  * Is this form field one whose value must never leave the browser?
  *
- * The state is the field descriptor only — label, name, type, autocomplete,
- * placeholder, description. It never includes a participant record, a typed
- * value, a URL or page text, so nothing sensitive is sent to answer it.
+ * The state is the sanitized field descriptor only. It never includes a
+ * participant record, a typed value, a URL or page text.
  */
 export const sensitiveFieldQuestions = (field: FieldDescriptor) => ({
-  state: Object.fromEntries(
-    Object.entries(field).filter(([, v]) => v !== undefined),
-  ) as Partial<FieldDescriptor>,
+  state: describeFieldForJev(field),
   questions: {
     sensitive: noul(
       'Would a value typed into the form field described by this state be a secret or a government, financial or case identifier that must not be shown to anyone else: a Social Security number or ITIN, a tax ID, a bank account or routing number, a card number or card security code, a password, PIN or security answer, a one-time or verification code, a driver license or state ID number, a passport number, an immigration A-number, or a benefit case or ID number? Date of birth, address, phone number, email address and ordinary names are NOT in this category.',
