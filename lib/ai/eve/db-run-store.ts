@@ -75,8 +75,14 @@ export function createDbRunStore(): EveRunStore {
     },
     countRecentRelayRuns: (userId, since) =>
       countRecentRelayRuns({ userId, since }),
-    swapToken: (userId, chatId, expected, next) =>
-      swapEveRunToken({ userId, chatId, expected, next }),
+    swapToken: (userId, chatId, expected, next, opts) =>
+      swapEveRunToken({
+        userId,
+        chatId,
+        expected,
+        next,
+        live: opts?.live === true,
+      }),
     advance: (userId, chatId, update) =>
       advanceEveRun({ userId, chatId, ...update }),
     setPending: (userId, chatId, pendingRequests) =>

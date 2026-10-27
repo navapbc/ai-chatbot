@@ -106,6 +106,8 @@ const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
 
 export type CancelTurnStatus = 'accepted' | 'no_active_turn';
 
+const CANCEL_TIMEOUT_MS = 5000;
+
 /**
  * Cancel the session's in-flight turn. Both of Eve's statuses are success
  * ("no_active_turn" covers a settled turn or a duplicate cancel). The session
@@ -122,11 +124,20 @@ export async function cancelEveTurn(
   if (!SESSION_ID_PATTERN.test(sessionId)) {
     throw new Error('Eve cancel: invalid session id');
   }
-  const res = await fetch(`${EVE_URL}/eve/v1/session/${sessionId}/cancel`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: '{}',
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${EVE_URL}/eve/v1/session/${sessionId}/cancel`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      // A hung Eve must not hold a Stop or a turn open; callers treat a
+      // timeout as a failed (best-effort) cancel.
+      signal: AbortSignal.timeout(CANCEL_TIMEOUT_MS),
+    });
+  } catch {
+    // Fixed text: a network or abort error can carry the URL.
+    throw new Error('Eve cancel request failed');
+  }
   if (!res.ok) throw new Error(`Eve cancel responded ${res.status}`);
   const json = (await res.json().catch(() => null)) as {
     status?: unknown;

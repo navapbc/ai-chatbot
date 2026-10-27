@@ -111,14 +111,39 @@ describe('POST /api/relay/runs/[runId]/stop', () => {
     expect((await store.get(USER, RUN))?.endedAt).toBeInstanceOf(Date);
   });
 
-  it('a second stop reports alreadyEnded and never cancels again', async () => {
+  it('a later stop reports alreadyEnded and still attempts the cancel', async () => {
     await postStop(RUN);
     const endedAt = (await store.get(USER, RUN))?.endedAt;
+    for (let i = 0; i < 2; i++) {
+      const res = await postStop(RUN);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ended: true, alreadyEnded: true });
+    }
+    // Eve's cancel is idempotent; a first cancel may have failed transiently.
+    expect(eve.cancelEveTurn).toHaveBeenCalledTimes(3);
+    for (const call of eve.cancelEveTurn.mock.calls) {
+      expect(call).toEqual([SESSION]);
+    }
+    expect((await store.get(USER, RUN))?.endedAt).toEqual(endedAt);
+  });
+
+  it('a later stop answers alreadyEnded even when its cancel fails', async () => {
+    await postStop(RUN);
+    eve.cancelEveTurn.mockRejectedValue(new Error(`Eve ${SESSION}`));
     const res = await postStop(RUN);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ended: true, alreadyEnded: true });
-    expect(eve.cancelEveTurn).toHaveBeenCalledTimes(1);
-    expect((await store.get(USER, RUN))?.endedAt).toEqual(endedAt);
+    expect(logged).toContain('[relay-stop] cancel failed');
+    expect(logged.join('\n')).not.toContain(SESSION);
+  });
+
+  it('two concurrent stops: exactly one ends the run', async () => {
+    const bodies = await Promise.all(
+      [postStop(RUN), postStop(RUN)].map(async (p) => (await p).json()),
+    );
+    expect(bodies.map((b) => b.alreadyEnded).sort()).toEqual([false, true]);
+    expect(bodies.every((b) => b.ended === true)).toBe(true);
+    expect((await store.getByChatId(OTHER_RUN))?.endedAt).toBeNull();
   });
 
   it('still answers ended when the cancel fails, and logs no values', async () => {

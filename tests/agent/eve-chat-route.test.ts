@@ -10,6 +10,7 @@ const eve = vi.hoisted(() => ({
   continueEveSession: vi.fn(),
   openEveStream: vi.fn(),
   parseNdjson: vi.fn(),
+  cancelEveTurn: vi.fn(),
 }));
 vi.mock('@/lib/ai/eve/eve-client', () => eve);
 
@@ -1923,6 +1924,113 @@ describe('POST /api/eve-chat ended relay runs', () => {
     await expectRunEnded(await say('hello'));
   });
 
+  describe('a Stop racing a follow-up', () => {
+    const seedLive = () =>
+      store.create(USER, RELAY_CHAT, {
+        eveSessionId: 'sess-1',
+        continuationToken: 'tok-0',
+        relayOrigin: ORIGIN,
+      });
+    let logged: string[];
+    beforeEach(() => {
+      eve.cancelEveTurn.mockResolvedValue('accepted');
+      logged = [];
+      vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+        logged.push(
+          a.map((x) => (x instanceof Error ? x.message : String(x))).join(' '),
+        );
+      });
+    });
+
+    it('claims with live: true on a relay run', async () => {
+      await seedLive();
+      const swap = vi.spyOn(store, 'swapToken');
+      eve.continueEveSession.mockResolvedValue({
+        continuationToken: '',
+        sessionId: 'sess-1',
+      });
+      streamEvents({ type: 'turn.started' });
+      const res = await say('go on');
+      expect(res.status).toBe(200);
+      await drain(res);
+      expect(swap.mock.calls[0]).toEqual([
+        USER,
+        RELAY_CHAT,
+        'tok-0',
+        expect.stringMatching(/^claim:/),
+        { live: true },
+      ]);
+      // The final swap is unguarded.
+      expect(swap.mock.calls[1][4]).toBeUndefined();
+      expect(eve.cancelEveTurn).not.toHaveBeenCalled();
+      expect((await store.get(USER, RELAY_CHAT))?.continuationToken).toBe(
+        'tok-0',
+      );
+    });
+
+    it('answers run_ended when the claim loses to a concurrent end', async () => {
+      await seedLive();
+      const swap = store.swapToken.bind(store);
+      vi.spyOn(store, 'swapToken').mockImplementation(
+        async (u, c, expected, next, opts) => {
+          // Stop lands between the route's read and its claim.
+          if (opts?.live) await store.end(u, c);
+          return swap(u, c, expected, next, opts);
+        },
+      );
+      const res = await say('go on');
+      expect(res.status).toBe(400);
+      expect((await res.json()).cause).toBe('run_ended');
+      expect(eve.continueEveSession).not.toHaveBeenCalled();
+      expect(eve.openEveStream).not.toHaveBeenCalled();
+      expect((await store.get(USER, RELAY_CHAT))?.continuationToken).toBe(
+        'tok-0',
+      );
+    });
+
+    it('still answers offline:chat when the claim loses on a live run', async () => {
+      await seedLive();
+      vi.spyOn(store, 'swapToken').mockResolvedValueOnce(false);
+      const res = await say('go on');
+      expect(res.status).toBe(503);
+      expect((await res.json()).code).toBe('offline:chat');
+      expect(eve.continueEveSession).not.toHaveBeenCalled();
+    });
+
+    it('cancels the turn when Stop lands between the claim and continue', async () => {
+      await seedLive();
+      eve.continueEveSession.mockImplementation(async () => {
+        // The Stop route ran here: the row ended, its cancel found no turn.
+        await store.end(USER, RELAY_CHAT);
+        return { continuationToken: '', sessionId: 'sess-1' };
+      });
+      streamEvents({ type: 'turn.started' });
+      const res = await say('go on');
+      await drain(res);
+      expect(eve.cancelEveTurn).toHaveBeenCalledTimes(1);
+      expect(eve.cancelEveTurn).toHaveBeenCalledWith('sess-1');
+      // The final swap still ran, so the row is not stranded on a claim.
+      expect((await store.get(USER, RELAY_CHAT))?.continuationToken).toBe(
+        'tok-0',
+      );
+    });
+
+    it('swallows a failed late cancel with a value-free line', async () => {
+      await seedLive();
+      eve.cancelEveTurn.mockRejectedValue(new Error('Eve sess-1 down'));
+      eve.continueEveSession.mockImplementation(async () => {
+        await store.end(USER, RELAY_CHAT);
+        return { continuationToken: '', sessionId: 'sess-1' };
+      });
+      streamEvents({ type: 'turn.started' });
+      const res = await say('go on');
+      expect(res.status).toBe(200);
+      await drain(res);
+      expect(logged).toContain('[relay-stop] cancel failed');
+      expect(logged.join('\n')).not.toContain('sess-1 down');
+    });
+  });
+
   it('leaves relay first turns alone', async () => {
     streamEvents({ type: 'turn.started' });
     const res = await post({
@@ -1949,9 +2057,12 @@ describe('POST /api/eve-chat ended relay runs', () => {
       sessionId: 'sess-w',
     });
     streamEvents({ type: 'turn.started' });
+    const swap = vi.spyOn(store, 'swapToken');
     const res = await say('hi', CHAT);
     expect(res.status).toBe(200);
     await drain(res);
     expect(eve.continueEveSession).toHaveBeenCalledTimes(1);
+    expect(swap.mock.calls.every((c) => c[4] === undefined)).toBe(true);
+    expect(eve.cancelEveTurn).not.toHaveBeenCalled();
   });
 });

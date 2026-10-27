@@ -5,9 +5,11 @@ import { guardRelayRoute } from '@/lib/relay/route-guard';
 
 // Server-side Stop for a relay run (P4b-c). Ends the row first, so the run is
 // closed to tokens and turns whatever happens next, then cancels the Eve turn
-// in flight, once: only the call that ended the run cancels. A cancel failure
-// is logged without values and does not undo the end. There is no resume; the
-// caseworker starts a new run.
+// in flight. Every Stop attempts the cancel, a repeated one included: Eve's
+// cancel is idempotent ("no_active_turn" when nothing runs) and an earlier
+// cancel may have failed transiently. A cancel failure is logged without
+// values and does not undo the end. There is no resume; the caseworker starts
+// a new run.
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -47,13 +49,11 @@ export async function POST(
     return internalError();
   }
 
-  if (ended) {
-    try {
-      await cancelEveTurn(eveSessionId);
-    } catch {
-      // One fixed line: no session id, run id or error text.
-      console.error('[relay-stop] cancel failed');
-    }
+  try {
+    await cancelEveTurn(eveSessionId);
+  } catch {
+    // One fixed line: no session id, run id or error text.
+    console.error('[relay-stop] cancel failed');
   }
 
   return noStore(Response.json({ ended: true, alreadyEnded: !ended }));

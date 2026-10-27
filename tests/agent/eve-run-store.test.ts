@@ -359,6 +359,24 @@ function runSuite(
     expect(await store.get(other, chatId)).toBeUndefined();
   });
 
+  it('swapToken with live: true refuses an ended row and keeps its token', async () => {
+    const store = makeStore();
+    const { owner } = users();
+    const chatId = randomUUID();
+    await store.create(owner, chatId, init('t1'));
+    expect(
+      await store.swapToken(owner, chatId, 't1', 't2', { live: true }),
+    ).toBe(true);
+    expect(await store.end(owner, chatId)).toBe(true);
+    expect(
+      await store.swapToken(owner, chatId, 't2', 't3', { live: true }),
+    ).toBe(false);
+    expect((await store.get(owner, chatId))?.continuationToken).toBe('t2');
+    // Without the option an ended row still swaps (rollback, final swap).
+    expect(await store.swapToken(owner, chatId, 't2', 't3')).toBe(true);
+    expect((await store.get(owner, chatId))?.continuationToken).toBe('t3');
+  });
+
   it('a web row can also be ended', async () => {
     const store = makeStore();
     const { owner } = users();

@@ -9,6 +9,7 @@ import {
 } from '@/lib/ai/eve/run-store';
 import { setLiveViewUrl } from '@/lib/ai/eve/live-view-store';
 import {
+  cancelEveTurn,
   createEveSession,
   continueEveSession,
   openEveStream,
@@ -183,6 +184,24 @@ async function prepareRelayStart(
       ref: { url, runId: chatId },
     },
   };
+}
+
+/**
+ * Cancels the session's turn when the relay run has ended. Never throws; a
+ * failure logs one fixed line (no ids, no error text), as the Stop route does.
+ */
+async function cancelIfEnded(
+  store: EveRunStore,
+  userId: string,
+  chatId: string,
+  eveSessionId: string,
+): Promise<void> {
+  try {
+    if (!(await store.get(userId, chatId))?.endedAt) return;
+    await cancelEveTurn(eveSessionId);
+  } catch {
+    console.error('[relay-stop] cancel failed');
+  }
 }
 
 export async function POST(request: Request) {
@@ -405,14 +424,24 @@ export async function POST(request: Request) {
         return new ChatSDKError('offline:chat').toResponse();
       }
       const claim = `${CLAIM_PREFIX}${generateUUID()}`;
+      const isRelayRun = existing.relayOrigin !== null;
+      // On a relay run the claim also requires the row to be un-ended, in the
+      // same compare-and-set, so a Stop that lands after the read above
+      // cannot be followed by a turn. Only the claim is guarded: the rollback
+      // and the final swap below must land on an ended row too, or a Stop
+      // mid-turn would strand the row on a claim.
       if (
         !(await store.swapToken(
           userId,
           chatId,
           existing.continuationToken,
           claim,
+          isRelayRun ? { live: true } : undefined,
         ))
       ) {
+        if (isRelayRun && (await store.get(userId, chatId))?.endedAt) {
+          return new ChatSDKError('bad_request:api', 'run_ended').toResponse();
+        }
         return new ChatSDKError('offline:chat').toResponse();
       }
       let nextToken: string;
@@ -491,6 +520,12 @@ export async function POST(request: Request) {
           chatId,
           swapErr,
         });
+      }
+      // A Stop that landed between the claim and Eve accepting the turn found
+      // no turn to cancel. Re-read after the final swap, and cancel this turn
+      // if the run ended meanwhile. Best-effort: never fails the request.
+      if (isRelayRun) {
+        await cancelIfEnded(store, userId, chatId, existing.eveSessionId);
       }
       sessionId = existing.eveSessionId;
       startIndex = existing.streamIndex;

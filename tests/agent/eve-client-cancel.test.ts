@@ -46,6 +46,33 @@ describe('cancelEveTurn', () => {
     },
   );
 
+  it('gives up after 5 seconds when Eve never answers', async () => {
+    // Stands in for the 5 s timer, so the test controls when it fires.
+    const timer = new AbortController();
+    const timeout = vi
+      .spyOn(AbortSignal, 'timeout')
+      .mockReturnValue(timer.signal);
+    // A fetch that only settles when its signal aborts.
+    fetchMock.mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () =>
+            reject(new Error(`aborted ${SESSION}`)),
+          );
+        }),
+    );
+    const pending = cancelEveTurn(SESSION).catch((e: unknown) => e);
+    expect(timeout).toHaveBeenCalledWith(5000);
+    expect((fetchMock.mock.calls[0][1] as RequestInit).signal).toBe(
+      timer.signal,
+    );
+    timer.abort(new DOMException('timed out', 'TimeoutError'));
+    const err = await pending;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).not.toContain(SESSION);
+    timeout.mockRestore();
+  });
+
   it('throws on a 2xx with an unknown status', async () => {
     respond(202, { ok: true, status: 'something_else' });
     await expect(cancelEveTurn(SESSION)).rejects.toThrow();

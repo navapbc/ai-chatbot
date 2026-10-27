@@ -55,12 +55,17 @@ export interface EveRunStore {
   ): Promise<EveRunRecord>;
   /** Relay runs this user created at or after `since`. */
   countRecentRelayRuns(userId: string, since: Date): Promise<number>;
-  /** Compare-and-set on continuationToken; true when the swap happened. */
+  /**
+   * Compare-and-set on continuationToken; true when the swap happened. With
+   * `live: true` the row must also be un-ended (the eve-chat claim only; a
+   * rollback or final swap must still land on an ended row).
+   */
   swapToken(
     userId: string,
     chatId: string,
     expected: string,
     next: string,
+    opts?: { live?: boolean },
   ): Promise<boolean>;
   /**
    * Moves the cursor to streamIndex when that is greater than the stored one.
@@ -150,9 +155,10 @@ export function createMemoryRunStore(): EveRunStore {
           r.createdAt >= since,
       ).length;
     },
-    async swapToken(userId, chatId, expected, next) {
+    async swapToken(userId, chatId, expected, next, opts) {
       const row = rows.get(key(userId, chatId));
       if (!row || row.continuationToken !== expected) return false;
+      if (opts?.live && row.endedAt !== null) return false;
       row.continuationToken = next;
       return true;
     },

@@ -793,17 +793,22 @@ export async function createEveRun({
   return row;
 }
 
-/** Compare-and-set on continuationToken. Returns whether the swap happened. */
+/**
+ * Compare-and-set on continuationToken. Returns whether the swap happened.
+ * With `live`, the row must also be un-ended, in the same statement.
+ */
 export async function swapEveRunToken({
   userId,
   chatId,
   expected,
   next,
+  live = false,
 }: {
   userId: string;
   chatId: string;
   expected: string;
   next: string;
+  live?: boolean;
 }): Promise<boolean> {
   try {
     const rows = await db
@@ -814,6 +819,7 @@ export async function swapEveRunToken({
           eq(eveRun.userId, userId),
           eq(eveRun.chatId, chatId),
           eq(eveRun.continuationToken, expected),
+          live ? isNull(eveRun.endedAt) : undefined,
         ),
       )
       .returning({ id: eveRun.id });
