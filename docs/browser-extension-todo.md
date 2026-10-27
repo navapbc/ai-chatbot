@@ -17,10 +17,11 @@ Living tracker for the Chrome extension work. Compiled on 2026-10-23 from the re
 
 Nothing here has been applied. The relay stays off until `RELAY_ENABLED` is `true`.
 
+- [ ] Set `RELAY_EXTENSION_ORIGIN` (`chrome-extension://<id>` from `extension/EXTENSION_ID`) in deployment; unset, the extension-origin check is off. Build the released extension with `APP_ORIGIN` equal to the deployed app origin and `EXTENSION_RELEASE=1`.
 - [ ] Create Secret Manager secrets: `relay-token-secret-{dev,preview,prod}` (32+ characters) and `eve-internal-secret-{dev,preview,prod}`.
 - [ ] Grant `roles/logging.configWriter` to the deploy service account, or set `relay_exclude_request_logs = false` knowingly (that leaves token-bearing request URLs in Cloud Logging).
 - [ ] Set the GitHub repository variable `RELAY_ENABLED=true` only after the two items above. Turning it off later plans a destroy; on dev and prod deletion protection makes that apply fail.
-- [ ] Do not set `RELAY_TOKEN_ENDPOINT_ENABLED` anywhere until the extension can authenticate to the app (plan 4b; runs are now user-bound).
+- [ ] Do not set `RELAY_TOKEN_ENDPOINT_ENABLED` anywhere until the panel exists (plan 4c); the auth path is done in plan 4b (runs are user-bound).
 - [ ] Before deploying plan 4a: migrations 0008 (Participant) and 0009 (partial unique index on `EveRun.chatId`) are applied by `scripts/start-container.sh` (`pnpm tsx lib/db/migrate`, `set -euo pipefail`) on the first deploy that carries this merge, and a failure crash-loops the new revision. BEFORE that deploy, `SELECT "chatId", count(*) FROM "EveRun" WHERE "relayOrigin" IS NOT NULL GROUP BY 1 HAVING count(*) > 1;` must return no rows (in practice none exist: `RELAY_RUNS_ENABLED` is set nowhere in deployment). No down migrations; rolling back the code is safe (old code ignores `Participant`; the index only touches relay rows). Run `scripts/seed-participants.ts` manually (the container does not), and make sure `EVE_INTERNAL_SECRET` and `RELAY_TOKEN_SECRET` are each at least 32 characters (a short `RELAY_TOKEN_SECRET` makes both token routes return 500).
 - [ ] Only if running more than one relay instance: create `relay-redis-url-<env>` and first close the multi-instance gaps listed under plan 5.
 - [ ] Run the manual cloud check (plan task 11) after the first apply: e2e against the deployed relay, compare round trip, snapshot and fill times with the spike (56 ms, about 600 ms, about 240 ms), and search the Eve Postgres world for relay token strings.
@@ -85,7 +86,7 @@ Landed on `feat/sensitive-redaction-impl`; see `docs/changes/2026-10-26-add-sens
 
 - [ ] The six screens and saved details with the 8-hour limit (the participant API is done, plan 4a).
 - [x] Runtime Jev route `app/(chat)/api/relay/classify-field/route.ts` (plan 4a); `CLAUDE.md` updated.
-- [ ] 4b: the worker calls classify-field (build the request with `describeFieldForJev`) and ORs the verdict with the deterministic `isSensitiveField`, so Jev can only escalate masking.
+- [x] 4b: the worker calls classify-field (build the request with `describeFieldForJev`) and ORs the verdict with the deterministic `isSensitiveField`, so Jev can only escalate masking (plan 4b; residuals in "Plan 4b follow-ups").
 - [ ] Typing sensitive values from the panel into the page, and registering them with the worker through `addKnownValue`. Values are lost on a worker restart, so the panel re-registers them after each restart.
 - [x] Server-built opening message (plan 4a): before this, the unstripped participant record transited the browser to the Next server before the route stripped it. Done: the server builds the message from the stored participant, so the record no longer transits the browser.
 - [x] Adapter redaction of tool inputs in the client stream on relay runs (plan 4a). Residuals: see "Plan 4a follow-ups".
@@ -96,17 +97,17 @@ Landed on `feat/sensitive-redaction-impl`; see `docs/changes/2026-10-26-add-sens
 - [x] (plan 4a: relay-only lookup, partial unique index, other-user refusal before session creation) Chat-id squatting on the internal token route: another user who creates an `EveRun` row for the same chat id first makes the route 404 for the real owner, and if a run id leaks, that user can obtain an agent token for the run with an origin they chose (hijack). The session binding (the route mints only for the Eve session stored on the row) narrows this to the squatter's own session but does not stop it; fix with user binding, plus a partial unique index on `EveRun.chatId` where `relayOrigin` is not null, or a relay-only store lookup.
 - [x] `EVE_INTERNAL_SECRET` minimum length (32; shorter is treated as unset). Owner: the deployed secret must meet it.
 - [x] The agent-token route reads its body through a bounded reader (`lib/relay/read-bounded-body.ts`).
-- [ ] Per-run "Allow this site?" approval for a redirect (leaving the origin currently ends the run, which breaks login redirects).
-- [ ] Serialize `startRun` so concurrent calls cannot orphan a run.
+- [ ] Per-run "Allow this site?" approval for a redirect. Partly done (plan 4b): the worker holds the run for 60 s (120 s cap) when the tab leaves for another https origin, and the `allowOrigin` message adds the origin (max 3). The prompt UI is plan 4c.
+- [x] Serialize `startRun` so concurrent calls cannot orphan a run (plan 4b: `startRun`, `stopRun` and `resumeRun` share one queue).
 - [x] Mint-side claim validation and refusing an empty secret in `mintRelayToken`; value-free log line on route misconfiguration; `Cache-Control: no-store` on error responses.
-- [ ] Gate the service-worker test hooks (`bridgeHandleMessage`, `bridgeOnDebuggerDetach`) behind a build define before real extension pages exist.
-- [ ] A Stop issued while the socket is reconnecting drops the `stop` frame; send it on reopen.
-- [ ] Decide whether a detach for reasons other than `canceled_by_user` should end the run.
+- [x] Gate the service-worker test hooks (`bridgeHandleMessage`, `bridgeOnDebuggerDetach`) behind a build define before real extension pages exist (plan 4b: `EXTENSION_TEST_HOOKS=1`; refused with `EXTENSION_RELEASE=1`).
+- [x] A Stop issued while the socket is reconnecting drops the `stop` frame; send it on reopen (plan 4b: queued for 30 s or token expiry, memory only, so a worker restart loses it).
+- [x] Decide whether a detach for reasons other than `canceled_by_user` should end the run (plan 4b: ends it with `debugger-detached` after 5 s without a re-attach).
 
-- [ ] 4b: the panel; saved details; typing sensitive values plus `addKnownValue`; the "Allow this site?" flow; `startRun` serialization; service-worker hook gating; Stop while reconnecting; the detach decision (all as listed above).
-- [ ] 4b: how the extension authenticates to the app: CORS, cookies, SameSite.
-- [ ] 4b: a read route for run state: `progress` and `pendingRequests` are stored on the `EveRun` row but nothing returns them, so a panel reopened mid-run cannot rebuild its state; there is also no stream-resume GET on `eve-chat`.
-- [ ] 4b: a server-side Stop: spec Security 9 says Stop ends the run, but today Stop only closes the relay session and the Eve session keeps running, because no route calls Eve's `POST /eve/v1/session/:id/cancel`.
+- [ ] Plan 4c: the panel; saved details; typing sensitive values plus `addKnownValue`; the "Allow this site?" prompt. `startRun` serialization, hook gating, Stop while reconnecting and the detach decision landed in plan 4b (above). See "Plan 4c carry-forward".
+- [x] 4b: how the extension authenticates to the app: CORS, cookies, SameSite. Settled by a spike (Chromium 145): a Lax cookie reaches the app from the worker and extension pages once `host_permissions` covers `APP_ORIGIN`; `auth.ts` is unchanged. Third-party-cookie blocking is untested.
+- [x] 4b: a read route for run state (`GET /api/relay/runs/[runId]`: origin, progress, `pending`, `ended`, `endedAt`). Still open: there is no stream-resume GET on `eve-chat`.
+- [x] 4b: a server-side Stop (`POST /api/relay/runs/[runId]/stop`: ends the row, cancels the Eve turn). Nothing calls it yet; the 4c panel must call it as well as the worker `stopRun`. Tokens minted before Stop stay valid up to 1800 s and the hub does not know `endedAt`.
 - [ ] Owner decision: the `eve-chat` route reads `request.json()` with no size bound (so does `relay/token`, behind auth), so a 10 MB body is buffered before refusal. Bounding it would change the web path too.
 - [ ] 4b note: runs started from entered `details` (not a `recordId`) get no Jev annotation, silently: the Eve participant hook only recognizes a full participant record (`record_id` plus `participant.name`), so Jev features behave as if the flag were off for them.
 - [ ] 4b: decide whether `action_label` text is needed in tool-card inputs (they are `{}` on relay runs; it would need a deliberately sanitized field).
@@ -128,6 +129,61 @@ Deferred minors:
 - [ ] Classify route: the bounded reader does not cancel the body on the up-front `Content-Length` refusal and does not release the lock in `finally`; `describeFieldForJev` runs twice; the descriptor allowlist is duplicated; a store read failure answers `offline:chat`, distinguishable from a 404.
 - [ ] Tool-input redaction: element 0 can be any short letters-and-hyphens token (restricting it to the command-policy verbs would close that); non-ref second arguments degrade to `[hidden]`; the `open` pathname is kept verbatim.
 - [ ] Config route: the returned URL is the original string, not `parsed.href`; no maximum URL length; no tests for uppercase scheme, whitespace, port or `https:///`; the source-grep test is brittle.
+
+### Plan 4b follow-ups
+
+Deferred minors and residuals from the run plumbing, grouped by area.
+
+Auth and origin check:
+- [ ] Thin `resolveAppOrigin` test rows (whitespace, uppercase, `localhost.evil.com`, `[::1]`, userinfo); the manifest file mode is the umask's (0600 locally); GET-without-Origin and POST-with-Origin are asserted only in the e2e.
+- [ ] A failed release build leaves an earlier `extension/dist` in place.
+- [ ] The `eve-chat` 403 lacks `no-store`; the answer-turn origin case is not separately tested; `resetOriginWarningForTests` ships in the bundle.
+- [ ] Tests: `tsc --noEmit` reported errors in two `tests/agent` files (`relay-config`, `relay-route-origin`); recheck.
+
+Run state and Stop:
+- [ ] The UUID regex, `noStore` and `notFound` helpers are duplicated across the run routes; `endEveRun` also writes `updatedAt`; concurrency of `end` is untested against Postgres.
+- [ ] A failed-claim re-read is not wrapped (a DB error gives 500, not `offline:chat`, before Eve); `cancelIfEnded` awaits a cancel up to 5 s in the race.
+- [ ] Whether `/eve/v1/session/:id/cancel` is reachable through the `withEve()` rewrite on the public origin (predates this plan; owner to confirm).
+
+`eve-chat` persistence:
+- [ ] `clientGone` flips silently (an optional value-free warning); relay close-then-reconnect is untested; web reads leave the Eve body open after `session.waiting` (relay closes it).
+- [ ] Cloud Run CPU allocation after a client disconnects is not established (no `cpu_idle` in Terraform); a scale-in mid-read can lose pending, cursor and heal; Eve's behavior on a closed stream body is not proven from Eve code. The SDK behavior is pinned by tests against `ai@7.0.42`.
+
+Redactor hook:
+- [ ] Empty and filled AX fields use different cache keys (one extra call); DOM results can wait up to `describeDeadlineMs`; agent-browser's internal `DOM.getAttributes` use is unverified.
+- [ ] Eight permanently hung classify calls disable the hook until restart (no slot reclaim or circuit breaker); `getAttributes` over-masks a non-input whose descriptor equals a flagged field's.
+- [ ] AX checkbox and radio are not asked about the hook (a label-only sensitive checkbox is not caught by Jev).
+
+Worker Jev classifier:
+- [ ] Large forms exceed the deadline at about 8 per batch and retry on the next snapshot; no backoff on a persistent outage (bounded by the 200-request budget; later fields keep the deterministic verdict); `failures()` counts rejected calls, not requests.
+- [ ] The default bundle contains the classifier and app client code when `APP_ORIGIN` is empty; one test name is misleading and the e2e lacks a hung-server case.
+
+Worker lifecycle:
+- [ ] A same-run-id restart after the old run already ended returns `needsRegistration: false` although values were lost (needs a worker-level record of run ids that held values).
+- [ ] `registrationComplete` and `addKnownValue` are not tied to a `runId` and not serialized.
+- [ ] The harness leaves `test-page.html` and a test-hooks build in `extension/dist`, which can persist into a release build; plain and release bundles still read `typeof __ORIGIN_HOLD_MS__`.
+- [ ] The detach grace relies on the agent re-attaching; if Chrome emits detaches during in-origin navigation this becomes important (unverified). A same-run-id replacement does not announce `resumed`; the endRun detach is not ordered by the lifecycle chain.
+- [ ] Test gaps: `sendCommand` never asserted for refused methods, child sessions while unregistered, token-in-logs across delivery retries.
+- [ ] Residuals: pending stops are lost on a worker restart within 30 s; events missed while unregistered are not replayed; `registration required` does not match Eve's rotation regex; Chrome may log WebSocket URLs containing the token on delivery retries.
+
+Origin hold:
+- [ ] A command in flight across A to B to A is still sent to the new A document (a double-submit risk; fix with `requireSameScope` inside the forward loop and the input recheck).
+- [ ] The agent cannot dismiss an in-scope dialog during a hold; a resumed run whose tab is off-origin ends at once; a navigation announced but never committed ends the run after 60 s.
+- [ ] A page on A can create a pending origin B through a never-committing request, and `allowOrigin(B)` then succeeds while the tab is on A (fails closed).
+- [ ] Hub design: only `open` is bound to the token origin; after `allowOrigin` the agent works on the new origin but cannot `Page.navigate` to it. A round trip B to A without an allow lets B choose the A URL the agent resumes on.
+- [ ] `P4b-f` is superseded: leaving the origin holds the run (60 s, 120 s cap) instead of ending it at once.
+
+### Plan 4c carry-forward
+
+Contracts the panel must honor:
+- [ ] Stop: call the server stop route and the worker `stopRun`; the hub does not know `endedAt` and tokens minted before Stop stay valid up to 1800 s.
+- [ ] After a worker restart, send `runId` with `registrationComplete` and `addKnownValue`, and call `registrationComplete` (count may be 0) promptly; the run stalls fail-closed until then.
+- [ ] Hide pending questions when the run state says `ended`.
+- [ ] The allow-origin prompt shows the tab's actual URL as well as `pendingOrigin`, and is never auto-approved. A prompt-injected agent can also trigger holds by clicking links.
+- [ ] During a hold the Eve tool returns the out-of-scope refusal; the agent should be told to wait and retry.
+- [ ] Show `jevFailures` as a count, not as an outage signal.
+- [ ] `RELAY_EXTENSION_ORIGIN` must be set at deploy for the origin check; `APP_ORIGIN` must exactly match the deployed app origin for cookie auth.
+- [ ] Owner follow-ups: set `RELAY_EXTENSION_ORIGIN`; third-party-cookie blocking is untested; Cloud Run CPU after a disconnect; scale-in mid-read; whether the Eve cancel path is reachable through the public rewrite.
 
 ## Plan 5: Rollout
 
