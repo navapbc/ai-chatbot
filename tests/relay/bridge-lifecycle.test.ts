@@ -459,6 +459,29 @@ describe('run status after a worker restart', () => {
     );
   });
 
+  it('a same-run-id restart (token refresh) after values were registered needs registration', async () => {
+    const socket = await attachedRun('run-1');
+    expect(
+      await bridge.handleMessage({ type: 'addKnownValue', value: 'Rosalind' }),
+    ).toEqual({ ok: true });
+    expect(await start(tokenFor('run-1', 7200))).toEqual({ ok: true });
+    // Not ended on the relay: the new socket's register replaces the old one.
+    expect(socket.sent.filter((m) => m.type === 'stop')).toEqual([]);
+    expect((await status()).needsRegistration).toBe(true);
+    const next = FakeSocket.all.at(-1) as FakeSocket;
+    await next.open();
+    expect(
+      (await ask(next, { id: 'a', type: 'attach', targetId: 'T' })).error,
+    ).toBeUndefined();
+    expect((await screenshot(next, 's1')).error).toBe(REGISTRATION_REFUSED);
+  });
+
+  it('a same-run-id restart with no registered values does not', async () => {
+    await attachedRun('run-1');
+    expect(await start(tokenFor('run-1', 7200))).toEqual({ ok: true });
+    expect((await status()).needsRegistration).toBe(false);
+  });
+
   it('a fresh run does not need registration', async () => {
     await attachedRun('run-1');
     expect((await status()).needsRegistration).toBe(false);

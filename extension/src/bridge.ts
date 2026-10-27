@@ -387,10 +387,16 @@ async function startRunNow(
   if (url === null) return { ok: false, error: 'tab not found' };
   if (!inScope(url, claims.origin)) return { ok: false, error: OUT_OF_SCOPE };
 
-  // A run restarted under the same run id is not ended on the relay: its new
-  // socket's `register` replaces the old one there, while a `stop` would
-  // close the run for good (and refuse the new socket).
-  await endRun('replaced', { notifyRelay: run?.runId !== claims.runId });
+  // A run restarted under the same run id (e.g. a refreshed token) is not
+  // ended on the relay: its new socket's `register` replaces the old one
+  // there, while a `stop` would close the run for good (and refuse the new
+  // socket). Its known values are cleared with the old run, so the panel
+  // must register them again before screenshots are allowed.
+  const previous = run;
+  const sameRun = previous !== undefined && previous.runId === claims.runId;
+  const valuesLost =
+    sameRun && (previous.hasKnownValues || previous.needsRegistration);
+  await endRun('replaced', { notifyRelay: !sameRun });
   const config: RunConfig = {
     relayUrl: msg.relayUrl,
     token: msg.token,
@@ -398,7 +404,7 @@ async function startRunNow(
     allowedFrameOrigins,
   };
   await chrome.storage.session.set({ [STORAGE_KEY]: config });
-  begin(config, socket.url, claims);
+  begin(config, socket.url, claims, false, valuesLost);
   return { ok: true };
 }
 
@@ -535,6 +541,8 @@ function begin(
   socketUrl: string,
   claims: { runId: string; origin: string; exp: number },
   resumed = false,
+  // The known values lived in a dead worker's memory, or in a replaced run.
+  needsRegistration = resumed,
 ) {
   const jev = jevFor(claims.runId);
   const current: Run = {
@@ -553,8 +561,7 @@ function begin(
       : createRedactor(),
     jev,
     hasKnownValues: false,
-    // The known values lived in the dead worker's memory.
-    needsRegistration: resumed,
+    needsRegistration,
     relayClosed: false,
   };
   // A stop still queued for this run id would close the run just begun.
