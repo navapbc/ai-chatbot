@@ -4,6 +4,7 @@ import {
   AnswerInFlightError,
   AnswerInvalidError,
   AnswerRefusedError,
+  AnswerTooLongError,
   NotConnectedError,
   RunEndedError,
 } from './copy';
@@ -70,8 +71,10 @@ const normalize = (answers: unknown): InputAnswer[] | null => {
 const REASONS: Record<string, () => Error> = {
   unknown_request: () => new AnswerAlreadyGivenError(),
   answers_pending: () => new AnswerAlreadyGivenError(),
+  // The pending set changed under the card: wait for the next poll.
+  missing_answer: () => new AnswerAlreadyGivenError(),
   sensitive_value_in_message: () => new AnswerRefusedError(),
-  message_too_large: () => new AnswerRefusedError(),
+  message_too_large: () => new AnswerTooLongError(),
   run_ended: () => new RunEndedError(),
 };
 

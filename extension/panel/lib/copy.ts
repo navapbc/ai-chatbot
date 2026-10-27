@@ -60,6 +60,14 @@ export class AnswerRefusedError extends Error {
   }
 }
 
+/** The server refused an answer turn as too large. */
+export class AnswerTooLongError extends Error {
+  constructor() {
+    super('answer too long');
+    this.name = 'AnswerTooLongError';
+  }
+}
+
 /** The server says the run has ended. */
 export class RunEndedError extends Error {
   constructor() {
@@ -194,8 +202,12 @@ const ANSWER_COPY = {
   },
   refused: {
     title: "We can't send that here",
-    detail:
-      'It looks like a sensitive value. Type it in the page yourself instead, then answer again.',
+    detail: 'Type that value in the page yourself, then press Skip.',
+    retryable: true,
+  },
+  tooLong: {
+    title: 'That answer is too long',
+    detail: 'Shorten it, then press Send again.',
     retryable: true,
   },
   runEnded: {
@@ -221,6 +233,7 @@ export const messageFor = (error: unknown): ErrorMessage => {
     return { ...ANSWER_COPY.alreadyAnswered };
   }
   if (error instanceof AnswerRefusedError) return { ...ANSWER_COPY.refused };
+  if (error instanceof AnswerTooLongError) return { ...ANSWER_COPY.tooLong };
   if (error instanceof RunEndedError) return { ...ANSWER_COPY.runEnded };
   if (error instanceof AnswerInvalidError) return { ...ANSWER_COPY.invalid };
   if (error instanceof AnswerInFlightError) return { ...ANSWER_COPY.inFlight };
@@ -234,6 +247,38 @@ export const messageFor = (error: unknown): ErrorMessage => {
   }
   return { ...GENERIC };
 };
+
+/** The app refused an answer for a reason the card has no copy for. */
+const ANSWER_BAD_REQUEST: ErrorMessage = {
+  title: 'The app could not use that answer',
+  detail: 'Wait a moment and try again.',
+  retryable: true,
+};
+
+/** messageFor, with the Needs You card's own copy for a plain bad request. */
+export const answerMessageFor = (error: unknown): ErrorMessage =>
+  error instanceof AppApiError && error.code === 'bad_request'
+    ? { ...ANSWER_BAD_REQUEST }
+    : messageFor(error);
+
+/** Fixed copy for the Needs You card. */
+export const NEEDS_YOU_COPY = {
+  title: 'The agent needs you',
+  sensitive:
+    'This one is sensitive. Type it in the page yourself, then press the button.',
+  cannotAnswer:
+    'This question cannot be answered here. The agent is waiting; you can Stop the run.',
+  shouldHaveOffered:
+    'The agent should have offered "I entered it myself" and "Skip" for it.',
+  noNumbers:
+    'Do not type Social Security, bank, card or ID numbers here. Type those in the page.',
+  provided: 'I entered it myself',
+  skip: 'Skip',
+  skipped: 'Skipped.',
+  send: 'Send',
+  sending: 'Sending...',
+  sent: 'Sent. Waiting for the agent...',
+} as const;
 
 /** Fixed messages for the Home screen's tab choices. */
 export const HOME_COPY = {

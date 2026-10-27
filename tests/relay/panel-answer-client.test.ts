@@ -10,7 +10,10 @@ import {
   AnswerInFlightError,
   AnswerInvalidError,
   AnswerRefusedError,
+  AnswerTooLongError,
+  answerMessageFor,
   messageFor,
+  NEEDS_YOU_COPY,
   RunEndedError,
 } from '../../extension/panel/lib/copy';
 
@@ -221,8 +224,9 @@ describe('answerRequests: failures', () => {
   const reasonCases: [string, new () => Error][] = [
     ['unknown_request', AnswerAlreadyGivenError],
     ['answers_pending', AnswerAlreadyGivenError],
+    ['missing_answer', AnswerAlreadyGivenError],
     ['sensitive_value_in_message', AnswerRefusedError],
-    ['message_too_large', AnswerRefusedError],
+    ['message_too_large', AnswerTooLongError],
     ['run_ended', RunEndedError],
   ];
   for (const [reason, cls] of reasonCases) {
@@ -315,7 +319,10 @@ describe('answerRequests: refused before any request', () => {
     ['an empty list', []],
     ['not a list', 'x'],
     ['an empty text', [{ requestId: 'r', text: '   ' }]],
-    ['over 2000 chars after trim', [{ requestId: 'r', text: 'a'.repeat(2001) }]],
+    [
+      'over 2000 chars after trim',
+      [{ requestId: 'r', text: 'a'.repeat(2001) }],
+    ],
     ['both optionId and text', [{ requestId: 'r', optionId: 'a', text: 'b' }]],
     ['neither', [{ requestId: 'r' }]],
     ['an empty optionId', [{ requestId: 'r', optionId: '' }]],
@@ -385,10 +392,48 @@ describe('answerRequests: refused before any request', () => {
     expect(await answerRequests(d, RUN, [TEXT])).toEqual({ ok: true });
   });
 
+  it('gives too-long its own copy, not the sensitive-value copy', () => {
+    const tooLong = messageFor(new AnswerTooLongError());
+    expect(tooLong.title).toBe('That answer is too long');
+    expect(JSON.stringify(tooLong)).not.toMatch(/sensitive|in the page/i);
+    expect(messageFor(new AnswerRefusedError())).toEqual({
+      title: "We can't send that here",
+      detail: 'Type that value in the page yourself, then press Skip.',
+      retryable: true,
+    });
+  });
+
+  it('uses the card copy for a plain bad request, without "go back"', () => {
+    const m = answerMessageFor(new AppApiError('bad_request', 400));
+    expect(m).toEqual({
+      title: 'The app could not use that answer',
+      detail: 'Wait a moment and try again.',
+      retryable: true,
+    });
+    expect(answerMessageFor(new AppApiError('signed_out', 401))).toEqual(
+      messageFor(new AppApiError('signed_out', 401)),
+    );
+    expect(answerMessageFor(new AnswerRefusedError())).toEqual(
+      messageFor(new AnswerRefusedError()),
+    );
+  });
+
+  it('has the fixed card lines', () => {
+    expect(NEEDS_YOU_COPY.noNumbers).toBe(
+      'Do not type Social Security, bank, card or ID numbers here. Type those in the page.',
+    );
+    expect(NEEDS_YOU_COPY.cannotAnswer).toBe(
+      'This question cannot be answered here. The agent is waiting; you can Stop the run.',
+    );
+    // Nothing on the card suggests filling the page unblocks a dead end.
+    expect(NEEDS_YOU_COPY.shouldHaveOffered).not.toMatch(/page/i);
+  });
+
   it('every new error class has fixed copy', () => {
     for (const error of [
       new AnswerAlreadyGivenError(),
       new AnswerRefusedError(),
+      new AnswerTooLongError(),
       new RunEndedError(),
       new AnswerInvalidError(),
       new AnswerInFlightError(),

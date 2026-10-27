@@ -48,7 +48,7 @@ const toCount = (v: unknown): number =>
     : 0;
 
 // Cut by code points so an emoji is never split into a lone surrogate.
-const cut = (text: string, max: number): string =>
+export const cut = (text: string, max: number): string =>
   Array.from(text).slice(0, max).join('');
 
 const toName = (v: unknown): string => {

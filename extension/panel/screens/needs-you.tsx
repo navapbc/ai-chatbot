@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { type ChangeEvent, useEffect, useId, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
@@ -7,20 +7,24 @@ import type {
   InputAnswer,
   PendingInputRequest,
 } from '../../../lib/ai/eve/input-requests';
-import type { AnswerResult } from '../lib/answer-client';
+import { type AnswerResult, MAX_ANSWER_CHARS } from '../lib/answer-client';
 import {
   AnswerAlreadyGivenError,
   AnswerRefusedError,
-  messageFor,
+  answerMessageFor,
+  type ErrorMessage,
+  NEEDS_YOU_COPY,
   RunEndedError,
 } from '../lib/copy';
+import { cut } from '../lib/progress-view';
 import {
   classifyQuestion,
   type QuestionKind,
   sensitiveAnswer,
 } from '../lib/question-kind';
 
-// The Needs You card: the agent's open questions, answered in one batch.
+// The Needs You card: the agent's open questions, answered in one batch by
+// one Send.
 //
 // Every prompt and option label is untrusted agent text: rendered as a React
 // text node only, capped, never used in a key, an id, the URL, the title or
@@ -28,30 +32,14 @@ import {
 // never stored, cleared after a successful send and dropped on unmount. A
 // sensitive question never gets a text input: only "I entered it myself"
 // and "Skip". The card is keyed by its request ids in the parent, so a new
-// question set starts fresh.
+// question set starts fresh and the same set keeps what was typed.
 
+export { NEEDS_YOU_COPY };
 export const MAX_PROMPT = 300;
 export const MAX_OPTION_LABEL = 80;
-export const MAX_TEXT = 2000;
 
-export const NEEDS_YOU_COPY = {
-  title: 'The agent needs you',
-  sensitive:
-    'This one is sensitive. Type it in the page yourself, then press the button.',
-  cannotAnswer: 'This question cannot be answered here.',
-  sensitiveNoButtons:
-    'This looks like a sensitive question. Type it in the page yourself.',
-  sensitiveNoButtonsDetail:
-    'The agent should have offered "I entered it myself" and "Skip" here. Fill the field in the page, or stop the run.',
-  provided: 'I entered it myself',
-  skip: 'Skip',
-  skipped: 'Skipped.',
-  send: 'Send',
-  sending: 'Sending...',
-  sent: 'Sent. Waiting for the agent...',
-  typeInPage:
-    'Your typed answers were cleared. Type that value in the page yourself instead.',
-} as const;
+/** The id of the fixed no-numbers line under a text input. */
+export const warningIdFor = (inputId: string): string => `${inputId}-warning`;
 
 export type SendAnswers = (
   runId: string,
@@ -64,15 +52,16 @@ type Props = {
   sendAnswers: SendAnswers;
 };
 
-// Cut by code points so an emoji is never split into a lone surrogate.
-const cut = (text: unknown, max: number): string =>
-  typeof text === 'string' ? Array.from(text).slice(0, max).join('') : '';
+const cutText = (text: unknown, max: number): string =>
+  typeof text === 'string' ? cut(text, max) : '';
+
+type SensitiveChoice = 'provided' | 'skip';
 
 type Draft =
   | { kind: 'text'; text: string }
   | { kind: 'skip' }
   | { kind: 'option'; index: number }
-  | { kind: 'sensitive'; choice: 'provided' | 'skip' };
+  | { kind: 'sensitive'; choice: SensitiveChoice };
 
 type Question = {
   request: PendingInputRequest;
@@ -99,25 +88,28 @@ export const answerableRequests = (pending: unknown): PendingInputRequest[] =>
 
 const toQuestions = (pending: PendingInputRequest[]): Question[] =>
   answerableRequests(pending).map((request) => ({
-      request,
-      kind: classifyQuestion(request),
-      prompt: cut(request.prompt, MAX_PROMPT),
-      labels: Array.isArray(request.options)
-        ? request.options.map((o) =>
-            cut(typeof o === 'object' && o ? o.label : '', MAX_OPTION_LABEL),
-          )
-        : [],
-    }));
+    request,
+    kind: classifyQuestion(request),
+    prompt: cutText(request.prompt, MAX_PROMPT),
+    labels: Array.isArray(request.options)
+      ? request.options.map((o) =>
+          cutText(typeof o === 'object' && o ? o.label : '', MAX_OPTION_LABEL),
+        )
+      : [],
+  }));
 
 /** The wire answer for one question's draft, or null when unanswered. */
-const answerFor = (q: Question, draft: Draft | undefined): InputAnswer | null => {
+const answerFor = (
+  q: Question,
+  draft: Draft | undefined,
+): InputAnswer | null => {
   if (!draft) return null;
   const requestId = q.request.requestId;
   if (q.kind === 'text') {
     if (draft.kind === 'skip') return { requestId, text: 'skip' };
     if (draft.kind !== 'text') return null;
     const trimmed = draft.text.trim();
-    if (trimmed === '' || trimmed.length > MAX_TEXT) return null;
+    if (trimmed === '' || trimmed.length > MAX_ANSWER_CHARS) return null;
     return { requestId, text: draft.text };
   }
   if (q.kind === 'choice') {
@@ -131,6 +123,8 @@ const answerFor = (q: Question, draft: Draft | undefined): InputAnswer | null =>
   return sensitiveAnswer(q.request, draft.choice);
 };
 
+type Failure = ErrorMessage;
+
 export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
   const prefix = useId();
   const questions = toQuestions(pending);
@@ -139,12 +133,10 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
   // 'sent' and 'waiting' keep the card disabled until the parent remounts it
   // (a new question set) or removes it (the phase moved on).
   const [done, setDone] = useState<'sent' | 'waiting' | null>(null);
-  const [failure, setFailure] = useState<{
-    title: string;
-    detail: string;
-    typeInPage: boolean;
-  } | null>(null);
+  const [failure, setFailure] = useState<Failure | null>(null);
   const mounted = useRef(true);
+  const alertRef = useRef<HTMLDivElement>(null);
+  const sentRef = useRef<HTMLParagraphElement>(null);
 
   useEffect(() => {
     mounted.current = true;
@@ -153,13 +145,28 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
     };
   }, []);
 
+  // Send disables itself on press: keep keyboard focus on what replaced it.
+  useEffect(() => {
+    if (failure) alertRef.current?.focus();
+  }, [failure]);
+  useEffect(() => {
+    if (done === 'sent') sentRef.current?.focus();
+  }, [done]);
+
   const locked = sending || done !== null;
-  const answers = questions.map((q) => answerFor(q, drafts.get(q.request.requestId)));
+  const answers = questions.map((q) =>
+    answerFor(q, drafts.get(q.request.requestId)),
+  );
   const complete =
     questions.length > 0 && answers.every((a): a is InputAnswer => a !== null);
 
-  const setDraft = (requestId: string, draft: Draft) => {
-    setDrafts((current) => new Map(current).set(requestId, draft));
+  const setDraft = (requestId: string, draft: Draft | null) => {
+    setDrafts((current) => {
+      const next = new Map(current);
+      if (draft) next.set(requestId, draft);
+      else next.delete(requestId);
+      return next;
+    });
   };
 
   const send = async (batch: InputAnswer[]) => {
@@ -175,7 +182,7 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
       return;
     }
     const error = result.error;
-    const message = messageFor(error);
+    const message = answerMessageFor(error);
     if (error instanceof AnswerRefusedError) {
       // The server does not say which answer it refused: clear every typed
       // text, keep the choices.
@@ -186,7 +193,7 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
         }
         return next;
       });
-      setFailure({ ...message, typeInPage: true });
+      setFailure(message);
       return;
     }
     if (
@@ -196,10 +203,10 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
       // Nothing to retry: the next poll brings the new state.
       setDrafts(new Map());
       setDone('waiting');
-      setFailure({ ...message, typeInPage: false });
+      setFailure(message);
       return;
     }
-    setFailure({ ...message, typeInPage: false });
+    setFailure(message);
   };
 
   const handleSend = () => {
@@ -207,18 +214,26 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
     void send(answers as InputAnswer[]);
   };
 
-  const handleSensitive = (q: Question, choice: 'provided' | 'skip') => {
-    const requestId = q.request.requestId;
-    if (questions.length === 1) {
-      const answer = sensitiveAnswer(q.request, choice);
-      if (answer) void send([answer]);
-      return;
-    }
-    setDraft(requestId, { kind: 'sensitive', choice });
+  const handleTextChange =
+    (requestId: string) => (event: ChangeEvent<HTMLTextAreaElement>) => {
+      setDraft(requestId, { kind: 'text', text: event.target.value });
+    };
+
+  const handleSkipText = (requestId: string, skipped: boolean) => () => {
+    setDraft(
+      requestId,
+      skipped ? { kind: 'text', text: '' } : { kind: 'skip' },
+    );
   };
 
-  const handleSkipText = (requestId: string, skipped: boolean) => {
-    setDraft(requestId, skipped ? { kind: 'text', text: '' } : { kind: 'skip' });
+  // Selects (or, pressed again, clears) the answer; Send sends the batch.
+  const handleSensitive =
+    (requestId: string, choice: SensitiveChoice, chosen: boolean) => () => {
+      setDraft(requestId, chosen ? null : { kind: 'sensitive', choice });
+    };
+
+  const handleOption = (requestId: string) => (value: string) => {
+    setDraft(requestId, { kind: 'option', index: Number(value) });
   };
 
   if (questions.length === 0) return null;
@@ -231,11 +246,12 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
       <h3 className="text-sm font-semibold">{NEEDS_YOU_COPY.title}</h3>
       {questions.map((q, index) => {
         const id = `${prefix}-q${index}`;
-        const draft = drafts.get(q.request.requestId);
+        const requestId = q.request.requestId;
+        const draft = drafts.get(requestId);
         if (q.kind === 'text') {
           const skipped = draft?.kind === 'skip';
           return (
-            <div key={q.request.requestId} className="flex flex-col gap-2">
+            <div key={requestId} className="flex flex-col gap-2">
               <Label htmlFor={id} className="break-words leading-snug">
                 {q.prompt}
               </Label>
@@ -243,16 +259,18 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
                 id={id}
                 autoComplete="off"
                 spellCheck={false}
-                maxLength={MAX_TEXT}
+                maxLength={MAX_ANSWER_CHARS}
+                aria-describedby={warningIdFor(id)}
                 disabled={locked || skipped}
                 value={draft?.kind === 'text' ? draft.text : ''}
-                onChange={(event) =>
-                  setDraft(q.request.requestId, {
-                    kind: 'text',
-                    text: event.target.value,
-                  })
-                }
+                onChange={handleTextChange(requestId)}
               />
+              <p
+                id={warningIdFor(id)}
+                className="text-xs text-muted-foreground"
+              >
+                {NEEDS_YOU_COPY.noNumbers}
+              </p>
               <div className="flex items-center gap-2">
                 <Button
                   type="button"
@@ -260,7 +278,7 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
                   size="sm"
                   aria-pressed={skipped}
                   disabled={locked}
-                  onClick={() => handleSkipText(q.request.requestId, skipped)}
+                  onClick={handleSkipText(requestId, skipped)}
                 >
                   {NEEDS_YOU_COPY.skip}
                 </Button>
@@ -280,12 +298,15 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
           const chosen = draft?.kind === 'sensitive' ? draft.choice : null;
           return (
             <div
-              key={q.request.requestId}
+              key={requestId}
               role="group"
               aria-labelledby={`${id}-prompt`}
               className="flex flex-col gap-2"
             >
-              <p id={`${id}-prompt`} className="break-words text-sm font-medium">
+              <p
+                id={`${id}-prompt`}
+                className="break-words text-sm font-medium"
+              >
                 {q.prompt}
               </p>
               {answerable ? (
@@ -297,7 +318,11 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
                       variant={chosen === 'provided' ? 'default' : 'outline'}
                       aria-pressed={chosen === 'provided'}
                       disabled={locked}
-                      onClick={() => handleSensitive(q, 'provided')}
+                      onClick={handleSensitive(
+                        requestId,
+                        'provided',
+                        chosen === 'provided',
+                      )}
                     >
                       {NEEDS_YOU_COPY.provided}
                     </Button>
@@ -306,7 +331,11 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
                       variant={chosen === 'skip' ? 'default' : 'outline'}
                       aria-pressed={chosen === 'skip'}
                       disabled={locked}
-                      onClick={() => handleSensitive(q, 'skip')}
+                      onClick={handleSensitive(
+                        requestId,
+                        'skip',
+                        chosen === 'skip',
+                      )}
                     >
                       {NEEDS_YOU_COPY.skip}
                     </Button>
@@ -314,11 +343,9 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
                 </>
               ) : (
                 <>
-                  <p className="text-sm">
-                    {NEEDS_YOU_COPY.sensitiveNoButtons}
-                  </p>
+                  <p className="text-sm">{NEEDS_YOU_COPY.cannotAnswer}</p>
                   <p className="text-sm text-muted-foreground">
-                    {NEEDS_YOU_COPY.sensitiveNoButtonsDetail}
+                    {NEEDS_YOU_COPY.shouldHaveOffered}
                   </p>
                 </>
               )}
@@ -328,7 +355,7 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
         const selected = draft?.kind === 'option' ? String(draft.index) : '';
         return (
           <div
-            key={q.request.requestId}
+            key={requestId}
             role="group"
             aria-labelledby={`${id}-prompt`}
             className="flex flex-col gap-2"
@@ -343,12 +370,7 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
                 aria-labelledby={`${id}-prompt`}
                 value={selected}
                 disabled={locked}
-                onValueChange={(value) =>
-                  setDraft(q.request.requestId, {
-                    kind: 'option',
-                    index: Number(value),
-                  })
-                }
+                onValueChange={handleOption(requestId)}
               >
                 {q.labels.map((label, i) => (
                   // Options are positional: an agent's ids may repeat.
@@ -366,14 +388,24 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
         );
       })}
       {failure ? (
-        <div role="alert" className="flex flex-col gap-1 text-sm">
+        <div
+          ref={alertRef}
+          role="alert"
+          tabIndex={-1}
+          className="flex flex-col gap-1 text-sm focus-visible:outline-none"
+        >
           <p className="font-medium">{failure.title}</p>
           <p>{failure.detail}</p>
-          {failure.typeInPage ? <p>{NEEDS_YOU_COPY.typeInPage}</p> : null}
         </div>
       ) : null}
       {done === 'sent' ? (
-        <p role="status" aria-live="polite" className="text-sm">
+        <p
+          ref={sentRef}
+          role="status"
+          aria-live="polite"
+          tabIndex={-1}
+          className="text-sm focus-visible:outline-none"
+        >
           {NEEDS_YOU_COPY.sent}
         </p>
       ) : null}

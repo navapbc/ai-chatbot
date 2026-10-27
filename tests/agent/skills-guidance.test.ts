@@ -42,7 +42,8 @@ describe('extension-run skill', () => {
     'Never put a field value',
     'with no options',
     'built-in `agent` tool',
-    'exactly `skip` means leave that field empty',
+    "When the caseworker's text answer is exactly `skip`, do not fill that field",
+    'leave whatever is already in it and move on',
     'never type `skip`',
     'never a free-text question',
   ])('contains %s', (needle) => {

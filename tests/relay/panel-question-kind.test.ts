@@ -193,9 +193,9 @@ describe('sensitiveAnswer', () => {
   });
 
   it('never throws on malformed requests', () => {
-    expect(sensitiveAnswer(null as unknown as PendingInputRequest, 'skip')).toBe(
-      null,
-    );
+    expect(
+      sensitiveAnswer(null as unknown as PendingInputRequest, 'skip'),
+    ).toBe(null);
     expect(
       sensitiveAnswer({ requestId: '' } as PendingInputRequest, 'skip'),
     ).toBe(null);

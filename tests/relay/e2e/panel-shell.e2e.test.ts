@@ -93,7 +93,7 @@ beforeAll(async () => {
           res.end(
             JSON.stringify({
               code: 'bad_request:api',
-              message: 'The request couldn\'t be processed.',
+              message: "The request couldn't be processed.",
               cause: answerRefusal,
             }),
           );
@@ -552,9 +552,9 @@ describe('the panel shell', () => {
       // Markup in a section name renders as text, not as an element.
       await sectionList.getByText('<b>Household</b>').waitFor();
       expect(await sectionList.locator('b').count()).toBe(0);
-      expect(
-        await sectionList.locator('[aria-current="step"]').count(),
-      ).toBe(1);
+      expect(await sectionList.locator('[aria-current="step"]').count()).toBe(
+        1,
+      );
       // No way off a live run except Stop.
       expect(
         await page.getByRole('button', { name: 'Back to Home' }).count(),
@@ -718,6 +718,30 @@ describe('the panel shell', () => {
       const box = card.getByLabel('County of residence <b>x</b>');
       expect(await box.getAttribute('autocomplete')).toBe('off');
       expect(await box.getAttribute('maxlength')).toBe('2000');
+      // The fixed no-numbers line sits under the input and describes it.
+      const warning = card.getByText(
+        'Do not type Social Security, bank, card or ID numbers here. Type those in the page.',
+      );
+      const warningId = await warning.getAttribute('id');
+      expect(warningId).toBeTruthy();
+      expect(await box.getAttribute('aria-describedby')).toBe(warningId);
+      await box.fill(ANSWER);
+      expect(await send.isDisabled()).toBe(true);
+
+      // The same pending set re-reported by later polls keeps what was typed.
+      let mark = pollsSince();
+      await expect
+        .poll(pollsSince, { timeout: 10_000 })
+        .toBeGreaterThan(mark + 1);
+      expect(await box.inputValue()).toBe(ANSWER);
+      // A changed id set resets the card.
+      row.pending = [{ ...PENDING[0], requestId: 'q-text-2' }, PENDING[1]];
+      await expect.poll(() => box.inputValue(), { timeout: 10_000 }).toBe('');
+      row.pending = PENDING;
+      mark = pollsSince();
+      await expect
+        .poll(pollsSince, { timeout: 10_000 })
+        .toBeGreaterThan(mark + 1);
       await box.fill(ANSWER);
       expect(await send.isDisabled()).toBe(true);
       await card.getByRole('button', { name: 'I entered it myself' }).click();
@@ -726,12 +750,18 @@ describe('the panel shell', () => {
       // The server refuses the text: fixed copy, the text is cleared.
       answerRefusal = 'sensitive_value_in_message';
       await send.click();
-      await card.getByRole('alert').getByText("We can't send that here").waitFor();
       await card
-        .getByText('Type that value in the page yourself instead.', {
-          exact: false,
-        })
+        .getByRole('alert')
+        .getByText("We can't send that here")
         .waitFor();
+      await card
+        .getByRole('alert')
+        .getByText('Type that value in the page yourself, then press Skip.')
+        .waitFor();
+      // Focus moved to the alert, not lost with the disabled Send.
+      expect(
+        await page.evaluate(() => document.activeElement?.getAttribute('role')),
+      ).toBe('alert');
       expect(await box.inputValue()).toBe('');
       expect(await send.isDisabled()).toBe(true);
       expect(answerBodies).toHaveLength(1);
@@ -742,6 +772,9 @@ describe('the panel shell', () => {
       expect(await send.isDisabled()).toBe(false);
       await send.click();
       await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(
+        await page.evaluate(() => document.activeElement?.getAttribute('role')),
+      ).toBe('status');
       expect(answerBodies).toHaveLength(2);
       expect(answerBodies[1]).toEqual({
         id: runId,
@@ -770,12 +803,19 @@ describe('the panel shell', () => {
       await card.waitFor({ state: 'detached', timeout: 10_000 });
 
       // A lone sensitive question (plus a malformed entry the card ignores):
-      // its button answers at once, without Send.
+      // its button only selects; Send sends.
       row.pending = [null, PENDING[1]];
       row.phase = 'needs_you';
       await card.waitFor({ timeout: 10_000 });
       expect(await card.getByRole('textbox').count()).toBe(0);
       await card.getByRole('button', { name: 'Skip' }).click();
+      expect(
+        await card
+          .getByRole('button', { name: 'Skip' })
+          .getAttribute('aria-pressed'),
+      ).toBe('true');
+      expect(answerBodies).toHaveLength(2);
+      await send.click();
       await card.getByText('Sent. Waiting for the agent...').waitFor();
       expect(answerBodies).toHaveLength(3);
       expect(answerBodies[2]).toEqual({
@@ -800,7 +840,7 @@ describe('the panel shell', () => {
       row.phase = 'needs_you';
       await card
         .getByText(
-          'This looks like a sensitive question. Type it in the page yourself.',
+          'This question cannot be answered here. The agent is waiting; you can Stop the run.',
         )
         .waitFor({ timeout: 10_000 });
       expect(await card.getByRole('textbox').count()).toBe(0);

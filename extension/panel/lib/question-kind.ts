@@ -26,7 +26,9 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 
 const optionIds = (r: Record<string, unknown>): (string | null)[] =>
   Array.isArray(r.options)
-    ? r.options.map((o) => (isRecord(o) && typeof o.id === 'string' ? o.id : null))
+    ? r.options.map((o) =>
+        isRecord(o) && typeof o.id === 'string' ? o.id : null,
+      )
     : [];
 
 const hasSensitiveShape = (r: Record<string, unknown>): boolean => {
