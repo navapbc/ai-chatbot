@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildManifest,
   esbuildArgs,
+  extractTokens,
+  panelEsbuildArgs,
   resolveAppOrigin,
   resolveOriginHoldMs,
   resolveTestHooks,
@@ -105,6 +107,88 @@ describe('buildManifest', () => {
     const { host_permissions: _, ...rest } = built;
     expect(rest).toEqual(source);
     expect(source).toEqual(before);
+  });
+});
+
+describe('the source manifest', () => {
+  const source = JSON.parse(
+    readFileSync(path.join(ROOT, 'extension/manifest.json'), 'utf8'),
+  );
+
+  it('keeps the pinned key (it fixes the extension id)', () => {
+    expect(source.key).toBe(
+      'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwwc2pYVHPW/t+29jPeAaudSFX1xI1MLtnOcQo+wtpjYFO1aXXSVV6+ex79qw5cqbvGBMH74vcLTxNu6In+cRvYRYhAw6jowmmmTb+MdYUj0sANHABPzZfi4C7nI6YHSJXIptrXbSWz/RE+Ip1gu2k6Z/o/84qPd/8awQUuTAHXwCNSPVNfwRT06+dDh3msZfOLRTNnkXsLCCrK6WIZYMRHATWnz4nqfoEhHy007/MQ5z8T6aVMWX46WtBxUyOv5sXnSLDdfBuRr9+4pUFATjM+Rv5GO+2JRdzmpka2APaI5To2bXjBG++TsPyNJPnMz8HoO+qG/19bP+BXNVSabUbQIDAQAB',
+    );
+  });
+
+  it('declares the side panel, the toolbar action and their permissions', () => {
+    expect(source.permissions).toEqual([
+      'debugger',
+      'tabs',
+      'storage',
+      'sidePanel',
+      'alarms',
+    ]);
+    expect(source.side_panel).toEqual({ default_path: 'panel.html' });
+    expect(source.action).toEqual({ default_title: 'Labs ASP' });
+    const built = buildManifest(source, 'https://app.example.org');
+    expect(built.side_panel).toEqual(source.side_panel);
+    expect(built.action).toEqual(source.action);
+    expect(built.permissions).toEqual(source.permissions);
+  });
+});
+
+describe('panelEsbuildArgs', () => {
+  it('bundles the panel as an ESM module with the panel-only cn alias', () => {
+    expect(panelEsbuildArgs('/repo', 'out/panel.js')).toEqual([
+      '/repo/extension/panel/main.tsx',
+      '--bundle',
+      '--format=esm',
+      '--jsx=automatic',
+      '--outfile=out/panel.js',
+      '--define:process.env.NODE_ENV="production"',
+      '--alias:@/lib/utils=/repo/extension/panel/lib/cn.ts',
+      '--alias:@=/repo',
+    ]);
+  });
+
+  it('writes a metafile only when asked', () => {
+    expect(
+      panelEsbuildArgs('/repo', 'out/panel.js', '/tmp/meta.json').at(-1),
+    ).toBe('--metafile=/tmp/meta.json');
+  });
+});
+
+describe('extractTokens', () => {
+  const globals = readFileSync(path.join(ROOT, 'app/globals.css'), 'utf8');
+
+  it('keeps the light and dark token blocks of app/globals.css', () => {
+    const tokens = extractTokens(globals);
+    expect(tokens).toMatch(/:root\s*\{[^}]*--primary:\s*320 47% 47%;/);
+    expect(tokens).toMatch(/:root\s*\{[^}]*--radius:\s*0\.75rem;/);
+    expect(tokens).toMatch(/\.dark\s*\{[^}]*--background:/);
+  });
+
+  it('drops the Next-only rules around them', () => {
+    const tokens = extractTokens(globals);
+    for (const rule of [
+      'body',
+      'font-family',
+      '@apply',
+      '@tailwind',
+      '@media',
+      '--foreground-rgb',
+      '.skeleton',
+      'scrollbar',
+    ]) {
+      expect(tokens).not.toContain(rule);
+    }
+  });
+
+  it('refuses a stylesheet without the token block', () => {
+    expect(() => extractTokens('body { color: red; }')).toThrow(
+      /no @layer base/,
+    );
   });
 });
 
