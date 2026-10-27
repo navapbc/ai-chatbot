@@ -86,7 +86,7 @@ Landed on `feat/sensitive-redaction-impl`; see `docs/changes/2026-10-26-add-sens
 
 - [ ] The six screens and saved details with the 8-hour limit (the participant API is done, plan 4a).
 - [x] Runtime Jev route `app/(chat)/api/relay/classify-field/route.ts` (plan 4a); `CLAUDE.md` updated.
-- [x] 4b: the worker calls classify-field (build the request with `describeFieldForJev`) and ORs the verdict with the deterministic `isSensitiveField`, so Jev can only escalate masking (plan 4b; residuals in "Plan 4b follow-ups").
+- [x] 4b: the worker calls classify-field, sending only the `DESCRIPTOR_KEYS` string fields of each descriptor (the route sanitizes them with `describeFieldForJev` before asking Jev), and ORs the verdict with the deterministic `isSensitiveField`, so Jev can only escalate masking. A `null` answer (no verdict: Jev disabled or failing) leaves the deterministic verdict and is not cached (plan 4b; residuals in "Plan 4b follow-ups").
 - [ ] Typing sensitive values from the panel into the page, and registering them with the worker through `addKnownValue`. Values are lost on a worker restart, so the panel re-registers them after each restart.
 - [x] Server-built opening message (plan 4a): before this, the unstripped participant record transited the browser to the Next server before the route stripped it. Done: the server builds the message from the stored participant, so the record no longer transits the browser.
 - [x] Adapter redaction of tool inputs in the client stream on relay runs (plan 4a). Residuals: see "Plan 4a follow-ups".
@@ -138,7 +138,7 @@ Auth and origin check:
 - [ ] Thin `resolveAppOrigin` test rows (whitespace, uppercase, `localhost.evil.com`, `[::1]`, userinfo); the manifest file mode is the umask's (0600 locally); GET-without-Origin and POST-with-Origin are asserted only in the e2e.
 - [ ] A failed release build leaves an earlier `extension/dist` in place.
 - [ ] The `eve-chat` 403 lacks `no-store`; the answer-turn origin case is not separately tested; `resetOriginWarningForTests` ships in the bundle.
-- [ ] Tests: `tsc --noEmit` reported errors in two `tests/agent` files (`relay-config`, `relay-route-origin`); recheck.
+- [x] Tests: `tsc --noEmit` reported errors in two `tests/agent` files (`relay-config`, `relay-route-origin`); fixed in the final review.
 
 Run state and Stop:
 - [ ] The UUID regex, `noStore` and `notFound` helpers are duplicated across the run routes; `endEveRun` also writes `updatedAt`; concurrency of `end` is untested against Postgres.
@@ -159,15 +159,15 @@ Worker Jev classifier:
 - [ ] The default bundle contains the classifier and app client code when `APP_ORIGIN` is empty; one test name is misleading and the e2e lacks a hung-server case.
 
 Worker lifecycle:
-- [ ] A same-run-id restart after the old run already ended returns `needsRegistration: false` although values were lost (needs a worker-level record of run ids that held values).
+- [x] A same-run-id restart after the old run already ended returned `needsRegistration: false` although values were lost. Fixed: the worker records the 20 most recent begun run ids (ids only, `chrome.storage.session`), and a `startRun` for one of them with no live run of that id needs registration.
 - [ ] `registrationComplete` and `addKnownValue` are not tied to a `runId` and not serialized.
-- [ ] The harness leaves `test-page.html` and a test-hooks build in `extension/dist`, which can persist into a release build; plain and release bundles still read `typeof __ORIGIN_HOLD_MS__`.
+- [ ] The harness leaves `test-page.html` and a test-hooks build (with a 2.5 s origin hold) in `extension/dist`, which can persist into a release build; plain and release bundles still read `typeof __ORIGIN_HOLD_MS__`.
 - [ ] The detach grace relies on the agent re-attaching; if Chrome emits detaches during in-origin navigation this becomes important (unverified). A same-run-id replacement does not announce `resumed`; the endRun detach is not ordered by the lifecycle chain.
 - [ ] Test gaps: `sendCommand` never asserted for refused methods, child sessions while unregistered, token-in-logs across delivery retries.
 - [ ] Residuals: pending stops are lost on a worker restart within 30 s; events missed while unregistered are not replayed; `registration required` does not match Eve's rotation regex; Chrome may log WebSocket URLs containing the token on delivery retries.
 
 Origin hold:
-- [ ] A command in flight across A to B to A is still sent to the new A document (a double-submit risk; fix with `requireSameScope` inside the forward loop and the input recheck).
+- [x] A command in flight across A to B to A was still sent to the new A document (a double-submit risk). Fixed: `requireSameScope` runs in the forward loop, right before the send and before a screenshot capture.
 - [ ] The agent cannot dismiss an in-scope dialog during a hold; a resumed run whose tab is off-origin ends at once; a navigation announced but never committed ends the run after 60 s.
 - [ ] A page on A can create a pending origin B through a never-committing request, and `allowOrigin(B)` then succeeds while the tab is on A (fails closed).
 - [ ] Hub design: only `open` is bound to the token origin; after `allowOrigin` the agent works on the new origin but cannot `Page.navigate` to it. A round trip B to A without an allow lets B choose the A URL the agent resumes on.
@@ -177,6 +177,9 @@ Origin hold:
 
 Contracts the panel must honor:
 - [ ] Stop: call the server stop route and the worker `stopRun`; the hub does not know `endedAt` and tokens minted before Stop stay valid up to 1800 s.
+- [ ] Call the server Stop for worker-initiated ends too (`left-origin`, `token-expired`, `debugger-canceled`, `debugger-detached`, tab closed). Those tell only the hub: the server row stays live, the Eve turn keeps running and `relay/agent-token` keeps minting. The bridge has no push, so poll `getRunStatus` to notice an end.
+- [ ] Token refresh (a same-run-id `startRun`): it is refused when the tab is on an origin added by `allowOrigin` (only the token origin is checked); it drops the extra origins, detaches the debugger, sends no `resumed`, clears known values and requires re-registration. Refresh BEFORE `exp`: the worker's own `token-expired` sends `stop`, and the hub then closes the run for good.
+- [ ] Jev disabled is a supported configuration: `classify-field` answers `null` for unflagged fields and masking is deterministic only. `jevFailures` grows with every `null`, so it is not an outage signal.
 - [ ] After a worker restart, send `runId` with `registrationComplete` and `addKnownValue`, and call `registrationComplete` (count may be 0) promptly; the run stalls fail-closed until then.
 - [ ] Hide pending questions when the run state says `ended`.
 - [ ] The allow-origin prompt shows the tab's actual URL as well as `pendingOrigin`, and is never auto-approved. A prompt-injected agent can also trigger holds by clicking links.
@@ -184,6 +187,11 @@ Contracts the panel must honor:
 - [ ] Show `jevFailures` as a count, not as an outage signal.
 - [ ] `RELAY_EXTENSION_ORIGIN` must be set at deploy for the origin check; `APP_ORIGIN` must exactly match the deployed app origin for cookie auth.
 - [ ] Owner follow-ups: set `RELAY_EXTENSION_ORIGIN`; third-party-cookie blocking is untested; Cloud Run CPU after a disconnect; scale-in mid-read; whether the Eve cancel path is reachable through the public rewrite.
+
+Code items for 4c or a follow-up:
+- [ ] The bridge must itself check `runId` on `registrationComplete` and `addKnownValue` (today it ignores any `runId`), not only rely on the panel sending it.
+- [ ] Owner or 4c decision: a server-side backstop for Stop, re-checking `endedAt` on the agent-token cache path (`lib/relay/agent-token.ts`) so an ended run stops getting tokens from the cache.
+- [ ] The hub tombstone (`closedRunTtlMs`) equals the token TTL measured from the close, so a token minted later from a still-live row can re-register the run after the tombstone expires.
 
 ## Plan 5: Rollout
 
