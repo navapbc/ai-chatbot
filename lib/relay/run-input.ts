@@ -32,6 +32,10 @@ export type RelayStart =
     }
   | { ok: false; reason: string };
 
+// Keys an object literal or JSON.parse treats specially: `__proto__` would be
+// dropped when copied, so it is refused, never silently stripped.
+const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -50,7 +54,11 @@ const parseDetails = (raw: unknown): DetailsCheck => {
   const details: Record<string, string> = {};
   for (const key of keys) {
     const value = raw[key];
-    if (key.trim() === '' || typeof value !== 'string') {
+    if (
+      key.trim() === '' ||
+      RESERVED_KEYS.has(key) ||
+      typeof value !== 'string'
+    ) {
       return { ok: false, reason: 'details_invalid' };
     }
     if (key.length > MAX_DETAIL_CHARS || value.length > MAX_DETAIL_CHARS) {

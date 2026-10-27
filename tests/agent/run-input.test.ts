@@ -135,6 +135,23 @@ describe('parseRelayStart', () => {
       });
     });
 
+    it.each(['__proto__', 'constructor', 'prototype'])(
+      'refuses the reserved key %s instead of dropping it',
+      (key) => {
+        expect(parse(JSON.parse(`{"${key}":"x","name":"A"}`))).toEqual({
+          ok: false,
+          reason: 'details_invalid',
+        });
+      },
+    );
+
+    it('refuses __proto__ from a parsed JSON body', () => {
+      expect(parse(JSON.parse('{"__proto__":"x","name":"A"}'))).toEqual({
+        ok: false,
+        reason: 'details_invalid',
+      });
+    });
+
     it('refuses an overlong key', () => {
       expect(parse({ ['k'.repeat(501)]: 'v' })).toEqual({
         ok: false,
@@ -148,6 +165,10 @@ describe('parseRelayStart', () => {
       'Social security number',
       'calworks_id',
       'password',
+      'socialsecuritynumber',
+      's s n',
+      'CIN',
+      'client index number',
     ])('refuses the sensitive key %s rather than stripping it', (key) => {
       expect(parse({ 'First name': 'Ada', [key]: 'x' })).toEqual({
         ok: false,

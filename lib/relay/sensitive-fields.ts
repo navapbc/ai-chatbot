@@ -105,6 +105,10 @@ const PATTERNS: readonly string[] = [
   'medicare',
   `(?:client|beneficiary|member|participant|recipient) (?:id|${NUM})`,
   `(?:cal ?works|case|benefits?|ebt|medicaid|medi cal) (?:id|${NUM})`,
+  // California client index number, a benefit ID. Whole word only, so
+  // "cinema" and "decision" stay ordinary.
+  'cin',
+  'client index',
 ];
 
 // A card expiry label is only sensitive next to another card signal; a lease
@@ -136,9 +140,11 @@ const normalize = (text: string): string =>
 // Separator-free keys (`calworksid`, `pincode`) defeat the word-boundary
 // patterns above. Tested against the WHOLE normalized text with separators
 // removed, anchored at both ends, so `pinned` and `membership` still pass.
-// Bare `cin` and `dl` are left out on purpose: too many false positives.
+// Bare `dl` is left out on purpose: too many false positives. `cin` and `ssn`
+// match only as the whole key, so `s s n` and `s-s-n` count but `cinema` and
+// `decision` do not.
 const COMPACT_SENSITIVE =
-  /^(?:calworksid|calworksnumber|cwid|pincode|ebtcard|ebt|idnumber|dlnumber|drivinglicen[sc]e|drivinglicen[sc]enumber|driverlicen[sc]e|driverslicen[sc]e|ssnnumber|taxid|accountnumber|routingnumber|cardnumber)$/;
+  /^(?:ssn|ssno|socialsec(?:urity)?(?:number|num|no)?|cin(?:number|num|no)?|clientindex(?:number|num|no)?|calworksid|calworksnumber|cwid|pincode|ebtcard|ebt|idnumber|dlnumber|drivinglicen[sc]e|drivinglicen[sc]enumber|driverlicen[sc]e|driverslicen[sc]e|ssnnumber|taxid|accountnumber|routingnumber|cardnumber)$/;
 const compactIsSensitive = (text: string): boolean =>
   COMPACT_SENSITIVE.test(text.replace(/[^a-z0-9]/g, ''));
 
