@@ -145,6 +145,45 @@ describe('installSweepAlarm', () => {
   });
 });
 
+describe('installSweepAlarm sweeps at worker start', () => {
+  const NOW = Date.now();
+  let store: Record<string, unknown>;
+  const start = async () => {
+    store = {};
+    vi.stubGlobal('chrome', {
+      alarms: { get: vi.fn(async () => ({})), create: vi.fn() },
+      storage: {
+        local: {
+          get: vi.fn(async (k: string) =>
+            k in store ? { [k]: store[k] } : {},
+          ),
+          remove: vi.fn(async (k: string) => {
+            delete store[k];
+          }),
+        },
+      },
+    });
+  };
+
+  it('deletes an expired record', async () => {
+    await start();
+    store.savedDetails = {
+      savedAt: NOW - 9 * 3_600_000,
+      values: { city: 'a' },
+    };
+    installSweepAlarm(asChrome({ runtime: {} }));
+    await vi.waitFor(() => expect('savedDetails' in store).toBe(false));
+  });
+
+  it('leaves a fresh record', async () => {
+    await start();
+    store.savedDetails = { savedAt: NOW, values: { city: 'a' } };
+    installSweepAlarm(asChrome({ runtime: {} }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect('savedDetails' in store).toBe(true);
+  });
+});
+
 describe('service worker start', () => {
   const listener = () => ({ addListener: vi.fn() });
 

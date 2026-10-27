@@ -39,10 +39,14 @@ export function onAlarm(alarm: chrome.alarms.Alarm): Promise<void> | undefined {
   return sweepSavedDetails().catch(() => {});
 }
 
-/** Creates the sweep alarm on install, browser start and worker start. */
+/**
+ * Ensures the sweep alarm on install, browser start and worker start, and
+ * sweeps once at every worker start so an expired record goes on each wake.
+ */
 export function installSweepAlarm(chromeApi: typeof chrome): void {
   const create = () => void ensureSweepAlarm();
   chromeApi.runtime.onInstalled?.addListener(create);
   chromeApi.runtime.onStartup?.addListener(create);
   create();
+  sweepSavedDetails().catch(() => {});
 }

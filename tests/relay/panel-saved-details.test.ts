@@ -21,6 +21,8 @@ let failing = false;
 let writes = 0;
 let alarms: { name: string; info: unknown }[];
 let alarmFails = false;
+let alarmGetFails = false;
+let alarmCreates = 0;
 
 beforeEach(() => {
   store = {};
@@ -28,6 +30,8 @@ beforeEach(() => {
   writes = 0;
   alarms = [];
   alarmFails = false;
+  alarmGetFails = false;
+  alarmCreates = 0;
   (globalThis as unknown as { chrome: unknown }).chrome = {
     storage: {
       local: {
@@ -48,8 +52,13 @@ beforeEach(() => {
       },
     },
     alarms: {
+      get: async (name: string) => {
+        if (alarmGetFails) throw new Error('boom');
+        return alarms.find((a) => a.name === name);
+      },
       create: async (name: string, info: unknown) => {
         if (alarmFails) throw new Error('boom');
+        alarmCreates += 1;
         alarms = alarms.filter((a) => a.name !== name);
         alarms.push({ name, info });
       },
@@ -264,6 +273,23 @@ describe('startSavedDetailsSweep', () => {
     expect(alarms).toEqual([
       { name: 'saved-details-sweep', info: { periodInMinutes: 30 } },
     ]);
+  });
+
+  it('does not re-create an existing alarm', async () => {
+    alarms = [{ name: 'saved-details-sweep', info: { periodInMinutes: 30 } }];
+    await ensureSweepAlarm();
+    expect(alarmCreates).toBe(0);
+  });
+
+  it('creates a missing alarm', async () => {
+    await ensureSweepAlarm();
+    expect(alarmCreates).toBe(1);
+  });
+
+  it('falls back to creating when alarms.get rejects', async () => {
+    alarmGetFails = true;
+    await expect(ensureSweepAlarm()).resolves.toBeUndefined();
+    expect(alarmCreates).toBe(1);
   });
 
   it('swallows a failing alarm create', async () => {

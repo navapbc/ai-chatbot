@@ -136,11 +136,20 @@ export const pickDetails = (
 };
 
 /**
- * Creates the periodic sweep alarm. Creating an alarm with an existing name
- * replaces it, so this is idempotent. Errors are swallowed value-free.
+ * Creates the periodic sweep alarm only when none exists: creating an alarm
+ * with an existing name replaces it and restarts its period, and the worker
+ * wakes on every tab navigation, so re-creating it on each start could keep
+ * it from ever firing. Errors are swallowed value-free.
  */
 export const ensureSweepAlarm = async (): Promise<void> => {
   try {
+    let existing: unknown;
+    try {
+      existing = await chrome.alarms.get(SAVED_DETAILS_SWEEP_ALARM);
+    } catch {
+      existing = undefined;
+    }
+    if (existing) return;
     await chrome.alarms.create(SAVED_DETAILS_SWEEP_ALARM, {
       periodInMinutes: 30,
     });
