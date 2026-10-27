@@ -2635,7 +2635,7 @@ describe('classifyExtra hook', () => {
       expect(flagged).toEqual(deterministic);
     });
 
-    it('a button input flagged by the hook loses its value like a sensitive one; a false answer changes nothing', async () => {
+    it('the hook is not called for a button input, and the reply is unchanged', async () => {
       const button = () =>
         input(['type', 'submit', 'aria-label', 'Case', 'value', 'Send']);
       const plain = await createRedactor().redactResult(
@@ -2698,6 +2698,144 @@ describe('classifyExtra hook', () => {
         classifyExtra: () => Promise.reject(new Error('down')),
       }).redactResult('DOM.describeNode', input(attrs));
       expect(out).toEqual(plain);
+    });
+  });
+});
+
+describe('classifyExtra hook, fix round 1', () => {
+  const text = (node: unknown) =>
+    (node as { name?: { value?: unknown } }).name?.value;
+  it('slots held by hung calls cost a reply at most classifyTimeoutMs, and free up once the calls settle', async () => {
+    vi.useFakeTimers();
+    try {
+      const hung: ((v: boolean) => void)[] = [];
+      const asked: string[] = [];
+      const r = createRedactor({
+        classifyExtra: (d) => {
+          asked.push(String(d.label));
+          if (hung.length < 8) {
+            return new Promise<boolean>((resolve) => hung.push(resolve));
+          }
+          return Promise.resolve(true);
+        },
+        classifyTimeoutMs: 2000,
+        describeDeadlineMs: 60_000,
+      });
+      const eight: AXNode[] = [];
+      for (let i = 0; i < 8; i++)
+        eight.push(textbox(String(i), `Hung ${i}`, ''));
+      const first = r.redactResult(AX, { nodes: eight });
+      await vi.advanceTimersByTimeAsync(2010);
+      await first;
+      expect(hung).toHaveLength(8);
+
+      // Every slot is held: a new field waits at most classifyTimeoutMs.
+      let done = false;
+      const fresh = () => tree(textbox('1', 'Fresh field', ''));
+      const pending = r.redactResult(AX, fresh()).then((x) => {
+        done = true;
+        return x;
+      });
+      await vi.advanceTimersByTimeAsync(1990);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(done).toBe(true);
+      expect(text(byId(await pending, '1'))).toBe('Fresh field');
+      expect(asked).not.toContain('Fresh field');
+
+      // The hung calls settle: their slots are free again.
+      for (const resolve of hung) resolve(false);
+      await vi.advanceTimersByTimeAsync(0);
+      const again = r.redactResult(AX, fresh());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(text(byId(await again, '1'))).toBe(MASK);
+      expect(asked).toContain('Fresh field');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  describe('cache-only paths (no new calls)', () => {
+    const attributes = [
+      'type',
+      'text',
+      'name',
+      'field_17',
+      'aria-label',
+      'Case reference',
+      'value',
+      'ABC-QX',
+    ];
+
+    it('DOM.getAttributes masks a field the hook already flagged to the sensitive allowlist', async () => {
+      let calls = 0;
+      const r = createRedactor({
+        classifyExtra: async () => {
+          calls++;
+          return true;
+        },
+      });
+      await r.redactResult('DOM.describeNode', {
+        node: { nodeType: 1, nodeName: 'INPUT', attributes },
+      });
+      expect(calls).toBe(1);
+      const out = await r.redactResult('DOM.getAttributes', { attributes });
+      expect((out as { attributes: string[] }).attributes).toEqual([
+        'type',
+        'text',
+        'name',
+        'field_17',
+        'aria-label',
+        MASK,
+        'value',
+        MASK,
+      ]);
+      expect(calls).toBe(1);
+    });
+
+    it('DOM.getAttributes leaves an uncached field to the deterministic rule and never calls the hook', async () => {
+      let calls = 0;
+      const r = createRedactor({
+        classifyExtra: async () => {
+          calls++;
+          return true;
+        },
+      });
+      const out = await r.redactResult('DOM.getAttributes', { attributes });
+      expect((out as { attributes: string[] }).attributes).toEqual([
+        'type',
+        'text',
+        'name',
+        'field_17',
+        'aria-label',
+        'Case reference',
+        'value',
+        MASK,
+      ]);
+      expect(calls).toBe(0);
+    });
+
+    it('Accessibility.loadComplete masks a field-like root the hook already flagged, and never calls the hook', async () => {
+      let calls = 0;
+      const r = createRedactor({
+        classifyExtra: async () => {
+          calls++;
+          return true;
+        },
+      });
+      const root = () => textbox('1', 'Case reference', '');
+      const before = r.redactEvent('Accessibility.loadComplete', {
+        root: root(),
+      }) as { root: AXNode & { name: { value: unknown } } };
+      expect(before.root.name.value).toBe('Case reference');
+      expect(calls).toBe(0);
+      await r.redactResult(AX, tree(root()));
+      expect(calls).toBe(1);
+      const after = r.redactEvent('Accessibility.loadComplete', {
+        root: root(),
+      }) as { root: AXNode & { name: { value: unknown } } };
+      expect(after.root.name.value).toBe(MASK);
+      expect(calls).toBe(1);
     });
   });
 });

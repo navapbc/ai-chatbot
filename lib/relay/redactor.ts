@@ -1337,7 +1337,8 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
   let slotsInUse = 0;
   const slotWaiters: (() => void)[] = [];
 
-  const acquireSlot = (deadline: number): Promise<boolean> => {
+  // Waits for a free slot until `until`; false when none came by then.
+  const acquireSlot = (until: number): Promise<boolean> => {
     if (slotsInUse < CLASSIFY_CONCURRENCY) {
       slotsInUse++;
       return Promise.resolve(true);
@@ -1353,7 +1354,7 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
           if (at >= 0) slotWaiters.splice(at, 1);
           resolve(false);
         },
-        Math.max(0, deadline - Date.now()),
+        Math.max(0, until - Date.now()),
       );
       slotWaiters.push(grant);
     });
@@ -1401,9 +1402,21 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
     return Object.keys(out).length === 0 ? undefined : out;
   };
 
+  // Cache only, never a call: true when classifyExtra already flagged a
+  // field with this descriptor. For synchronous paths and results that
+  // cannot be tied to a field (defense in depth).
+  const cachedExtra = (d: FieldDescriptor): boolean => {
+    const descriptor = extraDescriptor(d);
+    return (
+      descriptor !== undefined &&
+      verdicts.get(JSON.stringify(descriptor)) === true
+    );
+  };
+
   // One verdict: cached, or from one bounded call. Undefined (keep the
   // deterministic verdict) on a throw, rejection, non-boolean answer,
-  // per-call timeout, no free slot by `deadline`, or `deadline` itself.
+  // no free slot within the call's budget (classifyTimeoutMs, cut short by
+  // `deadline`), that budget running out, or `deadline` itself.
   const askExtra = (
     hook: (d: FieldDescriptor) => Promise<boolean>,
     d: FieldDescriptor,
@@ -1423,7 +1436,11 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
       if (Date.now() >= deadline) return Promise.resolve(undefined);
       const asked = generation;
       const run = async (): Promise<boolean | undefined> => {
-        if (!(await acquireSlot(deadline))) return undefined;
+        // One budget for waiting for a slot and for the call itself, so
+        // slots held by hung calls cost a reply at most classifyTimeoutMs.
+        // The slot itself is held until the hook settles.
+        const until = Math.min(Date.now() + classifyTimeoutMs, deadline);
+        if (!(await acquireSlot(until))) return undefined;
         const call = Promise.resolve()
           // A fresh copy: the hook cannot reach the redactor's state.
           .then(() => hook({ ...descriptor }))
@@ -1437,10 +1454,7 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
           // counts for later snapshots, never for a reply already sent.
           if (v !== undefined && asked === generation) remember(key, v);
         });
-        return within(
-          call,
-          Math.min(classifyTimeoutMs, deadline - Date.now()),
-        );
+        return within(call, until - Date.now());
       };
       const started = run();
       pending = started;
@@ -1618,7 +1632,8 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
           maskDomSubtree(
             out,
             result,
-            isDomFieldSensitive(result.attributes),
+            isDomFieldSensitive(result.attributes) ||
+              cachedExtra(descriptorFromAttributes(result.attributes)),
             false,
           );
         }
@@ -1637,7 +1652,11 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
           const pairs = axPairs([out.root], [params.root]);
           const sensitive = new Set(
             pairs
-              .filter((p) => classifyAXNode(p.src) !== 'ordinary')
+              .filter(
+                (p) =>
+                  classifyAXNode(p.src) !== 'ordinary' ||
+                  (isFieldLike(p.src) && cachedExtra(axDescriptor(p.src))),
+              )
               .map((p) => p.node),
           );
           maskAXTree(pairs, sensitive, pattern);
