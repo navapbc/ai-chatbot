@@ -20,7 +20,7 @@ const ORIGIN = `chrome-extension://${'a'.repeat(32)}`;
 const FOREIGN = 'https://evil.example';
 const RUN = '11111111-1111-4111-8111-111111111111';
 
-const headers = (origin?: string) =>
+const headers = (origin?: string): HeadersInit =>
   origin === undefined ? {} : { Origin: origin };
 const get = (path: string, origin?: string) =>
   new Request(`http://localhost${path}`, { headers: headers(origin) });
