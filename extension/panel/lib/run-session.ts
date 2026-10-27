@@ -14,12 +14,14 @@ import type { WorkerApi } from './worker-api';
 //   origin, token expired, debugger canceled or detached, tab closed). Those
 //   reach only the hub, so the server stop route is called once here, or the
 //   Eve turn keeps running and agent tokens keep being minted. Another runId
-//   ends it at once; no run must be answered on two polls in a row, and not
-//   within the first 5 s unless the run was already seen.
+//   ends it at once. No run must be answered continuously for
+//   WORKER_GONE_AFTER_MS (see there), and the server is read once more first:
+//   a row that already ended wins (reason `stopped`, no stop call).
 // - The extension token is refreshed at 5 minutes left (P4c-e): a new token,
 //   a same-run-id worker startRun on the run's tab, registrationComplete(runId,
 //   0). A refusal shows a notice and is tried again at most once a minute.
-// - stop(): the server stop, then the worker stop (P4c-f).
+// - stop(): the server stop, then the worker stop (P4c-f). Every worker stop
+//   names this run, so it never ends another window's run.
 //
 // Nothing here ever sees an applicant value: only ids, origins and counts.
 // No I/O runs at creation (only timers), so a StrictMode mount, dispose and
@@ -27,9 +29,21 @@ import type { WorkerApi } from './worker-api';
 
 export const WORKER_POLL_MS = 2000;
 export const SERVER_POLL_MS = 5000;
+/**
+ * A fresh run may read inactive briefly before the worker holds it. Covered by
+ * WORKER_GONE_AFTER_MS, which is longer: no separate check is needed.
+ */
 export const GRACE_MS = 5000;
-/** Consecutive inactive worker answers that end the run. */
-export const INACTIVE_POLLS_TO_END = 2;
+/**
+ * How long the worker must answer "no run" without a break before the run
+ * counts as ended by the worker. The bridge answers getRunStatus outside its
+ * startRun queue, and a same-run restart (another panel window refreshing the
+ * token, or rebuilding the run) clears the run at once, then waits up to its
+ * STOP_WAIT_MS (5 s, extension/src/bridge.ts) for an in-flight screenshot
+ * before the new run begins. Kept at STOP_WAIT_MS plus one worker poll; a test
+ * reads the bridge constant.
+ */
+export const WORKER_GONE_AFTER_MS = 7_000;
 export const REFRESH_BEFORE_MS = 5 * 60_000;
 export const REFRESH_RETRY_MS = 60_000;
 /** A rebuilt run's expiry is unknown: assume this little is left. */
@@ -95,7 +109,6 @@ export const createRunSession = (
   run: SessionRun,
 ): RunSession => {
   const { runId, tabId } = run;
-  const createdAt = deps.now();
   let expiresAt = run.expiresAt;
   let estimated = run.expiresAtEstimated === true;
 
@@ -106,12 +119,11 @@ export const createRunSession = (
   let stopping = false;
   let stopFailed = false;
   let stopPromise: Promise<void> | undefined;
-  let seenActive = false;
-  // Consecutive answered polls with no worker run. One alone is not an end:
-  // the worker answers getRunStatus outside its startRun/resumeRun queue, so
-  // a same-run restart (another panel's refresh) or a cold start briefly
-  // reads as inactive. Failed and discarded polls neither count nor reset.
-  let inactiveStreak = 0;
+  // When the worker first answered "no run" since it last showed this run.
+  // Failed and discarded polls neither start nor reset it.
+  let inactiveSince: number | undefined;
+  // Reading the server once more before ending the run as worker-ended.
+  let confirming = false;
   let lastWorker: RunStatus | undefined;
 
   let workerInFlight = false;
@@ -179,9 +191,6 @@ export const createRunSession = (
     emit();
   };
 
-  const isOurs = (status: RunStatus | undefined) =>
-    status?.active === true && status.runId === runId;
-
   const refreshDue = () =>
     !refreshPromise &&
     !stopping &&
@@ -190,29 +199,36 @@ export const createRunSession = (
     (refreshFailedAt === undefined ||
       deps.now() - refreshFailedAt >= REFRESH_RETRY_MS);
 
-  const halted = () => stopping || ended || disposed;
+  const done = () => stopping || ended || disposed;
+  /** No new poll starts, and worker answers are ignored, while this holds. */
+  const halted = () => done() || confirming;
 
   const refresh = async () => {
     generation += 1;
+    // Nothing settles before the caller has stored refreshPromise, even if a
+    // dependency throws synchronously.
+    await Promise.resolve();
     try {
       const token = await deps.api.getExtensionToken(runId);
-      if (halted()) return;
+      if (!Number.isFinite(token.expiresAt)) throw new Error('bad expiry');
+      if (done()) return;
       await deps.worker.startRun({
         relayUrl: token.relayUrl,
         token: token.extensionToken,
         tabId,
       });
-      if (halted()) return;
-      // The restarted run has no registered values (plan 4b): screenshots
-      // stay refused until this arrives. Count 0 holds while the panel
-      // registers no known values (plan 4c-1); once it does (plan 4c-2) it
-      // must send them again first and pass the real count.
-      await deps.worker.registrationComplete(runId, 0);
-      if (!Number.isFinite(token.expiresAt)) throw new Error('bad expiry');
+      // The worker now holds the new token: its expiry is the run's.
       expiresAt = token.expiresAt;
       estimated = false;
       refreshFailed = false;
       refreshFailedAt = undefined;
+      if (done()) return;
+      // The restarted run has no registered values (plan 4b): screenshots
+      // stay refused until this arrives. Count 0 holds while the panel
+      // registers no known values (plan 4c-1); once it does (plan 4c-2) it
+      // must send them again first and pass the real count. A failure here is
+      // retried by the poll, which sees `needsRegistration`.
+      await ignore(() => deps.worker.registrationComplete(runId, 0));
     } catch {
       refreshFailed = true;
       refreshFailedAt = deps.now();
@@ -229,6 +245,25 @@ export const createRunSession = (
     finish('worker-ended');
   };
 
+  /** The worker answered "no run" long enough: ask the server once more. */
+  const workerGone = async () => {
+    confirming = true;
+    let rowEnded = false;
+    try {
+      rowEnded = (await deps.api.getRunState(runId)).ended === true;
+    } catch {
+      rowEnded = false;
+    } finally {
+      confirming = false;
+    }
+    if (done()) return;
+    if (rowEnded) {
+      finish('stopped');
+      return;
+    }
+    endByWorker();
+  };
+
   const onWorkerStatus = (status: RunStatus) => {
     if (status.active && status.runId !== runId) {
       lastWorker = status;
@@ -237,17 +272,16 @@ export const createRunSession = (
     }
     if (!status.active) {
       lastWorker = status;
-      inactiveStreak += 1;
-      const inGrace = !seenActive && deps.now() - createdAt < GRACE_MS;
-      if (inGrace || inactiveStreak < INACTIVE_POLLS_TO_END) {
-        emit();
+      const now = deps.now();
+      if (inactiveSince === undefined) inactiveSince = now;
+      if (now - inactiveSince >= WORKER_GONE_AFTER_MS) {
+        void workerGone();
         return;
       }
-      endByWorker();
+      emit();
       return;
     }
-    seenActive = true;
-    inactiveStreak = 0;
+    inactiveSince = undefined;
     lastWorker = status;
     if (status.needsRegistration && !registering) {
       // Count 0: this panel registers no known values (plan 4c-1). Once it
@@ -293,10 +327,10 @@ export const createRunSession = (
     } finally {
       serverInFlight = false;
     }
-    if (halted() || !rowEnded) return;
-    // The worker may still hold this run: release the tab's debugger. Never
-    // when it shows another run (its stopRun takes no run id).
-    if (isOurs(lastWorker)) void ignore(() => deps.worker.stopRun());
+    if (done() || !rowEnded) return;
+    // The worker may still hold this run: release the tab's debugger. The
+    // stop names this run, so another window's run is left alone.
+    void ignore(() => deps.worker.stopRun(runId));
     finish('stopped');
   };
 
@@ -304,10 +338,8 @@ export const createRunSession = (
     let failed = !(await ignore(() => deps.api.stopRun(runId)));
     // A refresh in flight would restart the worker after its stop.
     if (refreshPromise) await refreshPromise;
-    // A worker last seen with another run already ended this session (Stop is
-    // then a no-op). The worker's stopRun takes no run id, so another window
-    // starting a run within the last poll interval would still be stopped.
-    if (!(await ignore(() => deps.worker.stopRun()))) failed = true;
+    // Scoped to this run: a run another window started is left alone.
+    if (!(await ignore(() => deps.worker.stopRun(runId)))) failed = true;
     stopFailed = failed;
     finish('user');
   };
@@ -344,11 +376,12 @@ const MAX_SITE_NAME = 100;
  * when the worker's run is live on the server, on the same origin. The expiry
  * is unknown, so a conservative 5 minutes is assumed and marked estimated
  * (the session then refreshes the token at its first poll). Any failure or
- * mismatch rebuilds nothing.
+ * mismatch rebuilds nothing. A worker run whose server row already ended is
+ * stopped (by its run id): nothing else would end it before its token expires.
  */
 export const rebuildRun = async (deps: {
   api: Pick<AppApi, 'getRunState'>;
-  worker: Pick<WorkerApi, 'getRunStatus'>;
+  worker: Pick<WorkerApi, 'getRunStatus' | 'stopRun'>;
   now: () => number;
 }): Promise<{ run: SessionRun; target: Target } | null> => {
   try {
@@ -361,8 +394,13 @@ export const rebuildRun = async (deps: {
     ) {
       return null;
     }
-    const row = await deps.api.getRunState(status.runId);
-    if (row.ended || row.origin !== status.origin) return null;
+    const runId = status.runId;
+    const row = await deps.api.getRunState(runId);
+    if (row.ended) {
+      await ignore(() => deps.worker.stopRun(runId));
+      return null;
+    }
+    if (row.origin !== status.origin) return null;
     const tabId = status.tabId as number;
     return {
       run: {

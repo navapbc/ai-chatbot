@@ -539,11 +539,12 @@ describe('the panel shell', () => {
     const { site, page, runId } = await startOnRealTab();
     try {
       // The worker ends the run without the panel (as on leaving the origin).
+      // The panel waits out 7 s of "no run" (WORKER_GONE_AFTER_MS) first.
       await stopWorkerRun(page);
       await page
         .getByText('The run ended in the browser.', { exact: false })
-        .waitFor({ timeout: 15_000 });
-      expect(stopCalls(runId)).toBe(1);
+        .waitFor({ timeout: 20_000 });
+      await expect.poll(() => stopCalls(runId), { timeout: 5_000 }).toBe(1);
       expect(runs.get(runId)?.ended).toBe(true);
       expect(await page.getByRole('button', { name: 'Stop' }).count()).toBe(0);
       // Leaving the ended run (polling stopped with it; the unit tests pin
@@ -556,7 +557,7 @@ describe('the panel shell', () => {
       await page.close();
       await site.close();
     }
-  }, 30_000);
+  }, 40_000);
 
   it('rebuilds Running when the panel reopens mid-run, without a second eve-chat', async () => {
     const { site, page, runId } = await startOnRealTab();

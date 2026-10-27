@@ -173,7 +173,7 @@ const startRunNow = async (
   } catch (error) {
     // Server first, then the worker (P4c-f).
     await ignore(() => deps.api.stopRun(runId));
-    if (workerStarted) await ignore(() => deps.worker.stopRun());
+    if (workerStarted) await ignore(() => deps.worker.stopRun(runId));
     return { ok: false, error, runId };
   }
 

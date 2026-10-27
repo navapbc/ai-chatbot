@@ -64,7 +64,12 @@ export type BridgeMessage =
       tabId: number;
       allowedFrameOrigins?: string[];
     }
-  | { type: 'stopRun' }
+  /**
+   * Ends the run. With `runId`, only that run: another run (or none) is left
+   * alone and the answer is still `{ ok: true }`. Without it, whatever run is
+   * current (older callers and tests).
+   */
+  | { type: 'stopRun'; runId?: string }
   | { type: 'addKnownValue'; runId: string; value: string }
   | { type: 'getRunStatus' }
   /** The panel re-entered the run's known values (count only, no values). */
@@ -554,6 +559,20 @@ async function readBegunRuns(): Promise<string[]> {
  */
 export function stopRun(reason: StopReason = 'user'): Promise<BridgeResponse> {
   return serialized(() => endRun(reason));
+}
+
+/**
+ * Ends the run only if it is `runId`, checked in the queue (so a startRun
+ * queued before it counts). Any other case changes nothing and succeeds.
+ */
+function stopRunFor(runId: unknown): Promise<BridgeResponse> {
+  return serialized(async () => {
+    const current = run;
+    if (!current || current.stopped || current.runId !== runId) {
+      return { ok: true };
+    }
+    return endRun('user');
+  });
 }
 
 /**
@@ -2686,7 +2705,11 @@ export async function handleMessage(message: unknown): Promise<BridgeResponse> {
   if (message.type === 'startRun') {
     return startRun(message as Extract<BridgeMessage, { type: 'startRun' }>);
   }
-  if (message.type === 'stopRun') return stopRun('user');
+  if (message.type === 'stopRun') {
+    return message.runId === undefined
+      ? stopRun('user')
+      : stopRunFor(message.runId);
+  }
   if (message.type === 'addKnownValue')
     return addKnownValue(message.runId, message.value);
   if (message.type === 'getRunStatus') return getRunStatus();

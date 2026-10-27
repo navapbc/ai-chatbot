@@ -238,6 +238,46 @@ describe('startRun serialization', () => {
   });
 });
 
+describe('stopRun scoped to a run id', () => {
+  const stop = (runId?: string) =>
+    bridge.handleMessage(
+      runId === undefined ? { type: 'stopRun' } : { type: 'stopRun', runId },
+    );
+
+  it('a matching run id stops the run', async () => {
+    expect(await start(tokenFor('run-1'))).toEqual({ ok: true });
+    expect(await stop('run-1')).toEqual({ ok: true });
+    expect(await status()).toEqual({ ok: true, active: false });
+  });
+
+  it('a different run id succeeds without stopping anything', async () => {
+    expect(await start(tokenFor('run-1'))).toEqual({ ok: true });
+    const socket = FakeSocket.all.at(-1) as FakeSocket;
+    expect(await stop('run-2')).toEqual({ ok: true });
+    expect(await status()).toMatchObject({ active: true, runId: 'run-1' });
+    expect(socket.closedByClient).toBe(false);
+  });
+
+  it('a run id with no run succeeds and does nothing', async () => {
+    expect(await stop('run-1')).toEqual({ ok: true });
+    expect(await status()).toEqual({ ok: true, active: false });
+  });
+
+  it('no run id stops whatever run is current (as before)', async () => {
+    expect(await start(tokenFor('run-1'))).toEqual({ ok: true });
+    expect(await stop()).toEqual({ ok: true });
+    expect(await status()).toEqual({ ok: true, active: false });
+  });
+
+  it('a run id stop queued behind a startRun sees the run that start made', async () => {
+    const started = start(tokenFor('run-2'));
+    const stopped = stop('run-2');
+    expect(await started).toEqual({ ok: true });
+    expect(await stopped).toEqual({ ok: true });
+    expect(await status()).toEqual({ ok: true, active: false });
+  });
+});
+
 describe('stop while the socket is down', () => {
   it('delivers one stop, right after register, once a socket opens', async () => {
     vi.useFakeTimers();

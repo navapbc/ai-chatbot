@@ -18,6 +18,7 @@ describe('createWorkerApi message shapes', () => {
       allowedFrameOrigins: ['https://a.example'],
     });
     await api.stopRun();
+    await api.stopRun('run1');
     await api.addKnownValue('run1', 'v');
     await api.registrationComplete('run1', 2);
     await api.allowOrigin('https://a.example');
@@ -31,6 +32,7 @@ describe('createWorkerApi message shapes', () => {
         allowedFrameOrigins: ['https://a.example'],
       },
       { type: 'stopRun' },
+      { type: 'stopRun', runId: 'run1' },
       { type: 'addKnownValue', runId: 'run1', value: 'v' },
       { type: 'registrationComplete', runId: 'run1', count: 2 },
       { type: 'allowOrigin', origin: 'https://a.example' },

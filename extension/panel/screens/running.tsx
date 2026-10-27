@@ -25,9 +25,7 @@ const ENDED_TEXT: Record<EndedReason, string> = {
 };
 
 export const PENDING_ORIGIN_TEXT =
-  'The page moved to another site. The agent is waiting. Deciding is coming in a later update.';
-
-const LAST_MINUTES_S = 5 * 60;
+  'The page moved to another site. The agent is paused until you decide.';
 
 /** Elapsed time as m:ss (minutes are not capped at 59). */
 export const formatElapsed = (ms: number): string => {
@@ -40,7 +38,7 @@ export const formatElapsed = (ms: number): string => {
 const endsInText = (secondsLeft: number): string => {
   const minutes = Math.max(1, Math.ceil(secondsLeft / 60));
   const unit = minutes === 1 ? 'minute' : 'minutes';
-  return `This run ends in ${minutes} ${unit}. The agent works for at most 30 minutes.`;
+  return `This run ends in ${minutes} ${unit}.`;
 };
 
 /**
@@ -90,7 +88,7 @@ export const RunningScreen = ({
   const handleHome = () => onHome();
 
   const stopping = state?.stopping === true;
-  const secondsLeft = state?.secondsLeft ?? Number.POSITIVE_INFINITY;
+  const secondsLeft = state?.secondsLeft ?? 0;
 
   return (
     <section className="flex flex-col gap-4" aria-label="Running">
@@ -119,12 +117,13 @@ export const RunningScreen = ({
         <div aria-live="polite" className="flex flex-col gap-2">
           {state?.expiresAtEstimated ? (
             <p className="text-sm">This run may end soon.</p>
-          ) : secondsLeft < LAST_MINUTES_S ? (
-            <p className="text-sm">{endsInText(secondsLeft)}</p>
           ) : null}
           {state?.refreshFailed ? (
+            // Only once a refresh failed: a successful one keeps the run
+            // going, so the countdown would only flicker around it.
             <p className="text-sm">
               We could not extend this run. It ends at its original time.
+              {state.expiresAtEstimated ? null : ` ${endsInText(secondsLeft)}`}
             </p>
           ) : null}
           {state?.pendingOrigin ? (

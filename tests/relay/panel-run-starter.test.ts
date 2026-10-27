@@ -135,8 +135,8 @@ const makeWorker = (over: Partial<WorkerApi> = {}): WorkerApi => {
     registrationComplete: vi.fn(async (runId: string, count: number) => {
       calls.push(`registered:${runId}:${count}`);
     }),
-    stopRun: vi.fn(async () => {
-      calls.push('workerStop');
+    stopRun: vi.fn(async (runId?: string) => {
+      calls.push(runId === undefined ? 'workerStop' : `workerStop:${runId}`);
     }),
     ...over,
   };
@@ -537,7 +537,7 @@ describe('startRun: after the run exists', () => {
       'workerStart:7',
       'registered',
       `apiStop:${RUN_ID}`,
-      'workerStop',
+      `workerStop:${RUN_ID}`,
     ]);
   });
 

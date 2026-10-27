@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createRunSession,
@@ -9,6 +11,7 @@ import {
   rebuildRun,
   SERVER_POLL_MS,
   type SessionRun,
+  WORKER_GONE_AFTER_MS,
   WORKER_POLL_MS,
 } from '../../extension/panel/lib/run-session';
 import { createControllerLifecycle } from '../../extension/panel/lib/search-controller';
@@ -101,8 +104,8 @@ const setup = (run: Partial<SessionRun> = {}) => {
       calls.push('status');
       return plan.status();
     }),
-    stopRun: vi.fn(async () => {
-      calls.push('workerStop');
+    stopRun: vi.fn(async (id?: string) => {
+      calls.push(id === undefined ? 'workerStop' : `workerStop:${id}`);
       return plan.workerStop();
     }),
     startRun: vi.fn(async (args: { token: string; tabId: number }) => {
@@ -276,13 +279,24 @@ describe('run session: polling', () => {
 });
 
 describe('run session: worker-initiated end', () => {
-  it('worker inactive on two polls in a row after the grace: one server stop, worker-ended, recents', async () => {
+  it('WORKER_GONE_AFTER_MS is the bridge STOP_WAIT_MS plus one poll', () => {
+    const source = readFileSync(
+      path.resolve(__dirname, '../../extension/src/bridge.ts'),
+      'utf8',
+    );
+    const wait = Number(
+      source.match(/const STOP_WAIT_MS = ([\d_]+);/)?.[1]?.replace(/_/g, ''),
+    );
+    expect(wait).toBe(5000);
+    expect(WORKER_GONE_AFTER_MS).toBe(wait + WORKER_POLL_MS);
+  });
+
+  it('inactive continuously for 7 s: one server stop, worker-ended, recents', async () => {
     const t = setup();
     await tick(2000);
     t.plan.status = async () => inactive;
-    await tick(2000);
-    // One inactive answer may be a gap (a same-run restart from another
-    // panel, a worker cold start): not an end yet.
+    // First inactive answer at 4 s; still running 6 s later.
+    await tick(8000);
     expect(t.last()?.status).toBe('running');
     expect(t.api.stopRun).not.toHaveBeenCalled();
     await tick(2000);
@@ -304,20 +318,87 @@ describe('run session: worker-initiated end', () => {
     t.session.dispose();
   });
 
+  it('inactive for 5 s (a bridge same-run restart waiting on a screenshot), then active: not ended', async () => {
+    const t = setup();
+    await tick(2000);
+    t.plan.status = async () => inactive;
+    await tick(6000); // inactive answers at 4, 6 and 8 s
+    t.plan.status = async () => ours();
+    await tick(20_000);
+    expect(t.last()?.status).toBe('running');
+    expect(t.api.stopRun).not.toHaveBeenCalled();
+    t.session.dispose();
+  });
+
+  it('inactive 3 s, active, inactive 5 s: the active answer resets the clock', async () => {
+    const t = setup();
+    const answers = [
+      ours(),
+      inactive,
+      inactive,
+      ours(),
+      inactive,
+      inactive,
+      inactive,
+    ];
+    t.plan.status = async () => answers.shift() ?? ours();
+    await tick(14_000);
+    expect(count(t.calls, 'status')).toBe(7);
+    expect(t.last()?.status).toBe('running');
+    expect(t.api.stopRun).not.toHaveBeenCalled();
+    t.session.dispose();
+  });
+
+  it('a failed poll neither counts nor resets the inactive clock', async () => {
+    const t = setup();
+    const answers: (RunStatus | Error)[] = [
+      ours(),
+      inactive, // 4 s: the clock starts
+      new WorkerError('worker_unreachable'),
+      inactive,
+      new WorkerError('worker_unreachable'),
+      inactive, // 12 s: 8 s inactive
+    ];
+    t.plan.status = async () => {
+      const next = answers.shift() ?? ours();
+      if (next instanceof Error) throw next;
+      return next;
+    };
+    await tick(10_000);
+    expect(t.last()?.status).toBe('running');
+    await tick(2000);
+    expect(t.last()?.status).toBe('ended');
+    expect(t.api.stopRun).toHaveBeenCalledTimes(1);
+    t.session.dispose();
+  });
+
+  it('inactive from the start is not an end within the first 5 s', async () => {
+    expect(GRACE_MS).toBe(5000);
+    const t = setup();
+    t.plan.status = async () => inactive;
+    await tick(4000);
+    expect(t.last()?.status).toBe('running');
+    // First inactive answer at 2 s: gone at the 10 s poll.
+    await tick(4000);
+    expect(t.last()?.status).toBe('running');
+    await tick(2000);
+    expect(t.last()?.status).toBe('ended');
+    t.session.dispose();
+  });
+
   it('a server stop that fails is still called only once', async () => {
     const t = setup();
     t.plan.serverStop = async () => {
       throw new AppApiError('network', 0);
     };
     t.plan.status = async () => inactive;
-    await tick(GRACE_MS + 10_000);
+    await tick(30_000);
     expect(t.last()?.status).toBe('ended');
     expect(t.api.stopRun).toHaveBeenCalledTimes(1);
-    expect(t.calls.filter((c) => c.startsWith('serverStop'))).toHaveLength(1);
     t.session.dispose();
   });
 
-  it('replaced by another window (different runId): server stop once, never the worker stop', async () => {
+  it('replaced by another window (different runId): ends at once, server stop once, never the worker stop', async () => {
     const t = setup();
     await tick(2000);
     t.plan.status = async () => ours({ runId: OTHER_RUN });
@@ -334,58 +415,12 @@ describe('run session: worker-initiated end', () => {
     t.session.dispose();
   });
 
-  it('a different runId ends the run even within the grace', async () => {
+  it('a different runId ends the run even within the first 5 s', async () => {
     const t = setup();
     t.plan.status = async () => ours({ runId: OTHER_RUN });
     await tick(2000);
     expect(t.last()?.status).toBe('ended');
     expect(t.worker.stopRun).not.toHaveBeenCalled();
-    t.session.dispose();
-  });
-
-  it('grace: active:false within 5 s is not an end; after it, it is', async () => {
-    expect(GRACE_MS).toBe(5000);
-    const t = setup();
-    t.plan.status = async () => inactive;
-    await tick(4000);
-    expect(count(t.calls, 'status')).toBe(2);
-    expect(t.last()?.status).toBe('running');
-    expect(t.api.stopRun).not.toHaveBeenCalled();
-    await tick(2000);
-    expect(t.last()?.status).toBe('ended');
-    expect(t.api.stopRun).toHaveBeenCalledTimes(1);
-    t.session.dispose();
-  });
-
-  it('a single inactive answer between active ones never ends the run', async () => {
-    const t = setup();
-    const answers = [ours(), inactive, ours(), inactive, ours(), inactive];
-    t.plan.status = async () => answers.shift() ?? ours();
-    await tick(14_000);
-    expect(count(t.calls, 'status')).toBe(7);
-    expect(t.last()?.status).toBe('running');
-    expect(t.api.stopRun).not.toHaveBeenCalled();
-    t.session.dispose();
-  });
-
-  it('a failed poll neither counts toward nor resets the inactive streak', async () => {
-    const t = setup();
-    const answers: (RunStatus | Error)[] = [
-      ours(),
-      inactive,
-      new WorkerError('worker_unreachable'),
-      inactive,
-    ];
-    t.plan.status = async () => {
-      const next = answers.shift() ?? ours();
-      if (next instanceof Error) throw next;
-      return next;
-    };
-    await tick(6000);
-    expect(t.last()?.status).toBe('running');
-    await tick(2000);
-    expect(t.last()?.status).toBe('ended');
-    expect(t.api.stopRun).toHaveBeenCalledTimes(1);
     t.session.dispose();
   });
 });
@@ -404,20 +439,52 @@ describe('run session: the server ends it', () => {
     await tick(20_000);
     expect(t.api.stopRun).not.toHaveBeenCalled();
     expect(t.markRecentEnded).toHaveBeenCalledWith(RUN_ID, 'stopped');
-    // The worker still held this run, so its debugger is released.
+    // The worker's run (this run id only) is released.
     expect(t.worker.stopRun).toHaveBeenCalledTimes(1);
+    expect(t.worker.stopRun).toHaveBeenCalledWith(RUN_ID);
     t.session.dispose();
   });
 
-  it('server ended while the worker shows another run: the worker is left alone', async () => {
+  it('server ended first, worker inactive after: stopped, no server stop', async () => {
     const t = setup();
-    t.plan.status = async () => {
-      throw new WorkerError('worker_unreachable');
-    };
+    await tick(2000);
+    t.plan.status = async () => inactive;
     t.plan.row = async () => liveRow({ ended: true, endedAt: 'x' });
-    await tick(5000);
-    expect(t.last()?.status).toBe('ended');
-    expect(t.worker.stopRun).not.toHaveBeenCalled();
+    await tick(30_000);
+    expect(t.last()?.endedReason).toBe('stopped');
+    expect(t.api.stopRun).not.toHaveBeenCalled();
+    expect(t.markRecentEnded).toHaveBeenCalledTimes(1);
+    t.session.dispose();
+  });
+
+  it('worker gone first, server ended meanwhile: the server is asked before stopping, and wins', async () => {
+    const t = setup();
+    await tick(2000);
+    t.plan.status = async () => inactive;
+    // Inactive from 4 s, gone at 12 s; the row ends at 11 s, after the 10 s
+    // server poll and before the next one at 15 s.
+    await tick(9000);
+    expect(t.last()?.status).toBe('running');
+    t.plan.row = async () => liveRow({ ended: true, endedAt: 'x' });
+    await tick(1000);
+    expect(t.last()).toMatchObject({ status: 'ended', endedReason: 'stopped' });
+    await tick(20_000);
+    expect(t.api.stopRun).not.toHaveBeenCalled();
+    expect(t.markRecentEnded).toHaveBeenCalledTimes(1);
+    expect(t.markRecentEnded).toHaveBeenCalledWith(RUN_ID, 'stopped');
+    t.session.dispose();
+  });
+
+  it('worker gone while the server cannot be read: worker-ended, one server stop', async () => {
+    const t = setup();
+    t.plan.row = async () => {
+      throw new AppApiError('network', 0);
+    };
+    await tick(2000);
+    t.plan.status = async () => inactive;
+    await tick(30_000);
+    expect(t.last()?.endedReason).toBe('worker-ended');
+    expect(t.api.stopRun).toHaveBeenCalledTimes(1);
     t.session.dispose();
   });
 });
@@ -431,7 +498,7 @@ describe('run session: stop', () => {
     await done;
     expect(t.calls.filter((c) => /Stop|recent/.test(c))).toEqual([
       `serverStop:${RUN_ID}`,
-      'workerStop',
+      `workerStop:${RUN_ID}`,
       `recent:${RUN_ID}:user`,
     ]);
     expect(t.last()).toEqual({
@@ -641,7 +708,7 @@ describe('run session: token refresh', () => {
     expect(t.worker.startRun).not.toHaveBeenCalled();
     expect(t.calls.filter((c) => /Stop|workerStart/.test(c))).toEqual([
       `serverStop:${RUN_ID}`,
-      'workerStop',
+      `workerStop:${RUN_ID}`,
     ]);
     t.session.dispose();
   });
@@ -654,15 +721,45 @@ describe('run session: token refresh', () => {
     const done = t.session.stop();
     await tick(0);
     expect(t.calls).toContain(`serverStop:${RUN_ID}`);
-    expect(t.calls).not.toContain('workerStop');
+    expect(t.calls).not.toContain(`workerStop:${RUN_ID}`);
     start.resolve();
     await done;
     const order = t.calls.filter((c) => /Stop|workerStart/.test(c));
     expect(order).toEqual([
       'workerStart:7:tok-new',
       `serverStop:${RUN_ID}`,
-      'workerStop',
+      `workerStop:${RUN_ID}`,
     ]);
+    t.session.dispose();
+  });
+
+  it('commits the new expiry once startRun succeeds; a registrationComplete failure is retried by the poll', async () => {
+    const t = setup({ expiresAt: NOW / 1000 + 60 });
+    t.plan.registration = async () => {
+      throw new WorkerError('worker_unreachable');
+    };
+    await tick(2000);
+    expect(t.worker.startRun).toHaveBeenCalledTimes(1);
+    expect(t.last()?.refreshFailed).toBeUndefined();
+    expect(t.last()?.secondsLeft).toBe(1800);
+    // The restarted run says it needs registration: the poll sends it again.
+    t.plan.registration = async () => {};
+    t.plan.status = async () => ours({ needsRegistration: true });
+    await tick(2000);
+    expect(count(t.calls, 'registration')).toBe(2);
+    expect(t.api.getExtensionToken).toHaveBeenCalledTimes(1);
+    t.session.dispose();
+  });
+
+  it('a synchronous throw in the token fetch is a refusal, and is retried a minute later', async () => {
+    const t = setup({ expiresAt: NOW / 1000 + 4 * 60 });
+    t.api.getExtensionToken.mockImplementation(() => {
+      throw new Error('sync');
+    });
+    await tick(2000);
+    expect(t.last()?.refreshFailed).toBe(true);
+    await tick(60_000);
+    expect(t.api.getExtensionToken).toHaveBeenCalledTimes(2);
     t.session.dispose();
   });
 
@@ -750,6 +847,7 @@ describe('run session: no applicant data', () => {
       worker: {
         getRunStatus: async () =>
           ({ ...ours(), participant: 'Zelda Quill' }) as RunStatus,
+        stopRun: async () => {},
       },
       now: () => NOW,
     });
@@ -832,7 +930,10 @@ describe('rebuildRun', () => {
     row: () => Promise<RunState>,
   ) => ({
     api: { getRunState: vi.fn(async (_id: string) => row()) },
-    worker: { getRunStatus: vi.fn(status) },
+    worker: {
+      getRunStatus: vi.fn(status),
+      stopRun: vi.fn(async (_id?: string) => {}),
+    },
     now: () => NOW,
   });
 
@@ -862,12 +963,29 @@ describe('rebuildRun', () => {
     expect(d.api.getRunState).not.toHaveBeenCalled();
   });
 
-  it('an ended server row rebuilds nothing', async () => {
+  it('an ended server row rebuilds nothing and stops that worker run by id', async () => {
     const d = deps(
       async () => ours(),
       async () => liveRow({ ended: true, endedAt: 'x' }),
     );
     expect(await rebuildRun(d)).toBeNull();
+    expect(d.worker.stopRun).toHaveBeenCalledTimes(1);
+    expect(d.worker.stopRun).toHaveBeenCalledWith(RUN_ID);
+  });
+
+  it('a live row on another origin, or an inactive worker, stops nothing', async () => {
+    const d = deps(
+      async () => ours(),
+      async () => liveRow({ origin: 'https://other.example.gov' }),
+    );
+    expect(await rebuildRun(d)).toBeNull();
+    expect(d.worker.stopRun).not.toHaveBeenCalled();
+    const e = deps(
+      async () => inactive,
+      async () => liveRow(),
+    );
+    expect(await rebuildRun(e)).toBeNull();
+    expect(e.worker.stopRun).not.toHaveBeenCalled();
   });
 
   it('an origin mismatch rebuilds nothing', async () => {

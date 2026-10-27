@@ -75,7 +75,11 @@ export interface WorkerApi {
     tabId: number;
     allowedFrameOrigins?: string[];
   }): Promise<void>;
-  stopRun(): Promise<void>;
+  /**
+   * Stops the worker's run. With `runId`, only if that run is the current one
+   * (another run is left alone and the call still succeeds).
+   */
+  stopRun(runId?: string): Promise<void>;
   addKnownValue(runId: string, value: string): Promise<void>;
   registrationComplete(runId: string, count: number): Promise<void>;
   allowOrigin(origin: string): Promise<void>;
@@ -111,7 +115,10 @@ export const createWorkerApi = (sendMessage: Send = chromeSend): WorkerApi => {
 
   return {
     startRun: (args) => send({ type: 'startRun', ...args }),
-    stopRun: () => send({ type: 'stopRun' }),
+    stopRun: (runId) =>
+      send(
+        runId === undefined ? { type: 'stopRun' } : { type: 'stopRun', runId },
+      ),
     addKnownValue: (runId, value) =>
       send({ type: 'addKnownValue', runId, value }),
     registrationComplete: (runId, count) =>
