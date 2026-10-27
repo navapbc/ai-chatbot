@@ -1207,6 +1207,133 @@ describe('the panel shell', () => {
     }
   }, 60_000);
 
+  it('runs one form end to end: progress, questions, an allowed move, review, submitted, another form', async () => {
+    // Driven as panel.html in a tab (a real side panel cannot be driven
+    // headless), against the real worker and relay; the fake app's run row
+    // changes over time the way the server's would. The only stubs are the
+    // tab query (the panel is a tab) and the unlisted-origin move, which is a
+    // real navigation of the run's tab.
+    const ANSWER = 'End-To-End-Answer-91';
+    const PENDING = [
+      {
+        requestId: 'q-text',
+        prompt: 'County of residence',
+        display: 'text',
+        options: [],
+        allowFreeform: true,
+      },
+      {
+        requestId: 'q-ssn',
+        prompt: 'Social Security number',
+        display: 'select',
+        options: [
+          { id: 'provided', label: 'I entered it myself' },
+          { id: 'skip', label: 'Skip' },
+        ],
+        allowFreeform: false,
+      },
+    ];
+    const { site, page, runId } = await startOnRealTab();
+    const seen: string[] = [];
+    page.on('console', (msg) => seen.push(msg.text()));
+    page.on('pageerror', (error) => seen.push(error.message));
+    answerBodies.length = 0;
+    answerRefusal = null;
+    const row = runs.get(runId);
+    if (!row) throw new Error('no run row');
+    const needsYou = page.getByRole('region', { name: 'The agent needs you' });
+    const allow = page.getByRole('heading', { name: 'Allow this site?' });
+    const review = page.getByRole('heading', { name: 'Ready for your review' });
+    const none = async (...gone: import('playwright').Locator[]) => {
+      for (const l of gone) expect(await l.count()).toBe(0);
+    };
+    try {
+      // Working, with progress: sections and actions, nothing else.
+      await page.getByText('6 fields so far').waitFor();
+      await none(needsYou, allow, review);
+
+      // Text and sensitive questions: the card, only on needs_you.
+      row.pending = PENDING;
+      row.phase = 'needs_you';
+      await needsYou.waitFor({ timeout: 10_000 });
+      await needsYou.getByText('Social Security number').waitFor();
+      await none(allow, review);
+      await needsYou.getByLabel('County of residence').fill(ANSWER);
+      await needsYou
+        .getByRole('button', { name: 'I entered it myself' })
+        .click();
+      await needsYou.getByRole('button', { name: 'Send' }).click();
+      await needsYou.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(answerBodies).toEqual([
+        {
+          id: runId,
+          inputResponses: [
+            { requestId: 'q-text', text: ANSWER },
+            { requestId: 'q-ssn', optionId: 'provided' },
+          ],
+        },
+      ]);
+
+      // The agent took them: working again, no stale card.
+      row.pending = [];
+      row.phase = 'working';
+      await needsYou.waitFor({ state: 'detached', timeout: 10_000 });
+      await page.getByText('6 fields so far').waitFor();
+      await none(allow, review);
+
+      // The tab leaves for another origin: the allow card, then Allow.
+      await leaveForFrameOrigin(site, page);
+      await allow.waitFor({ timeout: 5_000 });
+      await none(needsYou, review);
+      await page
+        .getByRole('button', { name: 'Allow this site for this run' })
+        .click();
+      await expect.poll(() => allow.count(), { timeout: 5_000 }).toBe(0);
+      const status = (await runStatus(page)) as HoldStatus;
+      expect({ active: status.active, runId: status.runId }).toEqual({
+        active: true,
+        runId,
+      });
+
+      // The turn idles: the review panel, and nothing stale beside it.
+      row.phase = 'review';
+      await review.waitFor({ timeout: 10_000 });
+      await none(needsYou, allow);
+
+      // Submitted: one stop on each side, Confirmed, then another form.
+      await page.getByRole('button', { name: 'I submitted it' }).click();
+      await page.getByRole('heading', { name: 'Submitted' }).waitFor();
+      await none(needsYou, allow, review);
+      expect(row.ended).toBe(true);
+      expect(stopCalls(runId)).toBe(1);
+      expect((await runStatus(page)).active).toBe(false);
+      await page
+        .getByRole('button', { name: 'Start another form for this person' })
+        .click();
+      await page.getByRole('heading', { name: 'Ready' }).waitFor();
+      await page.getByRole('button', { name: 'Start' }).waitFor();
+      await none(needsYou, allow, review);
+
+      // The fake app saw each call once, in this order; the answer turn is
+      // the one eve-chat POST after the first, which `answerBodies` counted.
+      expect(appCalls).toEqual([
+        'POST /api/eve-chat',
+        'POST /api/relay/token',
+        `POST /api/relay/runs/${runId}/stop`,
+      ]);
+      expect(answerBodies).toHaveLength(1);
+      // No applicant text in the console, and nothing from the move's URL.
+      for (const line of seen) {
+        expect(line).not.toContain(ANSWER);
+        expect(line).not.toMatch(/Zelda|frag-77|oopif/);
+      }
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 90_000);
+
   it('saves details for 8 hours, reuses them, expires them and clears them', async () => {
     const seen: string[] = [];
     const watch = (page: import('playwright').Page) => {
