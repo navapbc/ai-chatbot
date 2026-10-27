@@ -965,7 +965,13 @@ describe('the panel shell', () => {
         })
         .waitFor();
       // The panel saw the hold begin (it polled the clear run first).
-      await page.getByText(/^Decide within \d+ seconds?$/).waitFor();
+      // The build's shortened hold (the panel gets the same define).
+      const left = await page
+        .getByText(/^About \d+ seconds? left$/)
+        .textContent();
+      expect(Number(left?.match(/\d+/)?.[0])).toBeLessThanOrEqual(
+        PANEL_HOLD_MS / 1000,
+      );
       const shown = await page.locator('body').innerText();
       expect(shown).not.toMatch(/Zelda|frag-77/);
       // Nothing allowed yet: the worker still holds.
@@ -976,18 +982,24 @@ describe('the panel shell', () => {
       await page
         .getByRole('button', { name: 'Allow this site for this run' })
         .click();
+      // One predicate: the same run, still active, and no longer held.
       await expect
-        .poll(async () => (await runStatus(page)) as HoldStatus, {
-          timeout: 5_000,
-        })
-        .toMatchObject({ active: true, runId });
-      expect(
-        ((await runStatus(page)) as HoldStatus).pendingOrigin,
-      ).toBeUndefined();
+        .poll(
+          async () => {
+            const status = (await runStatus(page)) as HoldStatus;
+            return {
+              active: status.active,
+              runId: status.runId,
+              held: status.pendingOrigin ?? null,
+            };
+          },
+          { timeout: 5_000 },
+        )
+        .toEqual({ active: true, runId, held: null });
       // The P4c2-e note, which outlives the card.
       await page
         .getByText(
-          /^Allowed\. This run can no longer be extended, so it ends at .+\.$/,
+          /^Allowed\. While the tab stays on that site this run cannot be extended and ends at .+\.$/,
         )
         .waitFor();
       await expect.poll(() => heading.count(), { timeout: 5_000 }).toBe(0);
@@ -1002,7 +1014,7 @@ describe('the panel shell', () => {
       expect(after.pendingOrigin).toBeUndefined();
       expect(stoppedFor(runId, 'left-origin')).toBe(false);
       await page.getByRole('heading', { name: 'Running' }).waitFor();
-      await page.getByText(/^Allowed\. This run/).waitFor();
+      await page.getByText(/^Allowed\. While the tab stays/).waitFor();
       for (const line of seen) expect(line).not.toMatch(/Zelda|frag-77|oopif/);
     } finally {
       await stopWorkerRun(page);

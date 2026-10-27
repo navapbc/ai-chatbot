@@ -179,6 +179,11 @@ const WORKER: Record<WorkerError['code'], ErrorMessage> = {
     detail: 'Nothing is needed from you for it. Carry on with the run.',
     retryable: false,
   },
+  too_many_origins: {
+    title: 'You have already allowed the most sites for this run',
+    detail: 'Stop the run, or bring the tab back to the form.',
+    retryable: false,
+  },
   worker_error: GENERIC,
 };
 
@@ -299,16 +304,18 @@ export const ALLOW_SITE_COPY = {
     `The page moved to ${origin}. The agent is paused until you decide.`,
   tabNow: (text: string) => `The tab is now on: ${text}`,
   hint: 'Allow it only if you expected the form to go there. This applies to this run only.',
-  decideWithin: (seconds: number) =>
-    `Decide within ${seconds} ${seconds === 1 ? 'second' : 'seconds'}`,
+  secondsLeft: (seconds: number) =>
+    `About ${seconds} ${seconds === 1 ? 'second' : 'seconds'} left`,
   decideSoon: 'Decide soon: the agent stops waiting after about a minute.',
-  holdOver: 'The hold ended',
+  holdMayHaveEnded: 'The hold may have ended',
   holdEnded: 'The hold ended. The agent has stopped waiting.',
+  tooMany: 'You have already allowed the most sites for this run.',
+  unreachable: 'The extension did not answer. Try again.',
   allow: 'Allow this site for this run',
   allowing: 'Allowing...',
   stop: 'Stop the run',
   allowed: (time: string) =>
-    `Allowed. This run can no longer be extended, so it ends at ${time}.`,
+    `Allowed. While the tab stays on that site this run cannot be extended and ends at ${time}.`,
   allowedEstimated:
-    'Allowed. This run can no longer be extended, so it may end soon.',
+    'Allowed. While the tab stays on that site this run cannot be extended and may end soon.',
 } as const;

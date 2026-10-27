@@ -13,6 +13,7 @@ export type WorkerErrorCode =
   | 'no_active_run'
   | 'wrong_run'
   | 'origin_not_pending'
+  | 'too_many_origins'
   | 'relay_unreachable'
   | 'worker_error';
 
@@ -24,6 +25,7 @@ const MESSAGES: Record<WorkerErrorCode, string> = {
   no_active_run: 'no active run',
   wrong_run: 'wrong run',
   origin_not_pending: 'origin not pending',
+  too_many_origins: 'too many allowed origins',
   relay_unreachable: 'relay unreachable',
   worker_error: 'worker error',
 };
@@ -45,6 +47,7 @@ const CODE_FOR_TEXT: Record<string, WorkerErrorCode> = {
   'no active run': 'no_active_run',
   'wrong run': 'wrong_run',
   'origin not pending': 'origin_not_pending',
+  'too many allowed origins': 'too_many_origins',
   'relay URL is invalid': 'relay_unreachable',
   'relay URL must use wss: (ws: only on 127.0.0.1 or localhost)':
     'relay_unreachable',
@@ -101,8 +104,10 @@ export const createWorkerApi = (sendMessage: Send = chromeSend): WorkerApi => {
     }
     if (!isRecord(reply)) throw new WorkerError('worker_unreachable');
     if (reply.ok !== true) {
+      // Own keys only: a prototype name ('constructor') is no code.
       const code =
-        typeof reply.error === 'string'
+        typeof reply.error === 'string' &&
+        Object.hasOwn(CODE_FOR_TEXT, reply.error)
           ? CODE_FOR_TEXT[reply.error]
           : undefined;
       throw new WorkerError(code ?? 'worker_error');

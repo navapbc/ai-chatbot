@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import {
   type AllowSiteController,
   type AllowSiteDeps,
+  type AllowSiteNotice,
   type AllowSiteView,
   createAllowSiteController,
 } from '../lib/allow-site';
@@ -31,6 +32,12 @@ export const defaultAllowSiteDeps = (): AllowSiteCardDeps => ({
   clearInterval: (id) => clearInterval(id),
 });
 
+const NOTICE_TEXT: Record<AllowSiteNotice, string> = {
+  holdEnded: ALLOW_SITE_COPY.holdEnded,
+  tooMany: ALLOW_SITE_COPY.tooMany,
+  unreachable: ALLOW_SITE_COPY.unreachable,
+};
+
 type Props = {
   /** The pending origin this card asks about. */
   origin: string;
@@ -58,7 +65,7 @@ export const AllowSiteCard = ({
   const controller = useRef<AllowSiteController | null>(null);
   const [view, setView] = useState<AllowSiteView | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const endedRef = useRef<HTMLParagraphElement>(null);
+  const noticeRef = useRef<HTMLParagraphElement>(null);
   // Read at mount only: the card is keyed by origin, and these do not change
   // for one hold.
   const mountInput = useRef({ origin, tabId, holdEndsAt, deps, onAllowed });
@@ -92,9 +99,11 @@ export const AllowSiteCard = ({
   }, []);
 
   const phase = view?.phase ?? 'waiting';
+  const notice = view?.notice ?? null;
+  // Allow may have disabled itself: keep keyboard focus on what explains it.
   useEffect(() => {
-    if (phase === 'ended') endedRef.current?.focus();
-  }, [phase]);
+    if (notice) noticeRef.current?.focus();
+  }, [notice]);
 
   const handleAllow = () => {
     void controller.current?.allow();
@@ -128,17 +137,18 @@ export const AllowSiteCard = ({
       ) : null}
       <p className="text-sm">{ALLOW_SITE_COPY.hint}</p>
       {phase === 'waiting' || phase === 'allowing' ? (
+        // Informational: the worker decides whether the hold is still on.
         <p className="text-sm">
           {secondsLeft === null
             ? ALLOW_SITE_COPY.decideSoon
             : secondsLeft > 0
-              ? ALLOW_SITE_COPY.decideWithin(secondsLeft)
-              : ALLOW_SITE_COPY.holdOver}
+              ? ALLOW_SITE_COPY.secondsLeft(secondsLeft)
+              : ALLOW_SITE_COPY.holdMayHaveEnded}
         </p>
       ) : null}
-      {phase === 'ended' ? (
-        <p ref={endedRef} role="alert" tabIndex={-1} className="text-sm">
-          {ALLOW_SITE_COPY.holdEnded}
+      {notice ? (
+        <p ref={noticeRef} role="alert" tabIndex={-1} className="text-sm">
+          {NOTICE_TEXT[notice]}
         </p>
       ) : null}
       <div className="flex flex-col gap-2">

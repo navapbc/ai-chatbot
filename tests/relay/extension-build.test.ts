@@ -164,6 +164,25 @@ describe('panelEsbuildArgs', () => {
       panelEsbuildArgs('/repo', 'out/panel.js', '/tmp/meta.json').at(-1),
     ).toBe('--metafile=/tmp/meta.json');
   });
+
+  it('defines the test hold for the panel only when given, as for the worker', () => {
+    // The caller passes it only from resolveOriginHoldMs, which refuses it
+    // without the test hooks: a plain or release panel keeps its 60 s.
+    const args = panelEsbuildArgs(
+      '/repo',
+      'out/panel.js',
+      '/tmp/meta.json',
+      '',
+      1500,
+    );
+    expect(args).toContain('--define:__ORIGIN_HOLD_MS__=1500');
+    expect(args.at(-1)).toBe('--metafile=/tmp/meta.json');
+    expect(
+      panelEsbuildArgs('/repo', 'out/panel.js').some((a) =>
+        a.includes('__ORIGIN_HOLD_MS__'),
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('extractTokens', () => {

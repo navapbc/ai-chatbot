@@ -162,7 +162,7 @@ describe('allow-site controller: what it shows', () => {
     expect(t.views.length).toBe(before);
   });
 
-  it('a known countdown: Decide within N seconds, floored at 0', async () => {
+  it('a known countdown counts down to 0 and never disables Allow', async () => {
     const t = setup({ holdEndsAt: NOW + 60_000 });
     t.controller.start();
     await tick(0);
@@ -173,9 +173,11 @@ describe('allow-site controller: what it shows', () => {
     expect(t.last().secondsLeft).toBe(1);
     await tick(500);
     expect(t.last().secondsLeft).toBe(0);
-    expect(t.last().canAllow).toBe(false);
+    // Informational only: the worker decides whether the hold is still on.
+    expect(t.last().canAllow).toBe(true);
     await tick(10_000);
     expect(t.last().secondsLeft).toBe(0);
+    expect(t.last().canAllow).toBe(true);
     t.controller.dispose();
   });
 
@@ -189,9 +191,15 @@ describe('allow-site controller: what it shows', () => {
   });
 
   it('countdown copy', () => {
-    expect(ALLOW_SITE_COPY.decideWithin(60)).toBe('Decide within 60 seconds');
-    expect(ALLOW_SITE_COPY.decideWithin(1)).toBe('Decide within 1 second');
-    expect(ALLOW_SITE_COPY.holdOver).toBe('The hold ended');
+    expect(ALLOW_SITE_COPY.secondsLeft(60)).toBe('About 60 seconds left');
+    expect(ALLOW_SITE_COPY.secondsLeft(1)).toBe('About 1 second left');
+    expect(ALLOW_SITE_COPY.holdMayHaveEnded).toBe('The hold may have ended');
+    expect(ALLOW_SITE_COPY.tooMany).toBe(
+      'You have already allowed the most sites for this run.',
+    );
+    expect(ALLOW_SITE_COPY.unreachable).toBe(
+      'The extension did not answer. Try again.',
+    );
     expect(ALLOW_SITE_COPY.moved(A)).toBe(
       `The page moved to ${A}. The agent is paused until you decide.`,
     );
@@ -221,7 +229,11 @@ describe('allow-site controller: Allow', () => {
     expect(t.allowOrigin).toHaveBeenCalledTimes(1);
     expect(t.allowOrigin).toHaveBeenCalledWith(A);
     expect(t.onAllowed).toHaveBeenCalledTimes(1);
-    expect(t.last()).toMatchObject({ phase: 'allowed', canAllow: false });
+    expect(t.last()).toMatchObject({
+      phase: 'allowed',
+      canAllow: false,
+      notice: null,
+    });
     t.controller.dispose();
   });
 
@@ -242,44 +254,63 @@ describe('allow-site controller: Allow', () => {
     t.controller.dispose();
   });
 
-  it('a press after the pending origin changed sends nothing and shows the hold ended', async () => {
+  it('a press after the pending origin changed sends nothing', async () => {
     const t = setup();
     t.controller.update({ pendingOrigin: B, stopping: false });
     expect(t.last().canAllow).toBe(false);
     await t.controller.allow();
     expect(t.allowOrigin).not.toHaveBeenCalled();
-    expect(t.last().phase).toBe('ended');
+    // The parent remounts the card for B; this one only stays inert.
+    expect(t.last()).toMatchObject({ phase: 'waiting', notice: null });
     t.controller.dispose();
   });
 
-  it('a press after the pending origin cleared sends nothing and shows the hold ended', async () => {
+  it('a press after the pending origin cleared sends nothing', async () => {
     const t = setup();
     t.controller.update({ pendingOrigin: undefined, stopping: false });
     await t.controller.allow();
     expect(t.allowOrigin).not.toHaveBeenCalled();
-    expect(t.last().phase).toBe('ended');
+    expect(t.last().notice).toBeNull();
     t.controller.dispose();
   });
 
-  it('a press after the countdown ran out sends nothing', async () => {
+  it('an expired countdown does not block Allow: the worker decides', async () => {
     const t = setup({ holdEndsAt: NOW + 5000 });
     t.controller.start();
-    await tick(5000);
+    await tick(20_000);
+    expect(t.last()).toMatchObject({ secondsLeft: 0, canAllow: true });
     await t.controller.allow();
-    expect(t.allowOrigin).not.toHaveBeenCalled();
-    expect(t.last().phase).toBe('ended');
+    expect(t.allowOrigin).toHaveBeenCalledTimes(1);
+    expect(t.last().phase).toBe('allowed');
+    t.controller.dispose();
+  });
+
+  it('an expired countdown then a refusal: the hold ended', async () => {
+    const t = setup({ holdEndsAt: NOW + 5000 });
+    t.plan.allow = async () => {
+      throw new WorkerError('origin_not_pending');
+    };
+    t.controller.start();
+    await tick(6000);
+    await t.controller.allow();
+    expect(t.last()).toMatchObject({
+      phase: 'refused',
+      notice: 'holdEnded',
+      canAllow: false,
+    });
     t.controller.dispose();
   });
 
   it.each([
-    ['origin not pending', new WorkerError('origin_not_pending')],
-    ['no active run', new WorkerError('no_active_run')],
-    ['worker error', new WorkerError('worker_error')],
-    ['unreachable', new WorkerError('worker_unreachable')],
-    ['a plain error', new Error('boom')],
+    ['origin not pending', new WorkerError('origin_not_pending'), 'holdEnded'],
+    ['no active run', new WorkerError('no_active_run'), 'holdEnded'],
+    ['wrong run', new WorkerError('wrong_run'), 'holdEnded'],
+    ['worker error', new WorkerError('worker_error'), 'holdEnded'],
+    ['a plain error', new Error('boom'), 'holdEnded'],
+    ['too many origins', new WorkerError('too_many_origins'), 'tooMany'],
   ])(
-    'a refusal (%s) shows the hold ended and disables Allow',
-    async (_n, e) => {
+    'a refusal (%s) shows its fixed message and disables Allow',
+    async (_n, e, notice) => {
       const t = setup();
       t.plan.allow = async () => {
         throw e;
@@ -287,12 +318,42 @@ describe('allow-site controller: Allow', () => {
       await t.controller.allow();
       expect(t.allowOrigin).toHaveBeenCalledTimes(1);
       expect(t.onAllowed).not.toHaveBeenCalled();
-      expect(t.last()).toMatchObject({ phase: 'ended', canAllow: false });
+      expect(t.last()).toMatchObject({
+        phase: 'refused',
+        notice,
+        canAllow: false,
+      });
       await t.controller.allow();
       expect(t.allowOrigin).toHaveBeenCalledTimes(1);
       t.controller.dispose();
     },
   );
+
+  it('an unreachable worker says so and leaves Allow for a retry press', async () => {
+    const t = setup();
+    t.plan.allow = async () => {
+      throw new WorkerError('worker_unreachable');
+    };
+    t.controller.start();
+    await t.controller.allow();
+    expect(t.last()).toMatchObject({
+      phase: 'waiting',
+      notice: 'unreachable',
+      canAllow: true,
+    });
+    // Never retried by itself: polls and timers send nothing more.
+    for (let i = 0; i < 20; i++) {
+      t.controller.update({ pendingOrigin: A, stopping: false });
+      await tick(1000);
+    }
+    expect(t.allowOrigin).toHaveBeenCalledTimes(1);
+    // A second press is a new decision: it is sent, and clears the notice.
+    t.plan.allow = async () => {};
+    await t.controller.allow();
+    expect(t.allowOrigin).toHaveBeenCalledTimes(2);
+    expect(t.last()).toMatchObject({ phase: 'allowed', notice: null });
+    t.controller.dispose();
+  });
 
   it('success after the card was removed still reports allowed, without a view', async () => {
     const t = setup();
@@ -376,6 +437,11 @@ describe('allow-site controller: never auto-approved', () => {
     expect(card).toMatch(
       /const handleAllow = \(\) => \{\s*void controller\.current\?\.allow\(\);/,
     );
+    // No raw 'allowOrigin' message anywhere but the worker client.
+    const raw = files
+      .filter((f) => /['"`]allowOrigin['"`]/.test(readFileSync(f, 'utf8')))
+      .map((f) => path.relative(ROOT, f));
+    expect(raw).toEqual(['extension/panel/lib/worker-api.ts']);
     // No other screen talks to the worker's allowOrigin.
     const running = readFileSync(
       path.join(panel, 'screens/running.tsx'),
@@ -398,9 +464,9 @@ describe('the allowed note', () => {
     expect(formatClock(1_800_000_000 + 25 * 60, utc)).toBe('08:25');
   });
 
-  it('says the run can no longer be extended and when it ends', () => {
+  it('says the run cannot be extended on that site and when it ends', () => {
     expect(allowedNote(1_800_000_000 + 25 * 60, false, utc)).toBe(
-      'Allowed. This run can no longer be extended, so it ends at 08:25.',
+      'Allowed. While the tab stays on that site this run cannot be extended and ends at 08:25.',
     );
   });
 
@@ -409,7 +475,7 @@ describe('the allowed note', () => {
     expect(allowedNote(1_800_000_000, true, utc)).toBe(text);
     expect(allowedNote(Number.NaN, false, utc)).toBe(text);
     expect(text).toBe(
-      'Allowed. This run can no longer be extended, so it may end soon.',
+      'Allowed. While the tab stays on that site this run cannot be extended and may end soon.',
     );
   });
 

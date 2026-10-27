@@ -151,13 +151,16 @@ export function esbuildArgs(
  * the longest matching alias, so the order of the two does not matter.
  * `metafile`, when given, records the import graph (the bundle test reads it).
  * `appOrigin` is defined as `__APP_ORIGIN__` for extension/src/config.ts, as
- * in the worker build.
+ * in the worker build. `originHoldMs` (see resolveOriginHoldMs, so only in a
+ * test-hooks build) is defined as `__ORIGIN_HOLD_MS__`, as for the worker, so
+ * the panel's hold countdown follows the shortened hold.
  */
 export function panelEsbuildArgs(
   root: string,
   outFile: string,
   metafile?: string,
   appOrigin = '',
+  originHoldMs?: number,
 ): string[] {
   const args = [
     path.join(root, 'extension/panel/main.tsx'),
@@ -170,6 +173,9 @@ export function panelEsbuildArgs(
     `--alias:@/lib/utils=${path.join(root, 'extension/panel/lib/cn.ts')}`,
     `--alias:@=${root}`,
   ];
+  if (originHoldMs !== undefined) {
+    args.push(`--define:__ORIGIN_HOLD_MS__=${originHoldMs}`);
+  }
   if (metafile) args.push(`--metafile=${metafile}`);
   return args;
 }

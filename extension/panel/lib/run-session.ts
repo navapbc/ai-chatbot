@@ -51,13 +51,19 @@ export const REFRESH_BEFORE_MS = 5 * 60_000;
 export const REFRESH_RETRY_MS = 60_000;
 /** A rebuilt run's expiry is unknown: assume this little is left. */
 export const ESTIMATED_LEFT_S = 5 * 60;
+// esbuild defines this only in a test-hooks build given
+// EXTENSION_TEST_ORIGIN_HOLD_MS (scripts/extension-build-config.ts), for the
+// panel exactly as for the worker; undeclared otherwise (a unit test too).
+declare const __ORIGIN_HOLD_MS__: number | undefined;
 /**
  * The bridge's origin hold (extension/src/bridge.ts ORIGIN_HOLD_MS and
- * ORIGIN_HOLD_CAP_MS in a shipped build): 60 s per pending origin, restarted
- * by a move to another origin, 120 s in total. The worker status carries no
- * start time, so the panel counts from when it first saw each origin.
+ * ORIGIN_HOLD_CAP_MS): 60 s per pending origin in a shipped build, restarted
+ * by a move to another origin, twice that in total. The worker status
+ * carries no start time, so the panel counts from when it first saw each
+ * origin. The countdown is informational only: the worker decides.
  */
-export const ORIGIN_HOLD_MS = 60_000;
+export const ORIGIN_HOLD_MS =
+  typeof __ORIGIN_HOLD_MS__ === 'number' ? __ORIGIN_HOLD_MS__ : 60_000;
 export const ORIGIN_HOLD_CAP_MS = 2 * ORIGIN_HOLD_MS;
 /**
  * A hold's countdown is known only when an accepted worker answer within
