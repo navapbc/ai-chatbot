@@ -16,6 +16,11 @@ export interface EveRunRecord {
   progress: RunProgress | null;
   /** When the run ended (Stop); null while it is live. Set once, never moves. */
   endedAt: Date | null;
+  /**
+   * Relay runs: the agent's turn has reached session.waiting and no turn has
+   * been claimed since. False on create. Never written for web chats.
+   */
+  turnIdle: boolean;
 }
 
 /**
@@ -30,7 +35,7 @@ export class EveRunExistsError extends Error {
 }
 
 /**
- * setPending, setProgress, advance and remove are no-ops when no run exists
+ * setPending, setProgress, setTurnIdle, advance and remove are no-ops when no run exists
  * for (userId, chatId); they never create a row.
  */
 export interface EveRunStore {
@@ -90,6 +95,7 @@ export interface EveRunStore {
     chatId: string,
     progress: RunProgress,
   ): Promise<void>;
+  setTurnIdle(userId: string, chatId: string, idle: boolean): Promise<void>;
   remove(userId: string, chatId: string): Promise<void>;
   /**
    * Marks the run ended. True only for the call that set it; false when it
@@ -143,6 +149,7 @@ export function createMemoryRunStore(): EveRunStore {
         pendingRequests: [],
         progress: null,
         endedAt: null,
+        turnIdle: false,
       };
       rows.set(k, { ...copy(record), userId, chatId, createdAt: new Date() });
       return record;
@@ -179,6 +186,10 @@ export function createMemoryRunStore(): EveRunStore {
     async setProgress(userId, chatId, progress) {
       const row = rows.get(key(userId, chatId));
       if (row) row.progress = structuredClone(progress);
+    },
+    async setTurnIdle(userId, chatId, idle) {
+      const row = rows.get(key(userId, chatId));
+      if (row) row.turnIdle = idle;
     },
     async remove(userId, chatId) {
       rows.delete(key(userId, chatId));

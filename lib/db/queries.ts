@@ -920,6 +920,28 @@ export async function setEveRunProgress({
   }
 }
 
+export async function setEveRunTurnIdle({
+  userId,
+  chatId,
+  idle,
+}: {
+  userId: string;
+  chatId: string;
+  idle: boolean;
+}): Promise<void> {
+  try {
+    await db
+      .update(eveRun)
+      .set({ turnIdle: idle, updatedAt: new Date() })
+      .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to set eve run turn idle',
+    );
+  }
+}
+
 export async function deleteEveRun({
   userId,
   chatId,

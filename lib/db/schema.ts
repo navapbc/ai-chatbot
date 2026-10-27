@@ -242,6 +242,9 @@ export const eveRun = pgTable(
     progress: jsonb('progress').$type<RunProgress>(),
     // Set once when the run ends (Stop); an ended run never resumes.
     endedAt: timestamp('endedAt'),
+    // Relay runs: true once the agent's turn reached session.waiting, false
+    // again when the next turn is claimed. Never written for web chats.
+    turnIdle: boolean('turnIdle').notNull().default(false),
     createdAt: timestamp('createdAt').notNull(),
     updatedAt: timestamp('updatedAt').notNull(),
   },

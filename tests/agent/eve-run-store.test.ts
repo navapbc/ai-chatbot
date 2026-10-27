@@ -59,6 +59,7 @@ function runSuite(
       pendingRequests: [],
       progress: null,
       endedAt: null,
+      turnIdle: false,
     };
     expect(created).toEqual(expected);
     expect(await store.get(owner, chatId)).toEqual(expected);
@@ -294,6 +295,7 @@ function runSuite(
       pendingRequests: [],
       progress: null,
       endedAt: null,
+      turnIdle: false,
     });
     expect(await store.get(other, chatId)).toBeUndefined();
   });
@@ -384,6 +386,42 @@ function runSuite(
     await store.create(owner, chatId, init());
     expect(await store.end(owner, chatId)).toBe(true);
     expect((await store.get(owner, chatId))?.endedAt).toBeInstanceOf(Date);
+  });
+
+  it('create starts turnIdle false; setTurnIdle sets it true then false', async () => {
+    const store = makeStore();
+    const { owner } = users();
+    const chatId = randomUUID();
+    const created = await store.create(owner, chatId, {
+      ...init(),
+      relayOrigin: 'https://forms.example.gov',
+    });
+    expect(created.turnIdle).toBe(false);
+
+    await store.setTurnIdle(owner, chatId, true);
+    expect((await store.get(owner, chatId))?.turnIdle).toBe(true);
+    expect((await store.getByChatId(chatId))?.turnIdle).toBe(true);
+
+    await store.setTurnIdle(owner, chatId, false);
+    expect((await store.get(owner, chatId))?.turnIdle).toBe(false);
+  });
+
+  it('setTurnIdle on an unknown run is a no-op and creates nothing', async () => {
+    const store = makeStore();
+    const { owner } = users();
+    const chatId = randomUUID();
+    await store.setTurnIdle(owner, chatId, true);
+    expect(await store.get(owner, chatId)).toBeUndefined();
+  });
+
+  it("setTurnIdle for another user's chat id leaves the owner's row untouched", async () => {
+    const store = makeStore();
+    const { owner, other } = users();
+    const chatId = randomUUID();
+    await store.create(owner, chatId, init());
+    await store.setTurnIdle(other, chatId, true);
+    expect((await store.get(owner, chatId))?.turnIdle).toBe(false);
+    expect(await store.get(other, chatId)).toBeUndefined();
   });
 }
 

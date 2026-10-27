@@ -196,6 +196,24 @@ async function prepareRelayStart(
 }
 
 /**
+ * Records whether a relay run's agent turn is idle (at session.waiting) or
+ * running. Best-effort: the panel's phase reads it, nothing else depends on
+ * it, so a failure logs one fixed value-free line and never throws.
+ */
+async function writeTurnIdle(
+  store: EveRunStore,
+  userId: string,
+  chatId: string,
+  idle: boolean,
+): Promise<void> {
+  try {
+    await store.setTurnIdle(userId, chatId, idle);
+  } catch {
+    console.error('[eve-chat] turn idle write failed');
+  }
+}
+
+/**
  * Cancels the session's turn when the relay run has ended. Never throws; a
  * failure logs one fixed line (no ids, no error text), as the Stop route does.
  */
@@ -453,6 +471,9 @@ export async function POST(request: Request) {
         }
         return new ChatSDKError('offline:chat').toResponse();
       }
+      // The claim is this turn's: the agent is working again until its
+      // session.waiting. Relay runs only.
+      if (isRelayRun) await writeTurnIdle(store, userId, chatId, false);
       let nextToken: string;
       try {
         let landedOn: string | undefined;
@@ -497,6 +518,11 @@ export async function POST(request: Request) {
             chatId,
             rollbackErr,
           });
+        }
+        // No turn started, so an idle run is idle again. A run that was not
+        // idle is left alone: the earlier turn's read will mark it.
+        if (isRelayRun && existing.turnIdle) {
+          await writeTurnIdle(store, userId, chatId, true);
         }
         throw err;
       }
@@ -691,6 +717,13 @@ export async function POST(request: Request) {
               // The turn ended without new questions, so nothing may be
               // pending. Heals a list a failed clear left behind.
               await store.setPending(userId, chatId, []);
+            }
+            if (r.continuationToken && structuredInput) {
+              // The turn is over: its pending list is persisted above, so a
+              // turn that ended by asking reads as needs_you, not review.
+              // Best-effort, and before advance so a failed advance still
+              // leaves the right status.
+              await writeTurnIdle(store, userId, chatId, true);
             }
             if (r.continuationToken) {
               // Persist the cursor: `consumed` already counts this
