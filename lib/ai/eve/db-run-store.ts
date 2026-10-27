@@ -5,6 +5,7 @@ import {
   countRecentRelayRuns,
   createEveRun,
   deleteEveRun,
+  endEveRun,
   getEveRun,
   getEveRunByChatId,
   setEveRunPending,
@@ -50,6 +51,7 @@ const toRecord = (row: EveRun): EveRunRecord => ({
   relayOrigin: row.relayOrigin,
   pendingRequests: row.pendingRequests,
   progress: row.progress,
+  endedAt: row.endedAt,
 });
 
 /** Postgres-backed run store over the EveRun table (lib/db/queries.ts). */
@@ -82,5 +84,6 @@ export function createDbRunStore(): EveRunStore {
     setProgress: (userId, chatId, progress) =>
       setEveRunProgress({ userId, chatId, progress }),
     remove: (userId, chatId) => deleteEveRun({ userId, chatId }),
+    end: (userId, chatId) => endEveRun({ userId, chatId }),
   };
 }

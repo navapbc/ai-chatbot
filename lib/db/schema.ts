@@ -240,6 +240,8 @@ export const eveRun = pgTable(
       .notNull()
       .default([]),
     progress: jsonb('progress').$type<RunProgress>(),
+    // Set once when the run ends (Stop); an ended run never resumes.
+    endedAt: timestamp('endedAt'),
     createdAt: timestamp('createdAt').notNull(),
     updatedAt: timestamp('updatedAt').notNull(),
   },

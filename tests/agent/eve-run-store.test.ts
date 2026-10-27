@@ -58,6 +58,7 @@ function runSuite(
       relayOrigin: null,
       pendingRequests: [],
       progress: null,
+      endedAt: null,
     };
     expect(created).toEqual(expected);
     expect(await store.get(owner, chatId)).toEqual(expected);
@@ -292,6 +293,7 @@ function runSuite(
       relayOrigin: null,
       pendingRequests: [],
       progress: null,
+      endedAt: null,
     });
     expect(await store.get(other, chatId)).toBeUndefined();
   });
@@ -303,6 +305,67 @@ function runSuite(
     await store.create(owner, chatId, init());
     await store.remove(owner, chatId);
     expect(await store.get(owner, chatId)).toBeUndefined();
+  });
+
+  it('end returns true once, then false, and the stored time does not move', async () => {
+    const store = makeStore();
+    const { owner } = users();
+    const chatId = randomUUID();
+    await store.create(owner, chatId, init());
+
+    expect(await store.end(owner, chatId)).toBe(true);
+    const first = (await store.get(owner, chatId))?.endedAt;
+    expect(first).toBeInstanceOf(Date);
+
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(await store.end(owner, chatId)).toBe(false);
+    const second = (await store.get(owner, chatId))?.endedAt;
+    expect(second?.getTime()).toBe(first?.getTime());
+  });
+
+  it('get and getByChatId expose endedAt', async () => {
+    const store = makeStore();
+    const { owner } = users();
+    const chatId = randomUUID();
+    await store.create(owner, chatId, {
+      ...init(),
+      relayOrigin: 'https://app.example.test',
+    });
+    expect((await store.get(owner, chatId))?.endedAt).toBeNull();
+    expect((await store.getByChatId(chatId))?.endedAt).toBeNull();
+
+    await store.end(owner, chatId);
+    const viaGet = (await store.get(owner, chatId))?.endedAt;
+    const viaChat = (await store.getByChatId(chatId))?.endedAt;
+    expect(viaGet).toBeInstanceOf(Date);
+    expect(viaChat?.getTime()).toBe(viaGet?.getTime());
+  });
+
+  it('end on an unknown run returns false and creates nothing', async () => {
+    const store = makeStore();
+    const { owner } = users();
+    const chatId = randomUUID();
+    expect(await store.end(owner, chatId)).toBe(false);
+    expect(await store.get(owner, chatId)).toBeUndefined();
+  });
+
+  it("end for another user's chat id returns false and leaves the row unended", async () => {
+    const store = makeStore();
+    const { owner, other } = users();
+    const chatId = randomUUID();
+    await store.create(owner, chatId, init());
+    expect(await store.end(other, chatId)).toBe(false);
+    expect((await store.get(owner, chatId))?.endedAt).toBeNull();
+    expect(await store.get(other, chatId)).toBeUndefined();
+  });
+
+  it('a web row can also be ended', async () => {
+    const store = makeStore();
+    const { owner } = users();
+    const chatId = randomUUID();
+    await store.create(owner, chatId, init());
+    expect(await store.end(owner, chatId)).toBe(true);
+    expect((await store.get(owner, chatId))?.endedAt).toBeInstanceOf(Date);
   });
 }
 

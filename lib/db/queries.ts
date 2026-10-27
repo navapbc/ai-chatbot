@@ -10,6 +10,7 @@ import {
   gte,
   inArray,
   isNotNull,
+  isNull,
   lt,
   or,
   type SQL,
@@ -923,6 +924,34 @@ export async function deleteEveRun({
       .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
   } catch (error) {
     throw new ChatSDKError('bad_request:database', 'Failed to delete eve run');
+  }
+}
+
+/**
+ * Marks a run ended. The `endedAt IS NULL` guard makes it one atomic,
+ * idempotent statement: true only for the call that set the time, false when
+ * it was already ended or no run matches (never creates a row).
+ */
+export async function endEveRun({
+  userId,
+  chatId,
+}: { userId: string; chatId: string }): Promise<boolean> {
+  try {
+    const now = new Date();
+    const rows = await db
+      .update(eveRun)
+      .set({ endedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(eveRun.userId, userId),
+          eq(eveRun.chatId, chatId),
+          isNull(eveRun.endedAt),
+        ),
+      )
+      .returning({ id: eveRun.id });
+    return rows.length === 1;
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to end eve run');
   }
 }
 
