@@ -19,10 +19,15 @@ export type Screen =
 
 export type Target = { tabId: number; origin: string; siteName: string };
 
+export type Participant =
+  | { kind: 'record'; recordId: string; name: string }
+  | { kind: 'details'; details: Record<string, string> };
+
 export type State = {
   screen: Screen;
   config?: RelayConfig;
   target?: Target;
+  participant?: Participant;
   error?: ErrorMessage;
 };
 
@@ -33,7 +38,12 @@ export type Action =
   | { type: 'goto'; screen: Screen }
   | { type: 'goHome' }
   | { type: 'chooseTarget'; target: Target }
-  | { type: 'clearTarget' };
+  | { type: 'clearTarget' }
+  | {
+      type: 'chooseParticipant';
+      participant: Extract<Participant, { kind: 'record' }>;
+    }
+  | { type: 'chooseDetails' };
 
 export const initialState: State = { screen: 'loading' };
 
@@ -57,8 +67,12 @@ export const reducer = (state: State, action: Action): State => {
     return { ...state, target: action.target, screen: 'participant' };
   }
   if (action.type === 'clearTarget') {
-    const { target: _target, ...rest } = state;
+    const { target: _target, participant: _participant, ...rest } = state;
     return { ...rest, screen: 'home' };
   }
+  if (action.type === 'chooseParticipant') {
+    return { ...state, participant: action.participant, screen: 'ready' };
+  }
+  if (action.type === 'chooseDetails') return { ...state, screen: 'details' };
   return state;
 };

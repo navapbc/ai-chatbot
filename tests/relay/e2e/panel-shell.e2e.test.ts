@@ -52,6 +52,21 @@ beforeAll(async () => {
       );
       return;
     }
+    if (req.url?.startsWith('/api/participants?q=')) {
+      const q = new URL(req.url, 'http://x').searchParams.get('q');
+      const body = (name: string) =>
+        JSON.stringify({
+          participants: [{ recordId: 'rec-1', name, county: 'Kern' }],
+        });
+      const send = (name: string) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(body(name));
+      };
+      // A slow answer to the earlier query must not overwrite the later one.
+      if (q === 'al') setTimeout(() => send('Stale Al'), 1200);
+      else send('Alice <b>x</b>');
+      return;
+    }
     res.writeHead(404).end();
   });
   await new Promise<void>((resolve) => app.listen(0, '127.0.0.1', resolve));
@@ -145,6 +160,34 @@ describe('the panel shell', () => {
 
     // No console or CSP error beyond that 401.
     expect(errors).toEqual([]);
+    await page.close();
+  }, 30_000);
+
+  it('searches participants, ignores a stale answer, and chooses one', async () => {
+    const page = await browser.context.newPage();
+    // The panel is a tab here, so "Use this tab" would see the panel itself;
+    // stub the tab query to return an https page instead.
+    await page.addInitScript(() => {
+      chrome.tabs.query = (async () => [
+        { id: 7, url: 'https://example.gov/apply' },
+      ]) as typeof chrome.tabs.query;
+    });
+    await page.goto(`chrome-extension://${EXTENSION_ID}/panel.html`);
+    await page.getByRole('button', { name: 'Use this tab' }).click();
+    await page.getByText('Site: example.gov').waitFor();
+
+    const box = page.getByRole('searchbox', { name: 'Search participants' });
+    await box.fill('al');
+    await page.waitForTimeout(400);
+    await box.fill('alice');
+    await page.getByText('Alice <b>x</b>').waitFor();
+    await page.waitForTimeout(1500);
+    expect(await page.getByText('Stale Al').count()).toBe(0);
+    expect(await page.locator('main b').count()).toBe(0);
+    await page.getByText('1 result').waitFor();
+
+    await page.getByRole('button', { name: /Alice/ }).click();
+    await page.getByRole('heading', { name: 'Ready' }).waitFor();
     await page.close();
   }, 30_000);
 });

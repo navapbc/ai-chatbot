@@ -84,4 +84,31 @@ describe('panel reducer', () => {
     expect(s.target).toBeUndefined();
     expect(s.config).toEqual(config);
   });
+
+  it('chooseParticipant stores the record and goes ready; clearTarget clears it', () => {
+    const target = { tabId: 1, origin: 'https://a.gov', siteName: 'A' };
+    const at = reducer(
+      { screen: 'participant', target },
+      {
+        type: 'chooseParticipant',
+        participant: { kind: 'record', recordId: 'r1', name: 'Ann' },
+      },
+    );
+    expect(at.screen).toBe('ready');
+    expect(at.participant).toEqual({
+      kind: 'record',
+      recordId: 'r1',
+      name: 'Ann',
+    });
+    expect(at.target).toEqual(target);
+    const home = reducer(at, { type: 'clearTarget' });
+    expect(home.screen).toBe('home');
+    expect(home.participant).toBeUndefined();
+    expect(home.target).toBeUndefined();
+  });
+
+  it('chooseDetails goes to the details screen', () => {
+    const s = reducer({ screen: 'participant' }, { type: 'chooseDetails' });
+    expect(s.screen).toBe('details');
+  });
 });

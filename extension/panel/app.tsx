@@ -1,15 +1,15 @@
-import { useEffect, useReducer } from 'react';
+import { useEffect, useMemo, useReducer } from 'react';
 import { APP_ORIGIN } from '../src/config';
 import { createAppApi } from '../src/app-api';
 import { NotConnectedError } from './lib/copy';
 import { initialState, reducer, type Screen, type Target } from './lib/state';
 import { ErrorScreen } from './screens/error';
 import { HomeScreen } from './screens/home';
+import { ParticipantScreen } from './screens/participant';
 import { Placeholder } from './screens/placeholder';
 import { SignedOutScreen } from './screens/signed-out';
 
 const STUB_NAMES: Partial<Record<Screen, string>> = {
-  participant: 'Participant',
   details: 'Details',
   ready: 'Ready',
   starting: 'Starting',
@@ -44,6 +44,11 @@ export const App = () => {
     };
   }, [state.screen]);
 
+  const api = useMemo(
+    () => (APP_ORIGIN ? createAppApi({ origin: APP_ORIGIN }) : null),
+    [],
+  );
+
   const handleRetry = () => dispatch({ type: 'retry' });
   const handleHome = () => dispatch({ type: 'clearTarget' });
   const handleChoose = (target: Target) =>
@@ -68,6 +73,18 @@ export const App = () => {
       ) : null}
       {state.screen === 'home' ? (
         <HomeScreen sites={state.config?.sites ?? []} onChoose={handleChoose} />
+      ) : null}
+      {state.screen === 'participant' && state.target && api ? (
+        <ParticipantScreen
+          api={api}
+          siteName={state.target.siteName}
+          onChoose={(participant) =>
+            dispatch({ type: 'chooseParticipant', participant })
+          }
+          onDetails={() => dispatch({ type: 'chooseDetails' })}
+          onBack={handleHome}
+          onSignedOut={handleRetry}
+        />
       ) : null}
       {STUB_NAMES[state.screen] ? (
         <Placeholder
