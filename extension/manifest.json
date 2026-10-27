@@ -4,9 +4,15 @@
   "version": "0.1.0",
   "description": "Lets the Labs ASP agent fill forms in one approved tab.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwwc2pYVHPW/t+29jPeAaudSFX1xI1MLtnOcQo+wtpjYFO1aXXSVV6+ex79qw5cqbvGBMH74vcLTxNu6In+cRvYRYhAw6jowmmmTb+MdYUj0sANHABPzZfi4C7nI6YHSJXIptrXbSWz/RE+Ip1gu2k6Z/o/84qPd/8awQUuTAHXwCNSPVNfwRT06+dDh3msZfOLRTNnkXsLCCrK6WIZYMRHATWnz4nqfoEhHy007/MQ5z8T6aVMWX46WtBxUyOv5sXnSLDdfBuRr9+4pUFATjM+Rv5GO+2JRdzmpka2APaI5To2bXjBG++TsPyNJPnMz8HoO+qG/19bP+BXNVSabUbQIDAQAB",
-  "permissions": ["debugger", "tabs", "storage"],
+  "permissions": ["debugger", "tabs", "storage", "sidePanel", "alarms"],
   "background": {
     "service_worker": "service-worker.js",
     "type": "module"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "action": {
+    "default_title": "Labs ASP"
   }
 }

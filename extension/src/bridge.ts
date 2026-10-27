@@ -64,11 +64,16 @@ export type BridgeMessage =
       tabId: number;
       allowedFrameOrigins?: string[];
     }
-  | { type: 'stopRun' }
-  | { type: 'addKnownValue'; value: string }
+  /**
+   * Ends the run. With `runId`, only that run: another run (or none) is left
+   * alone and the answer is still `{ ok: true }`. Without it, whatever run is
+   * current (older callers and tests).
+   */
+  | { type: 'stopRun'; runId?: string }
+  | { type: 'addKnownValue'; runId: string; value: string }
   | { type: 'getRunStatus' }
   /** The panel re-entered the run's known values (count only, no values). */
-  | { type: 'registrationComplete'; count?: number }
+  | { type: 'registrationComplete'; runId: string; count?: number }
   /**
    * The caseworker allowed the origin the run is held on (see holdOrigin)
    * for the rest of this run: exactly `pendingOrigin`, an https origin.
@@ -84,6 +89,11 @@ export interface RunStatus {
   active: boolean;
   runId?: string;
   origin?: string;
+  /**
+   * The tab the run drives, so a reopened panel can refresh the run's token
+   * (a same-run-id startRun needs the tab).
+   */
+  tabId?: number;
   attached?: boolean;
   /**
    * True on a run rebuilt after a worker restart until the panel sends
@@ -549,6 +559,20 @@ async function readBegunRuns(): Promise<string[]> {
  */
 export function stopRun(reason: StopReason = 'user'): Promise<BridgeResponse> {
   return serialized(() => endRun(reason));
+}
+
+/**
+ * Ends the run only if it is `runId`, checked in the queue (so a startRun
+ * queued before it counts). Any other case changes nothing and succeeds.
+ */
+function stopRunFor(runId: unknown): Promise<BridgeResponse> {
+  return serialized(async () => {
+    const current = run;
+    if (!current || current.stopped || current.runId !== runId) {
+      return { ok: true };
+    }
+    return endRun('user');
+  });
 }
 
 /**
@@ -2585,9 +2609,10 @@ export function onTabRemoved(tabId: number) {
  * from this extension. A value that cannot be registered is refused, and the
  * caller must not type it. Never logs or echoes the value.
  */
-function addKnownValue(value: unknown): BridgeResponse {
+function addKnownValue(runId: unknown, value: unknown): BridgeResponse {
   const current = run;
   if (!current || current.stopped) return { ok: false, error: 'no active run' };
+  if (runId !== current.runId) return { ok: false, error: 'wrong run' };
   if (typeof value !== 'string' || !current.redactor.addKnownValue(value)) {
     return { ok: false, error: 'known value not registered' };
   }
@@ -2631,7 +2656,10 @@ async function allowOrigin(origin: unknown): Promise<BridgeResponse> {
   return { ok: true };
 }
 
-/** The run's state for the panel: ids and counts, never a token or URL. */
+/**
+ * The run's state for the panel: ids (run, tab), the origin and counts, never
+ * a token or URL.
+ */
 function getRunStatus(): RunStatus {
   const current = run;
   if (!current || current.stopped) return { ok: true, active: false };
@@ -2640,6 +2668,7 @@ function getRunStatus(): RunStatus {
     active: true,
     runId: current.runId,
     origin: current.origin,
+    tabId: current.tabId,
     attached: current.attached,
     needsRegistration: current.needsRegistration,
   };
@@ -2657,9 +2686,10 @@ function getRunStatus(): RunStatus {
  * The panel re-entered the run's known values after a worker restart (it
  * sends only how many, never the values): screenshots may be taken again.
  */
-function registrationComplete(count: unknown): BridgeResponse {
+function registrationComplete(runId: unknown, count: unknown): BridgeResponse {
   const current = run;
   if (!current || current.stopped) return { ok: false, error: 'no active run' };
+  if (runId !== current.runId) return { ok: false, error: 'wrong run' };
   if (
     count !== undefined &&
     (typeof count !== 'number' || !Number.isInteger(count) || count < 0)
@@ -2675,11 +2705,16 @@ export async function handleMessage(message: unknown): Promise<BridgeResponse> {
   if (message.type === 'startRun') {
     return startRun(message as Extract<BridgeMessage, { type: 'startRun' }>);
   }
-  if (message.type === 'stopRun') return stopRun('user');
-  if (message.type === 'addKnownValue') return addKnownValue(message.value);
+  if (message.type === 'stopRun') {
+    return message.runId === undefined
+      ? stopRun('user')
+      : stopRunFor(message.runId);
+  }
+  if (message.type === 'addKnownValue')
+    return addKnownValue(message.runId, message.value);
   if (message.type === 'getRunStatus') return getRunStatus();
   if (message.type === 'registrationComplete') {
-    return registrationComplete(message.count);
+    return registrationComplete(message.runId, message.count);
   }
   if (message.type === 'allowOrigin') return allowOrigin(message.origin);
   return { ok: false, error: 'unknown message type' };

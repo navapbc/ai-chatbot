@@ -249,5 +249,8 @@ describe('app cookie auth from the extension (spike)', () => {
         `Chromium's cookie behavior for extension fetches changed (${userAgent}); update the Observed note and plan ruling P4b-a`,
       ).toEqual(expected);
     },
+    // Each case builds the extension (worker and side panel) and launches
+    // Chromium: past vitest's 5 s default when the whole e2e suite runs.
+    30_000,
   );
 });
