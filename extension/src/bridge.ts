@@ -226,6 +226,15 @@ interface Run extends RunConfig {
 }
 
 const STORAGE_KEY = 'run';
+/**
+ * Run ids this worker has begun (ids only: never a token or a value), most
+ * recent last, in chrome.storage.session so a worker restart keeps them.
+ * A startRun for one of them, with no live run of that id to ask, needs
+ * re-registration: whatever ended the earlier run (token expiry, a detach,
+ * a stop) also dropped its known values.
+ */
+const BEGUN_KEY = 'begunRuns';
+const BEGUN_CAP = 20;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost']);
 const OUT_OF_SCOPE = 'tab is outside the allowed origin';
 const FRAME_OUT_OF_SCOPE = 'frame is outside the allowed origins';
@@ -493,10 +502,21 @@ async function startRunNow(
   // there, while a `stop` would close the run for good (and refuse the new
   // socket). Its known values are cleared with the old run, so the panel
   // must register them again before screenshots are allowed.
+  // A live run of the same id says exactly whether values were lost; with
+  // none (it ended on its own, or the worker restarted) the record of begun
+  // run ids decides, failing closed.
   const previous = run;
   const sameRun = previous !== undefined && previous.runId === claims.runId;
-  const valuesLost =
-    sameRun && (previous.hasKnownValues || previous.needsRegistration);
+  const begun = await readBegunRuns();
+  const valuesLost = sameRun
+    ? previous.hasKnownValues || previous.needsRegistration
+    : begun.includes(claims.runId);
+  await chrome.storage.session.set({
+    [BEGUN_KEY]: [
+      ...begun.filter((id) => id !== claims.runId),
+      claims.runId,
+    ].slice(-BEGUN_CAP),
+  });
   await endRun('replaced', { notifyRelay: !sameRun });
   const config: RunConfig = {
     relayUrl: msg.relayUrl,
@@ -507,6 +527,19 @@ async function startRunNow(
   await chrome.storage.session.set({ [STORAGE_KEY]: config });
   begin(config, socket.url, claims, false, valuesLost);
   return { ok: true };
+}
+
+/** The begun run ids; empty when unreadable or malformed. */
+async function readBegunRuns(): Promise<string[]> {
+  try {
+    const stored = await chrome.storage.session.get(BEGUN_KEY);
+    const ids: unknown = stored[BEGUN_KEY];
+    return Array.isArray(ids)
+      ? ids.filter((id): id is string => typeof id === 'string')
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -1243,6 +1276,9 @@ async function forwardCdp(
   for (;;) {
     if (!screenshot) await untilNoScreenshot(lock);
     await requireTabInScope(current);
+    // In scope now is not enough: a hold that came and went (A -> B -> A)
+    // while this command awaited means the page is a new document.
+    requireSameScope(current, epoch);
     if (!framesInScope()) throw new Error(FRAME_OUT_OF_SCOPE);
     if (!current.attached) throw new Error('not attached');
     if (screenshot || !lock.writer) break;
@@ -1265,6 +1301,7 @@ async function forwardCdp(
   // frame out of scope is present, checked right before each capture (no
   // await in between) and again after it, when the image is discarded.
   const capture = async () => {
+    requireSameScope(current, epoch);
     if (outOfScopeFramePresent(current)) throw new Error(FRAME_OUT_OF_SCOPE);
     const shot = await sendIt();
     if (outOfScopeFramePresent(current)) throw new Error(FRAME_OUT_OF_SCOPE);
@@ -1299,6 +1336,9 @@ async function forwardCdp(
           }
         }
       }
+      // Checked unconditionally, with no await before the send: the input
+      // guard above may have awaited, and a scope bounce refuses the command.
+      requireSameScope(current, epoch);
       pending = sendIt();
     } catch (error) {
       // A throw before the send must not leak the hold.

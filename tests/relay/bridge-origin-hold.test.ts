@@ -71,6 +71,10 @@ const fake: {
   tabUrl: string;
   /** Holds Accessibility.getFullAXTree until released. */
   axGate?: Promise<void>;
+  /** Holds the next chrome.tabs.get until released (one-shot). */
+  tabsGate?: Promise<void>;
+  /** Set when a gated chrome.tabs.get is waiting. */
+  tabsWaiting?: boolean;
 } = { tabUrl: `${ORIGIN}/form` };
 
 let storage: Map<string, unknown>;
@@ -101,7 +105,18 @@ function stubChrome() {
   vi.stubGlobal('WebSocket', FakeSocket);
   vi.stubGlobal('chrome', {
     runtime: { id: 'ext' },
-    tabs: { get: async () => ({ url: fake.tabUrl }) },
+    tabs: {
+      get: async () => {
+        const gate = fake.tabsGate;
+        if (gate) {
+          fake.tabsGate = undefined;
+          fake.tabsWaiting = true;
+          await gate;
+          fake.tabsWaiting = false;
+        }
+        return { url: fake.tabUrl };
+      },
+    },
     storage: {
       session: {
         set: async (items: Record<string, unknown>) => {
@@ -139,6 +154,8 @@ beforeEach(async () => {
   FakeSocket.all = [];
   fake.tabUrl = `${ORIGIN}/form`;
   fake.axGate = undefined;
+  fake.tabsGate = undefined;
+  fake.tabsWaiting = false;
   sendCommand.mockClear();
   stubChrome();
   bridge = await import('@/extension/src/bridge');
@@ -725,5 +742,65 @@ describe('the relay socket during a hold', () => {
     await socket.open();
     expect(stops(socket)).toEqual(['left-origin']);
     expect((await status()).active).toBe(false);
+  });
+});
+
+describe('a command whose scope check spans a hold (A -> B -> A before the send)', () => {
+  /** Arms the gate on the next chrome.tabs.get; returns its release. */
+  const gateTabs = () => {
+    let open = () => {};
+    fake.tabsGate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return () => open();
+  };
+  const waitForGate = async () => {
+    for (let i = 0; i < 200 && !fake.tabsWaiting; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(fake.tabsWaiting).toBe(true);
+  };
+  const sent = (method: string) =>
+    sendCommand.mock.calls.filter(([, m]) => m === method).length;
+
+  it.each([
+    ['a generic command', 'Accessibility.getFullAXTree', {}],
+    [
+      'Input.dispatchMouseEvent',
+      'Input.dispatchMouseEvent',
+      { type: 'mousePressed', x: 5, y: 5, button: 'left', clickCount: 1 },
+    ],
+  ])(
+    '%s is refused before chrome.debugger sees it',
+    async (_n, method, params) => {
+      const socket = await attachedRun();
+      const before = sent(method);
+      const release = gateTabs();
+      const pending = cdp(socket, method, params);
+      await waitForGate();
+      commit(`${B}/x`);
+      commit(`${ORIGIN}/form`);
+      release();
+      expect((await pending).error).toBe(OUT_OF_SCOPE);
+      expect(sent(method)).toBe(before);
+      // The run carries on.
+      expect((await evaluate(socket)).error).toBeUndefined();
+    },
+  );
+
+  it('an unaffected command (no bounce) still executes', async () => {
+    const socket = await attachedRun();
+    const release = gateTabs();
+    const pending = cdp(socket, 'Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: 5,
+      y: 5,
+      button: 'left',
+      clickCount: 1,
+    });
+    await waitForGate();
+    release();
+    expect((await pending).error).toBeUndefined();
+    expect(sent('Input.dispatchMouseEvent')).toBe(1);
   });
 });

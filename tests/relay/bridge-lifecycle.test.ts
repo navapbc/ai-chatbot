@@ -482,6 +482,71 @@ describe('run status after a worker restart', () => {
     expect((await status()).needsRegistration).toBe(false);
   });
 
+  it('a same-run-id startRun after the run ended on token expiry needs registration', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    expect(await start(tokenFor('run-1', 3))).toEqual({ ok: true });
+    await (FakeSocket.all.at(-1) as FakeSocket).open();
+    expect(
+      await bridge.handleMessage({ type: 'addKnownValue', value: 'Rosalind' }),
+    ).toEqual({ ok: true });
+    await vi.advanceTimersByTimeAsync(4_000);
+    // Ended by the worker itself: no run is left to say values were lost.
+    expect((await status()).active).toBe(false);
+    vi.useRealTimers();
+
+    expect(await start(tokenFor('run-1'))).toEqual({ ok: true });
+    expect((await status()).needsRegistration).toBe(true);
+    const next = FakeSocket.all.at(-1) as FakeSocket;
+    await next.open();
+    expect(
+      (await ask(next, { id: 'a', type: 'attach', targetId: 'T' })).error,
+    ).toBeUndefined();
+    expect((await screenshot(next, 's1')).error).toBe(REGISTRATION_REFUSED);
+    expect(
+      await bridge.handleMessage({ type: 'registrationComplete', count: 1 }),
+    ).toEqual({ ok: true });
+    expect((await screenshot(next, 's2')).error).not.toBe(REGISTRATION_REFUSED);
+  });
+
+  it('a same-run-id startRun after stopRun needs registration; a fresh run id does not', async () => {
+    await attachedRun('run-1');
+    await bridge.handleMessage({ type: 'stopRun' });
+    expect(await start(tokenFor('run-2'))).toEqual({ ok: true });
+    expect((await status()).needsRegistration).toBe(false);
+    await bridge.handleMessage({ type: 'stopRun' });
+    expect(await start(tokenFor('run-1'))).toEqual({ ok: true });
+    expect((await status()).needsRegistration).toBe(true);
+  });
+
+  it('the record of begun run ids survives a worker restart and holds ids only', async () => {
+    await attachedRun('run-1');
+    await bridge.handleMessage({ type: 'stopRun' });
+    const record = JSON.stringify([...storage.entries()]);
+    expect(record).toContain('run-1');
+    expect(record).not.toContain('sig');
+    expect(record).not.toContain('Rosalind');
+    // A new worker: fresh module state, the same chrome.storage.session.
+    vi.resetModules();
+    bridge = await import('@/extension/src/bridge');
+    expect(await start(tokenFor('run-1'))).toEqual({ ok: true });
+    expect((await status()).needsRegistration).toBe(true);
+    expect(await start(tokenFor('run-3'))).toEqual({ ok: true });
+    expect((await status()).needsRegistration).toBe(false);
+  });
+
+  it('keeps only the 20 most recent run ids', async () => {
+    for (let i = 0; i <= 20; i++) {
+      expect(await start(tokenFor(`r${i}`))).toEqual({ ok: true });
+    }
+    await bridge.handleMessage({ type: 'stopRun' });
+    // r0 fell out of the record; r20 is in it.
+    expect(await start(tokenFor('r0'))).toEqual({ ok: true });
+    expect((await status()).needsRegistration).toBe(false);
+    await bridge.handleMessage({ type: 'stopRun' });
+    expect(await start(tokenFor('r20'))).toEqual({ ok: true });
+    expect((await status()).needsRegistration).toBe(true);
+  });
+
   it('a fresh run does not need registration', async () => {
     await attachedRun('run-1');
     expect((await status()).needsRegistration).toBe(false);
