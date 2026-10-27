@@ -2,7 +2,11 @@ import { createUIMessageStream, JsonToSseTransformStream } from 'ai';
 import { auth } from '@/app/(auth)/auth';
 import { generateUUID } from '@/lib/utils';
 import { ChatSDKError } from '@/lib/errors';
-import { EveRunExistsError, getRunStore } from '@/lib/ai/eve/run-store';
+import {
+  EveRunExistsError,
+  type EveRunStore,
+  getRunStore,
+} from '@/lib/ai/eve/run-store';
 import { setLiveViewUrl } from '@/lib/ai/eve/live-view-store';
 import {
   createEveSession,
@@ -14,16 +18,21 @@ import {
   translateEveEvent,
   extractLatestUserText,
 } from '@/lib/ai/eve/stream-adapter';
-import { toVertexModelId } from '@/lib/ai/eve/model-map';
+import { isRelayModelAllowed, toVertexModelId } from '@/lib/ai/eve/model-map';
 import { type InputAnswer, validateAnswers } from '@/lib/ai/eve/input-requests';
 import { isProductionEnvironment } from '@/lib/constants';
-import { normalizeOrigin } from '@/lib/relay/policy';
 import {
   MAX_RELAY_TEXT_CHARS,
   mustRefuseRelayText,
   stripSensitiveText,
 } from '@/lib/data/sensitive-record';
 import { buildExtensionRunMessage } from '@/lib/relay/run-prompt';
+import {
+  buildRelayOpeningMessage,
+  maxRelayRunsPerHour,
+  parseRelayStart,
+} from '@/lib/relay/run-input';
+import { getParticipantSource } from '@/lib/data/participant-source';
 import { toRelayWsUrl } from '@/lib/relay/url';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -85,6 +94,89 @@ const relayText = (text: string): RelayText => {
   return { ok: true, text: stripped };
 };
 
+const HOUR_MS = 60 * 60 * 1000;
+
+/** A validated relay first turn, ready to create the Eve session. */
+type RelayStartReady = {
+  /** The opening message after `relayText`; the marker is not yet added. */
+  text: string;
+  origin: string;
+  model: string | undefined;
+  ref: { url: string; runId: string };
+};
+
+/**
+ * Validates a relay first turn and builds its opening message on the server.
+ * Every refusal here happens before an Eve session or a row exists. Logs
+ * nothing about the record, the origin or the message.
+ */
+async function prepareRelayStart(
+  body: { message?: unknown; relay?: unknown },
+  chatId: string,
+  userId: string,
+  store: EveRunStore,
+): Promise<
+  { ok: true; start: RelayStartReady } | { ok: false; res: Response }
+> {
+  const refuse = (reason?: string) => ({
+    ok: false as const,
+    res: new ChatSDKError('bad_request:api', reason).toResponse(),
+  });
+  // The client no longer writes the opening message: the server does.
+  if (body.message !== undefined) return refuse('message_not_allowed');
+  const parsed = parseRelayStart(body.relay);
+  if (!parsed.ok) return refuse(parsed.reason);
+  const url = process.env.RELAY_PUBLIC_URL
+    ? toRelayWsUrl(process.env.RELAY_PUBLIC_URL)
+    : null;
+  if (!url || !UUID.test(chatId)) return refuse();
+  // Relay runs ignore the dev-only modelOverride rule: the allowlist governs.
+  if (parsed.model !== undefined && !isRelayModelAllowed(parsed.model)) {
+    return refuse('model_not_allowed');
+  }
+  // The relay run id is the chat id, unique across users. Refused here, with
+  // the same error as the create conflict, so a squat leaves no Eve session.
+  const holder = await store.getByChatId(chatId);
+  if (holder && holder.userId !== userId) {
+    console.error('[eve-chat] relay chat id held by another user', { chatId });
+    return {
+      ok: false,
+      res: new ChatSDKError('offline:chat').toResponse(),
+    };
+  }
+  const since = new Date(Date.now() - HOUR_MS);
+  if (
+    (await store.countRecentRelayRuns(userId, since)) >= maxRelayRunsPerHour()
+  ) {
+    return { ok: false, res: new ChatSDKError('rate_limit:chat').toResponse() };
+  }
+  let participant: Parameters<
+    typeof buildRelayOpeningMessage
+  >[0]['participant'];
+  if ('recordId' in parsed.participant) {
+    const record = await getParticipantSource().get(
+      parsed.participant.recordId,
+    );
+    if (!record) return refuse('unknown_participant');
+    participant = record;
+  } else {
+    participant = parsed.participant.details;
+  }
+  const safe = relayText(
+    buildRelayOpeningMessage({ origin: parsed.origin, participant }),
+  );
+  if (!safe.ok) return refuse(safe.reason);
+  return {
+    ok: true,
+    start: {
+      text: safe.text,
+      origin: parsed.origin,
+      model: toVertexModelId(parsed.model),
+      ref: { url, runId: chatId },
+    },
+  };
+}
+
 export async function POST(request: Request) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -114,7 +206,13 @@ export async function POST(request: Request) {
   // A body with `inputResponses` may carry no message: whether it is an
   // answer turn depends on the stored run, so its checks wait for the row.
   const hasAnswers = body.inputResponses !== undefined;
-  if (!chatId || (!hasAnswers && (!isUserMessage || !text))) {
+  // A body with `relay` may carry no message either: a relay first turn's
+  // message is built on the server. Whether it is a first turn depends on the
+  // stored run, so its checks also wait for the row.
+  if (
+    !chatId ||
+    (!hasAnswers && body.relay === undefined && (!isUserMessage || !text))
+  ) {
     return new ChatSDKError('bad_request:api').toResponse();
   }
 
@@ -224,8 +322,19 @@ export async function POST(request: Request) {
         ).toResponse();
       }
     }
-    // Web chats and first turns ignore `inputResponses` and need a message.
-    if (!answering && (!isUserMessage || !text)) {
+    // A relay first turn is validated, and its message built, before anything
+    // is created. The relay field is read on the first turn only: a follow-up
+    // ignores it (the stored origin governs), so it is never validated there.
+    let relayStart: RelayStartReady | undefined;
+    if (!existing && body.relay !== undefined) {
+      const prepared = await prepareRelayStart(body, chatId, userId, store);
+      if (!prepared.ok) return prepared.res;
+      relayStart = prepared.start;
+      structuredInput = true;
+    }
+    // Web chats and first turns ignore `inputResponses` and need a message,
+    // except a relay first turn, whose message the server built above.
+    if (!answering && !relayStart && (!isUserMessage || !text)) {
       return new ChatSDKError('bad_request:api').toResponse();
     }
     // Session-continuity diagnostic. This is the only place that records
@@ -241,7 +350,7 @@ export async function POST(request: Request) {
     // bug needs the text, read it from the Eve session, which already holds
     // it under access control.
     console.log(
-      `[eve-chat] turn userId=${userId} chatId=${chatId} decision=${existing ? 'CONTINUE' : 'CREATE'} existingSession=${existing?.eveSessionId ?? 'none'} resumeFrom=${existing?.streamIndex ?? 0} ${typeof input === 'string' ? `msgChars=${text.length}` : `answers=${input.inputResponses.length}`}`,
+      `[eve-chat] turn userId=${userId} chatId=${chatId} decision=${existing ? 'CONTINUE' : 'CREATE'} existingSession=${existing?.eveSessionId ?? 'none'} resumeFrom=${existing?.streamIndex ?? 0} ${typeof input === 'string' ? `msgChars=${relayStart ? relayStart.text.length : text.length}` : `answers=${input.inputResponses.length}`}`,
     );
     if (existing) {
       // Claim the stored token before talking to Eve: of turns that arrive
@@ -359,38 +468,14 @@ export async function POST(request: Request) {
       const model = isProductionEnvironment
         ? undefined
         : toVertexModelId(body.modelOverride);
-      // The relay field is read on the first turn only. A follow-up turn
-      // ignores it (the stored origin governs), so it is never validated there.
-      let relayOrigin: string | null = null;
-      let relayRef: { url: string; runId: string } | undefined;
-      if (body.relay !== undefined) {
-        const origin = (body.relay as { origin?: unknown } | null)?.origin;
-        const url = process.env.RELAY_PUBLIC_URL
-          ? toRelayWsUrl(process.env.RELAY_PUBLIC_URL)
-          : null;
-        if (
-          typeof origin !== 'string' ||
-          normalizeOrigin(origin) !== origin ||
-          !url ||
-          !UUID.test(chatId)
-        ) {
-          return new ChatSDKError('bad_request:api').toResponse();
-        }
-        relayOrigin = origin;
-        structuredInput = true;
-        // The relay run id is the chat id.
-        relayRef = { url, runId: chatId };
-      }
-      let safe: ReturnType<typeof relayText> = { ok: true, text };
-      if (relayRef) safe = relayText(text);
-      if (!safe.ok)
-        return new ChatSDKError('bad_request:api', safe.reason).toResponse();
-      const created = relayRef
+      const created = relayStart
         ? await createEveSession(
             // Stripped BEFORE the marker is added, and before anything is sent.
-            buildExtensionRunMessage(safe.text),
-            model,
-            relayRef,
+            // A relay run's model is the validated `relay.model`, never the
+            // dev override.
+            buildExtensionRunMessage(relayStart.text),
+            relayStart.model,
+            relayStart.ref,
           )
         : await createEveSession(text, model);
       sessionId = created.sessionId;
@@ -398,7 +483,7 @@ export async function POST(request: Request) {
         await store.create(userId, chatId, {
           eveSessionId: sessionId,
           continuationToken: created.continuationToken,
-          ...(relayOrigin ? { relayOrigin } : {}),
+          ...(relayStart ? { relayOrigin: relayStart.origin } : {}),
         });
       } catch (err) {
         if (!(err instanceof EveRunExistsError)) {

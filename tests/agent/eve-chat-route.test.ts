@@ -21,6 +21,11 @@ import {
   buildExtensionRunMessage,
   EXTENSION_RUN_MARKER,
 } from '@/lib/relay/run-prompt';
+import { buildRelayOpeningMessage } from '@/lib/relay/run-input';
+import {
+  createStaticParticipantSource,
+  setParticipantSourceForTests,
+} from '@/lib/data/participant-source';
 import {
   createMemoryRunStore,
   EveRunExistsError,
@@ -421,6 +426,7 @@ describe('POST /api/eve-chat relay runs', () => {
   const RELAY_CHAT = '3f2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b';
   const ORIGIN = 'https://apply.example.gov';
 
+  /** A follow-up (or web) turn that also carries a relay field. */
   const relayTurn = (relay: unknown, id = RELAY_CHAT, text = 'hi') =>
     POST(
       new Request('http://localhost/api/eve-chat', {
@@ -432,40 +438,298 @@ describe('POST /api/eve-chat relay runs', () => {
         }),
       }),
     );
+  /** A relay first turn: no message, the server builds it. */
+  const startRun = (
+    relay: unknown,
+    id = RELAY_CHAT,
+    extra: Record<string, unknown> = {},
+  ) =>
+    POST(
+      new Request('http://localhost/api/eve-chat', {
+        method: 'POST',
+        body: JSON.stringify({ id, relay, ...extra }),
+      }),
+    );
+  const RECORD = PARTICIPANTS[0];
+  const start = (extra: Record<string, unknown> = {}) => ({
+    origin: ORIGIN,
+    participant: { recordId: RECORD.record_id },
+    ...extra,
+  });
+  const REF = { url: 'wss://relay.example.gov', runId: RELAY_CHAT };
 
   beforeEach(() => {
     vi.stubEnv('RELAY_RUNS_ENABLED', '1');
     vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example.gov');
     vi.stubEnv('EVE_INTERNAL_SECRET', 'internal-secret-for-tests');
+    setParticipantSourceForTests(createStaticParticipantSource(PARTICIPANTS));
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    setParticipantSourceForTests(undefined);
   });
 
   it('creates the run with the origin and sends the run reference to Eve', async () => {
     streamEvents({ type: 'turn.started' });
-    const res = await relayTurn({ origin: ORIGIN });
+    const res = await startRun(start());
     expect(res.status).toBe(200);
     await drain(res);
 
     expect(eve.createEveSession).toHaveBeenCalledWith(
-      buildExtensionRunMessage('hi'),
+      buildExtensionRunMessage(
+        buildRelayOpeningMessage({ origin: ORIGIN, participant: RECORD }),
+      ),
       undefined,
-      {
-        url: 'wss://relay.example.gov',
-        runId: RELAY_CHAT,
-      },
+      REF,
     );
     expect((await store.get(USER, RELAY_CHAT))?.relayOrigin).toBe(ORIGIN);
   });
 
-  it('keeps the caseworker text verbatim at the end of the first message', async () => {
+  it('builds the opening message on the server, marker first, record after', async () => {
     streamEvents({ type: 'turn.started' });
-    await drain(await relayTurn({ origin: ORIGIN }));
+    await drain(await startRun(start()));
     const sent = eve.createEveSession.mock.calls[0][0] as string;
     expect(sent.startsWith(EXTENSION_RUN_MARKER)).toBe(true);
-    expect(sent.endsWith('hi')).toBe(true);
+    expect(sent).toContain(`Fill out ${ORIGIN} for the participant below.`);
+    expect(sent).toContain(RECORD.participant.name.first);
+    expect(sent).toContain(RECORD.participant.name.last);
+    expect(extractParticipantFromText(sent)?.record_id).toBe(RECORD.record_id);
+  });
+
+  it('never logs the record id, origin or participant name', async () => {
+    streamEvents({ type: 'turn.started' });
+    await drain(await startRun(start()));
+    const logged = JSON.stringify([
+      ...vi.mocked(console.log).mock.calls,
+      ...vi.mocked(console.error).mock.calls,
+    ]);
+    for (const s of [
+      RECORD.participant.name.first,
+      RECORD.participant.name.last,
+      ORIGIN,
+    ]) {
+      expect(logged).not.toContain(s);
+    }
+  });
+
+  describe('first-turn refusals happen before any Eve session', () => {
+    afterEach(() => {
+      expect(eve.createEveSession).not.toHaveBeenCalled();
+      expect(eve.continueEveSession).not.toHaveBeenCalled();
+    });
+
+    const expectCause = async (
+      res: Response,
+      status: number,
+      cause: string,
+    ) => {
+      expect(res.status).toBe(status);
+      expect((await res.json()).cause).toBe(cause);
+      expect(await store.get(USER, RELAY_CHAT)).toBeUndefined();
+    };
+
+    it('refuses a relay first turn that carries a message', async () => {
+      await expectCause(
+        await startRun(start(), RELAY_CHAT, {
+          message: { role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+        }),
+        400,
+        'message_not_allowed',
+      );
+    });
+
+    it('refuses a record id the source does not have', async () => {
+      await expectCause(
+        await startRun(start({ participant: { recordId: 'no-such-id' } })),
+        400,
+        'unknown_participant',
+      );
+    });
+
+    it('refuses a model outside the default allowlist', async () => {
+      await expectCause(
+        await startRun(start({ model: 'gpt-5.4' })),
+        400,
+        'model_not_allowed',
+      );
+    });
+
+    it('refuses a model the env list does not name', async () => {
+      vi.stubEnv('RELAY_ALLOWED_MODELS', 'claude-opus-5,claude-sonnet-5');
+      await expectCause(
+        await startRun(start({ model: 'claude-haiku-4-5' })),
+        400,
+        'model_not_allowed',
+      );
+    });
+
+    it('refuses a sensitive details key rather than stripping it', async () => {
+      await expectCause(
+        await startRun(
+          start({ participant: { details: { Name: 'Ada', SSN: 'x' } } }),
+        ),
+        400,
+        'sensitive_detail',
+      );
+    });
+
+    it('refuses too many details', async () => {
+      const details = Object.fromEntries(
+        Array.from({ length: 41 }, (_, i) => [`Field ${i}`, 'v']),
+      );
+      await expectCause(
+        await startRun(start({ participant: { details } })),
+        400,
+        'details_too_large',
+      );
+    });
+
+    it('refuses a nested details value', async () => {
+      await expectCause(
+        await startRun(
+          start({ participant: { details: { Address: { city: 'X' } } } }),
+        ),
+        400,
+        'details_invalid',
+      );
+    });
+
+    it('refuses a sensitive value typed into a details field', async () => {
+      const res = await startRun(
+        start({ participant: { details: { Note: 'SSN 123-45-6789' } } }),
+      );
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.cause).toBe('sensitive_value_in_message');
+      expect(JSON.stringify(body)).not.toContain('123-45-6789');
+    });
+
+    it('refuses a chat id another user already runs relay on, with the conflict error', async () => {
+      await store.create('user-2', RELAY_CHAT, {
+        eveSessionId: 'sess-other',
+        continuationToken: 'tok-other',
+        relayOrigin: ORIGIN,
+      });
+      const res = await startRun(start());
+      expect(res.status).toBe(503);
+      expect((await res.json()).code).toBe('offline:chat');
+      // The other user's run is untouched.
+      expect(await store.getByChatId(RELAY_CHAT)).toMatchObject({
+        userId: 'user-2',
+        eveSessionId: 'sess-other',
+      });
+    });
+
+    it('refuses the run over the hourly limit with rate_limit:chat', async () => {
+      for (let i = 0; i < 20; i++) {
+        await store.create(USER, `seed-${i}`, {
+          eveSessionId: `s-${i}`,
+          continuationToken: 't',
+          relayOrigin: ORIGIN,
+        });
+      }
+      const res = await startRun(start());
+      expect(res.status).toBe(429);
+      expect((await res.json()).code).toBe('rate_limit:chat');
+      expect(await store.get(USER, RELAY_CHAT)).toBeUndefined();
+    });
+
+    it('honors a lower RELAY_MAX_RUNS_PER_HOUR', async () => {
+      vi.stubEnv('RELAY_MAX_RUNS_PER_HOUR', '1');
+      await store.create(USER, 'seed-0', {
+        eveSessionId: 's-0',
+        continuationToken: 't',
+        relayOrigin: ORIGIN,
+      });
+      expect((await startRun(start())).status).toBe(429);
+    });
+  });
+
+  it('allows the 20th run in an hour', async () => {
+    for (let i = 0; i < 19; i++) {
+      await store.create(USER, `seed-${i}`, {
+        eveSessionId: `s-${i}`,
+        continuationToken: 't',
+        relayOrigin: ORIGIN,
+      });
+    }
+    // Web chats do not count toward the limit.
+    for (let i = 0; i < 5; i++) {
+      await store.create(USER, `web-${i}`, {
+        eveSessionId: `w-${i}`,
+        continuationToken: 't',
+      });
+    }
+    streamEvents({ type: 'turn.started' });
+    const res = await startRun(start());
+    expect(res.status).toBe(200);
+    await drain(res);
+    expect(eve.createEveSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends an allowed model to Eve and ignores modelOverride', async () => {
+    vi.stubEnv('RELAY_ALLOWED_MODELS', 'claude-opus-5,claude-sonnet-5');
+    streamEvents({ type: 'turn.started' });
+    const res = await startRun(
+      start({ model: 'claude-sonnet-5' }),
+      RELAY_CHAT,
+      {
+        modelOverride: 'gpt-5.4',
+      },
+    );
+    expect(res.status).toBe(200);
+    await drain(res);
+    expect(eve.createEveSession.mock.calls[0][1]).toBe('claude-sonnet-5');
+  });
+
+  it('sends no model when the start names none, whatever modelOverride says', async () => {
+    streamEvents({ type: 'turn.started' });
+    await drain(
+      await startRun(start(), RELAY_CHAT, { modelOverride: 'claude-sonnet-5' }),
+    );
+    expect(eve.createEveSession.mock.calls[0][1]).toBeUndefined();
+  });
+
+  it('builds the opening message from entered details', async () => {
+    const details = { 'First name': 'Ada', City: 'Riverside' };
+    streamEvents({ type: 'turn.started' });
+    const res = await startRun(start({ participant: { details } }));
+    expect(res.status).toBe(200);
+    await drain(res);
+    expect(eve.createEveSession).toHaveBeenCalledWith(
+      buildExtensionRunMessage(
+        buildRelayOpeningMessage({ origin: ORIGIN, participant: details }),
+      ),
+      undefined,
+      REF,
+    );
+  });
+
+  it('refuses a follow-up on a relay run that has no message', async () => {
+    await store.create(USER, RELAY_CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+      relayOrigin: ORIGIN,
+    });
+    const res = await startRun(start());
+    expect(res.status).toBe(400);
+    expect(eve.continueEveSession).not.toHaveBeenCalled();
+    expect(eve.createEveSession).not.toHaveBeenCalled();
+    expect((await store.get(USER, RELAY_CHAT))?.continuationToken).toBe(
+      'tok-0',
+    );
+  });
+
+  it('still refuses a web first turn with no message', async () => {
+    const res = await POST(
+      new Request('http://localhost/api/eve-chat', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'web-x' }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(eve.createEveSession).not.toHaveBeenCalled();
   });
 
   describe('sensitive record values', () => {
@@ -478,23 +742,14 @@ describe('POST /api/eve-chat relay runs', () => {
 
     it('a relay first turn sends Eve a message whose record has no calworks_id value', async () => {
       streamEvents({ type: 'turn.started' });
-      await drain(await relayTurn({ origin: ORIGIN }, RELAY_CHAT, opening()));
+      await drain(await startRun(start()));
       const sent = eve.createEveSession.mock.calls[0][0] as string;
+      expect(sent).toContain(RECORD.participant.name.first);
       expect(sent).not.toContain(SECRET);
       expect(sent).toContain(WITHHELD);
       expect(extractParticipantFromText(sent)?.participant.calworks_id).toBe(
         WITHHELD,
       );
-    });
-
-    it("the caseworker's own words around the record are unchanged", async () => {
-      streamEvents({ type: 'turn.started' });
-      const text = `Before words.\n${opening()}\nAfter words.`;
-      await drain(await relayTurn({ origin: ORIGIN }, RELAY_CHAT, text));
-      const sent = eve.createEveSession.mock.calls[0][0] as string;
-      expect(sent.startsWith(EXTENSION_RUN_MARKER)).toBe(true);
-      expect(sent).toContain('Before words.\nFill out a WIC application');
-      expect(sent.endsWith('\nAfter words.')).toBe(true);
     });
 
     it('a web chat first turn is unchanged', async () => {
@@ -559,10 +814,13 @@ describe('POST /api/eve-chat relay runs', () => {
 
   it('rejects a relay field with 400 when the flag is off', async () => {
     vi.stubEnv('RELAY_RUNS_ENABLED', undefined);
-    const res = await relayTurn({ origin: ORIGIN });
+    const res = await startRun(start());
     expect(res.status).toBe(400);
     expect(eve.createEveSession).not.toHaveBeenCalled();
     expect(await store.get(USER, RELAY_CHAT)).toBeUndefined();
+    // The old body shape is refused the same way.
+    expect((await relayTurn({ origin: ORIGIN })).status).toBe(400);
+    expect(eve.createEveSession).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -575,20 +833,27 @@ describe('POST /api/eve-chat relay runs', () => {
     ['an IDN host', 'https://bücher.de'],
     ['a non-string', 5],
   ])('rejects an origin with %s', async (_n, origin) => {
-    const res = await relayTurn({ origin });
+    const res = await startRun(start({ origin }));
     expect(res.status).toBe(400);
+    expect((await res.json()).cause).toBe('invalid_origin');
     expect(eve.createEveSession).not.toHaveBeenCalled();
   });
 
   it('rejects a malformed relay field and a non-UUID chat id', async () => {
-    expect((await relayTurn('https://a.gov')).status).toBe(400);
-    expect((await relayTurn({ origin: ORIGIN }, 'chat-1')).status).toBe(400);
+    expect((await startRun('https://a.gov')).status).toBe(400);
+    // The old body shape (no participant) is refused.
+    const old = await relayTurn({ origin: ORIGIN });
+    expect(old.status).toBe(400);
+    expect((await old.json()).cause).toBe('message_not_allowed');
+    const nonUuid = await startRun(start(), 'chat-1');
+    expect(nonUuid.status).toBe(400);
     expect(eve.createEveSession).not.toHaveBeenCalled();
+    expect(await store.get(USER, 'chat-1')).toBeUndefined();
   });
 
   it('rejects with 400 when RELAY_PUBLIC_URL is unusable', async () => {
     vi.stubEnv('RELAY_PUBLIC_URL', 'http://relay.example.gov');
-    expect((await relayTurn({ origin: ORIGIN })).status).toBe(400);
+    expect((await startRun(start())).status).toBe(400);
     expect(eve.createEveSession).not.toHaveBeenCalled();
   });
 
@@ -768,16 +1033,20 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
     vi.stubEnv('RELAY_RUNS_ENABLED', '1');
     vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example.gov');
     vi.stubEnv('EVE_INTERNAL_SECRET', 'internal-secret-for-tests');
+    setParticipantSourceForTests(createStaticParticipantSource(PARTICIPANTS));
   });
   afterEach(() => {
     vi.unstubAllEnvs();
+    setParticipantSourceForTests(undefined);
   });
 
   it('streams a structured chunk and persists two pending requests on a first relay turn', async () => {
     streamEvents(spikedEvent, waiting('tok-1'));
     const res = await post({
-      message: { role: 'user', parts: [{ type: 'text', text: 'go' }] },
-      relay: { origin: ORIGIN },
+      relay: {
+        origin: ORIGIN,
+        participant: { recordId: PARTICIPANTS[0].record_id },
+      },
     });
     expect(res.status).toBe(200);
     const chunks = await readChunks(res);
@@ -1268,8 +1537,10 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
       sections: [{ name: 'Name', status: 'done', filled: 2, ssn: '123' }],
     };
     const first = {
-      message: { role: 'user', parts: [{ type: 'text', text: 'go' }] },
-      relay: { origin: ORIGIN },
+      relay: {
+        origin: ORIGIN,
+        participant: { recordId: PARTICIPANTS[0].record_id },
+      },
     };
 
     it('stores sanitized progress on a relay run', async () => {
@@ -1323,17 +1594,22 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
 describe('POST /api/eve-chat relay message bounds', () => {
   const RELAY_CHAT = '4a2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b';
   const ORIGIN = 'https://apply.example.gov';
-  const relayTurn = (text: string) =>
+  const startRun = (participant: unknown) =>
     POST(
       new Request('http://localhost/api/eve-chat', {
         method: 'POST',
         body: JSON.stringify({
           id: RELAY_CHAT,
-          message: { role: 'user', parts: [{ type: 'text', text }] },
-          relay: { origin: ORIGIN },
+          relay: { origin: ORIGIN, participant },
         }),
       }),
     );
+  // A record whose free-text note is longer than the whole message cap.
+  const HUGE = {
+    ...PARTICIPANTS[0],
+    record_id: 'huge-1',
+    family_profile: { linked: false, notes: 'x'.repeat(MAX_RELAY_TEXT_CHARS) },
+  };
   const followUp = (text: string) =>
     POST(
       new Request('http://localhost/api/eve-chat', {
@@ -1349,14 +1625,19 @@ describe('POST /api/eve-chat relay message bounds', () => {
     vi.stubEnv('RELAY_RUNS_ENABLED', '1');
     vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example.gov');
     vi.stubEnv('EVE_INTERNAL_SECRET', 'internal-secret-for-tests');
+    setParticipantSourceForTests(
+      createStaticParticipantSource([...PARTICIPANTS, HUGE]),
+    );
   });
   afterEach(() => {
     vi.unstubAllEnvs();
+    setParticipantSourceForTests(undefined);
   });
 
   it('rejects an oversized first message before Eve or the store', async () => {
-    const res = await relayTurn('{'.repeat(MAX_RELAY_TEXT_CHARS + 1));
+    const res = await startRun({ recordId: HUGE.record_id });
     expect(res.status).toBe(400);
+    expect((await res.json()).cause).toBe('message_too_large');
     expect(eve.createEveSession).not.toHaveBeenCalled();
     expect(await store.get(USER, RELAY_CHAT)).toBeUndefined();
   });
@@ -1376,7 +1657,9 @@ describe('POST /api/eve-chat relay message bounds', () => {
   });
 
   it('refuses a first message with a sensitive value in prose', async () => {
-    const res = await relayTurn('CalWORKs ID: 12345 SSN 123-45-6789');
+    const res = await startRun({
+      details: { Notes: 'CalWORKs ID: 12345 SSN 123-45-6789' },
+    });
     expect(res.status).toBe(400);
     expect(JSON.stringify(await res.json())).not.toContain('123-45-6789');
     expect(eve.createEveSession).not.toHaveBeenCalled();
@@ -1399,12 +1682,7 @@ describe('POST /api/eve-chat relay message bounds', () => {
 
   it('accepts the normal opening message', async () => {
     streamEvents({ type: 'turn.started' });
-    const res = await relayTurn(
-      buildApplicationPrompt({
-        participant: PARTICIPANTS[0],
-        target: 'a WIC application',
-      }),
-    );
+    const res = await startRun({ recordId: PARTICIPANTS[0].record_id });
     expect(res.status).toBe(200);
     await drain(res);
   });
