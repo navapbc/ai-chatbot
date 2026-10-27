@@ -1,6 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from 'vitest';
 import {
   installPanelBehavior,
+  installSweepAlarm,
   onAlarm,
   SAVED_DETAILS_SWEEP_ALARM,
 } from '@/extension/src/panel-behavior';
@@ -66,9 +75,73 @@ describe('installPanelBehavior', () => {
 });
 
 describe('the alarm listener', () => {
-  it('ignores other alarm names and does nothing for the sweep', () => {
+  let store: Record<string, unknown>;
+  const NOW = Date.now();
+  beforeEach(() => {
+    store = {};
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn(async (k: string) =>
+            k in store ? { [k]: store[k] } : {},
+          ),
+          set: vi.fn(),
+          remove: vi.fn(async (k: string) => {
+            delete store[k];
+          }),
+        },
+      },
+    });
+  });
+
+  it('deletes an expired record on the sweep alarm', async () => {
+    store.savedDetails = {
+      savedAt: NOW - 9 * 3_600_000,
+      values: { city: 'a' },
+    };
+    await onAlarm(alarm(SAVED_DETAILS_SWEEP_ALARM));
+    expect('savedDetails' in store).toBe(false);
+  });
+
+  it('keeps a fresh record', async () => {
+    store.savedDetails = { savedAt: NOW, values: { city: 'a' } };
+    await onAlarm(alarm(SAVED_DETAILS_SWEEP_ALARM));
+    expect('savedDetails' in store).toBe(true);
+  });
+
+  it('ignores other alarm names without touching storage', async () => {
     expect(onAlarm(alarm('other'))).toBeUndefined();
-    expect(onAlarm(alarm(SAVED_DETAILS_SWEEP_ALARM))).toBeUndefined();
+    const local = (chrome.storage.local as unknown as { get: Mock }).get;
+    expect(local).not.toHaveBeenCalled();
+  });
+
+  it('swallows a failing sweep', async () => {
+    (chrome.storage.local as unknown as { get: Mock }).get.mockRejectedValue(
+      new Error('boom'),
+    );
+    await expect(
+      onAlarm(alarm(SAVED_DETAILS_SWEEP_ALARM)),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('installSweepAlarm', () => {
+  it('creates the alarm now, on install and on startup, swallowing rejection', async () => {
+    const create = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const onInstalled = { addListener: vi.fn() };
+    const onStartup = { addListener: vi.fn() };
+    vi.stubGlobal('chrome', { alarms: { create } });
+    installSweepAlarm(asChrome({ runtime: { onInstalled, onStartup } }));
+    expect(onInstalled.addListener).toHaveBeenCalledTimes(1);
+    expect(onStartup.addListener).toHaveBeenCalledTimes(1);
+    onInstalled.addListener.mock.calls[0][0]();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(create).toHaveBeenCalledWith('saved-details-sweep', {
+      periodInMinutes: 30,
+    });
+    expect(create).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -78,10 +151,15 @@ describe('service worker start', () => {
   async function loadWorker(sidePanel: unknown) {
     vi.resetModules();
     const stub = {
-      runtime: { id: 'ext', onMessage: listener() },
+      runtime: {
+        id: 'ext',
+        onMessage: listener(),
+        onInstalled: listener(),
+        onStartup: listener(),
+      },
       debugger: { onEvent: listener(), onDetach: listener() },
       tabs: { onUpdated: listener(), onRemoved: listener() },
-      alarms: { onAlarm: listener() },
+      alarms: { onAlarm: listener(), create: vi.fn(async () => {}) },
       storage: {
         session: {
           get: vi.fn(async () => ({})),
@@ -105,6 +183,8 @@ describe('service worker start', () => {
     stub.tabs.onUpdated.addListener,
     stub.tabs.onRemoved.addListener,
     stub.alarms.onAlarm.addListener,
+    stub.runtime.onInstalled.addListener,
+    stub.runtime.onStartup.addListener,
   ];
 
   it('sets the panel behavior once and registers every listener', async () => {

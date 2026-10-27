@@ -1,7 +1,12 @@
 /// <reference types="chrome" />
 
-/** The alarm the panel owns: it sweeps expired saved details (Task 6). */
-export const SAVED_DETAILS_SWEEP_ALARM = 'saved-details-sweep';
+import {
+  ensureSweepAlarm,
+  SAVED_DETAILS_SWEEP_ALARM,
+  sweepSavedDetails,
+} from '../panel/lib/saved-details';
+
+export { SAVED_DETAILS_SWEEP_ALARM };
 
 /**
  * Makes a click on the toolbar icon open the side panel. Never throws or
@@ -26,9 +31,18 @@ export function installPanelBehavior(chromeApi: typeof chrome): void {
 }
 
 /**
- * The sweep itself runs in the panel; the worker listens only so the owner
- * of the alarm is explicit. Every alarm is ignored here.
+ * The worker runs the saved-details sweep, so an expired record is deleted
+ * even with the panel closed. Every other alarm is ignored. Never rejects.
  */
-export function onAlarm(alarm: chrome.alarms.Alarm): void {
-  if (alarm.name !== SAVED_DETAILS_SWEEP_ALARM) return;
+export function onAlarm(alarm: chrome.alarms.Alarm): Promise<void> | undefined {
+  if (alarm.name !== SAVED_DETAILS_SWEEP_ALARM) return undefined;
+  return sweepSavedDetails().catch(() => {});
+}
+
+/** Creates the sweep alarm on install, browser start and worker start. */
+export function installSweepAlarm(chromeApi: typeof chrome): void {
+  const create = () => void ensureSweepAlarm();
+  chromeApi.runtime.onInstalled?.addListener(create);
+  chromeApi.runtime.onStartup?.addListener(create);
+  create();
 }

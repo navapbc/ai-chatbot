@@ -44,8 +44,11 @@ export const DetailsScreen = ({ onSubmit, onBack }: Props) => {
   const handleChange = (key: string, value: string) =>
     setValues((previous) => ({ ...previous, [key]: value }));
 
-  const handleReuse = () => {
-    if (saved) setValues({ ...saved });
+  // Re-read so a record that expired while the screen was open is not used.
+  const handleReuse = async () => {
+    const record = await loadSavedDetails();
+    setSaved(record);
+    if (record) setValues({ ...record });
   };
 
   const handleClearSaved = async () => {

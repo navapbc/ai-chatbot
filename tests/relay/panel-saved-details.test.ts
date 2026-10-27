@@ -1,7 +1,9 @@
+import { isSensitiveField } from '../../lib/relay/sensitive-fields';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   clearSavedDetails,
   DETAIL_FIELDS,
+  ensureSweepAlarm,
   loadSavedDetails,
   pickDetails,
   SensitiveDetailError,
@@ -83,6 +85,14 @@ describe('DETAIL_FIELDS', () => {
   });
 });
 
+describe('DETAIL_FIELDS and the classifier', () => {
+  it('flags none of the fixed keys', () => {
+    for (const { key } of DETAIL_FIELDS) {
+      expect(isSensitiveField({ name: key, label: key })).toBe(false);
+    }
+  });
+});
+
 describe('loadSavedDetails', () => {
   it('returns null when nothing is stored', async () => {
     expect(await loadSavedDetails(NOW)).toBeNull();
@@ -110,6 +120,10 @@ describe('loadSavedDetails', () => {
     ['bank_account', { bank_account: '1' }],
     ['unknown key', { nickname: 'x' }],
     ['non-string value', { city: 5 }],
+    ['socialsecuritynumber', { socialsecuritynumber: '1' }],
+    ['s s n', { 's s n': '1' }],
+    ['bank-account', { 'bank-account': '1' }],
+    ['CIN', { CIN: '1' }],
     ['long value', { city: 'x'.repeat(501) }],
   ])('drops and deletes a record with %s', async (_n, values) => {
     seed({ savedAt: NOW, values });
@@ -130,6 +144,8 @@ describe('loadSavedDetails', () => {
     ['extra top-level key', { savedAt: NOW, values: {}, more: 1 }],
     ['missing values', { savedAt: NOW }],
     ['NaN time', { savedAt: Number.NaN, values: {} }],
+    ['Infinity time', { savedAt: Number.POSITIVE_INFINITY, values: {} }],
+    ['-Infinity time', { savedAt: Number.NEGATIVE_INFINITY, values: {} }],
     ['array values', { savedAt: NOW, values: ['a'] }],
     ['string', 'junk'],
     ['array', []],
@@ -244,6 +260,7 @@ describe('startSavedDetailsSweep', () => {
   it('creates the 30 minute alarm, idempotently', async () => {
     await startSavedDetailsSweep();
     await startSavedDetailsSweep();
+    await ensureSweepAlarm();
     expect(alarms).toEqual([
       { name: 'saved-details-sweep', info: { periodInMinutes: 30 } },
     ]);

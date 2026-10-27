@@ -1,5 +1,4 @@
 import { isSensitiveField } from '../../../lib/relay/sensitive-fields';
-import { SAVED_DETAILS_SWEEP_ALARM } from '../../src/panel-behavior';
 
 // Saved details: non-sensitive entered-details values kept for 8 hours in
 // chrome.storage.local so a caseworker can reuse them. The stored value is
@@ -21,6 +20,9 @@ export const DETAIL_FIELDS = [
   { key: 'county', label: 'County' },
   { key: 'zip', label: 'ZIP code' },
 ] as const;
+
+/** The alarm that sweeps expired saved details (owned by the service worker). */
+export const SAVED_DETAILS_SWEEP_ALARM = 'saved-details-sweep';
 
 export class SensitiveDetailError extends Error {
   constructor() {
@@ -134,20 +136,21 @@ export const pickDetails = (
 };
 
 /**
- * On panel start: sweep once, create the periodic alarm (idempotent: creating
- * an alarm with an existing name replaces it) and sweep on each firing. Errors
- * are swallowed value-free.
+ * Creates the periodic sweep alarm. Creating an alarm with an existing name
+ * replaces it, so this is idempotent. Errors are swallowed value-free.
  */
-export const startSavedDetailsSweep = async (): Promise<void> => {
-  await sweepSavedDetails();
+export const ensureSweepAlarm = async (): Promise<void> => {
   try {
-    chrome.alarms.onAlarm?.addListener((alarm) => {
-      if (alarm.name === SAVED_DETAILS_SWEEP_ALARM) void sweepSavedDetails();
-    });
     await chrome.alarms.create(SAVED_DETAILS_SWEEP_ALARM, {
       periodInMinutes: 30,
     });
   } catch {
     // Value-free: the read-time check still enforces the 8 hours.
   }
+};
+
+/** On panel start: sweep once and make sure the alarm exists. */
+export const startSavedDetailsSweep = async (): Promise<void> => {
+  await sweepSavedDetails();
+  await ensureSweepAlarm();
 };

@@ -234,8 +234,12 @@ describe('the panel shell', () => {
     await stubTab(again);
     await toDetails(again);
     await again.getByRole('button', { name: 'Reuse saved details' }).click();
-    expect(await again.getByLabel('First name').inputValue()).toBe('Zelda');
-    expect(await again.getByLabel('City').inputValue()).toBe('Fresno');
+    await expect
+      .poll(() => again.getByLabel('First name').inputValue())
+      .toBe('Zelda');
+    await expect
+      .poll(() => again.getByLabel('City').inputValue())
+      .toBe('Fresno');
     await again.close();
 
     const late = await browser.context.newPage();

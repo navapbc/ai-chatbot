@@ -7,7 +7,11 @@ import {
   onTabUpdated,
   resumeRun,
 } from './bridge';
-import { installPanelBehavior, onAlarm } from './panel-behavior';
+import {
+  installPanelBehavior,
+  installSweepAlarm,
+  onAlarm,
+} from './panel-behavior';
 import { installTestHooks } from './test-hooks';
 
 // Listeners are registered synchronously at top level so a service worker
@@ -27,6 +31,7 @@ chrome.tabs.onUpdated.addListener(onTabUpdated);
 chrome.tabs.onRemoved.addListener(onTabRemoved);
 chrome.alarms.onAlarm.addListener(onAlarm);
 installPanelBehavior(chrome);
+installSweepAlarm(chrome);
 
 // esbuild defines this (scripts/build-extension.ts): true only for a build
 // with EXTENSION_TEST_HOOKS=1, false otherwise, so a plain build drops the
