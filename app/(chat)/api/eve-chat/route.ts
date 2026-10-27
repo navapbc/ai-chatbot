@@ -33,6 +33,7 @@ import {
   parseRelayStart,
 } from '@/lib/relay/run-input';
 import { getParticipantSource } from '@/lib/data/participant-source';
+import { isGuestEmail } from '@/lib/relay/route-guard';
 import { toRelayWsUrl } from '@/lib/relay/url';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -327,6 +328,11 @@ export async function POST(request: Request) {
     // ignores it (the stored origin governs), so it is never validated there.
     let relayStart: RelayStartReady | undefined;
     if (!existing && body.relay !== undefined) {
+      // P4a-a: guests never start a relay run. Refused before the participant
+      // lookup, the run count and Eve. Guests keep web chat.
+      if (isGuestEmail(session.user.email)) {
+        return new ChatSDKError('forbidden:chat').toResponse();
+      }
       const prepared = await prepareRelayStart(body, chatId, userId, store);
       if (!prepared.ok) return prepared.res;
       relayStart = prepared.start;

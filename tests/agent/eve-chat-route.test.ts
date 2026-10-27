@@ -646,6 +646,48 @@ describe('POST /api/eve-chat relay runs', () => {
     });
   });
 
+  describe('guests (P4a-a)', () => {
+    const GUEST = { id: 'guest-user', email: 'guest-0a1b2c3d@preview.local' };
+
+    it('refuses a guest relay first turn with 403 before any lookup or Eve call', async () => {
+      authMock.mockResolvedValue({ user: GUEST });
+      const get = vi.fn();
+      setParticipantSourceForTests({ search: vi.fn(), get });
+      const count = vi.spyOn(store, 'countRecentRelayRuns');
+      const byChat = vi.spyOn(store, 'getByChatId');
+
+      const res = await startRun(start());
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe('forbidden:chat');
+      expect(get).not.toHaveBeenCalled();
+      expect(count).not.toHaveBeenCalled();
+      expect(byChat).not.toHaveBeenCalled();
+      expect(eve.createEveSession).not.toHaveBeenCalled();
+      expect(await store.get(GUEST.id, RELAY_CHAT)).toBeUndefined();
+    });
+
+    it('still lets a guest start a web chat', async () => {
+      authMock.mockResolvedValue({ user: GUEST });
+      streamEvents({ type: 'turn.started' });
+      const res = await turn('hi', 'guest-web-chat');
+      expect(res.status).toBe(200);
+      await drain(res);
+      expect(eve.createEveSession).toHaveBeenCalledWith('hi', undefined);
+    });
+
+    it('does not refuse a regular user whose email merely mentions guest', async () => {
+      authMock.mockResolvedValue({
+        user: { id: USER, email: 'guest-relations@example.gov' },
+      });
+      streamEvents({ type: 'turn.started' });
+      const res = await startRun(start());
+      expect(res.status).toBe(200);
+      await drain(res);
+      expect(eve.createEveSession).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('allows the 20th run in an hour', async () => {
     for (let i = 0; i < 19; i++) {
       await store.create(USER, `seed-${i}`, {
