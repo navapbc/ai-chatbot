@@ -708,7 +708,8 @@ async function withRelayTool<T>(
   const sessionId = `wrun_red_${runId}`;
   const priorSecret = process.env.EVE_INTERNAL_SECRET;
   const priorNamespace = process.env.AGENT_BROWSER_NAMESPACE;
-  process.env.EVE_INTERNAL_SECRET = 'e2e-internal-secret';
+  process.env.EVE_INTERNAL_SECRET =
+    'e2e-internal-secret-padded-to-be-over-thirty-two-chars';
   process.env.AGENT_BROWSER_NAMESPACE = AGENT_NAMESPACE;
   let fetches = 0;
   vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {

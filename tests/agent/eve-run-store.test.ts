@@ -219,13 +219,47 @@ function runSuite(
     expect(await store.getByChatId(randomUUID())).toBeUndefined();
   });
 
-  it('getByChatId fails closed when two users hold the same chatId', async () => {
+  it('getByChatId ignores web rows, so one never hides a relay run', async () => {
     const store = makeStore();
     const { owner, other } = users();
     const chatId = randomUUID();
-    await store.create(owner, chatId, init());
     await store.create(other, chatId, init());
     expect(await store.getByChatId(chatId)).toBeUndefined();
+    await store.create(owner, chatId, {
+      ...init(),
+      relayOrigin: 'https://benefits.example.gov',
+    });
+    expect(await store.getByChatId(chatId)).toMatchObject({ userId: owner });
+  });
+
+  it('a second relay run on one chatId throws, for any user', async () => {
+    const store = makeStore();
+    const { owner, other } = users();
+    const chatId = randomUUID();
+    const relay = { ...init(), relayOrigin: 'https://benefits.example.gov' };
+    await store.create(owner, chatId, relay);
+    await expect(store.create(other, chatId, relay)).rejects.toBeInstanceOf(
+      EveRunExistsError,
+    );
+    await expect(store.create(owner, chatId, relay)).rejects.toBeInstanceOf(
+      EveRunExistsError,
+    );
+  });
+
+  it('countRecentRelayRuns counts only that user\'s relay rows since the cutoff', async () => {
+    const store = makeStore();
+    const { owner, other } = users();
+    const relay = { ...init(), relayOrigin: 'https://benefits.example.gov' };
+    const before = new Date(Date.now() - 1000);
+    const baseline = await store.countRecentRelayRuns(owner, before);
+    await store.create(owner, randomUUID(), relay);
+    await store.create(owner, randomUUID(), relay);
+    await store.create(owner, randomUUID(), init());
+    await store.create(other, randomUUID(), relay);
+    expect(await store.countRecentRelayRuns(owner, before)).toBe(baseline + 2);
+    expect(
+      await store.countRecentRelayRuns(owner, new Date(Date.now() + 60_000)),
+    ).toBe(0);
   });
 
   it('setPending, setProgress, advance and remove are no-ops for a missing run', async () => {

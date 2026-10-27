@@ -1,4 +1,4 @@
-import type { InferSelectModel } from 'drizzle-orm';
+import { type InferSelectModel, sql } from 'drizzle-orm';
 import {
   pgTable,
   varchar,
@@ -12,9 +12,11 @@ import {
   unique,
   integer,
   jsonb,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import type { PendingInputRequest } from '../ai/eve/input-requests';
 import type { RunProgress } from '../relay/progress';
+import type { Participant as ParticipantRecord } from '../data/participants';
 
 export const user = pgTable('User', {
   id: uuid('id').primaryKey().notNull().defaultRandom(),
@@ -246,7 +248,25 @@ export const eveRun = pgTable(
       table.userId,
       table.chatId,
     ),
+    // One relay run per chat id across all users; web rows are unaffected.
+    relayChatUnique: uniqueIndex('EveRun_chatId_relay_unique')
+      .on(table.chatId)
+      .where(sql`${table.relayOrigin} IS NOT NULL`),
   }),
 );
 
 export type EveRun = InferSelectModel<typeof eveRun>;
+
+// Participant records for the extension's participant picker. The full record
+// is read only on the server; the API exposes a summary. searchText is
+// lowercase "first middle last recordId" and is what prefix search matches.
+export const participant = pgTable('Participant', {
+  recordId: text('recordId').primaryKey().notNull(),
+  displayName: text('displayName').notNull(),
+  county: text('county').notNull(),
+  searchText: text('searchText').notNull(),
+  record: jsonb('record').$type<ParticipantRecord>().notNull(),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+});
+
+export type ParticipantRow = InferSelectModel<typeof participant>;

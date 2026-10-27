@@ -6,11 +6,14 @@ export interface RelayClaims {
   runId: string;
   role: RelayRole;
   origin: string;
+  /** The user the run belongs to. The hub pairs only sockets with one sub. */
+  sub: string;
   /** Expiry, epoch seconds. */
   exp: number;
 }
 
 export const RELAY_TOKEN_TTL_SECONDS = 1800;
+export const MIN_RELAY_SECRET_LENGTH = 32;
 
 const ROLES: readonly string[] = ['extension', 'agent'];
 
@@ -18,22 +21,6 @@ const sign = (payload: string, secret: string): Buffer =>
   createHmac('sha256', secret).update(payload).digest();
 
 const nowSeconds = () => Math.floor(Date.now() / 1000);
-
-export function mintRelayToken(
-  claims: Omit<RelayClaims, 'exp'>,
-  secret: string,
-  opts: { now?: number; ttlSeconds?: number } = {},
-): string {
-  const now = opts.now ?? nowSeconds();
-  const full: RelayClaims = {
-    runId: claims.runId,
-    role: claims.role,
-    origin: claims.origin,
-    exp: now + (opts.ttlSeconds ?? RELAY_TOKEN_TTL_SECONDS),
-  };
-  const payload = Buffer.from(JSON.stringify(full)).toString('base64url');
-  return `${payload}.${sign(payload, secret).toString('base64url')}`;
-}
 
 const isHttpsOrigin = (value: string): boolean => {
   try {
@@ -43,6 +30,45 @@ const isHttpsOrigin = (value: string): boolean => {
     return false;
   }
 };
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value !== '';
+
+/**
+ * Throws on claims verify would refuse, and on a missing or short secret.
+ * Error messages are fixed strings: they never carry a claim or the secret.
+ */
+export function mintRelayToken(
+  claims: Omit<RelayClaims, 'exp'>,
+  secret: string,
+  opts: { now?: number; ttlSeconds?: number } = {},
+): string {
+  if (typeof secret !== 'string' || secret.length < MIN_RELAY_SECRET_LENGTH) {
+    throw new Error('relay token: secret is missing or too short');
+  }
+  if (!isNonEmptyString(claims.sub)) {
+    throw new Error('relay token: sub is required');
+  }
+  if (!isNonEmptyString(claims.runId)) {
+    throw new Error('relay token: runId is required');
+  }
+  if (!ROLES.includes(claims.role)) {
+    throw new Error('relay token: invalid role');
+  }
+  if (typeof claims.origin !== 'string' || !isHttpsOrigin(claims.origin)) {
+    throw new Error('relay token: origin must be an exact https origin');
+  }
+  const now = opts.now ?? nowSeconds();
+  const full: RelayClaims = {
+    runId: claims.runId,
+    role: claims.role,
+    origin: claims.origin,
+    sub: claims.sub,
+    exp: now + (opts.ttlSeconds ?? RELAY_TOKEN_TTL_SECONDS),
+  };
+  const payload = Buffer.from(JSON.stringify(full)).toString('base64url');
+  return `${payload}.${sign(payload, secret).toString('base64url')}`;
+}
 
 /** Returns the claims, or null for anything invalid. Never throws. */
 export function verifyRelayToken(
@@ -68,15 +94,16 @@ export function verifyRelayToken(
       Buffer.from(payload, 'base64url').toString('utf8'),
     );
     if (typeof parsed !== 'object' || parsed === null) return null;
-    const { runId, role, origin, exp } = parsed as Record<string, unknown>;
+    const { runId, role, origin, sub, exp } = parsed as Record<string, unknown>;
 
     if (typeof runId !== 'string' || runId === '') return null;
     if (typeof role !== 'string' || !ROLES.includes(role)) return null;
     if (typeof origin !== 'string' || !isHttpsOrigin(origin)) return null;
+    if (!isNonEmptyString(sub)) return null;
     if (typeof exp !== 'number' || !Number.isFinite(exp)) return null;
     if ((opts.now ?? nowSeconds()) >= exp) return null;
 
-    return { runId, role: role as RelayRole, origin, exp };
+    return { runId, role: role as RelayRole, origin, sub, exp };
   } catch {
     return null;
   }

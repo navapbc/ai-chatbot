@@ -80,7 +80,8 @@ describe('runRelayCommand end to end', { timeout: 60_000 }, () => {
     // from the app's agent-token route, which this stands in for.
     agentToken = tokens.agent;
     priorSecret = process.env.EVE_INTERNAL_SECRET;
-    process.env.EVE_INTERNAL_SECRET = 'e2e-internal-secret';
+    process.env.EVE_INTERNAL_SECRET =
+      'e2e-internal-secret-padded-to-be-over-thirty-two-chars';
     // Like the route, it mints only for the run's own Eve session.
     vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
       const { runId, sessionId } = JSON.parse(String(init.body));

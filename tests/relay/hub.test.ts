@@ -4,6 +4,7 @@ import { type PeerSocket, RunHub } from '../../relay/hub';
 
 const ORIGIN = 'https://benefits.example.gov';
 const RUN = 'run-1';
+const SUB = 'user-a';
 
 class FakeSocket implements PeerSocket {
   sent: string[] = [];
@@ -69,8 +70,14 @@ function makeHub(
 }
 
 // Attaches a fake extension and sends the `register` a real one sends first.
-function attachExt(hub: RunHub, ext: FakeSocket, runId = RUN, origin = ORIGIN) {
-  hub.attachExtension(runId, origin, ext);
+function attachExt(
+  hub: RunHub,
+  ext: FakeSocket,
+  runId = RUN,
+  origin = ORIGIN,
+  sub = SUB,
+) {
+  hub.attachExtension(runId, origin, sub, ext);
   ext.receive({ type: 'register', runId, tabId: 7, origin });
 }
 
@@ -98,7 +105,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    expect(hub.attachAgent(RUN, ORIGIN, agent)).toBe('ok');
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, agent)).toBe('ok');
 
     agent.receive({
       id: 1,
@@ -132,7 +139,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
     agent.receive({
       id: 2,
@@ -177,7 +184,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
     agent.receive({
       id: 19,
@@ -196,7 +203,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
     const registered = {
       targetId: 'T7',
@@ -227,7 +234,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
     agent.receive({
       id: 6,
@@ -279,7 +286,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
     agent.receive({
       id: 9,
@@ -300,7 +307,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
     ext.receive({
       type: 'event',
@@ -319,17 +326,17 @@ describe('RunHub', () => {
 
   it("refuses a second agent socket for the same run with 'busy'", () => {
     const { hub } = makeHub();
-    expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('ok');
-    expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('busy');
-    expect(hub.attachAgent('run-2', ORIGIN, new FakeSocket())).toBe('ok');
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket())).toBe('ok');
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket())).toBe('busy');
+    expect(hub.attachAgent('run-2', ORIGIN, SUB, new FakeSocket())).toBe('ok');
   });
 
   it('frees the agent slot when the agent socket closes', () => {
     const { hub } = makeHub();
     const first = new FakeSocket();
-    hub.attachAgent(RUN, ORIGIN, first);
+    hub.attachAgent(RUN, ORIGIN, SUB, first);
     first.close();
-    expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('ok');
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket())).toBe('ok');
   });
 
   it('rejects an unanswered command with "extension did not answer"', async () => {
@@ -337,7 +344,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
     agent.receive({ id: 10, sessionId: 'tab-7', method: 'Page.enable' });
     await vi.waitFor(() =>
@@ -352,7 +359,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
     agent.receive({ id: 11, sessionId: 'tab-7', method: 'Page.enable' });
     await vi.waitFor(() => expect(ext.sent).toHaveLength(1));
@@ -374,7 +381,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(b.hub, ext);
-    a.hub.attachAgent(RUN, ORIGIN, agent);
+    a.hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
     agent.receive({ id: 12, sessionId: 'tab-7', method: 'DOM.enable' });
     await vi.waitFor(() => expect(ext.sent).toHaveLength(1));
@@ -400,7 +407,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
     ext.close();
 
     agent.receive({ id: 13, sessionId: 'tab-7', method: 'Page.enable' });
@@ -429,7 +436,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
     ext.close();
 
     agent.receive({ id: 14, sessionId: 'tab-7', method: 'Page.enable' });
@@ -443,7 +450,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
     ext.close();
 
     const returned = new FakeSocket();
@@ -466,7 +473,7 @@ describe('RunHub', () => {
     await new Promise((resolve) => setTimeout(resolve, 250));
     expect(agent.closed).toBeNull();
     const other = new FakeSocket();
-    expect(hub.attachAgent(RUN, ORIGIN, other)).toBe('busy');
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, other)).toBe('busy');
 
     // Now the extension leaves for good: the window lapses and the run closes.
     returned.close();
@@ -474,7 +481,7 @@ describe('RunHub', () => {
       expect(agent.closed?.reason).toBe('extension did not return'),
     );
     const later = new FakeSocket();
-    expect(hub.attachAgent(RUN, ORIGIN, later)).toBe('closed');
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, later)).toBe('closed');
     expect(later.closed).toMatchObject({ code: 1008 });
   });
 
@@ -483,12 +490,12 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     attachExt(hub, ext);
     const first = new FakeSocket();
-    hub.attachAgent(RUN, ORIGIN, first);
+    hub.attachAgent(RUN, ORIGIN, SUB, first);
     ext.close();
     first.close();
 
     const agent = new FakeSocket();
-    expect(hub.attachAgent(RUN, ORIGIN, agent)).toBe('ok');
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, agent)).toBe('ok');
     agent.receive({ id: 20, sessionId: 'tab-7', method: 'Page.enable' });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(lastReply(agent, 20)).toBeUndefined();
@@ -516,8 +523,8 @@ describe('RunHub', () => {
     const second = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, first);
-    hub.attachAgent(RUN, ORIGIN, agent);
-    hub.attachExtension(RUN, ORIGIN, second);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
+    hub.attachExtension(RUN, ORIGIN, SUB, second);
     expect(first.closed).toBeNull();
 
     second.receive({ type: 'register', runId: RUN, tabId: 8, origin: ORIGIN });
@@ -535,8 +542,8 @@ describe('RunHub', () => {
     const second = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, first);
-    hub.attachAgent(RUN, ORIGIN, agent);
-    hub.attachExtension(RUN, ORIGIN, second);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
+    hub.attachExtension(RUN, ORIGIN, SUB, second);
     // Anything but `register` is ignored before registration.
     second.receive({
       type: 'event',
@@ -567,10 +574,10 @@ describe('RunHub', () => {
     const first = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, first);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
     const wrongRun = new FakeSocket();
-    hub.attachExtension(RUN, ORIGIN, wrongRun);
+    hub.attachExtension(RUN, ORIGIN, SUB, wrongRun);
     wrongRun.receive({
       type: 'register',
       runId: 'other',
@@ -580,7 +587,7 @@ describe('RunHub', () => {
     expect(wrongRun.closed?.reason).toBe('registration mismatch');
 
     const wrongOrigin = new FakeSocket();
-    hub.attachExtension(RUN, ORIGIN, wrongOrigin);
+    hub.attachExtension(RUN, ORIGIN, SUB, wrongOrigin);
     wrongOrigin.receive({
       type: 'register',
       runId: RUN,
@@ -601,16 +608,18 @@ describe('RunHub', () => {
     const other = 'https://other.example.gov';
 
     const agent = new FakeSocket();
-    expect(hub.attachAgent(RUN, ORIGIN, agent)).toBe('ok');
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, agent)).toBe('ok');
     const ext = new FakeSocket();
-    hub.attachExtension(RUN, other, ext);
+    hub.attachExtension(RUN, other, SUB, ext);
     expect(ext.closed?.reason).toBe('origin mismatch');
     expect(agent.closed).toBeNull();
 
     const ext2 = new FakeSocket();
     attachExt(hub, ext2, 'run-2', other);
     const agent2 = new FakeSocket();
-    expect(hub.attachAgent('run-2', ORIGIN, agent2)).toBe('origin-mismatch');
+    expect(hub.attachAgent('run-2', ORIGIN, SUB, agent2)).toBe(
+      'origin-mismatch',
+    );
     expect(agent2.closed?.reason).toBe('origin mismatch');
     expect(ext2.closed).toBeNull();
 
@@ -631,14 +640,14 @@ describe('RunHub', () => {
       'https://benefits.example.gov/apply',
     ]) {
       const agent = new FakeSocket();
-      expect(hub.attachAgent(RUN, bad, agent)).toBe('origin-mismatch');
+      expect(hub.attachAgent(RUN, bad, SUB, agent)).toBe('origin-mismatch');
       expect(agent.closed?.reason).toBe('invalid origin');
       const ext = new FakeSocket();
-      hub.attachExtension(RUN, bad, ext);
+      hub.attachExtension(RUN, bad, SUB, ext);
       expect(ext.closed?.reason).toBe('invalid origin');
     }
     // Nothing was bound, so a valid origin still attaches.
-    expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('ok');
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket())).toBe('ok');
   });
 
   it('refuses an origin mismatch across two hubs', async () => {
@@ -651,7 +660,7 @@ describe('RunHub', () => {
 
     // Hub A's agent is bound to ORIGIN; hub B never saw the run.
     const agent = new FakeSocket();
-    a.hub.attachAgent(RUN, ORIGIN, agent);
+    a.hub.attachAgent(RUN, ORIGIN, SUB, agent);
     const wrongExt = new FakeSocket();
     attachExt(b.hub, wrongExt, RUN, other);
     await vi.waitFor(() =>
@@ -672,12 +681,107 @@ describe('RunHub', () => {
     c.hub.closeRun('run-2', 'test over');
   });
 
+  it("refuses an agent for another user after the extension bound the run, and keeps it usable by the owner's agent", async () => {
+    const { hub, logs } = makeHub();
+    const ext = new FakeSocket();
+    attachExt(hub, ext, RUN, ORIGIN, 'user-a');
+
+    const intruder = new FakeSocket();
+    expect(hub.attachAgent(RUN, ORIGIN, 'user-b', intruder)).toBe(
+      'sub-mismatch',
+    );
+    expect(intruder.closed?.reason).toBe('user mismatch');
+    expect(ext.closed).toBeNull();
+
+    const owner = new FakeSocket();
+    expect(hub.attachAgent(RUN, ORIGIN, 'user-a', owner)).toBe('ok');
+    const answer = answerExtension(ext, () => ({ ok: true }));
+    owner.receive({
+      id: 1,
+      sessionId: 'tab-7',
+      method: 'Runtime.evaluate',
+      params: { expression: '1' },
+    });
+    await vi.waitFor(() => {
+      answer();
+      expect(lastReply(owner, 1)).toBeDefined();
+    });
+    expect(owner.closed).toBeNull();
+
+    // Neither user id reaches a log line.
+    const text = JSON.stringify(logs);
+    expect(text).not.toContain('user-a');
+    expect(text).not.toContain('user-b');
+  });
+
+  it('refuses an extension for another user after the agent bound the run', () => {
+    const { hub } = makeHub();
+    const agent = new FakeSocket();
+    expect(hub.attachAgent(RUN, ORIGIN, 'user-b', agent)).toBe('ok');
+    const ext = new FakeSocket();
+    hub.attachExtension(RUN, ORIGIN, 'user-a', ext);
+    expect(ext.closed?.reason).toBe('user mismatch');
+    expect(agent.closed).toBeNull();
+
+    // The owner's extension still pairs.
+    const ownExt = new FakeSocket();
+    attachExt(hub, ownExt, RUN, ORIGIN, 'user-b');
+    expect(ownExt.closed).toBeNull();
+  });
+
+  it('refuses an empty or non-string sub without binding the run', () => {
+    const { hub } = makeHub();
+    for (const bad of ['', undefined, 42]) {
+      const agent = new FakeSocket();
+      expect(hub.attachAgent(RUN, ORIGIN, bad as never, agent)).toBe(
+        'sub-mismatch',
+      );
+      expect(agent.closed?.reason).toBe('invalid user');
+      const ext = new FakeSocket();
+      hub.attachExtension(RUN, ORIGIN, bad as never, ext);
+      expect(ext.closed?.reason).toBe('invalid user');
+    }
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket())).toBe('ok');
+  });
+
+  it('refuses a user mismatch across two hubs', async () => {
+    const bus = createLocalBus();
+    buses.push(bus);
+    const a = makeHub({ bus });
+    const b = makeHub({ bus });
+    const c = makeHub({ bus });
+
+    // Hub A's agent is bound to user-a; hub B never saw the run.
+    const agent = new FakeSocket();
+    a.hub.attachAgent(RUN, ORIGIN, 'user-a', agent);
+    const wrongExt = new FakeSocket();
+    attachExt(b.hub, wrongExt, RUN, ORIGIN, 'user-b');
+    await vi.waitFor(() => expect(agent.closed?.reason).toBe('user mismatch'));
+
+    // Another user's extension on hub C does not displace hub A's.
+    const ext = new FakeSocket();
+    attachExt(a.hub, ext, 'run-2', ORIGIN, 'user-a');
+    const intruder = new FakeSocket();
+    attachExt(c.hub, intruder, 'run-2', ORIGIN, 'user-b');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(ext.closed).toBeNull();
+
+    const text = JSON.stringify([...a.logs, ...b.logs, ...c.logs]);
+    expect(text).not.toContain('user-a');
+    expect(text).not.toContain('user-b');
+
+    a.hub.closeRun(RUN, 'test over');
+    b.hub.closeRun(RUN, 'test over');
+    a.hub.closeRun('run-2', 'test over');
+    c.hub.closeRun('run-2', 'test over');
+  });
+
   it('closes both sockets on closeRun and on tabClosed', async () => {
     const { hub } = makeHub();
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
     hub.closeRun(RUN, 'run finished');
     expect(ext.closed?.reason).toBe('run finished');
     expect(agent.closed?.reason).toBe('run finished');
@@ -685,7 +789,7 @@ describe('RunHub', () => {
     const ext2 = new FakeSocket();
     const agent2 = new FakeSocket();
     attachExt(hub, ext2, 'run-2');
-    hub.attachAgent('run-2', ORIGIN, agent2);
+    hub.attachAgent('run-2', ORIGIN, SUB, agent2);
     ext2.receive({ type: 'tabClosed' });
     await vi.waitFor(() => expect(agent2.closed?.reason).toBe('tab closed'));
     expect(ext2.closed).not.toBeNull();
@@ -696,7 +800,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
     ext.receive({ type: 'stop', reason: 'left-origin' });
     await vi.waitFor(() =>
       expect(agent.closed).toEqual({ code: 1000, reason: 'run stopped' }),
@@ -710,7 +814,7 @@ describe('RunHub', () => {
     });
     // Tombstoned: a re-dialing agent is refused with the same reason.
     const again = new FakeSocket();
-    expect(hub.attachAgent(RUN, ORIGIN, again)).toBe('closed');
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, again)).toBe('closed');
     expect(again.closed?.reason).toBe('run stopped');
   });
 
@@ -719,13 +823,13 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     attachExt(hub, ext);
     const agent = new FakeSocket();
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
     const pending = new FakeSocket();
-    hub.attachExtension(RUN, ORIGIN, pending);
+    hub.attachExtension(RUN, ORIGIN, SUB, pending);
     pending.receive({ type: 'stop', reason: 'user' });
     expect(agent.closed).toBeNull();
     expect(ext.closed).toBeNull();
-    expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('busy');
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket())).toBe('busy');
     hub.closeRun(RUN, 'test over');
   });
 
@@ -734,7 +838,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
     ext.receive({ type: 'stop', reason: 'secret-token-value' });
     await vi.waitFor(() => expect(agent.closed?.reason).toBe('run stopped'));
     expect(JSON.stringify(logs)).not.toContain('secret-token-value');
@@ -750,19 +854,19 @@ describe('RunHub', () => {
     const { hub } = makeHub();
     const ext = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, new FakeSocket());
+    hub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket());
     ext.receive({ type: 'tabClosed' });
 
     // A daemon that re-dials must fail at once, not wait for an extension.
     const agent = new FakeSocket();
-    expect(hub.attachAgent(RUN, ORIGIN, agent)).toBe('closed');
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, agent)).toBe('closed');
     expect(agent.closed).toEqual({ code: 1008, reason: 'tab closed' });
     const ext2 = new FakeSocket();
-    hub.attachExtension(RUN, ORIGIN, ext2);
+    hub.attachExtension(RUN, ORIGIN, SUB, ext2);
     expect(ext2.closed).toEqual({ code: 1008, reason: 'tab closed' });
 
     // Other runs are unaffected.
-    expect(hub.attachAgent('run-2', ORIGIN, new FakeSocket())).toBe('ok');
+    expect(hub.attachAgent('run-2', ORIGIN, SUB, new FakeSocket())).toBe('ok');
     hub.closeRun('run-2', 'test over');
   });
 
@@ -770,11 +874,13 @@ describe('RunHub', () => {
     vi.useFakeTimers();
     try {
       const { hub } = makeHub({ closedRunTtlMs: 1000 });
-      hub.attachAgent(RUN, ORIGIN, new FakeSocket());
+      hub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket());
       hub.closeRun(RUN, 'run finished');
-      expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('closed');
+      expect(hub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket())).toBe(
+        'closed',
+      );
       vi.advanceTimersByTime(1001);
-      expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('ok');
+      expect(hub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket())).toBe('ok');
       hub.closeRun(RUN, 'test over');
     } finally {
       vi.useRealTimers();
@@ -785,9 +891,9 @@ describe('RunHub', () => {
     const { hub } = makeHub();
     attachExt(hub, new FakeSocket());
     const first = new FakeSocket();
-    hub.attachAgent(RUN, ORIGIN, first);
+    hub.attachAgent(RUN, ORIGIN, SUB, first);
     first.close();
-    expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('ok');
+    expect(hub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket())).toBe('ok');
     hub.closeRun(RUN, 'test over');
   });
 
@@ -796,7 +902,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
     for (const bad of ['not json', 'null', '42', '[]', '{"type":"reply"}']) {
       expect(() => ext.receive(bad)).not.toThrow();
@@ -820,7 +926,7 @@ describe('RunHub', () => {
     const ext = new FakeSocket();
     const agent = new FakeSocket();
     attachExt(hub, ext);
-    hub.attachAgent(RUN, ORIGIN, agent);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
     agent.receive({
       id: 18,
@@ -864,7 +970,7 @@ describe('RunHub', () => {
       const ext = new FakeSocket();
       const agent = new FakeSocket();
       attachExt(hub, ext);
-      hub.attachAgent(RUN, ORIGIN, agent);
+      hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
       const rebuilt = restartExtension(hub, ext);
       await vi.waitFor(() =>
@@ -880,7 +986,7 @@ describe('RunHub', () => {
 
       // No tombstone: a new agent attaches and reaches the same extension.
       const next = new FakeSocket();
-      expect(hub.attachAgent(RUN, ORIGIN, next)).toBe('ok');
+      expect(hub.attachAgent(RUN, ORIGIN, SUB, next)).toBe('ok');
       next.receive({ id: 30, sessionId: 'tab-7', method: 'Page.enable' });
       await vi.waitFor(() => expect(rebuilt.sent).toHaveLength(1));
       const cmd = rebuilt.messages()[0];
@@ -905,7 +1011,7 @@ describe('RunHub', () => {
       const ext = new FakeSocket();
       const agent = new FakeSocket();
       attachExt(extHub, ext);
-      agentHub.attachAgent(RUN, ORIGIN, agent);
+      agentHub.attachAgent(RUN, ORIGIN, SUB, agent);
 
       restartExtension(extHub, ext);
       await vi.waitFor(() =>
@@ -914,7 +1020,9 @@ describe('RunHub', () => {
           reason: 'extension restarted',
         }),
       );
-      expect(agentHub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('ok');
+      expect(agentHub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket())).toBe(
+        'ok',
+      );
     });
 
     it("never flushes the old agent's queued command to the rebuilt extension", async () => {
@@ -922,7 +1030,7 @@ describe('RunHub', () => {
       const ext = new FakeSocket();
       const agent = new FakeSocket();
       attachExt(hub, ext);
-      hub.attachAgent(RUN, ORIGIN, agent);
+      hub.attachAgent(RUN, ORIGIN, SUB, agent);
       ext.close();
       // Sent while the worker is down: held in the agent's queue.
       agent.receive({ id: 40, sessionId: 'tab-7', method: 'Page.enable' });
@@ -942,7 +1050,7 @@ describe('RunHub', () => {
       const ext = new FakeSocket();
       const agent = new FakeSocket();
       attachExt(hub, ext);
-      hub.attachAgent(RUN, ORIGIN, agent);
+      hub.attachAgent(RUN, ORIGIN, SUB, agent);
       ext.close();
       const rebuilt = new FakeSocket();
       attachExt(hub, rebuilt);
@@ -960,7 +1068,7 @@ describe('RunHub', () => {
           reason: 'extension restarted',
         }),
       );
-      expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('ok');
+      expect(hub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket())).toBe('ok');
       hub.closeRun(RUN, 'test over');
     });
 
@@ -972,7 +1080,7 @@ describe('RunHub', () => {
       const ext = new FakeSocket();
       const agent = new FakeSocket();
       attachExt(extHub.hub, ext);
-      agentHub.hub.attachAgent(RUN, ORIGIN, agent);
+      agentHub.hub.attachAgent(RUN, ORIGIN, SUB, agent);
       await new Promise((resolve) => setTimeout(resolve, 20));
 
       const rebuilt = restartExtension(extHub.hub, ext);
@@ -987,7 +1095,7 @@ describe('RunHub', () => {
         );
       }
       const next = new FakeSocket();
-      expect(agentHub.hub.attachAgent(RUN, ORIGIN, next)).toBe('ok');
+      expect(agentHub.hub.attachAgent(RUN, ORIGIN, SUB, next)).toBe('ok');
       next.receive({ id: 41, sessionId: 'tab-7', method: 'Page.enable' });
       await vi.waitFor(() => expect(rebuilt.sent).toHaveLength(1));
       const cmd = rebuilt.messages()[0];
@@ -1001,10 +1109,10 @@ describe('RunHub', () => {
       const ext = new FakeSocket();
       const agent = new FakeSocket();
       attachExt(hub, ext);
-      hub.attachAgent(RUN, ORIGIN, agent);
+      hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
       const pending = new FakeSocket();
-      hub.attachExtension(RUN, ORIGIN, pending);
+      hub.attachExtension(RUN, ORIGIN, SUB, pending);
       pending.receive({ type: 'resumed' });
       pending.receive({
         type: 'register',
@@ -1028,16 +1136,16 @@ describe('RunHub', () => {
       const ext = new FakeSocket();
       const agent = new FakeSocket();
       attachExt(hub, ext);
-      hub.attachAgent(RUN, ORIGIN, agent);
+      hub.attachAgent(RUN, ORIGIN, SUB, agent);
 
       const pending = new FakeSocket();
-      hub.attachExtension(RUN, ORIGIN, pending);
+      hub.attachExtension(RUN, ORIGIN, SUB, pending);
       pending.receive({ type: 'resumed' });
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(agent.closed).toBeNull();
       expect(ext.closed).toBeNull();
       expect(pending.closed).toBeNull();
-      expect(hub.attachAgent(RUN, ORIGIN, new FakeSocket())).toBe('busy');
+      expect(hub.attachAgent(RUN, ORIGIN, SUB, new FakeSocket())).toBe('busy');
       hub.closeRun(RUN, 'test over');
     });
 
@@ -1046,12 +1154,12 @@ describe('RunHub', () => {
       const ext = new FakeSocket();
       const agent = new FakeSocket();
       attachExt(hub, ext);
-      hub.attachAgent(RUN, ORIGIN, agent);
+      hub.attachAgent(RUN, ORIGIN, SUB, agent);
       const rebuilt = restartExtension(hub, ext);
       await vi.waitFor(() => expect(agent.closed).not.toBeNull());
 
       const next = new FakeSocket();
-      expect(hub.attachAgent(RUN, ORIGIN, next)).toBe('ok');
+      expect(hub.attachAgent(RUN, ORIGIN, SUB, next)).toBe('ok');
       for (const repeat of [
         { type: 'resumed' },
         { type: 'resumed', reason: 'again' },

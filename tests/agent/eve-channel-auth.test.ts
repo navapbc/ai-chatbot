@@ -6,7 +6,8 @@ import channel from '@/agent/channels/eve';
 // once auth has passed, so the status tells the auth outcome apart: 403 is
 // the relay refusal, 401 is no principal at all, 500 is accepted.
 
-const SECRET = 'internal-secret-for-channel-tests';
+const SECRET =
+  'internal-secret-for-channel-tests-padded-to-be-over-thirty-two-chars';
 const RUN = '0b6f7c4e-5d1a-4c55-9a53-3f7d2f0c9a11';
 const relay = {
   'x-eve-relay-url': 'wss://relay.example',
@@ -89,6 +90,27 @@ describe('eve channel auth: relay headers', () => {
       expect(text).not.toContain(RUN);
     },
   );
+
+  it('treats a 31-character secret as unset: the grant is refused', async () => {
+    const short = 'x'.repeat(31);
+    vi.stubEnv('EVE_INTERNAL_SECRET', short);
+    const res = await call('127.0.0.1', {
+      ...relay,
+      'x-eve-internal-secret': short,
+    });
+    expect(res.status).toBe(403);
+    expect(await res.text()).not.toContain(short);
+  });
+
+  it('accepts a 32-character secret', async () => {
+    const ok = 'x'.repeat(32);
+    vi.stubEnv('EVE_INTERNAL_SECRET', ok);
+    const res = await call('127.0.0.1', {
+      ...relay,
+      'x-eve-internal-secret': ok,
+    });
+    expect(res.status).toBe(500);
+  });
 
   it('leaves a non-loopback request without relay headers to the other strategies', async () => {
     expect((await call('agent.example.com', {})).status).toBe(401);

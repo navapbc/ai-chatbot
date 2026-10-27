@@ -87,4 +87,26 @@ describe('isSensitiveField', () => {
     expect(isSensitiveField({ name: 'routing_number' })).toBe(true);
     expect(isSensitiveField({ name: 'socialWorkerName' })).toBe(false);
   });
+
+  it.each([
+    'socialsecuritynumber',
+    'socialsecurity',
+    'ssno',
+    's s n',
+    's-s-n',
+    'CIN',
+    'cin',
+    'Client CIN',
+    'client index number',
+    'clientindexnumber',
+  ])('treats the key %s as sensitive', (key) => {
+    expect(isSensitiveField({ name: key, label: key })).toBe(true);
+  });
+
+  it.each(['cinema', 'decision', 'date of birth', 'Date of birth', 'dob'])(
+    'keeps %s non-sensitive',
+    (key) => {
+      expect(isSensitiveField({ name: key, label: key })).toBe(false);
+    },
+  );
 });

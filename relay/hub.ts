@@ -39,10 +39,10 @@ export interface RunHubOptions {
 // `to-ext` and `to-agent`, which no socket can publish to directly.
 type ToExtFrame =
   | { t: 'cmd'; cmd: RelayToExtension }
-  | { t: 'ext-attached'; by: string; origin: string }
+  | { t: 'ext-attached'; by: string; origin: string; sub: string }
   | { t: 'close'; reason: string };
 type ToAgentFrame =
-  | { t: 'ext-up'; origin: string }
+  | { t: 'ext-up'; origin: string; sub: string }
   | { t: 'ext-down' }
   /** Drop the agent connection but keep the run (extension restarted). */
   | { t: 'agent-reset' }
@@ -63,6 +63,7 @@ interface Pending extends Waiter {
 interface AgentSide {
   socket: PeerSocket;
   origin: string;
+  sub: string;
   closed: boolean;
   extState: 'unknown' | 'up' | 'away';
   pending: Map<string, Pending>;
@@ -75,6 +76,7 @@ interface AgentSide {
 interface ExtSide {
   socket: PeerSocket;
   origin: string;
+  sub: string;
   closed: boolean;
   /** False until a matching `register`; a pending socket receives nothing. */
   registered: boolean;
@@ -89,6 +91,8 @@ interface ExtSide {
 interface Run {
   /** Bound by the first attach; every later attach must match it. */
   origin: string;
+  /** The user (token `sub`) bound by the first attach, like the origin. */
+  sub: string;
   agent?: AgentSide;
   ext?: ExtSide;
   /** Extension sockets that have not sent a matching `register` yet. */
@@ -159,25 +163,32 @@ export class RunHub {
     };
   }
 
-  attachExtension(runId: string, origin: string, socket: PeerSocket): void {
+  attachExtension(
+    runId: string,
+    origin: string,
+    sub: string,
+    socket: PeerSocket,
+  ): void {
     const closed = this.closedReason(runId);
     if (closed !== null) {
       this.log({ event: 'attach-refused', runId, role: 'extension' });
       this.refuse(socket, closed);
       return;
     }
-    const refusal = this.originRefusal(runId, origin);
+    const refusal =
+      this.originRefusal(runId, origin) ?? this.subRefusal(runId, sub);
     if (refusal) {
       this.log({ event: 'attach-refused', runId, role: 'extension' });
       this.refuse(socket, refusal);
       return;
     }
-    const run = this.run(runId, origin);
+    const run = this.run(runId, origin, sub);
     // Held apart until it registers, so it cannot displace the current
     // extension or receive commands on the strength of its token alone.
     const side: ExtSide = {
       socket,
       origin,
+      sub,
       closed: false,
       registered: false,
       announced: false,
@@ -208,8 +219,9 @@ export class RunHub {
   attachAgent(
     runId: string,
     origin: string,
+    sub: string,
     socket: PeerSocket,
-  ): 'ok' | 'busy' | 'origin-mismatch' | 'closed' {
+  ): 'ok' | 'busy' | 'origin-mismatch' | 'sub-mismatch' | 'closed' {
     const closed = this.closedReason(runId);
     if (closed !== null) {
       this.log({ event: 'attach-refused', runId, role: 'agent' });
@@ -222,11 +234,18 @@ export class RunHub {
       this.refuse(socket, refusal);
       return 'origin-mismatch';
     }
-    const run = this.run(runId, origin);
+    const subRefusal = this.subRefusal(runId, sub);
+    if (subRefusal) {
+      this.log({ event: 'attach-refused', runId, role: 'agent' });
+      this.refuse(socket, subRefusal);
+      return 'sub-mismatch';
+    }
+    const run = this.run(runId, origin, sub);
     if (run.agent) return 'busy';
     const agent: AgentSide = {
       socket,
       origin,
+      sub,
       closed: false,
       // An agent that connects inside the resume window waits like the last.
       extState: run.ext ? 'up' : run.holdTimer ? 'away' : 'unknown',
@@ -384,6 +403,10 @@ export class RunHub {
         this.log({ event: 'origin-mismatch', runId, role: 'extension' });
         return;
       }
+      if (frame.sub !== side.sub) {
+        this.log({ event: 'sub-mismatch', runId, role: 'extension' });
+        return;
+      }
       const run = this.runs.get(runId);
       this.dropExtension(side, NORMAL_CLOSE, 'replaced');
       if (run?.ext === side) run.ext = undefined;
@@ -421,12 +444,17 @@ export class RunHub {
           t: 'ext-attached',
           by: this.instanceId,
           origin: side.origin,
+          sub: side.sub,
         });
         // A restarted extension's agent is reset before `ext-up`, so the
         // commands it queued while the worker was down are failed, never
         // flushed to an extension that holds none of its sessions.
         if (side.resumed) this.publish(runId, 'to-agent', { t: 'agent-reset' });
-        this.publish(runId, 'to-agent', { t: 'ext-up', origin: side.origin });
+        this.publish(runId, 'to-agent', {
+          t: 'ext-up',
+          origin: side.origin,
+          sub: side.sub,
+        });
         side.announced = true;
         this.clearHold(runId, current);
       },
@@ -705,6 +733,16 @@ export class RunHub {
         }
         return;
       }
+      if (frame.sub !== agent.sub) {
+        // Another user's extension claimed this run on another hub.
+        this.log({ event: 'sub-mismatch', runId, role: 'agent' });
+        this.closeAgent(agent, 'user mismatch');
+        if (run?.agent === agent) {
+          run.agent = undefined;
+          this.forgetIfEmpty(runId, run);
+        }
+        return;
+      }
       if (run?.agent === agent) this.clearHold(runId, run);
       agent.extState = 'up';
       for (const waiter of agent.queue.splice(0)) {
@@ -776,10 +814,10 @@ export class RunHub {
     this.log({ event: 'run-closed', runId });
   }
 
-  private run(runId: string, origin: string): Run {
+  private run(runId: string, origin: string, sub: string): Run {
     let run = this.runs.get(runId);
     if (!run) {
-      run = { origin, pendingExts: new Set() };
+      run = { origin, sub, pendingExts: new Set() };
       this.runs.set(runId, run);
     }
     return run;
@@ -809,6 +847,17 @@ export class RunHub {
     }
     const run = this.runs.get(runId);
     if (run && run.origin !== origin) return 'origin mismatch';
+    return null;
+  }
+
+  /**
+   * Why an attach for this user must be refused, or null if it may proceed.
+   * Reasons are fixed strings: the sub itself is never logged or sent.
+   */
+  private subRefusal(runId: string, sub: string): string | null {
+    if (typeof sub !== 'string' || sub === '') return 'invalid user';
+    const run = this.runs.get(runId);
+    if (run && run.sub !== sub) return 'user mismatch';
     return null;
   }
 

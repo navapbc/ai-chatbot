@@ -33,12 +33,24 @@ describe('createEveSession with relay credentials', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('treats a 31-character secret as unset', async () => {
+    vi.stubEnv('EVE_INTERNAL_SECRET', 'x'.repeat(31));
+    const error = await createEveSession('hi', undefined, relay).catch(
+      (e) => e,
+    );
+    expect(error.message).toBe('relay sessions require EVE_INTERNAL_SECRET');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('sends the secret and relay headers, never in the body', async () => {
-    vi.stubEnv('EVE_INTERNAL_SECRET', 'sekret');
+    vi.stubEnv(
+      'EVE_INTERNAL_SECRET',
+      'sekret-padded-to-be-over-thirty-two-chars',
+    );
     await createEveSession('hi', undefined, relay);
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     expect(init.headers).toMatchObject({
-      'x-eve-internal-secret': 'sekret',
+      'x-eve-internal-secret': 'sekret-padded-to-be-over-thirty-two-chars',
       'x-eve-relay-url': relay.url,
       'x-eve-relay-run': relay.runId,
     });
@@ -47,7 +59,10 @@ describe('createEveSession with relay credentials', () => {
   });
 
   it('sends no secret when there are no relay credentials', async () => {
-    vi.stubEnv('EVE_INTERNAL_SECRET', 'sekret');
+    vi.stubEnv(
+      'EVE_INTERNAL_SECRET',
+      'sekret-padded-to-be-over-thirty-two-chars',
+    );
     await createEveSession('hi', 'model-x');
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     expect(init.headers).not.toHaveProperty('x-eve-internal-secret');

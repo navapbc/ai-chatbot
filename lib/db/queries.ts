@@ -9,6 +9,7 @@ import {
   gt,
   gte,
   inArray,
+  isNotNull,
   lt,
   or,
   type SQL,
@@ -32,6 +33,8 @@ import {
   sessionMapping,
   eveRun,
   type EveRun,
+  participant,
+  type ParticipantRow,
 } from './schema';
 import type { ArtifactKind } from '@/components/artifact';
 import { generateUUID } from '../utils';
@@ -708,9 +711,9 @@ export async function getEveRun({
 }
 
 /**
- * Looks a run up by chatId alone, for the internal token route. chatId is
- * only unique per user, so if two users hold the same chatId this fails
- * closed and returns undefined rather than picking one.
+ * Looks up the relay run with this chat id, for the token route. Web rows are
+ * ignored. A partial unique index allows one relay run per chat id; if more
+ * than one ever came back this fails closed and returns undefined.
  */
 export async function getEveRunByChatId({
   chatId,
@@ -719,13 +722,38 @@ export async function getEveRunByChatId({
     const rows = await db
       .select()
       .from(eveRun)
-      .where(eq(eveRun.chatId, chatId))
+      .where(and(eq(eveRun.chatId, chatId), isNotNull(eveRun.relayOrigin)))
       .limit(2);
     return rows.length === 1 ? rows[0] : undefined;
   } catch (error) {
     throw new ChatSDKError(
       'bad_request:database',
       'Failed to get eve run by chat id',
+    );
+  }
+}
+
+/** Relay runs a user created at or after `since`, for the hourly run limit. */
+export async function countRecentRelayRuns({
+  userId,
+  since,
+}: { userId: string; since: Date }): Promise<number> {
+  try {
+    const [row] = await db
+      .select({ count: count(eveRun.id) })
+      .from(eveRun)
+      .where(
+        and(
+          eq(eveRun.userId, userId),
+          isNotNull(eveRun.relayOrigin),
+          gte(eveRun.createdAt, since),
+        ),
+      );
+    return row?.count ?? 0;
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to count recent relay runs',
     );
   }
 }
@@ -895,5 +923,55 @@ export async function deleteEveRun({
       .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
   } catch (error) {
     throw new ChatSDKError('bad_request:database', 'Failed to delete eve run');
+  }
+}
+
+// Participant: word-start search over searchText (lowercase "first middle
+// last recordId"). A row matches when the whole query is a prefix of
+// searchText, or every token starts some word of it. The caller passes
+// LIKE-escaped values; escapeLike lives in lib/data/participant-source.ts.
+export async function searchParticipantRows({
+  whole,
+  tokens,
+  limit,
+}: {
+  whole: string;
+  tokens: string[];
+  limit: number;
+}): Promise<ParticipantRow[]> {
+  try {
+    const everyToken = and(
+      ...tokens.map(
+        (t) =>
+          sql`(${participant.searchText} ILIKE ${`${t}%`} OR ${participant.searchText} ILIKE ${`% ${t}%`})`,
+      ),
+    );
+    return await db
+      .select()
+      .from(participant)
+      .where(
+        or(sql`${participant.searchText} ILIKE ${`${whole}%`}`, everyToken),
+      )
+      .orderBy(asc(participant.displayName))
+      .limit(limit);
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to search participants',
+    );
+  }
+}
+
+export async function getParticipantRow(
+  recordId: string,
+): Promise<ParticipantRow | undefined> {
+  try {
+    const [row] = await db
+      .select()
+      .from(participant)
+      .where(eq(participant.recordId, recordId));
+    return row;
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to get participant');
   }
 }

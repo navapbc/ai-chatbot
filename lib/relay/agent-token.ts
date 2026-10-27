@@ -7,6 +7,8 @@
 // it. Nothing here may put the token, the internal secret or a caught error's
 // message into a returned value, a log line or a thrown error.
 
+import { internalSecret } from './internal-secret';
+
 export type AgentTokenResult =
   | { ok: true; token: string; expiresAt: number }
   | { ok: false; error: string };
@@ -58,7 +60,7 @@ export async function fetchAgentToken(
       return { ok: true, ...cached };
     }
 
-    const secret = process.env.EVE_INTERNAL_SECRET;
+    const secret = internalSecret();
     if (!secret) return { ok: false, error: ERR_UNAVAILABLE };
 
     const baseUrl =

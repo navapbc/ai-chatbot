@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -11,6 +12,7 @@ const ORIGIN = 'https://benefits.example.gov';
 const EXT_ID = 'abcdefghijklmnopabcdefghijklmnop';
 const EXT_ORIGIN = `chrome-extension://${EXT_ID}`;
 const RUN = 'run-1';
+const SUB = 'user-a';
 
 let server: Server;
 let port: number;
@@ -37,13 +39,29 @@ async function start(extra: Record<string, unknown> = {}) {
 
 const token = (
   role: 'extension' | 'agent',
-  opts: { secret?: string; now?: number } = {},
+  opts: { secret?: string; now?: number; sub?: string } = {},
 ) => {
   const t = mintRelayToken(
-    { runId: RUN, role, origin: ORIGIN },
+    { runId: RUN, role, origin: ORIGIN, sub: opts.sub ?? SUB },
     opts.secret ?? SECRET,
     opts.now === undefined ? {} : { now: opts.now },
   );
+  tokens.push(t);
+  return t;
+};
+
+// A validly signed token whose claims lack `sub` (mint refuses to make one).
+const tokenWithoutSub = (role: 'extension' | 'agent') => {
+  const payload = Buffer.from(
+    JSON.stringify({
+      runId: RUN,
+      role,
+      origin: ORIGIN,
+      exp: Math.floor(Date.now() / 1000) + 600,
+    }),
+  ).toString('base64url');
+  const sig = createHmac('sha256', SECRET).update(payload).digest('base64url');
+  const t = `${payload}.${sig}`;
   tokens.push(t);
   return t;
 };
@@ -145,6 +163,17 @@ describe('relay server', () => {
     it('with a token signed by another secret', async () => {
       await rejected(url('/cdp', token('agent', { secret: `${SECRET}-x` })));
     });
+    it('with a validly signed token that has no sub', async () => {
+      await rejected(url('/cdp', tokenWithoutSub('agent')));
+      await rejected(url('/extension', tokenWithoutSub('extension')), {
+        origin: EXT_ORIGIN,
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(logs.filter((l) => l.event === 'upgrade-rejected')).toEqual([
+        { event: 'upgrade-rejected', path: '/cdp', reason: 'token' },
+        { event: 'upgrade-rejected', path: '/extension', reason: 'token' },
+      ]);
+    });
     it('with an expired token', async () => {
       await rejected(url('/cdp', token('agent', { now: 1000 })));
     });
@@ -207,6 +236,39 @@ describe('relay server', () => {
     await pair();
     const second = await connect(url('/cdp', token('agent')));
     expect(await closed(second)).toEqual({ code: 1008, reason: 'run busy' });
+  });
+
+  it("closes another user's agent with 1008 user mismatch and keeps the run", async () => {
+    await start();
+    const ext = await connect(url('/extension', token('extension')), {
+      origin: EXT_ORIGIN,
+    });
+    ext.send(
+      JSON.stringify({
+        type: 'register',
+        runId: RUN,
+        tabId: 7,
+        origin: ORIGIN,
+      }),
+    );
+    const intruder = await connect(
+      url('/cdp', token('agent', { sub: 'user-b' })),
+    );
+    expect(await closed(intruder)).toEqual({
+      code: 1008,
+      reason: 'user mismatch',
+    });
+    expect(ext.readyState).toBe(WebSocket.OPEN);
+
+    // The owner's agent still pairs with the extension.
+    const agent = await connect(url('/cdp', token('agent')));
+    const eventAtAgent = nextMessage(agent);
+    ext.send(JSON.stringify({ type: 'event', method: 'Page.x', params: {} }));
+    expect(await eventAtAgent).toMatchObject({ method: 'Page.x' });
+
+    const output = JSON.stringify(logs);
+    expect(output).not.toContain(SUB);
+    expect(output).not.toContain('user-b');
   });
 
   it('passes a 5 MB message from the extension to the agent intact', async () => {

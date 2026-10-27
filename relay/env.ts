@@ -26,9 +26,9 @@ export function checkRelayEnv(
 
   // Known gaps when more than one relay instance shares a Redis bus
   // (ledgered; the supported deployment is a single instance without Redis):
-  // - origin binding is per hub, so a wrong-origin extension on another hub
-  //   can briefly receive commands;
-  // - a mismatched ext-up can close the legitimate agent;
+  // - origin and user (token sub) binding are per hub, so a wrong-origin or
+  //   other-user extension on another hub can briefly receive commands;
+  // - a mismatched ext-up (origin or sub) can close the legitimate agent;
   // - "busy" is per hub;
   // - an agent on a hub that never saw the run is never closed;
   // - closed runs leave no tombstone, so a token can be replayed within TTL;

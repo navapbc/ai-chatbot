@@ -954,5 +954,101 @@
     },
     "sensitive": false,
     "why": "near miss that must stay non-sensitive"
+  },
+  {
+    "id": "compact-socialsecuritynumber",
+    "field": {
+      "name": "socialsecuritynumber"
+    },
+    "sensitive": true,
+    "why": "SSN key with separators removed"
+  },
+  {
+    "id": "compact-socialsecurity",
+    "field": {
+      "name": "socialsecurity"
+    },
+    "sensitive": true,
+    "why": "SSN key with separators removed"
+  },
+  {
+    "id": "compact-ssno",
+    "field": {
+      "name": "ssno"
+    },
+    "sensitive": true,
+    "why": "SSN number abbreviation run together"
+  },
+  {
+    "id": "spaced-ssn",
+    "field": {
+      "label": "s s n"
+    },
+    "sensitive": true,
+    "why": "SSN letters separated by spaces"
+  },
+  {
+    "id": "dashed-ssn",
+    "field": {
+      "name": "s-s-n"
+    },
+    "sensitive": true,
+    "why": "SSN letters separated by dashes"
+  },
+  {
+    "id": "cin-key",
+    "field": {
+      "name": "CIN"
+    },
+    "sensitive": true,
+    "why": "California client index number, a benefit ID"
+  },
+  {
+    "id": "cin-word",
+    "field": {
+      "label": "Client CIN"
+    },
+    "sensitive": true,
+    "why": "CIN as a whole word"
+  },
+  {
+    "id": "client-index-number",
+    "field": {
+      "label": "Client index number"
+    },
+    "sensitive": true,
+    "why": "CIN spelled out"
+  },
+  {
+    "id": "compact-clientindexnumber",
+    "field": {
+      "name": "clientindexnumber"
+    },
+    "sensitive": true,
+    "why": "CIN spelled out, separators removed"
+  },
+  {
+    "id": "cinema-ok",
+    "field": {
+      "label": "cinema"
+    },
+    "sensitive": false,
+    "why": "contains cin but is not the CIN"
+  },
+  {
+    "id": "decision-ok",
+    "field": {
+      "name": "decision"
+    },
+    "sensitive": false,
+    "why": "contains cin but is not the CIN"
+  },
+  {
+    "id": "date-of-birth-lower-ok",
+    "field": {
+      "label": "date of birth"
+    },
+    "sensitive": false,
+    "why": "date of birth is not sensitive (owner decision)"
   }
 ]

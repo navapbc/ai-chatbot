@@ -13,7 +13,8 @@ import {
 import { verifyRelayToken } from '@/lib/relay/token';
 
 const SECRET = 'test-secret-that-is-at-least-32-characters-long';
-const INTERNAL = 'internal-secret-value-for-tests';
+const INTERNAL =
+  'internal-secret-value-for-tests-padded-to-be-over-thirty-two-chars';
 const RUN_ID = '3f2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b';
 const ORIGIN = 'https://apply.example.gov';
 const SESSION = 'wrun_01WINNERSESSION';
@@ -105,6 +106,74 @@ describe('POST /api/relay/agent-token', () => {
     );
   });
 
+  it('treats a 31-character EVE_INTERNAL_SECRET as unset', async () => {
+    const short = 'y'.repeat(31);
+    vi.stubEnv('EVE_INTERNAL_SECRET', short);
+    await seed();
+    const spy = vi.spyOn(store, 'getByChatId');
+    await expectBodylessNoStore404(
+      await post(
+        { runId: RUN_ID, sessionId: SESSION },
+        { 'x-eve-internal-secret': short },
+      ),
+    );
+    expect(spy).not.toHaveBeenCalled();
+    expect(
+      logged.filter((l) => l.includes('[relay-token] misconfigured')),
+    ).toHaveLength(1);
+    expect(logged.join('')).not.toContain(short);
+  });
+
+  it('accepts a 32-character EVE_INTERNAL_SECRET', async () => {
+    const ok = 'z'.repeat(32);
+    vi.stubEnv('EVE_INTERNAL_SECRET', ok);
+    await seed();
+    const res = await post(
+      { runId: RUN_ID, sessionId: SESSION },
+      { 'x-eve-internal-secret': ok },
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses a 3 KB body with 400 before parsing or the store', async () => {
+    await seed();
+    const spy = vi.spyOn(store, 'getByChatId');
+    const parse = vi.spyOn(JSON, 'parse');
+    const res = await post({
+      runId: RUN_ID,
+      sessionId: SESSION,
+      pad: 'p'.repeat(3072),
+    });
+    expect(res.status).toBe(400);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(spy).not.toHaveBeenCalled();
+    expect(parse).not.toHaveBeenCalled();
+  });
+
+  it('counts bytes, not characters, against the limit', async () => {
+    await seed();
+    const spy = vi.spyOn(store, 'getByChatId');
+    const res = await post(
+      JSON.stringify({
+        runId: RUN_ID,
+        sessionId: SESSION,
+        pad: 'é'.repeat(1100),
+      }),
+      undefined,
+      true,
+    );
+    expect(res.status).toBe(400);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('returns a no-store 500 when the store throws', async () => {
+    vi.spyOn(store, 'getByChatId').mockRejectedValue(new Error('db secret'));
+    const res = await post({ runId: RUN_ID, sessionId: SESSION });
+    expect(res.status).toBe(500);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.text()).not.toContain('db secret');
+  });
+
   it('returns 400 for a non-UUID or malformed body', async () => {
     for (const body of [
       { runId: 'nope', sessionId: SESSION },
@@ -159,16 +228,14 @@ describe('POST /api/relay/agent-token', () => {
     expect(winner.status).toBe(200);
   });
 
-  it('returns 404 when two users hold the chat id', async () => {
+  it('ignores a web row another user holds on the chat id', async () => {
     await seed();
     await store.create('u2', RUN_ID, {
       eveSessionId: 's2',
       continuationToken: 't2',
-      relayOrigin: ORIGIN,
     });
-    await expectBodylessNoStore404(
-      await post({ runId: RUN_ID, sessionId: SESSION }),
-    );
+    const res = await post({ runId: RUN_ID, sessionId: SESSION });
+    expect(res.status).toBe(200);
   });
 
   it.each([undefined, 'short'])(
@@ -179,6 +246,10 @@ describe('POST /api/relay/agent-token', () => {
       const res = await post({ runId: RUN_ID, sessionId: SESSION });
       expect(res.status).toBe(500);
       expect(res.headers.get('cache-control')).toBe('no-store');
+      const lines = logged.filter((l) => l.includes('[relay-token]'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toBe(JSON.stringify(['[relay-token] misconfigured']));
+      expect(logged).toHaveLength(1);
       const text = await res.text();
       for (const leak of [SECRET, INTERNAL, ORIGIN, 'short']) {
         expect(text).not.toContain(leak);
@@ -198,6 +269,7 @@ describe('POST /api/relay/agent-token', () => {
       runId: RUN_ID,
       role: 'agent',
       origin: ORIGIN,
+      sub: 'u1',
     });
     expect(body.expiresAt).toBeLessThan(1e11);
     expect(JSON.stringify(body)).not.toContain(INTERNAL);
@@ -217,6 +289,7 @@ describe('POST /api/relay/agent-token', () => {
       runId: RUN_ID,
       role: 'agent',
       origin: ORIGIN,
+      sub: 'u1',
     });
     const refused = await fetchAgentToken(RUN_ID, 'wrun_01LOSERSESSION', {
       fetchImpl: ((url: string, init: RequestInit) =>

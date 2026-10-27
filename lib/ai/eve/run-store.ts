@@ -16,7 +16,10 @@ export interface EveRunRecord {
   progress: RunProgress | null;
 }
 
-/** Thrown by `create` when a run already exists for (userId, chatId). */
+/**
+ * Thrown by `create` when a run already exists for (userId, chatId), or when
+ * a relay run is created on a chatId that already has one (any user).
+ */
 export class EveRunExistsError extends Error {
   constructor(options?: { cause?: unknown }) {
     super('Eve run already exists for this user and chat', options);
@@ -30,12 +33,13 @@ export class EveRunExistsError extends Error {
  */
 export interface EveRunStore {
   get(userId: string, chatId: string): Promise<EveRunRecord | undefined>;
-  /** Internal token route only. Undefined when two users hold the chatId. */
+  /** The relay run with this chatId; web rows never match. Token route only. */
   getByChatId(
     chatId: string,
   ): Promise<(EveRunRecord & { userId: string }) | undefined>;
   /**
-   * Throws EveRunExistsError if a run already exists for (userId, chatId);
+   * Throws EveRunExistsError if a run already exists for (userId, chatId), or
+   * if this is a relay run and any user already has a relay run on chatId;
    * any other failure propagates unchanged.
    */
   create(
@@ -47,6 +51,8 @@ export interface EveRunStore {
       relayOrigin?: string | null;
     },
   ): Promise<EveRunRecord>;
+  /** Relay runs this user created at or after `since`. */
+  countRecentRelayRuns(userId: string, since: Date): Promise<number>;
   /** Compare-and-set on continuationToken; true when the swap happened. */
   swapToken(
     userId: string,
@@ -84,25 +90,38 @@ const copy = (r: EveRunRecord): EveRunRecord => structuredClone(r);
 
 /** Single-process store for tests and local use. Never awaits mid-update. */
 export function createMemoryRunStore(): EveRunStore {
-  const rows = new Map<string, EveRunRecord & { userId: string; chatId: string }>();
+  const rows = new Map<
+    string,
+    EveRunRecord & { userId: string; chatId: string; createdAt: Date }
+  >();
   const key = (userId: string, chatId: string) => `${userId}:${chatId}`;
 
   return {
     async get(userId, chatId) {
       const row = rows.get(key(userId, chatId));
       if (!row) return undefined;
-      const { userId: _u, chatId: _c, ...record } = row;
+      const { userId: _u, chatId: _c, createdAt: _t, ...record } = row;
       return copy(record);
     },
     async getByChatId(chatId) {
-      const matches = [...rows.values()].filter((r) => r.chatId === chatId);
+      const matches = [...rows.values()].filter(
+        (r) => r.chatId === chatId && r.relayOrigin !== null,
+      );
       if (matches.length !== 1) return undefined;
-      const { chatId: _c, ...rest } = matches[0];
+      const { chatId: _c, createdAt: _t, ...rest } = matches[0];
       return structuredClone(rest);
     },
     async create(userId, chatId, init) {
       const k = key(userId, chatId);
       if (rows.has(k)) throw new EveRunExistsError();
+      if (
+        init.relayOrigin != null &&
+        [...rows.values()].some(
+          (r) => r.chatId === chatId && r.relayOrigin !== null,
+        )
+      ) {
+        throw new EveRunExistsError();
+      }
       const record: EveRunRecord = {
         eveSessionId: init.eveSessionId,
         continuationToken: init.continuationToken,
@@ -111,8 +130,16 @@ export function createMemoryRunStore(): EveRunStore {
         pendingRequests: [],
         progress: null,
       };
-      rows.set(k, { ...copy(record), userId, chatId });
+      rows.set(k, { ...copy(record), userId, chatId, createdAt: new Date() });
       return record;
+    },
+    async countRecentRelayRuns(userId, since) {
+      return [...rows.values()].filter(
+        (r) =>
+          r.userId === userId &&
+          r.relayOrigin !== null &&
+          r.createdAt >= since,
+      ).length;
     },
     async swapToken(userId, chatId, expected, next) {
       const row = rows.get(key(userId, chatId));

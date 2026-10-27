@@ -87,3 +87,27 @@ export function toVertexModelId(
 export function isVertexModelId(value: unknown): value is string {
   return typeof value === 'string' && ALLOWED_MODEL_IDS.has(value);
 }
+
+/** Model a relay run uses when `RELAY_ALLOWED_MODELS` names none we know. */
+const DEFAULT_RELAY_MODELS: readonly string[] = ['claude-opus-5'];
+
+type Env = Record<string, string | undefined>;
+
+/**
+ * Picker ids a relay (extension) run may request, from `RELAY_ALLOWED_MODELS`
+ * (comma-separated). Ids not in `MODEL_MAP` are dropped. Unset, blank, or a
+ * list with no known id gives the default, so a typo never opens the list
+ * and never leaves relay runs without a model. Read at call time.
+ */
+export function allowedRelayModels(env: Env = process.env): string[] {
+  const listed = (env.RELAY_ALLOWED_MODELS ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => Object.hasOwn(MODEL_MAP, id));
+  return listed.length > 0 ? [...new Set(listed)] : [...DEFAULT_RELAY_MODELS];
+}
+
+/** Whether a relay run may request this picker id. */
+export function isRelayModelAllowed(id: string, env: Env = process.env) {
+  return allowedRelayModels(env).includes(id);
+}

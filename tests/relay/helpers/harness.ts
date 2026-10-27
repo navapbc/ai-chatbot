@@ -271,12 +271,20 @@ export async function startRelay(
   };
 }
 
-export function mintRunTokens(secret: string, origin: string) {
+/** Both tokens for a fresh run; they share `sub`, as the hub requires. */
+export function mintRunTokens(
+  secret: string,
+  origin: string,
+  sub = 'e2e-user',
+) {
   const runId = `run-${randomBytes(6).toString('hex')}`;
   return {
     runId,
-    extension: mintRelayToken({ runId, role: 'extension', origin }, secret),
-    agent: mintRelayToken({ runId, role: 'agent', origin }, secret),
+    extension: mintRelayToken(
+      { runId, role: 'extension', origin, sub },
+      secret,
+    ),
+    agent: mintRelayToken({ runId, role: 'agent', origin, sub }, secret),
   };
 }
 

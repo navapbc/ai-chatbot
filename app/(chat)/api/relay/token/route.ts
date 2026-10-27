@@ -1,63 +1,89 @@
 import { z } from 'zod';
-import { auth } from '@/app/(auth)/auth';
+import { getRunStore } from '@/lib/ai/eve/run-store';
 import { ChatSDKError } from '@/lib/errors';
-import { normalizeOrigin } from '@/lib/relay/policy';
-import { mintRelayToken, RELAY_TOKEN_TTL_SECONDS } from '@/lib/relay/token';
+import { guardRelayRoute } from '@/lib/relay/route-guard';
+import {
+  MIN_RELAY_SECRET_LENGTH,
+  mintRelayToken,
+  RELAY_TOKEN_TTL_SECONDS,
+} from '@/lib/relay/token';
 import { toRelayWsUrl } from '@/lib/relay/url';
 
-const MIN_SECRET_LENGTH = 32;
+// Mints the extension's relay token for a run the caller owns. The run, its
+// origin and its owner all come from the run store: the body names the run
+// and nothing else. Unknown keys (an `origin`, a `role`, a `sub`) are stripped
+// by the schema and ignored, so a caller cannot steer the token's claims. The
+// agent's token is minted separately, by the internal agent-token route, for
+// the Eve session bound to the run.
+//
+// Gated by RELAY_TOKEN_ENDPOINT_ENABLED (checked first, before auth) and by
+// RELAY_RUNS_ENABLED (through guardRelayRoute). The endpoint flag stays unset
+// in deployment config until the owner decides to turn it on.
 
-const bodySchema = z.object({
-  runId: z.string().uuid(),
-  // Exact https origin only: no path, query, default port or trailing slash.
-  origin: z.string().refine((value) => normalizeOrigin(value) === value),
-});
+const NO_STORE = 'no-store';
+
+const bodySchema = z.object({ runId: z.string().uuid() });
+
+const noStore = (response: Response): Response => {
+  response.headers.set('Cache-Control', NO_STORE);
+  return response;
+};
+
+// Bodyless, so an unknown run, another user's run and a web run look alike.
+const notFound = () =>
+  new Response(null, { status: 404, headers: { 'Cache-Control': NO_STORE } });
+
+// Deliberately no cause: the body must not hint at env or stored values.
+const internalError = () =>
+  noStore(new ChatSDKError('internal_server_error:api').toResponse());
 
 export async function POST(request: Request) {
-  // Disabled by default: this mints tokens for any runId without an ownership
-  // check. It stays disabled until plan 4 binds runs to users (server-created
-  // runs, a `sub` claim and a hub peer check) and must not be enabled in
-  // deployment config before then. Checked first, before auth and parsing.
-  if (process.env.RELAY_TOKEN_ENDPOINT_ENABLED !== '1') {
-    return new Response(null, { status: 404 });
-  }
+  if (process.env.RELAY_TOKEN_ENDPOINT_ENABLED !== '1') return notFound();
 
-  const session = await auth();
-  if (!session?.user) {
-    return new ChatSDKError('unauthorized:chat').toResponse();
-  }
+  const guard = await guardRelayRoute();
+  if (!guard.ok) return noStore(guard.response);
+  const { userId } = guard;
 
-  let parsed: z.infer<typeof bodySchema>;
+  let runId: string;
   try {
-    parsed = bodySchema.parse(await request.json());
+    ({ runId } = bodySchema.parse(await request.json()));
   } catch {
-    return new ChatSDKError('bad_request:api').toResponse();
+    return noStore(new ChatSDKError('bad_request:api').toResponse());
   }
+
+  let relayOrigin: string | null;
+  try {
+    const run = await getRunStore().get(userId, runId);
+    if (!run) return notFound();
+    relayOrigin = run.relayOrigin;
+  } catch {
+    return internalError();
+  }
+  if (relayOrigin === null) return notFound();
 
   const secret = process.env.RELAY_TOKEN_SECRET;
   // RELAY_PUBLIC_URL (https) becomes the wss URL handed to clients.
   const publicUrl = process.env.RELAY_PUBLIC_URL;
   const relayUrl = publicUrl ? toRelayWsUrl(publicUrl) : null;
-  if (!secret || secret.length < MIN_SECRET_LENGTH || !relayUrl) {
-    // Deliberately no cause: the body must not hint at env values.
-    return new ChatSDKError('internal_server_error:api').toResponse();
+  if (!secret || secret.length < MIN_RELAY_SECRET_LENGTH || !relayUrl) {
+    console.error('[relay-token] misconfigured');
+    return internalError();
   }
 
-  // One clock read so both tokens share the same exp.
   const now = Math.floor(Date.now() / 1000);
-  const expiresAt = now + RELAY_TOKEN_TTL_SECONDS;
-  const claims = { runId: parsed.runId, origin: parsed.origin };
-  const extensionToken = mintRelayToken(
-    { ...claims, role: 'extension' },
-    secret,
-    { now },
-  );
-  const agentToken = mintRelayToken({ ...claims, role: 'agent' }, secret, {
-    now,
-  });
+  let extensionToken: string;
+  try {
+    extensionToken = mintRelayToken(
+      { runId, role: 'extension', origin: relayOrigin, sub: userId },
+      secret,
+      { now },
+    );
+  } catch {
+    return internalError();
+  }
 
   return Response.json(
-    { extensionToken, agentToken, relayUrl, expiresAt },
-    { headers: { 'Cache-Control': 'no-store' } },
+    { extensionToken, relayUrl, expiresAt: now + RELAY_TOKEN_TTL_SECONDS },
+    { headers: { 'Cache-Control': NO_STORE } },
   );
 }

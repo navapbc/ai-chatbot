@@ -12,7 +12,7 @@ const { runRelayCommand } = await import('@/lib/relay/eve-relay-browser');
 const RUN = '0b6f7c4e-5d1a-4c55-9a53-3f7d2f0c9a11';
 const TOKEN = 'FETCHED+token/with=specials&more';
 const LEGACY = 'SENTINEL-LEGACY-TOKEN';
-const SECRET = 'sekret-value';
+const SECRET = 'sekret-value-padded-to-be-over-thirty-two-chars';
 
 const ctxWith = (attributes: Record<string, string>) =>
   ({

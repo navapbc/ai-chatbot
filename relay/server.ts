@@ -175,14 +175,23 @@ export function createRelayServer(opts: RelayServerOptions): Server {
         role: claims.role,
         durationMs: Date.now() - started,
       });
+      // The token's sub binds the run to one user: the hub refuses a socket
+      // whose sub differs from the one the run's first socket carried.
       if (claims.role === 'extension') {
-        hub.attachExtension(claims.runId, claims.origin, peer);
+        hub.attachExtension(claims.runId, claims.origin, claims.sub, peer);
         return;
       }
-      const result = hub.attachAgent(claims.runId, claims.origin, peer);
+      const result = hub.attachAgent(
+        claims.runId,
+        claims.origin,
+        claims.sub,
+        peer,
+      );
       if (result === 'busy') ws.close(POLICY_CLOSE, 'run busy');
       else if (result === 'origin-mismatch') {
         ws.close(POLICY_CLOSE, 'origin mismatch');
+      } else if (result === 'sub-mismatch') {
+        ws.close(POLICY_CLOSE, 'user mismatch');
       }
     });
   });

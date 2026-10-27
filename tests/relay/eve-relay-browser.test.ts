@@ -124,7 +124,10 @@ afterAll(() => {
 const fetchMock = vi.fn();
 beforeEach(() => {
   _resetAgentTokenCache();
-  vi.stubEnv('EVE_INTERNAL_SECRET', 'sekret-value');
+  vi.stubEnv(
+    'EVE_INTERNAL_SECRET',
+    'sekret-value-padded-to-be-over-thirty-two-chars',
+  );
   fetchMock.mockReset();
   fetchMock.mockImplementation(
     async () =>
@@ -252,7 +255,9 @@ describe('runRelayCommand with a fetched token', () => {
     expect(result).toMatchObject({ success: false, liveViewUrl: null });
     expect(result.error).toBe('The relay token request was refused.');
     expect(JSON.stringify(result)).not.toContain(FAKE_TOKEN);
-    expect(JSON.stringify(result)).not.toContain('sekret-value');
+    expect(JSON.stringify(result)).not.toContain(
+      'sekret-value-padded-to-be-over-thirty-two-chars',
+    );
     vi.unstubAllEnvs();
   });
 

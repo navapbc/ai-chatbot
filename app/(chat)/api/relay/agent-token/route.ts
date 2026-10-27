@@ -1,7 +1,16 @@
 import { z } from 'zod';
 import { getRunStore } from '@/lib/ai/eve/run-store';
 import { secretMatches } from '@/lib/ai/eve/loopback-attributes';
-import { mintRelayToken, RELAY_TOKEN_TTL_SECONDS } from '@/lib/relay/token';
+import { readBoundedText } from '@/lib/relay/read-bounded-body';
+import {
+  internalSecret,
+  internalSecretMisconfigured,
+} from '@/lib/relay/internal-secret';
+import {
+  MIN_RELAY_SECRET_LENGTH,
+  mintRelayToken,
+  RELAY_TOKEN_TTL_SECONDS,
+} from '@/lib/relay/token';
 
 // Internal only: the Eve process calls this over loopback to get a fresh relay
 // agent token for a run (lib/relay/agent-token.ts). There is no user session
@@ -14,12 +23,17 @@ import { mintRelayToken, RELAY_TOKEN_TTL_SECONDS } from '@/lib/relay/token';
 // one. Nothing here may put the token, the secret, env values or the stored
 // origin into a log or an error.
 
-const MIN_SECRET_LENGTH = 32;
 const NO_STORE = { 'Cache-Control': 'no-store' };
 
 // Eve session ids are short (`wrun_` plus a ULID); the bound only keeps an
 // oversized value out of the comparison.
 const MAX_SESSION_ID_LENGTH = 200;
+
+// The real body is two short strings; anything larger is refused unparsed.
+const MAX_BODY_BYTES = 2048;
+
+// One fixed, value-free line: no names, lengths or values.
+const logMisconfigured = () => console.error('[relay-token] misconfigured');
 
 const bodySchema = z.object({
   runId: z.string().uuid(),
@@ -33,10 +47,14 @@ const failure = (status: number, error: string) =>
 export async function POST(request: Request) {
   if (process.env.RELAY_RUNS_ENABLED !== '1') return notFound();
 
+  if (internalSecretMisconfigured()) {
+    logMisconfigured();
+    return notFound();
+  }
   if (
     !secretMatches(
       request.headers.get('x-eve-internal-secret'),
-      process.env.EVE_INTERNAL_SECRET,
+      internalSecret(),
     )
   ) {
     return notFound();
@@ -45,7 +63,9 @@ export async function POST(request: Request) {
   let runId: string;
   let sessionId: string;
   try {
-    ({ runId, sessionId } = bodySchema.parse(await request.json()));
+    const read = await readBoundedText(request, MAX_BODY_BYTES);
+    if (!read.ok) return failure(400, 'Invalid request.');
+    ({ runId, sessionId } = bodySchema.parse(JSON.parse(read.text)));
   } catch {
     return failure(400, 'Invalid request.');
   }
@@ -66,16 +86,24 @@ export async function POST(request: Request) {
   }
 
   const secret = process.env.RELAY_TOKEN_SECRET;
-  if (!secret || secret.length < MIN_SECRET_LENGTH) {
+  if (!secret || secret.length < MIN_RELAY_SECRET_LENGTH) {
+    logMisconfigured();
     return failure(500, 'Internal error.');
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const token = mintRelayToken(
-    { runId, role: 'agent', origin: run.relayOrigin },
-    secret,
-    { now },
-  );
+  let token: string;
+  try {
+    // The run's owner is the token's sub, so the hub pairs this agent only
+    // with an extension that holds a token minted for the same user.
+    token = mintRelayToken(
+      { runId, role: 'agent', origin: run.relayOrigin, sub: run.userId },
+      secret,
+      { now },
+    );
+  } catch {
+    return failure(500, 'Internal error.');
+  }
   return Response.json(
     { token, expiresAt: now + RELAY_TOKEN_TTL_SECONDS },
     { headers: NO_STORE },
