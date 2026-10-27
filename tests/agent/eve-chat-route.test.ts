@@ -1837,3 +1837,121 @@ describe('POST /api/eve-chat relay message bounds', () => {
     await drain(res);
   });
 });
+
+describe('POST /api/eve-chat ended relay runs', () => {
+  const RELAY_CHAT = '3f2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b';
+  const ORIGIN = 'https://apply.example.gov';
+  const EXT = `chrome-extension://${'a'.repeat(32)}`;
+  const nameReq = {
+    requestId: 'call-a',
+    prompt: 'Name?',
+    display: 'text' as const,
+    options: [],
+    allowFreeform: true,
+  };
+
+  const post = (body: Record<string, unknown>, id = RELAY_CHAT) =>
+    POST(
+      new Request('http://localhost/api/eve-chat', {
+        method: 'POST',
+        headers: { Origin: EXT },
+        body: JSON.stringify({ id, ...body }),
+      }),
+    );
+  const say = (text: string, id = RELAY_CHAT) =>
+    post({ message: { role: 'user', parts: [{ type: 'text', text }] } }, id);
+
+  const seedEnded = async (pending: (typeof nameReq)[] = []) => {
+    await store.create(USER, RELAY_CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+      relayOrigin: ORIGIN,
+    });
+    await store.setPending(USER, RELAY_CHAT, pending);
+    await store.end(USER, RELAY_CHAT);
+  };
+
+  const expectRunEnded = async (res: Response) => {
+    expect(res.status).toBe(400);
+    expect((await res.json()).cause).toBe('run_ended');
+    expect(eve.continueEveSession).not.toHaveBeenCalled();
+    expect(eve.createEveSession).not.toHaveBeenCalled();
+    expect(eve.openEveStream).not.toHaveBeenCalled();
+    expect((await store.get(USER, RELAY_CHAT))?.continuationToken).toBe(
+      'tok-0',
+    );
+  };
+
+  beforeEach(() => {
+    vi.stubEnv('RELAY_RUNS_ENABLED', '1');
+    vi.stubEnv('RELAY_EXTENSION_ORIGIN', EXT);
+    vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example.gov');
+    vi.stubEnv(
+      'EVE_INTERNAL_SECRET',
+      'internal-secret-for-tests-padded-to-be-over-thirty-two-chars',
+    );
+    setParticipantSourceForTests(createStaticParticipantSource(PARTICIPANTS));
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    setParticipantSourceForTests(undefined);
+  });
+
+  it('refuses a follow-up with run_ended before the token claim', async () => {
+    await seedEnded();
+    const swap = vi.spyOn(store, 'swapToken');
+    await expectRunEnded(await say('keep going'));
+    expect(swap).not.toHaveBeenCalled();
+  });
+
+  it('refuses an answer turn with run_ended, keeping pending', async () => {
+    await seedEnded([nameReq]);
+    const swap = vi.spyOn(store, 'swapToken');
+    const setPending = vi.spyOn(store, 'setPending');
+    await expectRunEnded(
+      await post({ inputResponses: [{ requestId: 'call-a', text: 'Ada' }] }),
+    );
+    expect(swap).not.toHaveBeenCalled();
+    expect(setPending).not.toHaveBeenCalled();
+    expect((await store.get(USER, RELAY_CHAT))?.pendingRequests).toEqual([
+      nameReq,
+    ]);
+  });
+
+  it('refuses run_ended ahead of the answers_pending check', async () => {
+    await seedEnded([nameReq]);
+    await expectRunEnded(await say('hello'));
+  });
+
+  it('leaves relay first turns alone', async () => {
+    streamEvents({ type: 'turn.started' });
+    const res = await post({
+      relay: {
+        origin: ORIGIN,
+        participant: { recordId: PARTICIPANTS[0].record_id },
+      },
+    });
+    expect(res.status).toBe(200);
+    await drain(res);
+    expect(eve.createEveSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves web chats alone', async () => {
+    await store.create(USER, CHAT, {
+      eveSessionId: 'sess-w',
+      continuationToken: 'tok-w',
+    });
+    // end() on a web row is not something the stop route does; even so, the
+    // ended check is scoped to relay runs.
+    await store.end(USER, CHAT);
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-w2',
+      sessionId: 'sess-w',
+    });
+    streamEvents({ type: 'turn.started' });
+    const res = await say('hi', CHAT);
+    expect(res.status).toBe(200);
+    await drain(res);
+    expect(eve.continueEveSession).toHaveBeenCalledTimes(1);
+  });
+});

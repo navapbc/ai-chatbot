@@ -170,6 +170,12 @@ describe('POST /api/relay/token', () => {
     await expectBodylessNoStore404(await post({ runId }));
   });
 
+  it('returns a bodyless 404 for an ended run, minting nothing', async () => {
+    expect(await store.end(USER, RUN_ID)).toBe(true);
+    await expectBodylessNoStore404(await post(good));
+    expect(logged).toEqual([]);
+  });
+
   it('returns a credential-free 500 when the store throws', async () => {
     vi.spyOn(store, 'get').mockRejectedValue(new Error(`boom ${ORIGIN}`));
     const response = await post(good);

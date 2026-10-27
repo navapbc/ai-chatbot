@@ -258,6 +258,16 @@ export async function POST(request: Request) {
     if (isRelayTurn && originRefusal(request, { requireOrigin: true })) {
       return new ChatSDKError('forbidden:chat').toResponse();
     }
+    // A stopped relay run takes no more turns (P4b-c): refused before any
+    // other check, the token claim, a store write or an Eve call. The
+    // caseworker starts a new run. Web chats are not touched.
+    if (
+      existing &&
+      existing.relayOrigin !== null &&
+      existing.endedAt !== null
+    ) {
+      return new ChatSDKError('bad_request:api', 'run_ended').toResponse();
+    }
     // A web chat never becomes a relay run: a relay field on its follow-up is
     // refused rather than ignored. On a relay run's follow-up it is ignored
     // (the stored origin governs).

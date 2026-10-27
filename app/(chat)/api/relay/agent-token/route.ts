@@ -80,8 +80,14 @@ export async function POST(request: Request) {
   // the run's own Eve session gets one: an orphan from a lost race, or a
   // subagent's child session, is refused like an unknown run. Between Eve
   // creating the session and the run row landing this also refuses; the
-  // caller does not cache refusals, so the next tool call asks again.
-  if (!run || run.relayOrigin === null || run.eveSessionId !== sessionId) {
+  // caller does not cache refusals, so the next tool call asks again. An
+  // ended (stopped) run is refused the same way.
+  if (
+    !run ||
+    run.relayOrigin === null ||
+    run.eveSessionId !== sessionId ||
+    run.endedAt !== null
+  ) {
     return notFound();
   }
 

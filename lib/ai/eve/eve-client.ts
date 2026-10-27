@@ -100,6 +100,44 @@ export async function continueEveSession(
   return { continuationToken: next, sessionId: landedOn };
 }
 
+// Eve session ids are `wrun_` plus a ULID; this admits only a safe path
+// segment, so a stored id can never redirect the request.
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
+
+export type CancelTurnStatus = 'accepted' | 'no_active_turn';
+
+/**
+ * Cancel the session's in-flight turn. Both of Eve's statuses are success
+ * ("no_active_turn" covers a settled turn or a duplicate cancel). The session
+ * keeps its context; callers that must refuse further turns do so themselves.
+ *
+ * Same conventions as `continueEveSession`: no relay or internal-secret
+ * headers (those are a session-creation grant; Eve's cancel route runs the
+ * channel's route auth only). Errors carry no session id and no response
+ * text.
+ */
+export async function cancelEveTurn(
+  sessionId: string,
+): Promise<CancelTurnStatus> {
+  if (!SESSION_ID_PATTERN.test(sessionId)) {
+    throw new Error('Eve cancel: invalid session id');
+  }
+  const res = await fetch(`${EVE_URL}/eve/v1/session/${sessionId}/cancel`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  if (!res.ok) throw new Error(`Eve cancel responded ${res.status}`);
+  const json = (await res.json().catch(() => null)) as {
+    status?: unknown;
+  } | null;
+  const status = json?.status;
+  if (status !== 'accepted' && status !== 'no_active_turn') {
+    throw new Error('Eve cancel returned an unknown status');
+  }
+  return status;
+}
+
 /**
  * Read a session's durable event stream from `startIndex` (an absolute event
  * count, so it is also the number of events already consumed).
