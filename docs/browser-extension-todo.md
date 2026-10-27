@@ -21,7 +21,7 @@ Nothing here has been applied. The relay stays off until `RELAY_ENABLED` is `tru
 - [ ] Grant `roles/logging.configWriter` to the deploy service account, or set `relay_exclude_request_logs = false` knowingly (that leaves token-bearing request URLs in Cloud Logging).
 - [ ] Set the GitHub repository variable `RELAY_ENABLED=true` only after the two items above. Turning it off later plans a destroy; on dev and prod deletion protection makes that apply fail.
 - [ ] Do not set `RELAY_TOKEN_ENDPOINT_ENABLED` anywhere until the extension can authenticate to the app (plan 4b; runs are now user-bound).
-- [ ] Before deploying plan 4a: apply migrations 0008 (Participant) and 0009 (partial unique index on `EveRun.chatId`; fails if production holds duplicate relay rows per chat id, so check first), run `scripts/seed-participants.ts`, and make sure `EVE_INTERNAL_SECRET` is at least 32 characters.
+- [ ] Before deploying plan 4a: migrations 0008 (Participant) and 0009 (partial unique index on `EveRun.chatId`) are applied by `scripts/start-container.sh` (`pnpm tsx lib/db/migrate`, `set -euo pipefail`) on the first deploy that carries this merge, and a failure crash-loops the new revision. BEFORE that deploy, `SELECT "chatId", count(*) FROM "EveRun" WHERE "relayOrigin" IS NOT NULL GROUP BY 1 HAVING count(*) > 1;` must return no rows (in practice none exist: `RELAY_RUNS_ENABLED` is set nowhere in deployment). No down migrations; rolling back the code is safe (old code ignores `Participant`; the index only touches relay rows). Run `scripts/seed-participants.ts` manually (the container does not), and make sure `EVE_INTERNAL_SECRET` and `RELAY_TOKEN_SECRET` are each at least 32 characters (a short `RELAY_TOKEN_SECRET` makes both token routes return 500).
 - [ ] Only if running more than one relay instance: create `relay-redis-url-<env>` and first close the multi-instance gaps listed under plan 5.
 - [ ] Run the manual cloud check (plan task 11) after the first apply: e2e against the deployed relay, compare round trip, snapshot and fill times with the spike (56 ms, about 600 ms, about 240 ms), and search the Eve Postgres world for relay token strings.
 
@@ -31,7 +31,7 @@ Nothing here has been applied. The relay stays off until `RELAY_ENABLED` is `tru
 - [ ] Which models may caseworkers choose between? Mechanism exists: `RELAY_ALLOWED_MODELS`; the owner picks the values.
 - [ ] Which field categories count as sensitive beyond SSN and bank details?
 - [ ] Distribution: Chrome Enterprise force-install or an unlisted store listing, and which IT team owns it?
-- [x] The participant table lives in the app's existing Neon database (`Participant`, migration 0008).
+- [x] The participant table lives in the app's Postgres database, the one `DATABASE_URL` points to (`Participant`, migration 0008).
 - [ ] IT: do managed Chrome policies set `runtime_blocked_hosts` for this extension, `DisableScreenshots`, or DLP screenshot rules? Any of these breaks `chrome.debugger` on Chrome 155 and later.
 - [ ] IT: can a Chrome launch flag be set for caseworkers, and how do they start Chrome today?
 
@@ -83,16 +83,16 @@ Landed on `feat/sensitive-redaction-impl`; see `docs/changes/2026-10-26-add-sens
 
 ## Plan 4: Side Panel And App API
 
-- [ ] The six screens and saved details with the 8-hour limit (the participant API on Neon is done, plan 4a).
+- [ ] The six screens and saved details with the 8-hour limit (the participant API is done, plan 4a).
 - [x] Runtime Jev route `app/(chat)/api/relay/classify-field/route.ts` (plan 4a); `CLAUDE.md` updated.
 - [ ] 4b: the worker calls classify-field (build the request with `describeFieldForJev`) and ORs the verdict with the deterministic `isSensitiveField`, so Jev can only escalate masking.
 - [ ] Typing sensitive values from the panel into the page, and registering them with the worker through `addKnownValue`. Values are lost on a worker restart, so the panel re-registers them after each restart.
-- [x] Server-built opening message (plan 4a): the unstripped participant record currently transits the browser to the Next server before the route strips it. Fixed: the server builds it from the stored participant.
+- [x] Server-built opening message (plan 4a): before this, the unstripped participant record transited the browser to the Next server before the route stripped it. Done: the server builds the message from the stored participant, so the record no longer transits the browser.
 - [x] Adapter redaction of tool inputs in the client stream on relay runs (plan 4a). Residuals: see "Plan 4a follow-ups".
 - [ ] 4b: the panel must not render or log raw tool inputs (the client stream no longer carries them on relay runs, but `ask_question` and worker-side data still must not be logged).
 - [ ] A `calworks_id`-style panel flow: the field is stripped from the record, so the caseworker supplies it in the panel.
 - [x] Bind runs to users before enabling the token route (plan 4a): server-created runs, `runId` to `userId`, origin from the stored run, guests refused, soft run limit (`RELAY_MAX_RUNS_PER_HOUR`), a `sub` claim with a hub peer check. (Token refresh for the agent leg is no longer needed: it fetches on demand.)
-- [x] (plan 4a) The public `app/(chat)/api/relay/token/route.ts` now mints only the extension token. Was: it minted and returned an `agentToken`. Before `RELAY_TOKEN_ENDPOINT_ENABLED` is set anywhere, make it mint only the role its caller needs (the extension token); the agent leg gets its token from the internal agent-token route.
+- [x] (plan 4a) The public `app/(chat)/api/relay/token/route.ts` now mints only the extension token. Done: it no longer mints or returns an `agentToken` (it used to); the agent leg gets its token from the internal agent-token route.
 - [x] (plan 4a: relay-only lookup, partial unique index, other-user refusal before session creation) Chat-id squatting on the internal token route: another user who creates an `EveRun` row for the same chat id first makes the route 404 for the real owner, and if a run id leaks, that user can obtain an agent token for the run with an origin they chose (hijack). The session binding (the route mints only for the Eve session stored on the row) narrows this to the squatter's own session but does not stop it; fix with user binding, plus a partial unique index on `EveRun.chatId` where `relayOrigin` is not null, or a relay-only store lookup.
 - [x] `EVE_INTERNAL_SECRET` minimum length (32; shorter is treated as unset). Owner: the deployed secret must meet it.
 - [x] The agent-token route reads its body through a bounded reader (`lib/relay/read-bounded-body.ts`).
@@ -105,13 +105,17 @@ Landed on `feat/sensitive-redaction-impl`; see `docs/changes/2026-10-26-add-sens
 
 - [ ] 4b: the panel; saved details; typing sensitive values plus `addKnownValue`; the "Allow this site?" flow; `startRun` serialization; service-worker hook gating; Stop while reconnecting; the detach decision (all as listed above).
 - [ ] 4b: how the extension authenticates to the app: CORS, cookies, SameSite.
+- [ ] 4b: a read route for run state: `progress` and `pendingRequests` are stored on the `EveRun` row but nothing returns them, so a panel reopened mid-run cannot rebuild its state; there is also no stream-resume GET on `eve-chat`.
+- [ ] 4b: a server-side Stop: spec Security 9 says Stop ends the run, but today Stop only closes the relay session and the Eve session keeps running, because no route calls Eve's `POST /eve/v1/session/:id/cancel`.
+- [ ] Owner decision: the `eve-chat` route reads `request.json()` with no size bound (so does `relay/token`, behind auth), so a 10 MB body is buffered before refusal. Bounding it would change the web path too.
+- [ ] 4b note: runs started from entered `details` (not a `recordId`) get no Jev annotation, silently: the Eve participant hook only recognizes a full participant record (`record_id` plus `participant.name`), so Jev features behave as if the flag were off for them.
 - [ ] 4b: decide whether `action_label` text is needed in tool-card inputs (they are `{}` on relay runs; it would need a deliberately sanitized field).
 
 ### Plan 4a follow-ups
 
 Known residuals:
 - [ ] Reasoning and text deltas stream model text; a model could echo a typed value and nothing masks it.
-- [ ] An SSN in an `open` URL path survives tool-input redaction (the agent's own input; `tool-output-available` is redacted only by the worker upstream).
+- [ ] An SSN in an `open` URL path survives tool-input redaction (the agent's own input). Browser tool outputs are redacted only by the worker upstream; `form_summary`, `resolve_field_value` and `gap_analysis` outputs stream verbatim on relay runs (inputs become `{}`) and derive from the stripped record plus caseworker answers, so the 4b panel must treat them as applicant data.
 - [ ] Orphan Eve session if two users race on the same new chat id (the pre-check is not atomic).
 - [ ] The run limit is a soft cap: check-then-create, concurrent first turns can exceed it.
 - [ ] A Jev prompt injection can only suppress an escalation, never un-mask a deterministically sensitive field.
@@ -220,7 +224,7 @@ R5. Microsandbox edits from `eve:dev` are reverted; cost: none beyond re-install
 R6. Cheaper model tiers were used for small tasks; cost: extra review rounds if quality slipped.
 R7. Stale-claim takeover is deferred (minimum: never forward a `claim:` token); cost: a crash mid-swap strands that chat.
 R8. Token fetch dedupe and eviction on relay rejection are deferred; cost: extra token requests and a rejected token reused until expiry.
-R9. Chat-id squatting is deferred to plan 4 user binding; cost: denial of the token route for the real owner, and if a run id leaks, another user who creates the row first can obtain an agent token for that run with an origin they chose (hijack). Partly mitigated by binding the token to the Eve session stored on the row (no other session, such as an orphan, can use the run), which does not stop a squatter's own session.
+R9. Chat-id squatting: plan 4a added user binding (server-created runs, a relay-only lookup, a partial unique index, refusal of another user's chat id before session creation), which closes the row-squatting path; the residual is the orphan Eve session from a race on a new chat id. The original cost was: cost: denial of the token route for the real owner, and if a run id leaks, another user who creates the row first can obtain an agent token for that run with an origin they chose (hijack). Partly mitigated by binding the token to the Eve session stored on the row (no other session, such as an orphan, can use the run), which does not stop a squatter's own session.
 R10. Non-default ports stay valid origins; cost: a run can bind to an unexpected port on an allowed host.
 R11. Replay resurrection and persist-before-show are deferred; cost: a cleared question can reappear after a crash.
 R12. The relay stream is treated as sensitive; cost: the extension UI cannot show raw tool inputs.

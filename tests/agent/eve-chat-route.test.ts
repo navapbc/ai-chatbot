@@ -483,7 +483,7 @@ describe('POST /api/eve-chat relay runs', () => {
       buildExtensionRunMessage(
         buildRelayOpeningMessage({ origin: ORIGIN, participant: RECORD }),
       ),
-      undefined,
+      'claude-opus-5',
       REF,
     );
     expect((await store.get(USER, RELAY_CHAT))?.relayOrigin).toBe(ORIGIN);
@@ -728,12 +728,19 @@ describe('POST /api/eve-chat relay runs', () => {
     expect(eve.createEveSession.mock.calls[0][1]).toBe('claude-sonnet-5');
   });
 
-  it('sends no model when the start names none, whatever modelOverride says', async () => {
+  it('uses the default allowed model when the start names none, whatever modelOverride says', async () => {
     streamEvents({ type: 'turn.started' });
     await drain(
-      await startRun(start(), RELAY_CHAT, { modelOverride: 'claude-sonnet-5' }),
+      await startRun(start(), RELAY_CHAT, { modelOverride: 'gpt-5.4' }),
     );
-    expect(eve.createEveSession.mock.calls[0][1]).toBeUndefined();
+    expect(eve.createEveSession.mock.calls[0][1]).toBe('claude-opus-5');
+  });
+
+  it('uses the first env-allowed model when the start names none', async () => {
+    vi.stubEnv('RELAY_ALLOWED_MODELS', 'claude-sonnet-5');
+    streamEvents({ type: 'turn.started' });
+    await drain(await startRun(start()));
+    expect(eve.createEveSession.mock.calls[0][1]).toBe('claude-sonnet-5');
   });
 
   it('builds the opening message from entered details', async () => {
@@ -746,7 +753,7 @@ describe('POST /api/eve-chat relay runs', () => {
       buildExtensionRunMessage(
         buildRelayOpeningMessage({ origin: ORIGIN, participant: details }),
       ),
-      undefined,
+      'claude-opus-5',
       REF,
     );
   });

@@ -18,7 +18,11 @@ import {
   translateEveEvent,
   extractLatestUserText,
 } from '@/lib/ai/eve/stream-adapter';
-import { isRelayModelAllowed, toVertexModelId } from '@/lib/ai/eve/model-map';
+import {
+  allowedRelayModels,
+  isRelayModelAllowed,
+  toVertexModelId,
+} from '@/lib/ai/eve/model-map';
 import { type InputAnswer, validateAnswers } from '@/lib/ai/eve/input-requests';
 import { isProductionEnvironment } from '@/lib/constants';
 import {
@@ -172,7 +176,9 @@ async function prepareRelayStart(
     start: {
       text: safe.text,
       origin: parsed.origin,
-      model: toVertexModelId(parsed.model),
+      // No model named: the first allowed one, so a start can never run a
+      // model outside RELAY_ALLOWED_MODELS via Eve's own default.
+      model: toVertexModelId(parsed.model ?? allowedRelayModels()[0]),
       ref: { url, runId: chatId },
     },
   };
