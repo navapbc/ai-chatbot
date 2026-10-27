@@ -204,8 +204,57 @@ const MAX_RECONNECT_MS = 30_000;
 const PENDING_STOP_MS = 30_000;
 // A non-user detach ends the run unless the tab is re-attached in time.
 const DETACH_GRACE_MS = 5_000;
-const REGISTRATION_REFUSED =
-  'screenshots are refused until known values are registered again';
+const REGISTRATION_REFUSED = 'registration required';
+/**
+ * While a run needs registration (its redactor lost the known values in a
+ * worker restart), the agent may send only these: methods whose result is
+ * empty (no page text) and which keep the run's session alive. Everything
+ * else, including any method not listed here, is refused with
+ * REGISTRATION_REFUSED: DOM.*, Accessibility.*, Runtime.evaluate and
+ * callFunctionOn, Page.captureScreenshot, getFrameTree and navigate, ...
+ */
+const UNREGISTERED_METHODS: ReadonlySet<string> = new Set([
+  'Runtime.enable',
+  'Runtime.runIfWaitingForDebugger',
+  'Page.enable',
+  'Page.bringToFront',
+  'Page.handleJavaScriptDialog',
+  'Network.enable',
+  'DOM.enable',
+  'Accessibility.enable',
+  'Target.setAutoAttach',
+  'Input.insertText',
+  'Input.dispatchKeyEvent',
+  'Input.dispatchMouseEvent',
+]);
+/**
+ * Events forwarded while a run needs registration: the allowed events
+ * (ALLOWED_EVENT_METHODS) that carry no URL, title, origin, stack or other
+ * page text. Dropped meanwhile: Page.frameNavigated, navigatedWithinDocument,
+ * frameRequestedNavigation, frameStartedNavigating and frameAttached (URL or
+ * stack), Network.requestWillBeSent and responseReceived (URL),
+ * Runtime.executionContextCreated (origin, name). The two dialog events are
+ * rebuilt with empty text by filterEvent; the Target events are forwarded
+ * with their URL and title blanked (see withoutTargetUrl).
+ */
+const UNREGISTERED_EVENTS: ReadonlySet<string> = new Set([
+  'DOM.documentUpdated',
+  'Network.loadingFailed',
+  'Network.loadingFinished',
+  'Network.requestServedFromCache',
+  'Page.domContentEventFired',
+  'Page.frameDetached',
+  'Page.frameStartedLoading',
+  'Page.frameStoppedLoading',
+  'Page.javascriptDialogClosed',
+  'Page.javascriptDialogOpening',
+  'Page.loadEventFired',
+  'Runtime.executionContextDestroyed',
+  'Runtime.executionContextsCleared',
+  'Target.attachedToTarget',
+  'Target.detachedFromTarget',
+  'Target.targetInfoChanged',
+]);
 // Relay close codes that end the run: normal (run closed, replaced) and
 // policy (refused). Anything else is a dropped connection.
 const FINAL_CLOSE_CODES = new Set([1000, 1008]);
@@ -319,6 +368,12 @@ async function tabTarget(tabId: number) {
   const targets = await chrome.debugger.getTargets();
   return targets.find((t) => t.tabId === tabId && t.type === 'page');
 }
+
+/** A target as the agent sees it; URL and title blank while unregistered. */
+const agentTargetInfo = (current: Run, t: chrome.debugger.TargetInfo) => {
+  const info = targetInfo(t);
+  return current.needsRegistration ? { ...info, url: '', title: '' } : info;
+};
 
 const targetInfo = (t: chrome.debugger.TargetInfo) => ({
   targetId: t.id,
@@ -862,7 +917,7 @@ async function handleCommand(
       await requireTabInScope(current);
       const target = await tabTarget(current.tabId);
       return redact(current, 'Target.getTargets', {
-        targetInfos: target ? [targetInfo(target)] : [],
+        targetInfos: target ? [agentTargetInfo(current, target)] : [],
       });
     }
     case 'attach': {
@@ -932,7 +987,7 @@ async function handleCommand(
       current.mainFrameId = target.id;
       return redact(current, 'Target.attachToTarget', {
         sessionId: tabSessionId(current.tabId),
-        targetInfo: targetInfo({ ...target, attached: true }),
+        targetInfo: agentTargetInfo(current, { ...target, attached: true }),
       });
     }
     case 'createTarget': {
@@ -966,12 +1021,13 @@ async function forwardCdp(
     throw new Error('invalid params');
   }
 
-  const screenshot = method === 'Page.captureScreenshot';
-  // After a worker restart the redactor has lost the known values, so the
-  // mask cannot find them on the page: refuse until the panel re-registers.
-  if (screenshot && current.needsRegistration) {
+  // After a worker restart the redactor has lost the known values, so
+  // nothing that can carry page text may go up until the panel re-registers
+  // them (fail closed: unlisted methods are refused too).
+  if (current.needsRegistration && !UNREGISTERED_METHODS.has(method)) {
     throw new Error(REGISTRATION_REFUSED);
   }
+  const screenshot = method === 'Page.captureScreenshot';
   const lock = lockFor(current.tabId);
 
   const isTab = sessionId === tabSessionId(current.tabId);
@@ -2237,6 +2293,13 @@ export function onDebuggerEvent(
 
   const filtered = filterEvent(method, forwarded);
   if (!filtered) return;
+  // Unregistered (see UNREGISTERED_EVENTS): only events with no page text.
+  if (current.needsRegistration) {
+    if (!UNREGISTERED_EVENTS.has(filtered.method)) return;
+    if (LIFECYCLE_EVENTS.has(filtered.method)) {
+      filtered.params = withoutTargetUrl(filtered.params);
+    }
+  }
   // Routing and scope above used the raw params; only what is sent is
   // redacted. `null` means the event cannot be redacted: drop it.
   const redacted = redactEventParams(

@@ -8,6 +8,7 @@ import {
   type AgentResult,
   agentBrowser,
   bridgeMessage,
+  bridgeMessageFromPage,
   cdpUrl,
   closeAgentSessions,
   EXTENSION_ID,
@@ -2228,6 +2229,19 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     expect(
       relay.logs.some((l) => l.event === 'run-closed' && l.runId === runId),
     ).toBe(false);
+
+    // The rebuilt run lost its known values: reads are refused until the
+    // panel registers them again (fail closed).
+    const refused = await agentBrowser(['snapshot', '-i'], cdp, 'unregistered');
+    expect(refused.success).toBe(false);
+    expect(JSON.stringify(refused)).toContain('registration required');
+    await closeAgentSessions();
+    expect(
+      await bridgeMessageFromPage(browser.context, {
+        type: 'registrationComplete',
+        count: 0,
+      }),
+    ).toEqual({ ok: true });
 
     // A new agent session snapshots and fills a second field.
     const snap = await agentBrowser(['snapshot', '-i'], cdp, 'restarted');

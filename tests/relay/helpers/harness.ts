@@ -1,6 +1,6 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpsServer } from 'node:https';
 import type { Server, ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
@@ -328,6 +328,12 @@ export async function launchExtensionBrowser(
       env: { ...env, EXTENSION_TEST_HOOKS: '1' },
       stdio: 'ignore',
     });
+    // An empty extension page, only in this test build: bridgeMessageFromPage
+    // reaches a worker Playwright has no handle for (after a restart).
+    writeFileSync(
+      path.join(extensionDir, TEST_PAGE),
+      '<!doctype html><html lang="en"><title>test</title></html>',
+    );
   }
   const profile = mkdtempSync(path.join(tmpdir(), 'relay-e2e-profile-'));
   const context = await chromium.launchPersistentContext(profile, {
@@ -353,6 +359,30 @@ export async function launchExtensionBrowser(
 }
 
 export type BridgeResponse = { ok: true } | { ok: false; error: string };
+
+const TEST_PAGE = 'test-page.html';
+
+/**
+ * Sends a bridge message through chrome.runtime.sendMessage from an extension
+ * page, which also wakes the worker. For a worker restarted under the test,
+ * which Playwright reports no handle for. Needs launchExtensionBrowser's own
+ * build (it writes the page).
+ */
+export async function bridgeMessageFromPage(
+  context: BrowserContext,
+  message: Record<string, unknown>,
+): Promise<BridgeResponse> {
+  const page = await context.newPage();
+  try {
+    await page.goto(`chrome-extension://${EXTENSION_ID}/${TEST_PAGE}`);
+    return (await page.evaluate(
+      (msg) => chrome.runtime.sendMessage(msg),
+      message,
+    )) as BridgeResponse;
+  } finally {
+    await page.close();
+  }
+}
 
 /** Sends a bridge message to the service worker's onMessage handler. */
 export const bridgeMessage = (sw: Worker, message: Record<string, unknown>) =>

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ALLOWED_CDP_METHODS } from '@/lib/relay/allowed-cdp-methods';
 
 // The bridge's run lifecycle against a fake chrome and relay socket:
 // serialized startRun, a stop issued while the socket is down, the detach
@@ -8,8 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const ORIGIN = 'https://a.gov';
 const RELAY = 'ws://127.0.0.1:1';
-const REGISTRATION_REFUSED =
-  'screenshots are refused until known values are registered again';
+const REGISTRATION_REFUSED = 'registration required';
 
 interface Sent {
   type: string;
@@ -102,8 +102,8 @@ function stubChrome() {
           tabId: 1,
           type: 'page',
           id: 'T',
-          title: '',
-          url: '',
+          title: 'Form for Rosalind',
+          url: `${ORIGIN}/form?name=Rosalind`,
           attached: false,
         },
       ],
@@ -517,6 +517,186 @@ describe('run status after a worker restart', () => {
     expect(
       await bridge.handleMessage({ type: 'registrationComplete' }),
     ).toEqual({ ok: true });
+  });
+});
+
+describe('while a resumed run needs registration (fail closed)', () => {
+  // Methods whose result is empty and which keep the session alive.
+  const STILL_ALLOWED = new Set([
+    'Runtime.enable',
+    'Runtime.runIfWaitingForDebugger',
+    'Page.enable',
+    'Page.bringToFront',
+    'Page.handleJavaScriptDialog',
+    'Network.enable',
+    'DOM.enable',
+    'Accessibility.enable',
+    'Target.setAutoAttach',
+    'Input.insertText',
+    'Input.dispatchKeyEvent',
+    'Input.dispatchMouseEvent',
+  ]);
+  const REFUSED = [...ALLOWED_CDP_METHODS].filter((m) => !STILL_ALLOWED.has(m));
+
+  const PARAMS: Record<string, Record<string, unknown>> = {
+    'Page.navigate': { url: `${ORIGIN}/next` },
+    'Runtime.evaluate': { expression: '1' },
+    'Runtime.callFunctionOn': {
+      functionDeclaration: 'function () { return 1; }',
+      objectId: '1.1.1',
+    },
+    'DOM.describeNode': { backendNodeId: 1 },
+    'DOM.resolveNode': { backendNodeId: 1 },
+    'DOM.getBoxModel': { backendNodeId: 1 },
+    'DOM.scrollIntoViewIfNeeded': { backendNodeId: 1 },
+    'Input.insertText': { text: 'x' },
+    'Input.dispatchKeyEvent': { type: 'keyDown', key: 'a' },
+    'Input.dispatchMouseEvent': { type: 'mouseMoved', x: 1, y: 1 },
+    'Page.handleJavaScriptDialog': { accept: true },
+    'Target.setAutoAttach': {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+    },
+  };
+
+  let n = 0;
+  const cdp = (socket: FakeSocket, method: string) => {
+    n += 1;
+    return ask(socket, {
+      id: `c${n}`,
+      type: 'cdp',
+      sessionId: 'tab-1',
+      method,
+      params: PARAMS[method] ?? {},
+    });
+  };
+
+  async function resumedRun() {
+    storage.set('run', {
+      relayUrl: RELAY,
+      token: tokenFor('run-1'),
+      tabId: 1,
+      allowedFrameOrigins: [],
+    });
+    await bridge.resumeRun();
+    const socket = FakeSocket.all.at(-1) as FakeSocket;
+    await socket.open();
+    expect(
+      (await ask(socket, { id: 'a', type: 'attach', targetId: 'T' })).error,
+    ).toBeUndefined();
+    return socket;
+  }
+
+  it('refuses every method that can return page text, with no result', async () => {
+    expect(REFUSED).toEqual(
+      expect.arrayContaining([
+        'DOM.describeNode',
+        'Accessibility.getFullAXTree',
+        'Runtime.evaluate',
+        'Runtime.callFunctionOn',
+        'Page.getFrameTree',
+        'Page.captureScreenshot',
+        'Page.navigate',
+      ]),
+    );
+    const socket = await resumedRun();
+    for (const method of REFUSED) {
+      const reply = await cdp(socket, method);
+      expect([method, reply.error]).toEqual([method, REGISTRATION_REFUSED]);
+      expect(reply.result).toBeUndefined();
+    }
+  });
+
+  it('still runs the methods that return no page text', async () => {
+    const socket = await resumedRun();
+    for (const method of STILL_ALLOWED) {
+      const reply = await cdp(socket, method);
+      // Page.handleJavaScriptDialog fails only because no dialog is open.
+      const expected =
+        method === 'Page.handleJavaScriptDialog'
+          ? 'no dialog is open'
+          : undefined;
+      expect([method, reply.error]).toEqual([method, expected]);
+    }
+  });
+
+  it('refuses an unknown method', async () => {
+    const socket = await resumedRun();
+    const reply = await cdp(socket, 'Storage.getCookies');
+    expect(reply.error).toBeDefined();
+    expect(reply.result).toBeUndefined();
+  });
+
+  it('allows every method again after registrationComplete (count 0)', async () => {
+    const socket = await resumedRun();
+    expect(
+      await bridge.handleMessage({ type: 'registrationComplete', count: 0 }),
+    ).toEqual({ ok: true });
+    for (const method of REFUSED) {
+      const reply = await cdp(socket, method);
+      expect([method, reply.error]).not.toEqual([method, REGISTRATION_REFUSED]);
+    }
+  });
+
+  it('a fresh run is unaffected', async () => {
+    const socket = await attachedRun('run-1');
+    for (const method of REFUSED) {
+      const reply = await cdp(socket, method);
+      expect([method, reply.error]).not.toEqual([method, REGISTRATION_REFUSED]);
+    }
+  });
+
+  it('blanks the target URL and title the bridge reports', async () => {
+    const socket = await resumedRun();
+    const reply = await ask(socket, { id: 'l', type: 'listTargets' });
+    const infos = (reply.result as { targetInfos: Record<string, unknown>[] })
+      .targetInfos;
+    expect(infos[0]).toMatchObject({ url: '', title: '' });
+    const attached = await ask(socket, {
+      id: 'a2',
+      type: 'attach',
+      targetId: 'T',
+    });
+    expect(JSON.stringify(attached)).not.toContain('Rosalind');
+  });
+
+  it('forwards only events that carry no page text, with target URLs blanked', async () => {
+    const socket = await resumedRun();
+    const sentEvents = () =>
+      socket.sent
+        .filter((m) => m.type === 'event')
+        .map((m) => m as unknown as { method: string; params: unknown });
+    const fire = (method: string, params: unknown) =>
+      bridge.onDebuggerEvent({ tabId: 1 }, method, params);
+    fire('Page.frameNavigated', {
+      frame: { id: 'T', loaderId: 'L', url: `${ORIGIN}/form?name=Rosalind` },
+    });
+    fire('Network.requestWillBeSent', {
+      requestId: 'r',
+      request: { url: `${ORIGIN}/q?name=Rosalind` },
+    });
+    fire('Page.loadEventFired', { timestamp: 1 });
+    fire('Target.targetInfoChanged', {
+      targetInfo: {
+        targetId: 'T',
+        type: 'page',
+        url: `${ORIGIN}/x`,
+        title: 'Rosalind',
+      },
+    });
+    const events = sentEvents();
+    expect(events.map((e) => e.method)).toEqual([
+      'Page.loadEventFired',
+      'Target.targetInfoChanged',
+    ]);
+    expect(JSON.stringify(events)).not.toContain('Rosalind');
+
+    await bridge.handleMessage({ type: 'registrationComplete' });
+    fire('Page.frameNavigated', {
+      frame: { id: 'T', loaderId: 'L', url: `${ORIGIN}/form` },
+    });
+    expect(sentEvents().map((e) => e.method)).toContain('Page.frameNavigated');
   });
 });
 

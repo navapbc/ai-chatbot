@@ -13,6 +13,7 @@ import {
   AGENT_NAMESPACE,
   agentBrowser,
   bridgeMessage,
+  bridgeMessageFromPage,
   cdpUrl,
   closeAgentSessions,
   type ExtensionBrowser,
@@ -2476,7 +2477,7 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
 
   // Kept last: Playwright reports no handle for the restarted worker, so
   // `browser.sw` is dead afterwards (modelled on bridge.e2e.test.ts).
-  it('known values are gone after the worker restarts; fields stay masked', async () => {
+  it('after a worker restart reads are refused until values are registered again', async () => {
     const { cdp, runId } = await startRun();
     expect(await addKnownValue(KNOWN)).toEqual({ ok: true });
     expect(leaked([await storedAnywhere()], [KNOWN])).toEqual([]);
@@ -2497,16 +2498,34 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
       ),
     );
 
-    const mark = relay.frames.length;
+    // The rebuilt run's redactor is empty (values are never persisted), so
+    // the bridge refuses reads that could echo a known value (fail closed).
+    let mark = relay.frames.length;
+    const refused = await agentBrowser(['snapshot'], cdp, 'unregistered');
+    expect(refused.success).toBe(false);
+    await closeAgentSessions();
+    expect(leaked(relay.frames.slice(mark), [KNOWN, ...FIELD_VALUES])).toEqual(
+      [],
+    );
+
+    // The panel registers the value again; reads resume and stay scrubbed.
+    const viaPage = (message: Record<string, unknown>) =>
+      bridgeMessageFromPage(browser.context, message);
+    expect(await viaPage({ type: 'addKnownValue', value: KNOWN })).toEqual({
+      ok: true,
+    });
+    expect(await viaPage({ type: 'registrationComplete', count: 1 })).toEqual({
+      ok: true,
+    });
+    mark = relay.frames.length;
     const snap = await agentBrowser(['snapshot'], cdp, 'restarted');
     expect(snap.success).toBe(true);
     expect((snap.data as { snapshot: string }).snapshot).toContain(MASK);
     await closeAgentSessions();
     const { describe, rest } = splitDescribeReplies(mark);
-    expect(leaked([...describe, ...rest], FIELD_VALUES)).toEqual([]);
-    // The rebuilt run's redactor is empty: the echo text now goes up. Values
-    // are never persisted, so the restart dropped the registration.
-    expect(leaked(rest, [KNOWN])).toEqual([0]);
+    expect(leaked([...describe, ...rest], [KNOWN, ...FIELD_VALUES])).toEqual(
+      [],
+    );
 
     await devtools.detach();
     await waker.close();
