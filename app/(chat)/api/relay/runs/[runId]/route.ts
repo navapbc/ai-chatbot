@@ -45,7 +45,9 @@ export async function GET(
       ended: run.endedAt !== null,
       endedAt: run.endedAt ? run.endedAt.toISOString() : null,
       progress: run.progress,
-      pending: run.pendingRequests,
+      // An ended run takes no answers (P4b-c), so it has nothing to ask; the
+      // row may still hold questions persisted by a read that outlived Stop.
+      pending: run.endedAt !== null ? [] : run.pendingRequests,
     }),
   );
 }

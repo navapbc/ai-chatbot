@@ -14,6 +14,45 @@ const eve = vi.hoisted(() => ({
 }));
 vi.mock('@/lib/ai/eve/eve-client', () => eve);
 
+// A test seam for a client writer that throws. ai@7's own writer never throws
+// (it swallows enqueue errors after a cancel), so the only way to exercise a
+// throwing write is to wrap it. Off (null) unless a test turns it on.
+const writeFault = vi.hoisted(() => ({
+  throwAfter: null as number | null,
+  /** Write calls seen by the faulty writer, the throwing ones included. */
+  attempts: 0,
+}));
+vi.mock('ai', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('ai')>();
+  return {
+    ...actual,
+    createUIMessageStream: (
+      opts: Parameters<typeof actual.createUIMessageStream>[0],
+    ) =>
+      actual.createUIMessageStream({
+        ...opts,
+        execute: (args) => {
+          const limit = writeFault.throwAfter;
+          if (limit === null) return opts.execute(args);
+          const real = args.writer;
+          return opts.execute({
+            ...args,
+            writer: {
+              ...real,
+              write: (part) => {
+                writeFault.attempts += 1;
+                if (writeFault.attempts > limit) {
+                  throw new Error('client write failed');
+                }
+                real.write(part);
+              },
+            },
+          });
+        },
+      }),
+  };
+});
+
 import { POST } from '@/app/(chat)/api/eve-chat/route';
 import { PARTICIPANTS, buildApplicationPrompt } from '@/lib/data/participants';
 import { MAX_RELAY_TEXT_CHARS, WITHHELD } from '@/lib/data/sensitive-record';
@@ -2064,5 +2103,333 @@ describe('POST /api/eve-chat ended relay runs', () => {
     expect(eve.continueEveSession).toHaveBeenCalledTimes(1);
     expect(swap.mock.calls.every((c) => c[4] === undefined)).toBe(true);
     expect(eve.cancelEveTurn).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/eve-chat after the client leaves', () => {
+  const RELAY_CHAT = '5c2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b';
+  const ORIGIN = 'https://apply.example.gov';
+  const nameReq = {
+    requestId: 'call-a',
+    prompt: 'Name?',
+    display: 'text' as const,
+    options: [],
+    allowFreeform: true,
+  };
+  const asked = {
+    type: 'input.requested',
+    data: {
+      requests: [
+        { ...nameReq, action: { kind: 'tool-call', callId: 'call-a' } },
+      ],
+    },
+  };
+  const said = (delta: string) => ({
+    type: 'message.appended',
+    data: { messageDelta: delta },
+  });
+  const progressEvent = (input: unknown) => ({
+    type: 'actions.requested',
+    data: {
+      actions: [
+        { kind: 'tool-call', callId: 'p1', toolName: 'report_progress', input },
+      ],
+    },
+  });
+
+  const post = (
+    body: Record<string, unknown>,
+    id = RELAY_CHAT,
+    signal?: AbortSignal,
+  ) =>
+    POST(
+      new Request('http://localhost/api/eve-chat', {
+        method: 'POST',
+        body: JSON.stringify({ id, ...body }),
+        signal,
+      }),
+    );
+  const say = (text: string, id = RELAY_CHAT, signal?: AbortSignal) =>
+    post(
+      { message: { role: 'user', parts: [{ type: 'text', text }] } },
+      id,
+      signal,
+    );
+
+  /** Reads the SSE body into parsed chunks. */
+  const readChunks = async (res: Response) => {
+    let text = '';
+    const reader = (res.body as unknown as ReadableStream<string>).getReader();
+    for (let r = await reader.read(); !r.done; r = await reader.read()) {
+      text += r.value;
+    }
+    return text
+      .split('\n')
+      .filter((l) => l.startsWith('data: ') && l !== 'data: [DONE]')
+      .map((l) => JSON.parse(l.slice(6)));
+  };
+
+  /**
+   * The next stream read: yields `before`, stops at a gate the test opens,
+   * then yields `after`. `released` settles when the route has closed the
+   * reader (the generator's finally ran), so no sleeps are needed.
+   */
+  const gatedStream = (before: unknown[], after: unknown[]) => {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => {
+      open = r;
+    });
+    let atGate!: () => void;
+    const reachedGate = new Promise<void>((r) => {
+      atGate = r;
+    });
+    let close!: () => void;
+    const released = new Promise<void>((r) => {
+      close = r;
+    });
+    eve.parseNdjson.mockImplementationOnce(async function* () {
+      try {
+        for (const e of before) yield e;
+        atGate();
+        await gate;
+        for (const e of after) yield e;
+      } finally {
+        close();
+      }
+    });
+    return { open, reachedGate, released };
+  };
+
+  /** Lets the route's own post-loop work (after the reader closes) run. */
+  const settle = () => new Promise<void>((r) => setImmediate(r));
+
+  const seedRelay = () =>
+    store.create(USER, RELAY_CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+      relayOrigin: ORIGIN,
+    });
+
+  /** The final swap after continue fails, leaving the row on its claim. */
+  const failFinalSwap = () => {
+    const swap = store.swapToken.bind(store);
+    let calls = 0;
+    vi.spyOn(store, 'swapToken').mockImplementation(async (...args) => {
+      calls += 1;
+      if (calls === 2) return false;
+      return swap(...args);
+    });
+  };
+
+  let rejections: unknown[];
+  const onRejection = (reason: unknown) => {
+    rejections.push(reason);
+  };
+
+  beforeEach(() => {
+    vi.stubEnv('RELAY_RUNS_ENABLED', '1');
+    vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example.gov');
+    rejections = [];
+    process.on('unhandledRejection', onRejection);
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-1',
+      sessionId: 'sess-1',
+    });
+  });
+  afterEach(async () => {
+    await settle();
+    process.off('unhandledRejection', onRejection);
+    writeFault.throwAfter = null;
+    writeFault.attempts = 0;
+    vi.unstubAllEnvs();
+    expect(rejections).toEqual([]);
+  });
+
+  describe('relay runs', () => {
+    it('persists questions, the cursor and the healed claim after the client cancels', async () => {
+      await seedRelay();
+      failFinalSwap();
+      const stream = gatedStream([said('Working')], [asked, waiting('tok-1')]);
+
+      const res = await say('next');
+      expect(res.status).toBe(200);
+      const reader = (res.body as ReadableStream).getReader();
+      await reader.read();
+      await stream.reachedGate;
+      // Only this turn's session.waiting can heal the claim now.
+      expect((await store.get(USER, RELAY_CHAT))?.continuationToken).toMatch(
+        /^claim:/,
+      );
+      await reader.cancel();
+      stream.open();
+      await stream.released;
+
+      const row = await store.get(USER, RELAY_CHAT);
+      expect(row?.pendingRequests).toEqual([nameReq]);
+      expect(row?.streamIndex).toBe(3);
+      expect(row?.continuationToken).toBe('tok-1');
+      // A client leaving never cancels Eve's turn: Stop does that.
+      expect(eve.cancelEveTurn).not.toHaveBeenCalled();
+
+      // The answer turn validates against what the abandoned read persisted.
+      vi.mocked(store.swapToken).mockRestore();
+      streamEvents({ type: 'turn.started' }, waiting('tok-1'));
+      const answered = await post({
+        inputResponses: [{ requestId: 'call-a', text: 'Ada' }],
+      });
+      expect(answered.status).toBe(200);
+      await drain(answered);
+      expect(eve.continueEveSession).toHaveBeenLastCalledWith(
+        'sess-1',
+        'tok-1',
+        { inputResponses: [{ requestId: 'call-a', text: 'Ada' }] },
+      );
+      expect(eve.openEveStream).toHaveBeenLastCalledWith('sess-1', 3);
+      expect((await store.get(USER, RELAY_CHAT))?.pendingRequests).toEqual([]);
+    });
+
+    it('completes the turn in the store when the client aborts before any event', async () => {
+      await seedRelay();
+      const stream = gatedStream([], [asked, waiting('tok-1')]);
+      const abort = new AbortController();
+
+      const res = await say('next', RELAY_CHAT, abort.signal);
+      expect(res.status).toBe(200);
+      abort.abort();
+      await (res.body as ReadableStream).cancel();
+      stream.open();
+      await stream.released;
+
+      const row = await store.get(USER, RELAY_CHAT);
+      expect(row?.pendingRequests).toEqual([nameReq]);
+      expect(row?.streamIndex).toBe(2);
+      expect(row?.continuationToken).toBe('tok-1');
+      expect(eve.cancelEveTurn).not.toHaveBeenCalled();
+    });
+
+    it('stops writing but keeps reading and persisting when a client write throws', async () => {
+      await seedRelay();
+      failFinalSwap();
+      writeFault.throwAfter = 1;
+      const stream = gatedStream(
+        [said('Working'), said(' still')],
+        [asked, waiting('tok-1')],
+      );
+      const res = await say('next');
+      stream.open();
+      const chunks = await readChunks(res);
+      await stream.released;
+
+      // The first write landed, the second threw, and no write followed it.
+      expect(writeFault.attempts).toBe(2);
+      expect(chunks.some((c) => c.type === 'error')).toBe(false);
+      const row = await store.get(USER, RELAY_CHAT);
+      expect(row?.pendingRequests).toEqual([nameReq]);
+      expect(row?.streamIndex).toBe(4);
+      expect(row?.continuationToken).toBe('tok-1');
+    });
+
+    it('persists progress reported after the client left', async () => {
+      await seedRelay();
+      const stream = gatedStream(
+        [said('Working')],
+        [
+          progressEvent({
+            sections: [{ name: 'Name', status: 'done', filled: 2 }],
+          }),
+          waiting('tok-1'),
+        ],
+      );
+      const res = await say('next');
+      const reader = (res.body as ReadableStream).getReader();
+      await reader.read();
+      await reader.cancel();
+      stream.open();
+      await stream.released;
+
+      const row = await store.get(USER, RELAY_CHAT);
+      expect(row?.progress).toEqual({
+        sections: [{ name: 'Name', status: 'done', filled: 2 }],
+      });
+      expect(row?.streamIndex).toBe(3);
+    });
+
+    it('closes the Eve stream body once the turn ends', async () => {
+      await seedRelay();
+      const cancel = vi.fn(async () => {});
+      eve.openEveStream.mockResolvedValue({ body: { cancel } });
+      const stream = gatedStream([], [waiting('tok-1')]);
+      const res = await say('next');
+      await (res.body as ReadableStream).cancel();
+      stream.open();
+      await stream.released;
+      await settle();
+      expect(cancel).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('web chats (unchanged)', () => {
+    const seedWeb = () =>
+      store.create(USER, CHAT, {
+        eveSessionId: 'sess-w',
+        continuationToken: 'tok-w',
+      });
+    beforeEach(() => {
+      eve.continueEveSession.mockResolvedValue({
+        continuationToken: 'tok-w2',
+        sessionId: 'sess-w',
+      });
+    });
+
+    // ai@7's writer swallows enqueue errors once the body is cancelled and
+    // passes execute no abort signal, so a web read already runs on to
+    // session.waiting after the client leaves. Pinned as is.
+    it('keeps reading to session.waiting after the client cancels', async () => {
+      await seedWeb();
+      const stream = gatedStream(
+        [said('Working')],
+        [said(' more'), waiting('tok-w2')],
+      );
+      const res = await say('hi', CHAT);
+      const reader = (res.body as ReadableStream).getReader();
+      await reader.read();
+      await reader.cancel();
+      stream.open();
+      await stream.released;
+
+      const row = await store.get(USER, CHAT);
+      expect(row?.streamIndex).toBe(3);
+      expect(row?.continuationToken).toBe('tok-w2');
+      expect(eve.cancelEveTurn).not.toHaveBeenCalled();
+    });
+
+    it('stops the read with an error chunk when a client write throws', async () => {
+      await seedWeb();
+      writeFault.throwAfter = 1;
+      const stream = gatedStream(
+        [said('Working')],
+        [said(' more'), waiting('tok-w2')],
+      );
+      const res = await say('hi', CHAT);
+      stream.open();
+      const chunks = await readChunks(res);
+      await stream.released;
+
+      expect(chunks.some((c) => c.type === 'error')).toBe(true);
+      expect((await store.get(USER, CHAT))?.streamIndex).toBe(0);
+    });
+
+    it('leaves the Eve stream body to the reader', async () => {
+      await seedWeb();
+      const cancel = vi.fn(async () => {});
+      eve.openEveStream.mockResolvedValue({ body: { cancel } });
+      const stream = gatedStream([], [waiting('tok-w2')]);
+      const res = await say('hi', CHAT);
+      stream.open();
+      await drain(res);
+      await stream.released;
+      await settle();
+      expect(cancel).not.toHaveBeenCalled();
+    });
   });
 });

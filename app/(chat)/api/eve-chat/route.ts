@@ -84,6 +84,15 @@ function isBodyTimeout(err: unknown): boolean {
   );
 }
 
+/** Cancels a stream body without ever throwing or leaving a rejection. */
+function closeQuietly(body: ReadableStream<Uint8Array>): void {
+  try {
+    body.cancel().catch(() => {});
+  } catch {
+    /* not cancellable (already locked, or not a real stream) */
+  }
+}
+
 // The text of a relay turn, made safe to forward. Size first: the scanners
 // are linear but their input is attacker-controlled. Then strip, then refuse
 // what is still a sensitive label followed by a value (nothing is echoed).
@@ -605,13 +614,49 @@ export async function POST(request: Request) {
       const deadline = Date.now() + RECONNECT_BUDGET_MS;
       let reconnects = 0;
 
+      // A relay run's panel rebuilds itself from the row (progress, pending
+      // questions, which also drive answer validation, the cursor and the
+      // claim heal), and those are persisted only by this loop. So once Eve has
+      // accepted the turn the loop must read on to session.waiting even when
+      // the side panel closes mid-turn.
+      //
+      // How a gone client shows up here, read from ai@7.0.42's
+      // createUIMessageStream: execute starts when the stream is built and is
+      // given no abort signal; writer.write goes through `safeEnqueue`, which
+      // swallows the enqueue error once the response body is cancelled. So a
+      // cancel does not stop this loop, and `request.signal` is deliberately
+      // not used: wiring it in would be the thing that stops the read (and it
+      // must never reach Eve: Stop cancels a turn, a closed panel does not).
+      // The one remaining way a client failure can end the read is a write
+      // that throws (a different writer, an SDK change), so relay runs write
+      // through this best-effort proxy: the first throw stops client writes
+      // for the rest of the turn and the read carries on. The proxy wraps the
+      // write itself, not translateEveEvent, so an event whose write threw
+      // still returns its token, questions and progress to persist. Web chats
+      // keep the SDK writer: a throwing write still ends their read.
+      let clientGone = false;
+      const out = structuredInput
+        ? {
+            write: (part: Parameters<typeof writer.write>[0]) => {
+              if (clientGone) return;
+              try {
+                writer.write(part);
+              } catch {
+                clientGone = true;
+              }
+            },
+          }
+        : writer;
+
       while (!done) {
+        let body: ReadableStream<Uint8Array> | null = null;
         try {
           const res = await openEveStream(sessionId, consumed);
           if (!res.body) throw new Error('Eve stream returned no body');
+          body = res.body;
           for await (const event of parseNdjson(res.body)) {
             consumed++;
-            const r = translateEveEvent(event, writer, ctx);
+            const r = translateEveEvent(event, out, ctx);
             ctx.textId = r.textId;
             ctx.reasoningId = r.reasoningId;
             if (r.liveViewUrl) {
@@ -694,6 +739,14 @@ export async function POST(request: Request) {
             resumeFrom: consumed,
             reconnects,
           });
+        } finally {
+          // Eve holds its stream open past session.waiting, and parseNdjson
+          // only releases its reader lock, so a relay read closes the body
+          // itself rather than leave a connection to Eve open. Reading is
+          // over by now (the generator has returned), and closing a stream
+          // read never cancels the turn. Best-effort: never throws or
+          // rejects. Web chats are left as they were.
+          if (structuredInput && body) closeQuietly(body);
         }
       }
     },

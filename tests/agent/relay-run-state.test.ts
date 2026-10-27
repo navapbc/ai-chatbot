@@ -121,6 +121,17 @@ describe('GET /api/relay/runs/[runId]', () => {
     expect(Number.isNaN(Date.parse(body.endedAt))).toBe(false);
   });
 
+  it('reports no pending questions for an ended run, progress unchanged', async () => {
+    // A stream loop may still persist questions after Stop; an ended run
+    // takes no answers, so the panel must never be shown them.
+    await store.end(USER, RUN);
+    expect((await store.get(USER, RUN))?.pendingRequests).toEqual(PENDING);
+    const body = await (await get(RUN)).json();
+    expect(body.ended).toBe(true);
+    expect(body.pending).toEqual([]);
+    expect(body.progress).toEqual(PROGRESS);
+  });
+
   it.each([
     ["another user's relay run", OTHER_RUN],
     ['a web (non-relay) run', WEB_RUN],
