@@ -2069,6 +2069,93 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     await closeAgentSessions();
   });
 
+  it('getRunStatus reports the run by id and counts, never the token or URL', async () => {
+    const { cdp, runId } = await startRun();
+    expect(
+      (await agentBrowser(['snapshot', '-i'], cdp, 'status')).success,
+    ).toBe(true);
+    const status = await bridgeMessage(browser.sw, { type: 'getRunStatus' });
+    // Exactly these keys: no token, no relay URL (this build has no Jev).
+    expect(status).toEqual({
+      ok: true,
+      active: true,
+      runId,
+      origin: fixtures.origin,
+      attached: true,
+      needsRegistration: false,
+    });
+    expect(JSON.stringify(status)).not.toContain(relay.url);
+    expect(
+      await bridgeMessage(browser.sw, { type: 'registrationComplete' }),
+    ).toEqual({ ok: true });
+    await bridgeMessage(browser.sw, { type: 'stopRun' });
+    expect(await bridgeMessage(browser.sw, { type: 'getRunStatus' })).toEqual({
+      ok: true,
+      active: false,
+    });
+    await closeAgentSessions();
+  });
+
+  it('two concurrent startRun calls leave one run, the later one', async () => {
+    const a = mintRunTokens(relay.secret, fixtures.origin);
+    const b = mintRunTokens(relay.secret, fixtures.origin);
+    const start = (token: string) =>
+      bridgeMessage(browser.sw, {
+        type: 'startRun',
+        relayUrl: relay.url,
+        token,
+        tabId,
+        allowedFrameOrigins: [fixtures.frameOrigin],
+      });
+    expect(await Promise.all([start(a.extension), start(b.extension)])).toEqual(
+      [{ ok: true }, { ok: true }],
+    );
+    expect(
+      await bridgeMessage(browser.sw, { type: 'getRunStatus' }),
+    ).toMatchObject({ active: true, runId: b.runId });
+    await until(() =>
+      relay.logs.some((l) => l.event === 'registered' && l.runId === b.runId),
+    );
+    const cdp = cdpUrl(relay, b.agent);
+    expect(
+      (await agentBrowser(['snapshot', '-i'], cdp, 'double')).success,
+    ).toBe(true);
+    await bridgeMessage(browser.sw, { type: 'stopRun' });
+    await closeAgentSessions();
+  });
+
+  it('a detach that is not re-attached within 5 s ends the run (debugger-detached)', async () => {
+    const { cdp, runId } = await startRun();
+    expect(
+      (await agentBrowser(['snapshot', '-i'], cdp, 'detach')).success,
+    ).toBe(true);
+    await browser.sw.evaluate(
+      (id) =>
+        (
+          globalThis as unknown as {
+            bridgeOnDebuggerDetach: (s: { tabId: number }, r: string) => void;
+          }
+        ).bridgeOnDebuggerDetach({ tabId: id }, 'target_closed'),
+      tabId,
+    );
+    await until(
+      () =>
+        relay.logs.some(
+          (l) =>
+            l.event === 'run-stopped' &&
+            l.runId === runId &&
+            l.reason === 'debugger-detached',
+        ),
+      10_000,
+    );
+    expect(await bridgeMessage(browser.sw, { type: 'getRunStatus' })).toEqual({
+      ok: true,
+      active: false,
+    });
+    expect(await extensionAttached(tabId)).toBe(false);
+    await closeAgentSessions();
+  });
+
   it('closing the tab fails in-flight and later commands quickly', async () => {
     const doomed = await browser.context.newPage();
     const url = `${fixtures.formUrl}?doomed`;

@@ -155,7 +155,12 @@ function buildExtension(appOrigin: string): string {
   execFileSync(
     path.join(ROOT, 'node_modules/.bin/tsx'),
     ['scripts/build-extension.ts', '--out', out],
-    { cwd: ROOT, env: { ...env, APP_ORIGIN: appOrigin }, stdio: 'ignore' },
+    {
+      cwd: ROOT,
+      // The test drives the worker through the bridge's test hooks.
+      env: { ...env, APP_ORIGIN: appOrigin, EXTENSION_TEST_HOOKS: '1' },
+      stdio: 'ignore',
+    },
   );
   return out;
 }

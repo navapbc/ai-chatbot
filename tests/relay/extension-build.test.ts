@@ -8,6 +8,7 @@ import {
   buildManifest,
   esbuildArgs,
   resolveAppOrigin,
+  resolveTestHooks,
 } from '../../scripts/extension-build-config';
 
 const ROOT = path.resolve(__dirname, '../..');
@@ -107,14 +108,18 @@ describe('buildManifest', () => {
 });
 
 describe('esbuildArgs', () => {
-  it('keeps the bundle flags and defines APP_ORIGIN', () => {
+  it('keeps the bundle flags and defines APP_ORIGIN and the test hooks', () => {
     expect(esbuildArgs('in.ts', 'out/sw.js', 'https://a.example')).toEqual([
       'in.ts',
       '--bundle',
       '--format=esm',
       '--outfile=out/sw.js',
       '--define:__APP_ORIGIN__="https://a.example"',
+      '--define:EXTENSION_TEST_HOOKS=false',
     ]);
+    expect(esbuildArgs('in.ts', 'out/sw.js', '', true).at(-1)).toBe(
+      '--define:EXTENSION_TEST_HOOKS=true',
+    );
   });
 
   it.each([
@@ -139,4 +144,66 @@ describe('esbuildArgs', () => {
       }
     },
   );
+});
+
+describe('resolveTestHooks', () => {
+  it('is on only for EXTENSION_TEST_HOOKS=1 or --test-hooks', () => {
+    expect(resolveTestHooks({}, [])).toBe(false);
+    expect(resolveTestHooks({ EXTENSION_TEST_HOOKS: 'true' }, [])).toBe(false);
+    expect(resolveTestHooks({ EXTENSION_TEST_HOOKS: '0' }, [])).toBe(false);
+    expect(resolveTestHooks({ EXTENSION_TEST_HOOKS: '1' }, [])).toBe(true);
+    expect(resolveTestHooks({}, ['--test-hooks'])).toBe(true);
+  });
+
+  it('refuses test hooks in a release build', () => {
+    expect(() =>
+      resolveTestHooks(
+        { EXTENSION_TEST_HOOKS: '1', EXTENSION_RELEASE: '1' },
+        [],
+      ),
+    ).toThrow(/not allowed when EXTENSION_RELEASE=1/);
+    expect(() =>
+      resolveTestHooks({ EXTENSION_RELEASE: '1' }, ['--test-hooks']),
+    ).toThrow(/not allowed when EXTENSION_RELEASE=1/);
+  });
+});
+
+describe('the built service worker', () => {
+  const HOOKS = ['bridgeHandleMessage', 'bridgeOnDebuggerDetach'];
+
+  /** Runs scripts/build-extension.ts into a temp dir; returns the bundle. */
+  const build = (extra: Record<string, string>, argv: string[] = []) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'extension-build-test-'));
+    try {
+      const {
+        APP_ORIGIN: _o,
+        EXTENSION_RELEASE: _r,
+        EXTENSION_TEST_HOOKS: _h,
+        ...env
+      } = process.env;
+      execFileSync(
+        path.join(ROOT, 'node_modules/.bin/tsx'),
+        ['scripts/build-extension.ts', '--out', dir, ...argv],
+        { cwd: ROOT, env: { ...env, ...extra }, stdio: 'ignore' },
+      );
+      return readFileSync(path.join(dir, 'service-worker.js'), 'utf8');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('has no test hooks in a plain build', () => {
+    const bundle = build({});
+    for (const hook of HOOKS) expect(bundle).not.toContain(hook);
+    expect(bundle).not.toContain('EXTENSION_TEST_HOOKS');
+  }, 30_000);
+
+  it('has the test hooks with EXTENSION_TEST_HOOKS=1 or --test-hooks', () => {
+    for (const bundle of [
+      build({ EXTENSION_TEST_HOOKS: '1' }),
+      build({}, ['--test-hooks']),
+    ]) {
+      for (const hook of HOOKS) expect(bundle).toContain(hook);
+    }
+  }, 30_000);
 });

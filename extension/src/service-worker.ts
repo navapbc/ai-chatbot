@@ -7,6 +7,7 @@ import {
   onTabUpdated,
   resumeRun,
 } from './bridge';
+import { installTestHooks } from './test-hooks';
 
 // Listeners are registered synchronously at top level so a service worker
 // woken by an event receives it.
@@ -24,14 +25,13 @@ chrome.debugger.onDetach.addListener(onDebuggerDetach);
 chrome.tabs.onUpdated.addListener(onTabUpdated);
 chrome.tabs.onRemoved.addListener(onTabRemoved);
 
-// The worker cannot message itself, so tests (via Playwright's worker handle)
-// and future extension pages in this context call the handler directly. The
-// detach hook lets tests simulate the user dismissing Chrome's debugging
-// infobar, which cannot be clicked in headless Chromium. Only code running
-// inside the extension can reach these globals.
-Object.assign(globalThis, {
-  bridgeHandleMessage: handleMessage,
-  bridgeOnDebuggerDetach: onDebuggerDetach,
-});
+// esbuild defines this (scripts/build-extension.ts): true only for a build
+// with EXTENSION_TEST_HOOKS=1, false otherwise, so a plain build drops the
+// hooks entirely. Undeclared outside a bundle (a unit test): no hooks.
+declare const EXTENSION_TEST_HOOKS: boolean | undefined;
+
+if (typeof EXTENSION_TEST_HOOKS !== 'undefined' && EXTENSION_TEST_HOOKS) {
+  installTestHooks(globalThis, handleMessage, onDebuggerDetach);
+}
 
 void resumeRun();

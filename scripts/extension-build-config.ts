@@ -62,11 +62,36 @@ export function buildManifest(
   return { ...source, host_permissions: [`${appOrigin}/*`] };
 }
 
-/** esbuild argv bundling `entry` into `outFile` with APP_ORIGIN defined. */
+/**
+ * Whether the build installs the bridge's test hooks (the e2e suites drive
+ * the worker through them): only with `EXTENSION_TEST_HOOKS=1` or the
+ * `--test-hooks` flag, and never in a release build.
+ */
+export function resolveTestHooks(
+  env: Record<string, string | undefined>,
+  argv: readonly string[],
+): boolean {
+  const hooks =
+    env.EXTENSION_TEST_HOOKS === '1' || argv.includes('--test-hooks');
+  if (hooks && env.EXTENSION_RELEASE === '1') {
+    throw new ExtensionBuildError(
+      'test hooks (EXTENSION_TEST_HOOKS=1 / --test-hooks) are not allowed when EXTENSION_RELEASE=1',
+    );
+  }
+  return hooks;
+}
+
+/**
+ * esbuild argv bundling `entry` into `outFile` with APP_ORIGIN and
+ * EXTENSION_TEST_HOOKS defined. The hooks flag is always defined (false by
+ * default) so a plain build drops the hook code instead of testing for it
+ * at run time.
+ */
 export function esbuildArgs(
   entry: string,
   outFile: string,
   appOrigin: string,
+  testHooks = false,
 ): string[] {
   return [
     entry,
@@ -74,5 +99,6 @@ export function esbuildArgs(
     '--format=esm',
     `--outfile=${outFile}`,
     `--define:__APP_ORIGIN__=${JSON.stringify(appOrigin)}`,
+    `--define:EXTENSION_TEST_HOOKS=${testHooks}`,
   ];
 }

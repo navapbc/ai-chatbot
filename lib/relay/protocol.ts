@@ -17,7 +17,9 @@ export type StopReason =
   | 'left-origin'
   | 'debugger-canceled'
   | 'token-expired'
-  | 'replaced';
+  | 'replaced'
+  /** chrome.debugger let go of the tab and it was not re-attached in time. */
+  | 'debugger-detached';
 
 export const STOP_REASONS: ReadonlySet<string> = new Set<StopReason>([
   'user',
@@ -25,6 +27,7 @@ export const STOP_REASONS: ReadonlySet<string> = new Set<StopReason>([
   'debugger-canceled',
   'token-expired',
   'replaced',
+  'debugger-detached',
 ]);
 
 export type ExtensionToRelay =

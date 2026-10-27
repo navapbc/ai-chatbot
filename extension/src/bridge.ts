@@ -64,9 +64,37 @@ export type BridgeMessage =
       allowedFrameOrigins?: string[];
     }
   | { type: 'stopRun' }
-  | { type: 'addKnownValue'; value: string };
+  | { type: 'addKnownValue'; value: string }
+  | { type: 'getRunStatus' }
+  /** The panel re-entered the run's known values (count only, no values). */
+  | { type: 'registrationComplete'; count?: number };
 
-export type BridgeResponse = { ok: true } | { ok: false; error: string };
+/**
+ * The bridge's run state for the panel. Ids and counts only: never the
+ * token, the relay URL or a known value.
+ */
+export interface RunStatus {
+  ok: true;
+  active: boolean;
+  runId?: string;
+  origin?: string;
+  attached?: boolean;
+  /**
+   * True on a run rebuilt after a worker restart until the panel sends
+   * `registrationComplete`: the known values died with the old worker, so
+   * screenshots are refused meanwhile.
+   */
+  needsRegistration?: boolean;
+  /** Jev classify() calls that failed (P4b-e); absent without Jev. */
+  jevFailures?: number;
+  /** Requests made to the app's classify-field route; absent without Jev. */
+  jevRequests?: number;
+}
+
+export type BridgeResponse =
+  | { ok: true }
+  | { ok: false; error: string }
+  | RunStatus;
 
 interface RunConfig {
   relayUrl: string;
@@ -145,6 +173,18 @@ interface Run extends RunConfig {
   jev?: JevClassifier;
   /** True once a known value was registered; see addKnownValue. */
   hasKnownValues: boolean;
+  /**
+   * Set on a run rebuilt after a worker restart (its known values were lost
+   * with the old worker) until the panel sends `registrationComplete`.
+   * Screenshots are refused while it is set.
+   */
+  needsRegistration: boolean;
+  /** The socket `register` was sent on; see send/stop delivery. */
+  registeredWs?: WebSocket;
+  /** The relay closed the run (a final close code): no stop is owed. */
+  relayClosed: boolean;
+  /** Ends the run unless the tab is re-attached in time (P4b-d). */
+  detachTimer?: ReturnType<typeof setTimeout>;
   /** The bridge's focus-reading isolated world in the main frame, if made. */
   focusWorld?: number;
   /**
@@ -160,6 +200,12 @@ const OUT_OF_SCOPE = 'tab is outside the allowed origin';
 const FRAME_OUT_OF_SCOPE = 'frame is outside the allowed origins';
 const FIRST_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30_000;
+// A stop the socket could not carry is retried this long at most (P4b).
+const PENDING_STOP_MS = 30_000;
+// A non-user detach ends the run unless the tab is re-attached in time.
+const DETACH_GRACE_MS = 5_000;
+const REGISTRATION_REFUSED =
+  'screenshots are refused until known values are registered again';
 // Relay close codes that end the run: normal (run closed, replaced) and
 // policy (refused). Anything else is a dropped connection.
 const FINAL_CLOSE_CODES = new Set([1000, 1008]);
@@ -295,7 +341,29 @@ function send(current: Run, message: ExtensionToRelay) {
 
 // --- run lifecycle -----------------------------------------------------------
 
-export async function startRun(
+/**
+ * startRun, stopRun and resumeRun run one at a time, in call order, behind
+ * this chain, so two of them can never interleave their awaits and leave two
+ * runs (and two sockets). The internal stops (left origin, tab closed, token
+ * expiry, relay close, detach) do not queue: each ends the run it observed,
+ * synchronously, through endRun, and a queued one would end a newer run.
+ */
+let lifecycle: Promise<unknown> = Promise.resolve();
+
+function serialized<T>(task: () => Promise<T>): Promise<T> {
+  const result = lifecycle.then(task);
+  // A failed call must not poison the calls queued behind it.
+  lifecycle = result.catch(() => {});
+  return result;
+}
+
+export function startRun(
+  msg: Extract<BridgeMessage, { type: 'startRun' }>,
+): Promise<BridgeResponse> {
+  return serialized(() => startRunNow(msg));
+}
+
+async function startRunNow(
   msg: Extract<BridgeMessage, { type: 'startRun' }>,
 ): Promise<BridgeResponse> {
   if (typeof msg.relayUrl !== 'string' || typeof msg.token !== 'string') {
@@ -319,7 +387,10 @@ export async function startRun(
   if (url === null) return { ok: false, error: 'tab not found' };
   if (!inScope(url, claims.origin)) return { ok: false, error: OUT_OF_SCOPE };
 
-  await stopRun('replaced');
+  // A run restarted under the same run id is not ended on the relay: its new
+  // socket's `register` replaces the old one there, while a `stop` would
+  // close the run for good (and refuse the new socket).
+  await endRun('replaced', { notifyRelay: run?.runId !== claims.runId });
   const config: RunConfig = {
     relayUrl: msg.relayUrl,
     token: msg.token,
@@ -332,11 +403,28 @@ export async function startRun(
 }
 
 /**
- * Ends the run: tells the relay to close it (so the agent is cut off at once
- * rather than held for the resume window), closes the socket, detaches.
+ * Ends the run (queued behind any startRun/resumeRun in flight): tells the
+ * relay to close it (so the agent is cut off at once rather than held for
+ * the resume window), closes the socket, detaches.
  */
-export async function stopRun(
-  reason: StopReason = 'user',
+export function stopRun(reason: StopReason = 'user'): Promise<BridgeResponse> {
+  return serialized(() => endRun(reason));
+}
+
+/**
+ * Ends whatever run is current, now. The synchronous part (forgetting the
+ * run, blocking it, clearing its redactor and timers, stopping its Jev
+ * classifier, telling the relay) completes before the first await, so a
+ * caller that checked `run === current` ends exactly that run.
+ *
+ * The relay is told with a `stop` frame on the run's socket when that socket
+ * is open; otherwise the stop is queued for delivery on a short-lived socket
+ * (see queueStop). Not when the relay itself closed the run, or when
+ * `notifyRelay` is false.
+ */
+async function endRun(
+  reason: StopReason,
+  opts: { notifyRelay?: boolean } = {},
 ): Promise<BridgeResponse> {
   const current = run;
   run = undefined;
@@ -347,9 +435,19 @@ export async function stopRun(
     current.blocked = true;
     current.redactor.clear();
     current.hasKnownValues = false;
+    current.jev?.stop();
     clearTimeout(current.reconnectTimer);
     clearTimeout(current.expiryTimer);
-    send(current, { type: 'stop', reason });
+    clearTimeout(current.detachTimer);
+    if (opts.notifyRelay !== false && !current.relayClosed) {
+      if (current.ws?.readyState === WebSocket.OPEN) {
+        // The hub ignores everything before `register`.
+        if (current.registeredWs !== current.ws) sendRegister(current);
+        send(current, { type: 'stop', reason });
+      } else {
+        queueStop(current, reason);
+      }
+    }
     try {
       current.ws?.close(1000, 'run stopped');
     } catch {
@@ -358,10 +456,14 @@ export async function stopRun(
     // Let a screenshot in flight restore the page while the debugger is
     // still attached (it sees `stopped` and skips its capture); bounded, so
     // a hung page cannot hold the stop.
+    let waited: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       screenshotsIdle(current.tabId),
-      new Promise((resolve) => setTimeout(resolve, STOP_WAIT_MS)),
+      new Promise((resolve) => {
+        waited = setTimeout(resolve, STOP_WAIT_MS);
+      }),
     ]);
+    clearTimeout(waited);
     dropChildren(current);
     // The mask's worlds die with the run's debugger session; a newer run (if
     // one started meanwhile) tracks its own.
@@ -386,11 +488,15 @@ export async function stopRun(
 function leaveOrigin(current: Run) {
   if (current.blocked) return;
   current.blocked = true;
-  if (run === current) void stopRun('left-origin');
+  if (run === current) void endRun('left-origin');
 }
 
 /** Picks up a run persisted before a service worker restart. */
-export async function resumeRun(): Promise<void> {
+export function resumeRun(): Promise<void> {
+  return serialized(resumeRunNow);
+}
+
+async function resumeRunNow(): Promise<void> {
   if (run) return;
   const stored = await chrome.storage.session.get(STORAGE_KEY);
   const config = stored[STORAGE_KEY] as RunConfig | undefined;
@@ -447,11 +553,16 @@ function begin(
       : createRedactor(),
     jev,
     hasKnownValues: false,
+    // The known values lived in the dead worker's memory.
+    needsRegistration: resumed,
+    relayClosed: false,
   };
+  // A stop still queued for this run id would close the run just begun.
+  dropPendingStops(current.runId);
   run = current;
   current.expiryTimer = setTimeout(
     () => {
-      if (run === current) void stopRun('token-expired');
+      if (run === current) void endRun('token-expired');
     },
     Math.max(0, current.exp * 1000 - Date.now()),
   );
@@ -461,7 +572,7 @@ function begin(
 function connect(current: Run) {
   if (current.stopped || run !== current) return;
   if (current.exp <= nowSeconds()) {
-    void stopRun('token-expired');
+    void endRun('token-expired');
     return;
   }
   const url = new URL(current.socketUrl);
@@ -479,7 +590,7 @@ function connect(current: Run) {
     const tab = await tabUrl(current.tabId);
     if (current.ws !== ws || current.stopped) return;
     if (tab === null) {
-      void stopRun();
+      void endRun('user');
       return;
     }
     // The tab left the origin while the socket was down: the run is over.
@@ -488,12 +599,7 @@ function connect(current: Run) {
       return;
     }
     current.reconnectDelayMs = FIRST_RECONNECT_MS;
-    send(current, {
-      type: 'register',
-      runId: current.runId,
-      tabId: current.tabId,
-      origin: current.origin,
-    });
+    sendRegister(current);
     if (current.announceResume) {
       current.announceResume = false;
       send(current, { type: 'resumed' });
@@ -530,11 +636,150 @@ function connect(current: Run) {
     current.ws = undefined;
     if (current.stopped || run !== current) return;
     if (FINAL_CLOSE_CODES.has(event.code)) {
-      void stopRun();
+      // The relay ended (or refused) the run: no stop is owed to it.
+      current.relayClosed = true;
+      void endRun('user');
       return;
     }
     scheduleReconnect(current);
   };
+}
+
+function sendRegister(current: Run) {
+  current.registeredWs = current.ws;
+  send(current, {
+    type: 'register',
+    runId: current.runId,
+    tabId: current.tabId,
+    origin: current.origin,
+  });
+}
+
+// --- stop delivery -------------------------------------------------------------
+
+/**
+ * A `stop` the run's socket could not carry (it was connecting, or down
+ * between reconnects) when the run ended. The run itself is already gone
+ * (torn down locally at once); this keeps only what one short-lived socket
+ * needs to tell the relay: it opens with the run's token, sends `register`
+ * (the hub ignores anything before it) and then `stop` as its first frame
+ * after that, and closes. Failed attempts retry with the reconnect backoff.
+ * Dropped once the token expires, after PENDING_STOP_MS, when the relay
+ * refuses the socket with a final close code (the run is already closed or
+ * the token is refused), or when a run with the same id begins. Memory only:
+ * a worker restart loses it. Never logged: its URL carries the token.
+ */
+interface PendingStop {
+  runId: string;
+  tabId: number;
+  origin: string;
+  token: string;
+  socketUrl: string;
+  reason: StopReason;
+  /** Epoch ms after which the stop is dropped: 30 s or token expiry. */
+  dropAt: number;
+  delayMs: number;
+  ws?: WebSocket;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+const pendingStops = new Set<PendingStop>();
+
+function queueStop(current: Run, reason: StopReason) {
+  const dropAt = Math.min(Date.now() + PENDING_STOP_MS, current.exp * 1000);
+  if (dropAt <= Date.now()) return;
+  const pending: PendingStop = {
+    runId: current.runId,
+    tabId: current.tabId,
+    origin: current.origin,
+    token: current.token,
+    socketUrl: current.socketUrl,
+    reason,
+    dropAt,
+    delayMs: FIRST_RECONNECT_MS,
+  };
+  pendingStops.add(pending);
+  deliverStop(pending);
+}
+
+function dropStop(pending: PendingStop) {
+  pendingStops.delete(pending);
+  clearTimeout(pending.timer);
+  const ws = pending.ws;
+  pending.ws = undefined;
+  try {
+    ws?.close(1000, 'run stopped');
+  } catch {
+    // Already closed.
+  }
+}
+
+function dropPendingStops(runId: string) {
+  for (const pending of [...pendingStops]) {
+    if (pending.runId === runId) dropStop(pending);
+  }
+}
+
+function deliverStop(pending: PendingStop) {
+  if (!pendingStops.has(pending)) return;
+  if (Date.now() >= pending.dropAt) {
+    dropStop(pending);
+    return;
+  }
+  const url = new URL(pending.socketUrl);
+  url.searchParams.set('token', pending.token);
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(url.toString());
+  } catch {
+    retryStop(pending);
+    return;
+  }
+  pending.ws = ws;
+  ws.onopen = () => {
+    if (pending.ws !== ws) return;
+    try {
+      ws.send(
+        JSON.stringify({
+          type: 'register',
+          runId: pending.runId,
+          tabId: pending.tabId,
+          origin: pending.origin,
+        } satisfies ExtensionToRelay),
+      );
+      ws.send(
+        JSON.stringify({
+          type: 'stop',
+          reason: pending.reason,
+        } satisfies ExtensionToRelay),
+      );
+    } catch {
+      // The close handler retries.
+      return;
+    }
+    // Delivered: sends queued before close() go out ahead of the close.
+    dropStop(pending);
+  };
+  ws.onclose = (event) => {
+    if (pending.ws !== ws) return;
+    pending.ws = undefined;
+    if (FINAL_CLOSE_CODES.has(event.code)) {
+      dropStop(pending);
+      return;
+    }
+    retryStop(pending);
+  };
+}
+
+function retryStop(pending: PendingStop) {
+  if (!pendingStops.has(pending)) return;
+  const delay = Math.min(pending.delayMs, pending.dropAt - Date.now());
+  if (delay <= 0) {
+    dropStop(pending);
+    return;
+  }
+  pending.delayMs = Math.min(pending.delayMs * 2, MAX_RECONNECT_MS);
+  pending.timer = setTimeout(() => deliverStop(pending), delay);
 }
 
 function scheduleReconnect(current: Run) {
@@ -674,6 +919,9 @@ async function handleCommand(
         throw new Error(OUT_OF_SCOPE);
       }
       current.attached = true;
+      // Re-attached in time: the detach no longer ends the run (P4b-d).
+      clearTimeout(current.detachTimer);
+      current.detachTimer = undefined;
       current.mainFrameId = target.id;
       return redact(current, 'Target.attachToTarget', {
         sessionId: tabSessionId(current.tabId),
@@ -712,6 +960,11 @@ async function forwardCdp(
   }
 
   const screenshot = method === 'Page.captureScreenshot';
+  // After a worker restart the redactor has lost the known values, so the
+  // mask cannot find them on the page: refuse until the panel re-registers.
+  if (screenshot && current.needsRegistration) {
+    throw new Error(REGISTRATION_REFUSED);
+  }
   const lock = lockFor(current.tabId);
 
   const isTab = sessionId === tabSessionId(current.tabId);
@@ -1630,7 +1883,8 @@ async function captureMasked(
     isCoveredFrame,
     isSensitiveValue,
     hasKnownValue,
-    knownValuesRegistered: () => current.hasKnownValues,
+    knownValuesRegistered: () =>
+      current.hasKnownValues || current.needsRegistration,
   };
   const masks = [
     createMaskSession({
@@ -2001,12 +2255,21 @@ export function onDebuggerDetach(
   // The caseworker dismissed Chrome's debugging infobar: the run is over.
   if (reason === 'canceled_by_user') {
     current.blocked = true;
-    void stopRun('debugger-canceled');
+    void endRun('debugger-canceled');
     return;
   }
   const announced = current.attached;
   current.attached = false;
   dropChildren(current);
+  // P4b-d: the tab must be attached again (the agent re-attaches through the
+  // relay) within the grace period, or the run ends.
+  clearTimeout(current.detachTimer);
+  current.detachTimer = setTimeout(() => {
+    current.detachTimer = undefined;
+    if (run === current && !current.attached) {
+      void endRun('debugger-detached');
+    }
+  }, DETACH_GRACE_MS);
   // The agent was never given this session (a failed attach): say nothing.
   if (!announced) return;
   send(current, {
@@ -2027,7 +2290,7 @@ export function onTabRemoved(tabId: number) {
   const current = run;
   if (!current || tabId !== current.tabId) return;
   send(current, { type: 'tabClosed' });
-  void stopRun();
+  void endRun('user');
 }
 
 // --- messages ----------------------------------------------------------------
@@ -2048,6 +2311,42 @@ function addKnownValue(value: unknown): BridgeResponse {
   return { ok: true };
 }
 
+/** The run's state for the panel: ids and counts, never a token or URL. */
+function getRunStatus(): RunStatus {
+  const current = run;
+  if (!current || current.stopped) return { ok: true, active: false };
+  const status: RunStatus = {
+    ok: true,
+    active: true,
+    runId: current.runId,
+    origin: current.origin,
+    attached: current.attached,
+    needsRegistration: current.needsRegistration,
+  };
+  if (current.jev) {
+    status.jevFailures = current.jev.failures();
+    status.jevRequests = current.jev.requests();
+  }
+  return status;
+}
+
+/**
+ * The panel re-entered the run's known values after a worker restart (it
+ * sends only how many, never the values): screenshots may be taken again.
+ */
+function registrationComplete(count: unknown): BridgeResponse {
+  const current = run;
+  if (!current || current.stopped) return { ok: false, error: 'no active run' };
+  if (
+    count !== undefined &&
+    (typeof count !== 'number' || !Number.isInteger(count) || count < 0)
+  ) {
+    return { ok: false, error: 'count must be a non-negative integer' };
+  }
+  current.needsRegistration = false;
+  return { ok: true };
+}
+
 export async function handleMessage(message: unknown): Promise<BridgeResponse> {
   if (!isObject(message)) return { ok: false, error: 'invalid message' };
   if (message.type === 'startRun') {
@@ -2055,5 +2354,9 @@ export async function handleMessage(message: unknown): Promise<BridgeResponse> {
   }
   if (message.type === 'stopRun') return stopRun('user');
   if (message.type === 'addKnownValue') return addKnownValue(message.value);
+  if (message.type === 'getRunStatus') return getRunStatus();
+  if (message.type === 'registrationComplete') {
+    return registrationComplete(message.count);
+  }
   return { ok: false, error: 'unknown message type' };
 }

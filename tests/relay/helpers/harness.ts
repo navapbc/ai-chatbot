@@ -312,15 +312,22 @@ export interface ExtensionBrowser {
 }
 
 /**
- * Builds the extension and launches Chromium with it loaded. Pass
- * `extensionDir` to load an extension the caller already built (no build runs).
+ * Builds the extension (with the bridge's test hooks, which `bridgeMessage`
+ * needs) and launches Chromium with it loaded. Pass `extensionDir` to load an
+ * extension the caller already built (no build runs; build it with
+ * EXTENSION_TEST_HOOKS=1 if the test calls `bridgeMessage`).
  */
 export async function launchExtensionBrowser(
   opts: { extensionDir?: string; headless?: boolean } = {},
 ): Promise<ExtensionBrowser> {
   const extensionDir = opts.extensionDir ?? EXTENSION_DIST;
   if (!opts.extensionDir) {
-    execFileSync('pnpm', ['extension:build'], { cwd: ROOT, stdio: 'ignore' });
+    const { EXTENSION_RELEASE: _release, ...env } = process.env;
+    execFileSync('pnpm', ['extension:build'], {
+      cwd: ROOT,
+      env: { ...env, EXTENSION_TEST_HOOKS: '1' },
+      stdio: 'ignore',
+    });
   }
   const profile = mkdtempSync(path.join(tmpdir(), 'relay-e2e-profile-'));
   const context = await chromium.launchPersistentContext(profile, {

@@ -6,11 +6,15 @@ import {
   ExtensionBuildError,
   esbuildArgs,
   resolveAppOrigin,
+  resolveTestHooks,
 } from './extension-build-config';
 
 // Builds the browser bridge extension: bundles the service worker and writes
 // the manifest, adding host_permissions for APP_ORIGIN when it is set.
-// Usage: tsx scripts/build-extension.ts [--out <dir>]   (default extension/dist)
+// Usage: tsx scripts/build-extension.ts [--out <dir>] [--test-hooks]
+//   (default extension/dist). EXTENSION_TEST_HOOKS=1 or --test-hooks installs
+//   the bridge's globalThis test hooks for the e2e suites; refused together
+//   with EXTENSION_RELEASE=1.
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -24,6 +28,7 @@ function outDir(argv: string[]): string {
 
 try {
   const appOrigin = resolveAppOrigin(process.env);
+  const testHooks = resolveTestHooks(process.env, process.argv.slice(2));
   const out = outDir(process.argv.slice(2));
   mkdirSync(out, { recursive: true });
   execFileSync(
@@ -32,6 +37,7 @@ try {
       path.join(ROOT, 'extension/src/service-worker.ts'),
       path.join(out, 'service-worker.js'),
       appOrigin,
+      testHooks,
     ),
     { cwd: ROOT, stdio: 'inherit' },
   );

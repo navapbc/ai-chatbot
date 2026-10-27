@@ -27,6 +27,13 @@ export interface JevClassifier {
   failures: () => number;
   /** Requests made to the app so far. */
   requests: () => number;
+  /**
+   * Ends the classifier with its run: clears the window timer, aborts the
+   * requests in flight (and their deadlines), rejects every waiter, and
+   * rejects every later classify() at once. Stop rejections are not counted
+   * as failures. Idempotent.
+   */
+  stop: () => void;
 }
 
 type Waiter = {
@@ -62,6 +69,9 @@ export const createJevClassifier = (opts: {
   // The open window: one entry per distinct descriptor, in arrival order.
   let pending = new Map<string, Entry>();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
+  // Cancels each request in flight; see stop().
+  const inFlight = new Set<() => void>();
 
   const fail = (entries: Entry[]) => {
     for (const entry of entries) {
@@ -77,9 +87,20 @@ export const createJevClassifier = (opts: {
     requests++;
     const controller = new AbortController();
     let settled = false;
+    const cancel = () => {
+      if (settled) return;
+      settled = true;
+      inFlight.delete(cancel);
+      clearTimeout(deadline);
+      controller.abort();
+      for (const entry of entries) {
+        for (const w of entry.waiters) w.reject(failed());
+      }
+    };
     const finish = (results: unknown) => {
       if (settled) return;
       settled = true;
+      inFlight.delete(cancel);
       clearTimeout(deadline);
       if (
         !Array.isArray(results) ||
@@ -97,6 +118,7 @@ export const createJevClassifier = (opts: {
       controller.abort();
       finish(undefined);
     }, REQUEST_TIMEOUT_MS);
+    inFlight.add(cancel);
     let call: Promise<boolean[]>;
     try {
       call = api.classifyFields(
@@ -124,6 +146,10 @@ export const createJevClassifier = (opts: {
 
   const classify = (d: FieldDescriptor): Promise<boolean> =>
     new Promise<boolean>((resolve, reject) => {
+      if (stopped) {
+        reject(failed());
+        return;
+      }
       if (requests >= budget) {
         failures++;
         reject(failed());
@@ -140,9 +166,22 @@ export const createJevClassifier = (opts: {
       timer ??= setTimeout(flush, windowMs);
     });
 
+  const stop = () => {
+    stopped = true;
+    clearTimeout(timer);
+    timer = undefined;
+    const waiting = [...pending.values()];
+    pending = new Map();
+    for (const entry of waiting) {
+      for (const w of entry.waiters) w.reject(failed());
+    }
+    for (const cancel of [...inFlight]) cancel();
+  };
+
   return {
     classify,
     failures: () => failures,
     requests: () => requests,
+    stop,
   };
 };

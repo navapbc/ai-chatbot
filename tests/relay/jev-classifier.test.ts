@@ -306,3 +306,57 @@ describe('budget', () => {
     expect(jev.failures()).toBe(1);
   });
 });
+
+describe('stop', () => {
+  it('rejects the waiters of an open window, sends nothing, and leaves no timer', async () => {
+    const { api, calls } = fakeApi();
+    const jev = createJevClassifier({ api, runId: RUN });
+    const a = settle(jev.classify({ label: 'a secret' }));
+    jev.stop();
+    expect(vi.getTimerCount()).toBe(0);
+    expect((await a).ok).toBe(false);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('aborts an in-flight request, rejects its waiters, and clears its deadline', async () => {
+    const { api, calls } = fakeApi(() => new Promise<boolean[]>(() => {}));
+    const jev = createJevClassifier({ api, runId: RUN });
+    const a = settle(jev.classify({ label: 'x' }));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(calls).toHaveLength(1);
+    jev.stop();
+    expect(calls[0].signal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    expect((await a).ok).toBe(false);
+  });
+
+  it('a late answer after stop resolves nothing', async () => {
+    let answer: (r: boolean[]) => void = () => {};
+    const { api } = fakeApi(
+      () =>
+        new Promise<boolean[]>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const jev = createJevClassifier({ api, runId: RUN });
+    const a = settle(jev.classify({ label: 'x' }));
+    await vi.advanceTimersByTimeAsync(10);
+    jev.stop();
+    answer([true]);
+    expect((await a).ok).toBe(false);
+  });
+
+  it('rejects every later classify without a request or a timer', async () => {
+    const { api, calls } = fakeApi();
+    const jev = createJevClassifier({ api, runId: RUN });
+    jev.stop();
+    const a = settle(jev.classify({ label: 'a secret' }));
+    expect(vi.getTimerCount()).toBe(0);
+    expect((await a).ok).toBe(false);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(calls).toHaveLength(0);
+    // Idempotent.
+    jev.stop();
+  });
+});
