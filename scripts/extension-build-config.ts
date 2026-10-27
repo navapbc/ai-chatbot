@@ -150,11 +150,14 @@ export function esbuildArgs(
  * so the panel gets its own copy (extension/panel/lib/cn.ts). esbuild picks
  * the longest matching alias, so the order of the two does not matter.
  * `metafile`, when given, records the import graph (the bundle test reads it).
+ * `appOrigin` is defined as `__APP_ORIGIN__` for extension/src/config.ts, as
+ * in the worker build.
  */
 export function panelEsbuildArgs(
   root: string,
   outFile: string,
   metafile?: string,
+  appOrigin = '',
 ): string[] {
   const args = [
     path.join(root, 'extension/panel/main.tsx'),
@@ -163,6 +166,7 @@ export function panelEsbuildArgs(
     '--jsx=automatic',
     `--outfile=${outFile}`,
     `--define:process.env.NODE_ENV=${JSON.stringify('production')}`,
+    `--define:__APP_ORIGIN__=${JSON.stringify(appOrigin)}`,
     `--alias:@/lib/utils=${path.join(root, 'extension/panel/lib/cn.ts')}`,
     `--alias:@=${root}`,
   ];

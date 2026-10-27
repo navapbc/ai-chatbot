@@ -147,9 +147,16 @@ describe('panelEsbuildArgs', () => {
       '--jsx=automatic',
       '--outfile=out/panel.js',
       '--define:process.env.NODE_ENV="production"',
+      '--define:__APP_ORIGIN__=""',
       '--alias:@/lib/utils=/repo/extension/panel/lib/cn.ts',
       '--alias:@=/repo',
     ]);
+  });
+
+  it('defines the app origin for extension/src/config.ts', () => {
+    expect(
+      panelEsbuildArgs('/repo', 'out/panel.js', undefined, 'https://app.test'),
+    ).toContain('--define:__APP_ORIGIN__="https://app.test"');
   });
 
   it('writes a metafile only when asked', () => {

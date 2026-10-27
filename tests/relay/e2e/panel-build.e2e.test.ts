@@ -1,9 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { extractTokens } from '../../../scripts/extension-build-config';
 import {
   EXTENSION_ID,
   type ExtensionBrowser,
@@ -11,8 +10,8 @@ import {
 } from '../helpers/harness';
 
 // The side panel page as Chromium loads it from the built extension: the
-// placeholder renders, the app's primary color applies through the panel's
-// Tailwind build and tokens, and the page raises no console error or CSP
+// shell renders (here the not-connected screen), the panel's Tailwind build
+// applies, and the page raises no console error or CSP
 // violation (MV3 forbids inline script). Opened as a tab: a real side panel
 // cannot be driven headless. Run with
 // `pnpm test:relay e2e/panel-build.e2e.test.ts`; RELAY_E2E_HEADED=1 runs it
@@ -49,7 +48,7 @@ afterAll(async () => {
 });
 
 describe('the side panel page', () => {
-  it('renders the placeholder in the app primary color, without errors', async () => {
+  it('renders the not-connected screen, without errors', async () => {
     const page = await browser.context.newPage();
     const errors: string[] = [];
     page.on('console', (msg) => {
@@ -60,32 +59,15 @@ describe('the side panel page', () => {
     page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
 
     await page.goto(`chrome-extension://${EXTENSION_ID}/panel.html`);
-    const button = page.getByRole('button', { name: 'Start' });
-    await button.waitFor();
-
-    const primary = extractTokens(
-      readFileSync(path.join(ROOT, 'app/globals.css'), 'utf8'),
-    ).match(/--primary:\s*([^;]+);/)?.[1];
-    expect(primary).toBeTruthy();
-
-    // Let the browser convert the token, so no hand-rounded rgb is pinned.
-    const expected = await page.evaluate((hsl) => {
-      const probe = document.createElement('div');
-      document.body.append(probe);
-      probe.style.backgroundColor = `hsl(${hsl})`;
-      const color = getComputedStyle(probe).backgroundColor;
-      probe.remove();
-      return color;
-    }, primary as string);
-    const actual = await button.evaluate(
-      (el) => getComputedStyle(el).backgroundColor,
-    );
-    expect(expected).not.toBe('rgba(0, 0, 0, 0)');
-    expect(actual).toBe(expected);
+    // No APP_ORIGIN in this build: the shell says so instead of crashing.
+    await page.getByText('This build is not connected to an app').waitFor();
 
     // The system font stack applies (the app's next/font variables do not
-    // exist here), not the browser's default serif.
-    const font = await button.evaluate((el) => getComputedStyle(el).fontFamily);
+    // exist here), not the browser's default serif. The primary color is
+    // checked on a button in panel-shell.e2e.test.ts.
+    const font = await page
+      .locator('h1')
+      .evaluate((el) => getComputedStyle(el).fontFamily);
     expect(font).toContain('system-ui');
 
     expect(errors).toEqual([]);

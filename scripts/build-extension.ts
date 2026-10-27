@@ -53,7 +53,11 @@ function panelMetafile(argv: string[]): string | undefined {
  * app/globals.css on every build and replaced with a rename, so builds
  * running at the same time (the e2e files do) never read a half-written one.
  */
-function buildPanel(out: string, metafile: string | undefined) {
+function buildPanel(
+  out: string,
+  metafile: string | undefined,
+  appOrigin: string,
+) {
   const panel = path.join(ROOT, 'extension/panel');
   const tokens = path.join(panel, 'tokens.css');
   const pending = `${tokens}.${process.pid}.tmp`;
@@ -68,7 +72,7 @@ function buildPanel(out: string, metafile: string | undefined) {
   }
   execFileSync(
     path.join(ROOT, 'node_modules/.bin/esbuild'),
-    panelEsbuildArgs(ROOT, path.join(out, 'panel.js'), metafile),
+    panelEsbuildArgs(ROOT, path.join(out, 'panel.js'), metafile, appOrigin),
     { cwd: ROOT, stdio: 'inherit' },
   );
   // No --postcss: the panel CSS uses no nesting, and the CLI's own pipeline
@@ -106,7 +110,7 @@ try {
     ),
     { cwd: ROOT, stdio: 'inherit' },
   );
-  buildPanel(out, metafile);
+  buildPanel(out, metafile, appOrigin);
   const source = JSON.parse(
     readFileSync(path.join(ROOT, 'extension/manifest.json'), 'utf8'),
   );
