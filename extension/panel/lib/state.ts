@@ -29,6 +29,11 @@ export type State = {
   target?: Target;
   participant?: Participant;
   modelId?: string;
+  /**
+   * The run this panel started. `expiresAt` is the extension token's expiry
+   * as the token route returns it: Unix time in SECONDS, not milliseconds.
+   */
+  run?: { runId: string; expiresAt: number };
   error?: ErrorMessage;
 };
 
@@ -53,6 +58,7 @@ export type Action =
   | { type: 'chooseModel'; modelId: string }
   | { type: 'startRequested' }
   | { type: 'startFailed'; error: unknown }
+  | { type: 'runStarted'; runId: string; expiresAt: number }
   | { type: 'goBack' };
 
 export const initialState: State = { screen: 'loading' };
@@ -103,6 +109,15 @@ export const reducer = (state: State, action: Action): State => {
   if (action.type === 'startFailed') {
     if (state.screen !== 'starting') return state;
     return { ...state, screen: 'ready', error: messageFor(action.error) };
+  }
+  if (action.type === 'runStarted') {
+    if (state.screen !== 'starting') return state;
+    const { error: _error, ...rest } = state;
+    return {
+      ...rest,
+      screen: 'running',
+      run: { runId: action.runId, expiresAt: action.expiresAt },
+    };
   }
   if (action.type === 'goBack') {
     if (state.screen !== 'ready') return state;

@@ -76,32 +76,48 @@ export const loadRecents = async (
   }
 };
 
+// addRecent and markRecentEnded read the list, change it and write it back.
+// They run one at a time, in call order, so two near-simultaneous calls cannot
+// both read the old list and drop each other's change.
+let chain: Promise<unknown> = Promise.resolve();
+
+const serialized = <T>(task: () => Promise<T>): Promise<T> => {
+  const result = chain.then(task);
+  // A failed call must not block the calls queued behind it.
+  chain = result.catch(() => {});
+  return result;
+};
+
 export const addRecent = async (
   recent: Recent,
   now: number = Date.now(),
 ): Promise<void> => {
   const valid = parseRecent(recent);
   if (!valid) throw new Error('invalid recent');
-  const { list } = await read(now);
-  const next = [valid, ...list.filter((r) => r.runId !== valid.runId)].slice(
-    0,
-    MAX_RECENTS,
-  );
-  await chrome.storage.local.set({ [KEY]: next });
+  await serialized(async () => {
+    const { list } = await read(now);
+    const next = [valid, ...list.filter((r) => r.runId !== valid.runId)].slice(
+      0,
+      MAX_RECENTS,
+    );
+    await chrome.storage.local.set({ [KEY]: next });
+  });
 };
 
 export const markRecentEnded = async (
   runId: string,
   reason: string,
 ): Promise<void> => {
+  if (!isValidReason(reason)) return;
   try {
-    if (!isValidReason(reason)) return;
-    const { list } = await read(Date.now());
-    if (!list.some((r) => r.runId === runId)) return;
-    await chrome.storage.local.set({
-      [KEY]: list.map((r) =>
-        r.runId === runId ? { ...r, endedReason: reason } : r,
-      ),
+    await serialized(async () => {
+      const { list } = await read(Date.now());
+      if (!list.some((r) => r.runId === runId)) return;
+      await chrome.storage.local.set({
+        [KEY]: list.map((r) =>
+          r.runId === runId ? { ...r, endedReason: reason } : r,
+        ),
+      });
     });
   } catch {
     // Value-free: the recents list is a convenience.

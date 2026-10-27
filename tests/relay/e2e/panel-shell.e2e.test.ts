@@ -5,11 +5,16 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { mintRelayToken } from '../../../lib/relay/token';
 import { extractTokens } from '../../../scripts/extension-build-config';
 import {
   EXTENSION_ID,
   type ExtensionBrowser,
+  type Fixtures,
   launchExtensionBrowser,
+  type Relay,
+  serveFixtures,
+  startRelay,
 } from '../helpers/harness';
 
 // The panel shell against a fake app: GET /api/relay/config answers 401 first
@@ -18,6 +23,11 @@ import {
 // real side panel cannot be driven headless. Run with
 // `pnpm test:relay e2e/panel-shell.e2e.test.ts`; RELAY_E2E_HEADED=1 runs it
 // headed.
+//
+// Starting a run: the fake app's POST /api/eve-chat answers one SSE chunk and
+// keeps the stream open; POST /api/relay/token mints a real extension token
+// for a real relay (ws://127.0.0.1) and the fixture origin, so the worker's
+// startRun succeeds against a real tab and the panel reaches Running.
 
 const ROOT = path.resolve(__dirname, '../../..');
 const HEADED = process.env.RELAY_E2E_HEADED === '1';
@@ -26,9 +36,74 @@ let out: string;
 let browser: ExtensionBrowser;
 let app: Server;
 let configCalls = 0;
+let relay: Relay;
+let fixtures: Fixtures;
+/** Every start-flow request the fake app saw, in order: "METHOD path". */
+const appCalls: string[] = [];
+const eveChatBodies: unknown[] = [];
+const eveChatOrigins: (string | undefined)[] = [];
+/** The status the next POST /api/eve-chat answers with. */
+let eveChatStatus = 200;
+
+const readBody = (req: import('node:http').IncomingMessage) =>
+  new Promise<string>((resolve) => {
+    let text = '';
+    req.on('data', (chunk) => {
+      text += chunk;
+    });
+    req.on('end', () => resolve(text));
+  });
 
 beforeAll(async () => {
-  app = createServer((req, res) => {
+  relay = await startRelay();
+  fixtures = await serveFixtures();
+  app = createServer(async (req, res) => {
+    if (req.method === 'POST' && req.url === '/api/eve-chat') {
+      appCalls.push('POST /api/eve-chat');
+      eveChatOrigins.push(req.headers.origin);
+      eveChatBodies.push(JSON.parse(await readBody(req)));
+      if (eveChatStatus !== 200) {
+        res.writeHead(eveChatStatus, { 'content-type': 'application/json' });
+        res.end('{"code":"rate_limit:chat","message":"limit"}');
+        return;
+      }
+      // One chunk, then the turn "keeps going": the stream stays open.
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: {"type":"start"}\n\n');
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/api/relay/token') {
+      appCalls.push('POST /api/relay/token');
+      const { runId } = JSON.parse(await readBody(req)) as { runId: string };
+      const now = Math.floor(Date.now() / 1000);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          extensionToken: mintRelayToken(
+            {
+              runId,
+              role: 'extension',
+              origin: fixtures.origin,
+              sub: 'e2e-user',
+            },
+            relay.secret,
+            { now },
+          ),
+          relayUrl: relay.url,
+          expiresAt: now + 1800,
+        }),
+      );
+      return;
+    }
+    if (
+      req.method === 'POST' &&
+      req.url?.startsWith('/api/relay/runs/') &&
+      req.url.endsWith('/stop')
+    ) {
+      appCalls.push(`POST ${req.url}`);
+      res.writeHead(404).end();
+      return;
+    }
     if (req.url === '/api/relay/config') {
       configCalls += 1;
       if (configCalls === 1) {
@@ -92,7 +167,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await browser?.stop();
+  app?.closeAllConnections();
   app?.close();
+  await relay?.stop();
+  await fixtures?.stop();
   if (out) rmSync(out, { recursive: true, force: true });
 });
 
@@ -211,10 +289,143 @@ describe('the panel shell', () => {
     await page.getByRole('button', { name: /Alice/ }).click();
     await page.getByRole('heading', { name: 'Ready' }).waitFor();
 
-    // Start reaches the starting placeholder (the stub starter).
+    // The stubbed tab 7 does not exist: the starter refuses before any
+    // request, and Ready shows why.
+    const before = appCalls.length;
     await page.getByRole('button', { name: 'Start' }).click();
-    await page.getByRole('heading', { name: 'Starting' }).waitFor();
+    await page.getByText('The tab was closed').waitFor();
+    await page.getByRole('heading', { name: 'Ready' }).waitFor();
+    expect(appCalls.length).toBe(before);
     await page.close();
+  }, 30_000);
+
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+  type Status = {
+    ok: boolean;
+    active: boolean;
+    runId?: string;
+    attached?: boolean;
+  };
+
+  /** A panel on Ready for a real tab at the fixture origin. */
+  const readyOnRealTab = async () => {
+    const site = await browser.context.newPage();
+    await site.goto(fixtures.formUrl);
+    const page = await browser.context.newPage();
+    // The panel is a tab here: "Use this tab" must see the site's real tab
+    // (the worker checks its real URL), not the panel itself.
+    await page.addInitScript((origin: string) => {
+      const query = chrome.tabs.query.bind(chrome.tabs);
+      chrome.tabs.query = (async () =>
+        (await query({})).filter((t) =>
+          t.url?.startsWith(`${origin}/`),
+        )) as unknown as typeof chrome.tabs.query;
+    }, fixtures.origin);
+    await page.goto(`chrome-extension://${EXTENSION_ID}/panel.html`);
+    await page.getByRole('button', { name: 'Use this tab' }).click();
+    await page
+      .getByRole('searchbox', { name: 'Search participants' })
+      .fill('alice');
+    await page.getByRole('button', { name: /Alice/ }).click();
+    await page.getByRole('heading', { name: 'Ready' }).waitFor();
+    return { site, page };
+  };
+
+  const runStatus = (page: import('playwright').Page) =>
+    page.evaluate(
+      () =>
+        chrome.runtime.sendMessage({ type: 'getRunStatus' }) as Promise<Status>,
+    );
+
+  const stopWorkerRun = (page: import('playwright').Page) =>
+    page.evaluate(() => chrome.runtime.sendMessage({ type: 'stopRun' }));
+
+  it('starts a run: eve-chat, then the token, then the worker; shows Running', async () => {
+    const { site, page } = await readyOnRealTab();
+    appCalls.length = 0;
+    eveChatBodies.length = 0;
+    eveChatOrigins.length = 0;
+    eveChatStatus = 200;
+
+    await page.getByRole('button', { name: 'Start' }).click();
+    await page.getByRole('heading', { name: 'Running' }).waitFor();
+
+    expect(appCalls).toEqual(['POST /api/eve-chat', 'POST /api/relay/token']);
+    expect(eveChatOrigins).toEqual([`chrome-extension://${EXTENSION_ID}`]);
+    const body = eveChatBodies[0] as { id: string; relay: unknown };
+    expect(body.id).toMatch(UUID);
+    expect(body).toEqual({
+      id: body.id,
+      relay: { origin: fixtures.origin, participant: { recordId: 'rec-1' } },
+    });
+
+    // The worker holds the run and registered it with the real relay (the
+    // debugger attaches only once an agent asks, so `attached` stays false).
+    const status = await runStatus(page);
+    expect({ active: status.active, runId: status.runId }).toEqual({
+      active: true,
+      runId: body.id,
+    });
+    await expect
+      .poll(
+        () =>
+          relay.logs.some(
+            (l) => l.event === 'registered' && l.runId === body.id,
+          ),
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+    const recents = await page.evaluate(
+      async () => (await chrome.storage.local.get('recentRuns')).recentRuns,
+    );
+    expect(recents).toEqual(
+      expect.arrayContaining([
+        {
+          runId: body.id,
+          siteName: 'localhost',
+          startedAt: expect.any(Number),
+        },
+      ]),
+    );
+
+    await stopWorkerRun(page);
+    await page.close();
+    await site.close();
+  }, 30_000);
+
+  it('shows the run-limit message on 429, then Start works again', async () => {
+    const { site, page } = await readyOnRealTab();
+    appCalls.length = 0;
+    eveChatBodies.length = 0;
+    eveChatStatus = 429;
+
+    await page.getByRole('button', { name: 'Start' }).click();
+    await page.getByText('Too many runs right now').waitFor();
+    await page.getByRole('heading', { name: 'Ready' }).waitFor();
+    const refusedId = (eveChatBodies[0] as { id: string }).id;
+    // A run may exist once eve-chat was asked, so the server stop is called.
+    await expect.poll(() => appCalls.length).toBe(2);
+    expect(appCalls).toEqual([
+      'POST /api/eve-chat',
+      `POST /api/relay/runs/${refusedId}/stop`,
+    ]);
+    expect((await runStatus(page)).active).toBe(false);
+
+    eveChatStatus = 200;
+    const start = page.getByRole('button', { name: 'Start' });
+    expect(await start.isDisabled()).toBe(false);
+    await start.click();
+    await page.getByRole('heading', { name: 'Running' }).waitFor();
+    expect(appCalls.slice(2)).toEqual([
+      'POST /api/eve-chat',
+      'POST /api/relay/token',
+    ]);
+    expect((eveChatBodies[1] as { id: string }).id).not.toBe(refusedId);
+
+    await stopWorkerRun(page);
+    await page.close();
+    await site.close();
   }, 30_000);
 
   it('saves details for 8 hours, reuses them, expires them and clears them', async () => {

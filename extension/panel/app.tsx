@@ -2,7 +2,15 @@ import { useEffect, useMemo, useReducer } from 'react';
 import { APP_ORIGIN } from '../src/config';
 import { createAppApi } from '../src/app-api';
 import { NotConnectedError } from './lib/copy';
-import { initialState, reducer, type Screen, type Target } from './lib/state';
+import { startRun } from './lib/run-starter';
+import {
+  type Action,
+  initialState,
+  reducer,
+  type Screen,
+  type Target,
+} from './lib/state';
+import { createWorkerApi } from './lib/worker-api';
 import { DetailsScreen } from './screens/details';
 import { ErrorScreen } from './screens/error';
 import { HomeScreen } from './screens/home';
@@ -12,7 +20,6 @@ import { type OnStart, ReadyScreen } from './screens/ready';
 import { SignedOutScreen } from './screens/signed-out';
 
 const STUB_NAMES: Partial<Record<Screen, string>> = {
-  starting: 'Starting',
   running: 'Running',
 };
 
@@ -29,12 +36,35 @@ const probe = async () => {
   }
 };
 
-// Task 8 replaces this with the run starter; until then a start only moves the
-// panel to the starting placeholder.
-const stubStart: OnStart = () => undefined;
+// The real starter: Chrome's APIs and the build's APP_ORIGIN. A failure is
+// thrown, so the Ready screen shows its fixed message and enables Start again.
+const createStarter =
+  (dispatch: (action: Action) => void): OnStart =>
+  async ({ tabId, siteName, request }) => {
+    if (!APP_ORIGIN) throw new NotConnectedError();
+    const result = await startRun(
+      {
+        api: createAppApi({ origin: APP_ORIGIN }),
+        worker: createWorkerApi(),
+        fetch: (input, init) => globalThis.fetch(input, init),
+        appOrigin: APP_ORIGIN,
+        newId: () => crypto.randomUUID(),
+        now: () => Date.now(),
+        tabs: { get: (id) => chrome.tabs.get(id) },
+      },
+      { tabId, siteName, request },
+    );
+    if (!result.ok) throw result.error;
+    dispatch({
+      type: 'runStarted',
+      runId: result.runId,
+      expiresAt: result.expiresAt,
+    });
+  };
 
-export const App = ({ onStart = stubStart }: { onStart?: OnStart }) => {
+export const App = ({ onStart }: { onStart?: OnStart }) => {
   const [state, dispatch] = useReducer(reducer, initialState);
+  const starter = useMemo(() => onStart ?? createStarter(dispatch), [onStart]);
 
   useEffect(() => {
     if (state.screen !== 'loading') return;
@@ -99,7 +129,18 @@ export const App = ({ onStart = stubStart }: { onStart?: OnStart }) => {
         />
       ) : null}
       {state.screen === 'ready' ? (
-        <ReadyScreen state={state} dispatch={dispatch} onStart={onStart} />
+        <ReadyScreen state={state} dispatch={dispatch} onStart={starter} />
+      ) : null}
+      {state.screen === 'starting' ? (
+        // No way off this screen: a start always ends in running or back on
+        // Ready, and a run started while the panel was elsewhere would be
+        // left with nothing to stop it.
+        <section className="flex flex-col gap-4" aria-label="Starting">
+          <h2 className="text-base font-semibold">Starting</h2>
+          <p role="status" aria-live="polite" className="text-sm">
+            Starting the run...
+          </p>
+        </section>
       ) : null}
       {STUB_NAMES[state.screen] ? (
         <Placeholder

@@ -20,6 +20,30 @@ export class NotConnectedError extends Error {
   }
 }
 
+/** The chosen tab is gone (closed, or unreadable) when a run starts. */
+export class TabGoneError extends Error {
+  constructor() {
+    super('tab closed');
+    this.name = 'TabGoneError';
+  }
+}
+
+/** The chosen tab is no longer on the run's origin when a run starts. */
+export class TabMovedError extends Error {
+  constructor() {
+    super('tab left the origin');
+    this.name = 'TabMovedError';
+  }
+}
+
+/** A start was asked for while another one is still in flight. */
+export class StartInFlightError extends Error {
+  constructor() {
+    super('start in flight');
+    this.name = 'StartInFlightError';
+  }
+}
+
 const GENERIC: ErrorMessage = {
   title: 'Something went wrong',
   detail:
@@ -116,8 +140,17 @@ const NOT_CONNECTED: ErrorMessage = {
   retryable: false,
 };
 
+const START_IN_FLIGHT: ErrorMessage = {
+  title: 'A run is already starting',
+  detail: 'Wait for it to finish starting.',
+  retryable: false,
+};
+
 export const messageFor = (error: unknown): ErrorMessage => {
   if (error instanceof NotConnectedError) return { ...NOT_CONNECTED };
+  if (error instanceof TabGoneError) return { ...WORKER.tab_not_found };
+  if (error instanceof TabMovedError) return { ...WORKER.tab_out_of_scope };
+  if (error instanceof StartInFlightError) return { ...START_IN_FLIGHT };
   if (error instanceof AppApiError) return { ...(APP[error.code] ?? GENERIC) };
   if (error instanceof WorkerError) {
     return { ...(WORKER[error.code] ?? GENERIC) };

@@ -8,8 +8,15 @@ import {
 } from '../lib/start-request';
 import type { Action, State } from '../lib/state';
 
-/** Wired by the shell; the run starter replaces the stub. */
-export type OnStart = (request: StartRequest) => Promise<unknown> | undefined;
+/**
+ * Wired by the shell to the run starter. A rejection becomes `startFailed`,
+ * which shows its fixed message here and enables Start again.
+ */
+export type OnStart = (args: {
+  tabId: number;
+  siteName: string;
+  request: StartRequest;
+}) => Promise<unknown> | undefined;
 
 type Props = {
   state: State;
@@ -69,7 +76,9 @@ export const ReadyScreen = ({ state, dispatch, onStart }: Props) => {
     pending.current = true;
     dispatch({ type: 'startRequested' });
     Promise.resolve()
-      .then(() => onStart(request))
+      .then(() =>
+        onStart({ tabId: target.tabId, siteName: target.siteName, request }),
+      )
       .catch((failure: unknown) => {
         pending.current = false;
         dispatch({ type: 'startFailed', error: failure });

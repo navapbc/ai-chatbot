@@ -152,6 +152,63 @@ describe('recents', () => {
   });
 });
 
+describe('recents: read-modify-write is serialized', () => {
+  // Slow storage, so two unserialized calls would both read the old list and
+  // the second write would drop the first one's change.
+  const slow = () => {
+    const local = (
+      globalThis as unknown as {
+        chrome: { storage: { local: Record<string, unknown> } };
+      }
+    ).chrome.storage.local;
+    const get = local.get as (key: string) => Promise<unknown>;
+    const set = local.set as (items: Record<string, unknown>) => Promise<void>;
+    local.get = async (key: string) => {
+      const value = await get(key);
+      await new Promise((r) => setTimeout(r, 5));
+      return value;
+    };
+    local.set = async (items: Record<string, unknown>) => {
+      await new Promise((r) => setTimeout(r, 5));
+      return set(items);
+    };
+  };
+
+  it('two near-simultaneous addRecent calls both land', async () => {
+    slow();
+    await Promise.all([addRecent(rec(1), NOW), addRecent(rec(2), NOW)]);
+    const ids = (await loadRecents(NOW)).map((r) => r.runId).sort();
+    expect(ids).toEqual([id(1), id(2)]);
+  });
+
+  it('addRecent and markRecentEnded both land', async () => {
+    await addRecent(rec(1), NOW);
+    slow();
+    await Promise.all([
+      markRecentEnded(id(1), 'stopped'),
+      addRecent(rec(2), NOW),
+    ]);
+    const list = await loadRecents(NOW);
+    expect(list.map((r) => r.runId).sort()).toEqual([id(1), id(2)]);
+    expect(list.find((r) => r.runId === id(1))?.endedReason).toBe('stopped');
+  });
+
+  it('a failed call does not block the next one', async () => {
+    slow();
+    const settled = await Promise.allSettled([
+      addRecent({ ...rec(1), siteName: '' }, NOW),
+      addRecent(rec(2), NOW),
+    ]);
+    expect(settled.map((s) => s.status)).toEqual(['rejected', 'fulfilled']);
+    failing = true;
+    await addRecent(rec(3), NOW).catch(() => {});
+    failing = false;
+    await addRecent(rec(4), NOW);
+    const ids = (await loadRecents(NOW)).map((r) => r.runId).sort();
+    expect(ids).toEqual([id(2), id(4)]);
+  });
+});
+
 describe('formatAgo', () => {
   it('formats relative times', () => {
     expect(formatAgo(NOW, NOW - 5_000)).toBe('just now');

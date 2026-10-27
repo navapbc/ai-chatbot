@@ -205,6 +205,31 @@ describe('ready screen reducer actions', () => {
     expect(s.participant).toEqual(ready.participant);
   });
 
+  it('runStarted moves starting to running and keeps the run', () => {
+    const starting = reducer(ready, { type: 'startRequested' });
+    const runId = '11111111-2222-4333-8444-555555555555';
+    const s = reducer(starting, {
+      type: 'runStarted',
+      runId,
+      expiresAt: 1_800_001_800,
+    });
+    expect(s.screen).toBe('running');
+    expect(s.run).toEqual({ runId, expiresAt: 1_800_001_800 });
+    expect(s.target).toEqual(ready.target);
+    expect(s.error).toBeUndefined();
+  });
+
+  it('runStarted is ignored unless starting', () => {
+    const action = {
+      type: 'runStarted',
+      runId: '11111111-2222-4333-8444-555555555555',
+      expiresAt: 1,
+    } as const;
+    expect(reducer(ready, action)).toBe(ready);
+    const home: State = { screen: 'home' };
+    expect(reducer(home, action)).toBe(home);
+  });
+
   it('startFailed is ignored unless starting', () => {
     expect(reducer(ready, { type: 'startFailed', error: new Error('x') })).toBe(
       ready,
