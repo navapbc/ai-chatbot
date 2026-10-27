@@ -1,4 +1,5 @@
 import type { InputAnswer } from '@/lib/ai/eve/input-requests';
+import { internalSecret } from '@/lib/relay/internal-secret';
 import type { RelayRunRef } from '@/lib/relay/eve-relay-browser';
 
 // Eve is mounted on this app's own origin: next.config.ts wraps the config in
@@ -51,7 +52,7 @@ export async function createEveSession(
   if (relay) {
     // Without the shared secret the channel would ignore the reference, so
     // fail here rather than send it anyway.
-    const secret = process.env.EVE_INTERNAL_SECRET;
+    const secret = internalSecret();
     if (!secret) throw new Error('relay sessions require EVE_INTERNAL_SECRET');
     headers['x-eve-internal-secret'] = secret;
     headers['x-eve-relay-url'] = relay.url;

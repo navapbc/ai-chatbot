@@ -461,7 +461,10 @@ describe('POST /api/eve-chat relay runs', () => {
   beforeEach(() => {
     vi.stubEnv('RELAY_RUNS_ENABLED', '1');
     vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example.gov');
-    vi.stubEnv('EVE_INTERNAL_SECRET', 'internal-secret-for-tests');
+    vi.stubEnv(
+      'EVE_INTERNAL_SECRET',
+      'internal-secret-for-tests-padded-to-be-over-thirty-two-chars',
+    );
     setParticipantSourceForTests(createStaticParticipantSource(PARTICIPANTS));
   });
 
@@ -1074,7 +1077,10 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
   beforeEach(() => {
     vi.stubEnv('RELAY_RUNS_ENABLED', '1');
     vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example.gov');
-    vi.stubEnv('EVE_INTERNAL_SECRET', 'internal-secret-for-tests');
+    vi.stubEnv(
+      'EVE_INTERNAL_SECRET',
+      'internal-secret-for-tests-padded-to-be-over-thirty-two-chars',
+    );
     setParticipantSourceForTests(createStaticParticipantSource(PARTICIPANTS));
   });
   afterEach(() => {
@@ -1666,7 +1672,10 @@ describe('POST /api/eve-chat relay message bounds', () => {
   beforeEach(() => {
     vi.stubEnv('RELAY_RUNS_ENABLED', '1');
     vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example.gov');
-    vi.stubEnv('EVE_INTERNAL_SECRET', 'internal-secret-for-tests');
+    vi.stubEnv(
+      'EVE_INTERNAL_SECRET',
+      'internal-secret-for-tests-padded-to-be-over-thirty-two-chars',
+    );
     setParticipantSourceForTests(
       createStaticParticipantSource([...PARTICIPANTS, HUGE]),
     );

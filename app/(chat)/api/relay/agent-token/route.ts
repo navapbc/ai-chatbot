@@ -2,6 +2,10 @@ import { z } from 'zod';
 import { getRunStore } from '@/lib/ai/eve/run-store';
 import { secretMatches } from '@/lib/ai/eve/loopback-attributes';
 import {
+  internalSecret,
+  internalSecretMisconfigured,
+} from '@/lib/relay/internal-secret';
+import {
   MIN_RELAY_SECRET_LENGTH,
   mintRelayToken,
   RELAY_TOKEN_TTL_SECONDS,
@@ -24,6 +28,12 @@ const NO_STORE = { 'Cache-Control': 'no-store' };
 // oversized value out of the comparison.
 const MAX_SESSION_ID_LENGTH = 200;
 
+// The real body is two short strings; anything larger is refused unparsed.
+const MAX_BODY_BYTES = 2048;
+
+// One fixed, value-free line: no names, lengths or values.
+const logMisconfigured = () => console.error('[relay-token] misconfigured');
+
 const bodySchema = z.object({
   runId: z.string().uuid(),
   sessionId: z.string().min(1).max(MAX_SESSION_ID_LENGTH),
@@ -36,10 +46,14 @@ const failure = (status: number, error: string) =>
 export async function POST(request: Request) {
   if (process.env.RELAY_RUNS_ENABLED !== '1') return notFound();
 
+  if (internalSecretMisconfigured()) {
+    logMisconfigured();
+    return notFound();
+  }
   if (
     !secretMatches(
       request.headers.get('x-eve-internal-secret'),
-      process.env.EVE_INTERNAL_SECRET,
+      internalSecret(),
     )
   ) {
     return notFound();
@@ -48,7 +62,13 @@ export async function POST(request: Request) {
   let runId: string;
   let sessionId: string;
   try {
-    ({ runId, sessionId } = bodySchema.parse(await request.json()));
+    const declared = Number(request.headers.get('content-length') ?? 0);
+    if (declared > MAX_BODY_BYTES) return failure(400, 'Invalid request.');
+    const text = await request.text();
+    if (Buffer.byteLength(text) > MAX_BODY_BYTES) {
+      return failure(400, 'Invalid request.');
+    }
+    ({ runId, sessionId } = bodySchema.parse(JSON.parse(text)));
   } catch {
     return failure(400, 'Invalid request.');
   }
@@ -70,6 +90,7 @@ export async function POST(request: Request) {
 
   const secret = process.env.RELAY_TOKEN_SECRET;
   if (!secret || secret.length < MIN_RELAY_SECRET_LENGTH) {
+    logMisconfigured();
     return failure(500, 'Internal error.');
   }
 

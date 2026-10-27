@@ -4,7 +4,7 @@ import {
   relayHeaderGrant,
 } from '@/lib/ai/eve/loopback-attributes';
 
-const SECRET = 'internal-secret-for-tests';
+const SECRET = 'internal-secret-for-tests-padded-to-be-over-thirty-two-chars';
 const RUN = '0b6f7c4e-5d1a-4c55-9a53-3f7d2f0c9a11';
 const relay = {
   'x-eve-relay-url': 'wss://relay.example',

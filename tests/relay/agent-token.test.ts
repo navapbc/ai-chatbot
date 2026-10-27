@@ -6,7 +6,7 @@ import {
 
 const RUN = '0b6f7c4e-5d1a-4c55-9a53-3f7d2f0c9a11';
 const TOKEN = 'AGENT-TOKEN-do-not-leak-abcdef0123456789';
-const SECRET = 'internal-secret-do-not-leak';
+const SECRET = 'internal-secret-do-not-leak-padded-to-be-over-thirty-two-chars';
 const BASE = 'http://127.0.0.1:3999';
 const SESSION = 'wrun_01SESSIONIDFORTESTS';
 

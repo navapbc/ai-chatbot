@@ -157,7 +157,9 @@ describe('POST /api/relay/token', () => {
   });
 
   it('returns 400 for malformed JSON', async () => {
-    expect((await post('{not json', true)).status).toBe(400);
+    const response = await post('{not json', true);
+    expect(response.status).toBe(400);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
   });
 
   it.each([
@@ -235,6 +237,9 @@ describe('POST /api/relay/token', () => {
 
     const response = await post(good);
     expect(response.status).toBe(500);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    // Exactly one fixed line: no values, lengths or variable names.
+    expect(logged).toEqual([JSON.stringify(['[relay-token] misconfigured'])]);
     const text = await response.text();
     expect(text).not.toContain(SECRET);
     expect(text).not.toContain(PUBLIC_URL);

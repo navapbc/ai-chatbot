@@ -66,6 +66,7 @@ export async function POST(request: Request) {
   const publicUrl = process.env.RELAY_PUBLIC_URL;
   const relayUrl = publicUrl ? toRelayWsUrl(publicUrl) : null;
   if (!secret || secret.length < MIN_RELAY_SECRET_LENGTH || !relayUrl) {
+    console.error('[relay-token] misconfigured');
     return internalError();
   }
 

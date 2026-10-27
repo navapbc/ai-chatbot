@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { internalSecret as usableSecret } from '@/lib/relay/internal-secret';
 
 // Pure core of the Eve channel's header-to-attribute auth (agent/channels/
 // eve.ts), kept free of Eve imports so it can be unit tested.
@@ -8,9 +9,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const digest = (value: string) => createHash('sha256').update(value).digest();
 
 /** Constant-time compare of two secrets via fixed-length digests. */
-export function secretMatches(provided: string | null, expected: string | undefined) {
-  if (!provided || !expected) return false;
-  return timingSafeEqual(digest(provided), digest(expected));
+export function secretMatches(
+  provided: string | null,
+  expected: string | undefined,
+) {
+  const secret = usableSecret(expected);
+  if (!provided || !secret) return false;
+  return timingSafeEqual(digest(provided), digest(secret));
 }
 
 export type RelayHeaderGrant = 'absent' | 'granted' | 'refused';
@@ -27,7 +32,7 @@ export type RelayHeaderGrant = 'absent' | 'granted' | 'refused';
 export function relayHeaderGrant(
   headers: Headers,
   loopback: boolean,
-  internalSecret: string | undefined = process.env.EVE_INTERNAL_SECRET,
+  internalSecret: string | undefined = usableSecret(),
 ): RelayHeaderGrant {
   const relayUrl = headers.get('x-eve-relay-url');
   const relayRunId = headers.get('x-eve-relay-run');
@@ -55,7 +60,7 @@ export function relayHeaderGrant(
 export function attributesFromHeaders(
   headers: Headers,
   loopback: boolean,
-  internalSecret: string | undefined = process.env.EVE_INTERNAL_SECRET,
+  internalSecret: string | undefined = usableSecret(),
 ): Record<string, string> | null {
   if (!loopback) return null;
   const attributes: Record<string, string> = {};
