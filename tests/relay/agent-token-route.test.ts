@@ -196,6 +196,7 @@ describe('POST /api/relay/agent-token', () => {
       runId: RUN_ID,
       role: 'agent',
       origin: ORIGIN,
+      sub: 'u1',
     });
     expect(body.expiresAt).toBeLessThan(1e11);
     expect(JSON.stringify(body)).not.toContain(INTERNAL);
@@ -215,6 +216,7 @@ describe('POST /api/relay/agent-token', () => {
       runId: RUN_ID,
       role: 'agent',
       origin: ORIGIN,
+      sub: 'u1',
     });
     const refused = await fetchAgentToken(RUN_ID, 'wrun_01LOSERSESSION', {
       fetchImpl: ((url: string, init: RequestInit) =>

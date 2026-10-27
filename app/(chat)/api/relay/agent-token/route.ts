@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import { getRunStore } from '@/lib/ai/eve/run-store';
 import { secretMatches } from '@/lib/ai/eve/loopback-attributes';
-import { mintRelayToken, RELAY_TOKEN_TTL_SECONDS } from '@/lib/relay/token';
+import {
+  MIN_RELAY_SECRET_LENGTH,
+  mintRelayToken,
+  RELAY_TOKEN_TTL_SECONDS,
+} from '@/lib/relay/token';
 
 // Internal only: the Eve process calls this over loopback to get a fresh relay
 // agent token for a run (lib/relay/agent-token.ts). There is no user session
@@ -14,7 +18,6 @@ import { mintRelayToken, RELAY_TOKEN_TTL_SECONDS } from '@/lib/relay/token';
 // one. Nothing here may put the token, the secret, env values or the stored
 // origin into a log or an error.
 
-const MIN_SECRET_LENGTH = 32;
 const NO_STORE = { 'Cache-Control': 'no-store' };
 
 // Eve session ids are short (`wrun_` plus a ULID); the bound only keeps an
@@ -66,16 +69,23 @@ export async function POST(request: Request) {
   }
 
   const secret = process.env.RELAY_TOKEN_SECRET;
-  if (!secret || secret.length < MIN_SECRET_LENGTH) {
+  if (!secret || secret.length < MIN_RELAY_SECRET_LENGTH) {
     return failure(500, 'Internal error.');
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const token = mintRelayToken(
-    { runId, role: 'agent', origin: run.relayOrigin },
-    secret,
-    { now },
-  );
+  let token: string;
+  try {
+    // The run's owner is the token's sub, so the hub pairs this agent only
+    // with an extension that holds a token minted for the same user.
+    token = mintRelayToken(
+      { runId, role: 'agent', origin: run.relayOrigin, sub: run.userId },
+      secret,
+      { now },
+    );
+  } catch {
+    return failure(500, 'Internal error.');
+  }
   return Response.json(
     { token, expiresAt: now + RELAY_TOKEN_TTL_SECONDS },
     { headers: NO_STORE },
