@@ -61,6 +61,9 @@ jobs:
           cache: 'pnpm'
       - name: Install dependencies
         run: pnpm install
+      # screenshot-mask.test.ts drives real Chromium.
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
       - name: Run relay unit tests
         run: pnpm exec vitest run --config vitest.config.node.mjs tests/relay --exclude 'tests/relay/e2e/**'
 
