@@ -9,7 +9,7 @@ import {
 import type { Action, State } from '../lib/state';
 
 /** Wired by the shell; the run starter replaces the stub. */
-export type OnStart = (request: StartRequest) => void | Promise<unknown>;
+export type OnStart = (request: StartRequest) => Promise<unknown> | undefined;
 
 type Props = {
   state: State;
