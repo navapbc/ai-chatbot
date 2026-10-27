@@ -99,7 +99,12 @@ describe('buildProgressView', () => {
       ]),
       [],
     );
-    expect(all.bar).toEqual({ filled: 3, total: 10, label: '3 of 10 fields' });
+    expect(all.bar).toEqual({
+      filled: 3,
+      total: 10,
+      value: 30,
+      label: '3 of 10 fields',
+    });
     const mixed = buildProgressView(
       prog([sec({ filled: 2, total: 4 }), sec({ filled: 1 })]),
       [],
@@ -208,5 +213,64 @@ describe('buildProgressView', () => {
     expect(v.sections[0].name).toBe('Untitled section');
     expect(v.sections[0].status).toBe('waiting');
     expect(v.sections[0].filled).toBe(0);
+  });
+
+  it('keeps every number finite for huge or odd counts', () => {
+    const inputs = [
+      1e308,
+      Number.POSITIVE_INFINITY,
+      Number.NaN,
+      2 ** 53,
+      Number.NEGATIVE_INFINITY,
+    ];
+    for (const n of inputs) {
+      const v = buildProgressView(
+        prog([sec({ filled: n, total: n }), sec({ filled: n, total: n })]),
+        [],
+      );
+      const json = JSON.stringify(v);
+      expect(json).not.toContain('NaN');
+      expect(json).not.toContain('Infinity');
+      for (const x of [v.bar.filled, v.bar.total, v.bar.value]) {
+        if (x !== undefined) expect(Number.isFinite(x)).toBe(true);
+      }
+      if (v.bar.value !== undefined) {
+        expect(v.bar.value).toBeGreaterThanOrEqual(0);
+        expect(v.bar.value).toBeLessThanOrEqual(100);
+      }
+    }
+    const big = buildProgressView(
+      prog([
+        sec({ filled: 1e308, total: 1e308 }),
+        sec({ filled: 1e308, total: 1e308 }),
+      ]),
+      [],
+    );
+    expect(big.bar.label).toBe('2000000 of 2000000 fields');
+    expect(big.bar.value).toBe(100);
+  });
+
+  it('a zero total gives value 0; no total gives no value (indeterminate)', () => {
+    expect(
+      buildProgressView(prog([sec({ filled: 3, total: 0 })]), []).bar.value,
+    ).toBe(0);
+    expect(
+      buildProgressView(prog([sec({ filled: 3 })]), []).bar.value,
+    ).toBeUndefined();
+    expect(buildProgressView(null, []).bar.value).toBeUndefined();
+  });
+
+  it('cuts without splitting a surrogate pair', () => {
+    const name = `${'a'.repeat(79)}😀tail`;
+    const v = buildProgressView(prog([sec({ name, status: 'filling' })]), [
+      `${'b'.repeat(119)}😀tail`,
+    ]);
+    expect(v.sections[0].name).toBe(`${'a'.repeat(79)}😀`);
+    expect(v.sections[0].recent?.[0]).toBe(`${'b'.repeat(119)}😀`);
+    const lone = buildProgressView(
+      prog([sec({ name: `${'a'.repeat(80)}😀` })]),
+      [],
+    );
+    expect(lone.sections[0].name).toBe('a'.repeat(80));
   });
 });

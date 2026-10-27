@@ -18,7 +18,8 @@ export type SectionView = {
 };
 
 export type ProgressViewModel = {
-  bar: { filled: number; total?: number; label: string };
+  /** `value` (0..100) only for a determinate bar (every total known). */
+  bar: { filled: number; total?: number; value?: number; label: string };
   /** "Section X of Y"; absent when there are no sections. */
   sectionLabel?: string;
   sections: SectionView[];
@@ -38,11 +39,20 @@ const STATUSES: readonly SectionStatus[] = [
   'needs_you',
 ];
 
+// Capped so the sum of 40 sections stays an exact, readable integer.
+const MAX_COUNT = 1_000_000;
+
 const toCount = (v: unknown): number =>
-  typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0;
+  typeof v === 'number' && Number.isFinite(v)
+    ? Math.min(MAX_COUNT, Math.max(0, Math.floor(v)))
+    : 0;
+
+// Cut by code points so an emoji is never split into a lone surrogate.
+const cut = (text: string, max: number): string =>
+  Array.from(text).slice(0, max).join('');
 
 const toName = (v: unknown): string => {
-  const text = typeof v === 'string' ? v.trim().slice(0, MAX_NAME).trim() : '';
+  const text = typeof v === 'string' ? cut(v.trim(), MAX_NAME).trim() : '';
   return text === '' ? 'Untitled section' : text;
 };
 
@@ -50,7 +60,7 @@ const toActions = (v: unknown): string[] =>
   Array.isArray(v)
     ? v
         .filter((a): a is string => typeof a === 'string')
-        .map((a) => a.slice(0, MAX_ACTION))
+        .map((a) => cut(a, MAX_ACTION))
     : [];
 
 type Clean = {
@@ -133,10 +143,14 @@ export const buildProgressView = (
     };
   });
 
+  const ratio = total !== undefined && total > 0 ? (filled / total) * 100 : 0;
+  const value =
+    Number.isFinite(ratio) && ratio >= 0 && ratio <= 100 ? ratio : 0;
+
   return {
     bar: {
       filled,
-      ...(total === undefined ? {} : { total }),
+      ...(total === undefined ? {} : { total, value }),
       label:
         total === undefined
           ? `${filled} fields so far`

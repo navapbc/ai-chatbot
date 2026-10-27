@@ -73,19 +73,15 @@ const SectionCard = ({ section }: { section: SectionView }) => {
 /** The progress bar, section cards and (without sections) a flat step list. */
 export const ProgressView = ({ model }: Props) => {
   const { bar, sections, steps, sectionLabel } = model;
-  const known = bar.total !== undefined;
-  const value =
-    known && bar.total !== undefined && bar.total > 0
-      ? Math.min(100, (bar.filled / bar.total) * 100)
-      : 0;
+  const determinate = bar.value !== undefined && Number.isFinite(bar.value);
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
         <Progress
           aria-label="Fields filled"
-          value={known ? value : undefined}
+          value={determinate ? bar.value : undefined}
           max={100}
-          className={known ? 'h-2' : 'h-2 animate-pulse'}
+          className={determinate ? 'h-2' : 'h-2 motion-safe:animate-pulse'}
         />
         <div className="flex justify-between gap-2 text-xs text-muted-foreground">
           <span>{bar.label}</span>
