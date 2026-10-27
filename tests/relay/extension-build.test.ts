@@ -8,6 +8,7 @@ import {
   buildManifest,
   esbuildArgs,
   resolveAppOrigin,
+  resolveOriginHoldMs,
   resolveTestHooks,
 } from '../../scripts/extension-build-config';
 
@@ -168,6 +169,45 @@ describe('resolveTestHooks', () => {
   });
 });
 
+describe('resolveOriginHoldMs', () => {
+  it('is undefined (the bridge keeps 60 s) when unset', () => {
+    expect(resolveOriginHoldMs({}, false)).toBeUndefined();
+    expect(resolveOriginHoldMs({}, true)).toBeUndefined();
+    expect(
+      resolveOriginHoldMs({ EXTENSION_TEST_ORIGIN_HOLD_MS: '' }, true),
+    ).toBeUndefined();
+  });
+
+  it('reads a whole number of ms, only for a test-hooks build', () => {
+    expect(
+      resolveOriginHoldMs({ EXTENSION_TEST_ORIGIN_HOLD_MS: '1500' }, true),
+    ).toBe(1500);
+    expect(() =>
+      resolveOriginHoldMs({ EXTENSION_TEST_ORIGIN_HOLD_MS: '1500' }, false),
+    ).toThrow(/only with the test hooks/);
+  });
+
+  it.each(['0', '-5', '1.5', 'abc', '600001', '1e3'])('refuses %j', (value) => {
+    expect(() =>
+      resolveOriginHoldMs({ EXTENSION_TEST_ORIGIN_HOLD_MS: value }, true),
+    ).toThrow(/EXTENSION_TEST_ORIGIN_HOLD_MS/);
+  });
+
+  it('defines the hold only when given, and only with the hooks', () => {
+    expect(esbuildArgs('in.ts', 'out/sw.js', '', true, 1500).at(-1)).toBe(
+      '--define:__ORIGIN_HOLD_MS__=1500',
+    );
+    expect(esbuildArgs('in.ts', 'out/sw.js', '', false, 1500)).not.toContain(
+      '--define:__ORIGIN_HOLD_MS__=1500',
+    );
+    expect(
+      esbuildArgs('in.ts', 'out/sw.js', '', true).some((a) =>
+        a.includes('__ORIGIN_HOLD_MS__'),
+      ),
+    ).toBe(false);
+  });
+});
+
 describe('the built service worker', () => {
   const HOOKS = ['bridgeHandleMessage', 'bridgeOnDebuggerDetach'];
 
@@ -205,5 +245,15 @@ describe('the built service worker', () => {
     ]) {
       for (const hook of HOOKS) expect(bundle).toContain(hook);
     }
+  }, 30_000);
+
+  it('bakes a shortened origin hold into a test-hooks build only', () => {
+    const hooks = build({
+      EXTENSION_TEST_HOOKS: '1',
+      EXTENSION_TEST_ORIGIN_HOLD_MS: '1234',
+    });
+    expect(hooks).not.toContain('__ORIGIN_HOLD_MS__');
+    expect(hooks).toMatch(/\b1234\b/);
+    expect(() => build({ EXTENSION_TEST_ORIGIN_HOLD_MS: '1234' })).toThrow();
   }, 30_000);
 });

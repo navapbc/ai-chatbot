@@ -19,6 +19,16 @@ const FIXTURES = path.join(ROOT, 'tests/relay/fixtures');
 const EXTENSION_DIST = path.join(ROOT, 'extension/dist');
 const AGENT_BROWSER = path.join(ROOT, 'node_modules/.bin/agent-browser');
 
+/**
+ * The bridge's origin hold in the e2e build (the shipped bridge holds 60 s):
+ * short, so a run that leaves its origin still ends within seconds, and long
+ * enough for a test to see the hold and answer it. Baked in at build time
+ * through EXTENSION_TEST_ORIGIN_HOLD_MS, which only a test-hooks build takes.
+ * Every launchExtensionBrowser build uses this same value (the e2e files can
+ * build extension/dist concurrently).
+ */
+export const E2E_ORIGIN_HOLD_MS = 2_500;
+
 export const EXTENSION_ID = readFileSync(
   path.join(ROOT, 'extension/EXTENSION_ID'),
   'utf8',
@@ -325,7 +335,11 @@ export async function launchExtensionBrowser(
     const { EXTENSION_RELEASE: _release, ...env } = process.env;
     execFileSync('pnpm', ['extension:build'], {
       cwd: ROOT,
-      env: { ...env, EXTENSION_TEST_HOOKS: '1' },
+      env: {
+        ...env,
+        EXTENSION_TEST_HOOKS: '1',
+        EXTENSION_TEST_ORIGIN_HOLD_MS: String(E2E_ORIGIN_HOLD_MS),
+      },
       stdio: 'ignore',
     });
     // An empty extension page, only in this test build: bridgeMessageFromPage

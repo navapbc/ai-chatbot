@@ -81,19 +81,52 @@ export function resolveTestHooks(
   return hooks;
 }
 
+/** Longest test hold accepted: the production hold is 60 s. */
+const MAX_TEST_ORIGIN_HOLD_MS = 600_000;
+
+/**
+ * A shortened origin hold (ms) for a test-hooks build, from
+ * `EXTENSION_TEST_ORIGIN_HOLD_MS`, so the e2e suites see a run that left its
+ * origin end in seconds rather than after the bridge's 60 s (the total cap
+ * is twice it). Undefined when unset: the bridge keeps its 60 s. Refused in a
+ * build without the test hooks (and so in a release build, which refuses the
+ * hooks): it is a build-time constant only, never a runtime setting.
+ */
+export function resolveOriginHoldMs(
+  env: Record<string, string | undefined>,
+  testHooks: boolean,
+): number | undefined {
+  const value = env.EXTENSION_TEST_ORIGIN_HOLD_MS ?? '';
+  if (value === '') return undefined;
+  if (!testHooks) {
+    throw new ExtensionBuildError(
+      'EXTENSION_TEST_ORIGIN_HOLD_MS is allowed only with the test hooks (EXTENSION_TEST_HOOKS=1 / --test-hooks)',
+    );
+  }
+  const ms = /^[1-9]\d*$/.test(value) ? Number(value) : Number.NaN;
+  if (!Number.isSafeInteger(ms) || ms > MAX_TEST_ORIGIN_HOLD_MS) {
+    throw new ExtensionBuildError(
+      `EXTENSION_TEST_ORIGIN_HOLD_MS must be a whole number of ms from 1 to ${MAX_TEST_ORIGIN_HOLD_MS}; got ${JSON.stringify(value)}`,
+    );
+  }
+  return ms;
+}
+
 /**
  * esbuild argv bundling `entry` into `outFile` with APP_ORIGIN and
  * EXTENSION_TEST_HOOKS defined. The hooks flag is always defined (false by
  * default) so a plain build drops the hook code instead of testing for it
- * at run time.
+ * at run time. `originHoldMs` (see resolveOriginHoldMs) is defined as
+ * `__ORIGIN_HOLD_MS__` only in a test-hooks build.
  */
 export function esbuildArgs(
   entry: string,
   outFile: string,
   appOrigin: string,
   testHooks = false,
+  originHoldMs?: number,
 ): string[] {
-  return [
+  const args = [
     entry,
     '--bundle',
     '--format=esm',
@@ -101,4 +134,8 @@ export function esbuildArgs(
     `--define:__APP_ORIGIN__=${JSON.stringify(appOrigin)}`,
     `--define:EXTENSION_TEST_HOOKS=${testHooks}`,
   ];
+  if (testHooks && originHoldMs !== undefined) {
+    args.push(`--define:__ORIGIN_HOLD_MS__=${originHoldMs}`);
+  }
+  return args;
 }

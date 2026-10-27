@@ -6,6 +6,7 @@ import {
   ExtensionBuildError,
   esbuildArgs,
   resolveAppOrigin,
+  resolveOriginHoldMs,
   resolveTestHooks,
 } from './extension-build-config';
 
@@ -14,7 +15,8 @@ import {
 // Usage: tsx scripts/build-extension.ts [--out <dir>] [--test-hooks]
 //   (default extension/dist). EXTENSION_TEST_HOOKS=1 or --test-hooks installs
 //   the bridge's globalThis test hooks for the e2e suites; refused together
-//   with EXTENSION_RELEASE=1.
+//   with EXTENSION_RELEASE=1. EXTENSION_TEST_ORIGIN_HOLD_MS=<ms> (test-hooks
+//   builds only) shortens the bridge's 60 s origin hold for the e2e suites.
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -29,6 +31,7 @@ function outDir(argv: string[]): string {
 try {
   const appOrigin = resolveAppOrigin(process.env);
   const testHooks = resolveTestHooks(process.env, process.argv.slice(2));
+  const originHoldMs = resolveOriginHoldMs(process.env, testHooks);
   const out = outDir(process.argv.slice(2));
   mkdirSync(out, { recursive: true });
   execFileSync(
@@ -38,6 +41,7 @@ try {
       path.join(out, 'service-worker.js'),
       appOrigin,
       testHooks,
+      originHoldMs,
     ),
     { cwd: ROOT, stdio: 'inherit' },
   );

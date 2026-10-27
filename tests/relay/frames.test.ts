@@ -10,6 +10,7 @@ import {
   type FrameInfo,
   frameInScope,
   framesOfTree,
+  inRunOrigins,
   NO_FRAME_CONTENT_METHODS,
   navigationDestination,
   PRUNED_RESULT_METHODS,
@@ -77,6 +78,48 @@ describe('frameInScope', () => {
       expect(frameInScope(frames, id, RUN, [OTHER])).toBe(true);
     }
     expect(frameInScope(frames, 'data', RUN, [OTHER])).toBe(false);
+  });
+
+  it('admits an extra run origin (allowOrigin) like the run origin', () => {
+    for (const id of ['other', 'other-srcdoc', 'other-blank-blank']) {
+      expect(frameInScope(frames, id, RUN, [], [OTHER])).toBe(true);
+    }
+    expect(frameInScope(frames, 'data', RUN, [], [OTHER])).toBe(false);
+    expect(frameInScope(frames, 'http', RUN, [], [OTHER])).toBe(false);
+  });
+});
+
+describe('inRunOrigins', () => {
+  it('is the run origin or an extra run origin, never a frame origin', () => {
+    const o = {
+      origin: RUN,
+      allowedFrameOrigins: ['https://frames.gov'],
+      extraOrigins: [OTHER],
+    };
+    expect(inRunOrigins(`${RUN}/x?y=1`, o)).toBe(true);
+    expect(inRunOrigins(`${OTHER}/login`, o)).toBe(true);
+    expect(inRunOrigins('https://frames.gov/x', o)).toBe(false);
+    expect(inRunOrigins('http://b.a.gov/login', o)).toBe(false);
+    expect(inRunOrigins('about:blank', o)).toBe(false);
+    expect(inRunOrigins(`${OTHER}/x`, { origin: RUN })).toBe(false);
+  });
+
+  it('contextInScope and scopeFrameEvent honour extra origins', () => {
+    const scope = createFrameScope();
+    const withExtra = { ...origins, extraOrigins: [OTHER] };
+    scope.frames.set('main', { url: `${OTHER}/login` });
+    expect(
+      scopeFrameEvent(scope, origins, 'Runtime.executionContextCreated', {
+        context: { id: 9, origin: OTHER, auxData: { frameId: 'main' } },
+      }),
+    ).toBe(false);
+    expect(contextInScope(scope, origins, 9)).toBe(false);
+    expect(contextInScope(scope, withExtra, 9)).toBe(true);
+    expect(
+      scopeFrameEvent(scope, withExtra, 'Page.frameNavigated', {
+        frame: { id: 'main', url: `${OTHER}/next` },
+      }),
+    ).toBe(true);
   });
 });
 
