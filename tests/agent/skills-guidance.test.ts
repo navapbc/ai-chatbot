@@ -42,6 +42,9 @@ describe('extension-run skill', () => {
     'Never put a field value',
     'with no options',
     'built-in `agent` tool',
+    'exactly `skip` means leave that field empty',
+    'never type `skip`',
+    'never a free-text question',
   ])('contains %s', (needle) => {
     expect(skill).toContain(needle);
   });

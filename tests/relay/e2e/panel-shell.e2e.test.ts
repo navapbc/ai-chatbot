@@ -786,6 +786,55 @@ describe('the panel shell', () => {
       row.pending = [];
       await card.waitFor({ state: 'detached', timeout: 10_000 });
 
+      // A free-text question with a flagged prompt: a notice, no input, no
+      // buttons, and Send never enables.
+      row.pending = [
+        {
+          requestId: 'q-free-ssn',
+          prompt: 'What is your Social Security number?',
+          display: 'text',
+          options: [],
+          allowFreeform: true,
+        },
+      ];
+      row.phase = 'needs_you';
+      await card
+        .getByText(
+          'This looks like a sensitive question. Type it in the page yourself.',
+        )
+        .waitFor({ timeout: 10_000 });
+      expect(await card.getByRole('textbox').count()).toBe(0);
+      expect(
+        await card.getByRole('button', { name: 'I entered it myself' }).count(),
+      ).toBe(0);
+      expect(await send.isDisabled()).toBe(true);
+
+      // A yes/no whose prompt only mentions a sensitive topic stays a choice.
+      row.pending = [
+        {
+          requestId: 'q-benefits',
+          prompt:
+            'Does anyone in the household receive Social Security benefits?',
+          display: 'select',
+          options: [
+            { id: 'yes', label: 'Yes' },
+            { id: 'no', label: 'No' },
+          ],
+          allowFreeform: false,
+        },
+      ];
+      await card.getByRole('radio', { name: 'Yes' }).click({ timeout: 10_000 });
+      await send.click();
+      await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(answerBodies).toHaveLength(4);
+      expect(answerBodies[3]).toEqual({
+        id: runId,
+        inputResponses: [{ requestId: 'q-benefits', optionId: 'yes' }],
+      });
+      row.phase = 'working';
+      row.pending = [];
+      await card.waitFor({ state: 'detached', timeout: 10_000 });
+
       // The typed answer reached no console line, the title or storage.
       expect(await page.title()).not.toContain(ANSWER);
       expect(page.url()).not.toContain(ANSWER);

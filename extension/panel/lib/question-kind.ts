@@ -9,12 +9,15 @@ import { isSensitiveField } from '../../../lib/relay/sensitive-fields';
 // every field here is read defensively and the functions never throw.
 //
 // - sensitive: the skill's convention (options exactly `provided` and `skip`,
-//   no free text), or a prompt the field classifier flags. The card offers
-//   only "I entered it myself" and "Skip": a sensitive value is never typed
-//   into the panel.
-// - choice: options exist (or free text is not allowed): answered by option
-//   id only. With no options at all it cannot be answered here.
-// - text: free text is allowed and there are no options.
+//   no free text), whatever the prompt; or a free-text question (no options)
+//   whose prompt the field classifier flags. The card never offers a text
+//   input for it: the convention gets "I entered it myself" and "Skip", a
+//   flagged free-text question gets a fixed notice and no answer.
+// - choice: any other question with options (a prompt that merely mentions a
+//   sensitive topic stays answerable: an option id carries no value), or one
+//   that does not allow free text. With no options it cannot be answered here.
+// - text: free text is allowed, there are no options, the prompt is not
+//   flagged.
 
 export type QuestionKind = 'sensitive' | 'choice' | 'text';
 
@@ -48,16 +51,16 @@ const promptFlagged = (r: Record<string, unknown>): boolean => {
 
 export const classifyQuestion = (req: PendingInputRequest): QuestionKind => {
   const r: Record<string, unknown> = isRecord(req) ? req : {};
-  if (hasSensitiveShape(r) || promptFlagged(r)) return 'sensitive';
+  if (hasSensitiveShape(r)) return 'sensitive';
   const options = Array.isArray(r.options) ? r.options : [];
   if (options.length > 0 || r.allowFreeform !== true) return 'choice';
-  return 'text';
+  return promptFlagged(r) ? 'sensitive' : 'text';
 };
 
 /**
  * The answer for a sensitive question's button: by option id, and only when
- * the request carries that option. A request flagged by its prompt alone has
- * no such option and gets null (cannot be answered here): sending the word as
+ * the request carries that option. A free-text question flagged by its prompt
+ * has no such option and gets null (no answer from the panel): sending the word as
  * free text is not done, because the skill tells the agent that free text is
  * the field's value, so it could type "provided" over what the caseworker
  * entered.

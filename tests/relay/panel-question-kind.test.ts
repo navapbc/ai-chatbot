@@ -59,19 +59,46 @@ describe('classifyQuestion', () => {
     ).toBe('choice');
   });
 
-  it('treats a prompt that isSensitiveField flags as sensitive without those options', () => {
-    expect(
-      classifyQuestion(req({ prompt: 'Social Security number' })),
-    ).toBe('sensitive');
+  it('keeps the two-option shape sensitive with an innocuous prompt', () => {
     expect(
       classifyQuestion(
         req({
-          prompt: 'Bank account number',
-          options: [{ id: 'a', label: 'A' }],
+          prompt: 'The third field in Applicant Information',
+          display: 'select',
+          options: SENSITIVE_OPTIONS,
           allowFreeform: false,
         }),
       ),
     ).toBe('sensitive');
+  });
+
+  it('treats a free-text question whose prompt isSensitiveField flags as sensitive', () => {
+    expect(
+      classifyQuestion(req({ prompt: 'What is your Social Security number?' })),
+    ).toBe('sensitive');
+  });
+
+  it('keeps a choice whose prompt only mentions a sensitive topic a choice', () => {
+    for (const prompt of [
+      'Does anyone in the household receive Social Security benefits?',
+      'Does the applicant have a bank account?',
+      'Bank account number',
+    ]) {
+      const yesNo = req({
+        prompt,
+        display: 'select',
+        options: [
+          { id: 'yes', label: 'Yes' },
+          { id: 'no', label: 'No' },
+        ],
+        allowFreeform: false,
+      });
+      expect(classifyQuestion(yesNo)).toBe('choice');
+      // Options with free text too: still answered by option id.
+      expect(classifyQuestion({ ...yesNo, allowFreeform: true })).toBe(
+        'choice',
+      );
+    }
   });
 
   it('classifies a plain choice and a plain text question', () => {
@@ -156,7 +183,7 @@ describe('sensitiveAnswer', () => {
     expect(sensitiveAnswer(r, 'skip')).toBeNull();
   });
 
-  it('cannot answer a flagged question with other options and no free text', () => {
+  it('has no answer for a request without provided/skip options', () => {
     const r = req({
       prompt: 'Bank account number',
       options: [{ id: 'a', label: 'A' }],

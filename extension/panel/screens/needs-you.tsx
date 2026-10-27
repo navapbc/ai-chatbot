@@ -39,6 +39,10 @@ export const NEEDS_YOU_COPY = {
   sensitive:
     'This one is sensitive. Type it in the page yourself, then press the button.',
   cannotAnswer: 'This question cannot be answered here.',
+  sensitiveNoButtons:
+    'This looks like a sensitive question. Type it in the page yourself.',
+  sensitiveNoButtonsDetail:
+    'The agent should have offered "I entered it myself" and "Skip" here. Fill the field in the page, or stop the run.',
   provided: 'I entered it myself',
   skip: 'Skip',
   skipped: 'Skipped.',
@@ -309,7 +313,14 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
                   </div>
                 </>
               ) : (
-                <p className="text-sm">{NEEDS_YOU_COPY.cannotAnswer}</p>
+                <>
+                  <p className="text-sm">
+                    {NEEDS_YOU_COPY.sensitiveNoButtons}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {NEEDS_YOU_COPY.sensitiveNoButtonsDetail}
+                  </p>
+                </>
               )}
             </div>
           );
