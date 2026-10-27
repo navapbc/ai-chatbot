@@ -177,8 +177,8 @@ Origin hold:
 
 Contracts the panel must honor:
 - [x] (plan 4c-1) Stop: call the server stop route and the worker `stopRun`; the hub does not know `endedAt` and tokens minted before Stop stay valid up to 1800 s.
-- [x] (plan 4c-1: the run session polls `getRunStatus` every 2 s and treats 7 s of continuous inactivity for its run as an end; an extra read of the server first) Call the server Stop for worker-initiated ends too (`left-origin`, `token-expired`, `debugger-canceled`, `debugger-detached`, tab closed). Those tell only the hub: the server row stays live, the Eve turn keeps running and `relay/agent-token` keeps minting. The bridge has no push, so poll `getRunStatus` to notice an end.
-- [x] (plan 4c-1: refresh at 5 min left, retry every 60 s, then `registrationComplete(runId, 0)`) Token refresh (a same-run-id `startRun`): it is refused when the tab is on an origin added by `allowOrigin` (only the token origin is checked); it drops the extra origins, detaches the debugger, sends no `resumed`, clears known values and requires re-registration. Refresh BEFORE `exp`: the worker's own `token-expired` sends `stop`, and the hub then closes the run for good.
+- [x] (plan 4c-1: the run session polls `getRunStatus` every 2 s and treats 7 s of continuous inactivity for its run as an end; an extra read of the server first) Call the server Stop for worker-initiated ends too (only while a panel is open; see I1 under 'Must land before') (`left-origin`, `token-expired`, `debugger-canceled`, `debugger-detached`, tab closed). Those tell only the hub: the server row stays live, the Eve turn keeps running and `relay/agent-token` keeps minting. The bridge has no push, so poll `getRunStatus` to notice an end.
+- [x] (plan 4c-1: refresh at 5 min left, retry every 60 s, then `registrationComplete(runId, 0)`) Token refresh (a same-run-id `startRun`): it is refused when the tab is on an origin added by `allowOrigin` (only the token origin is checked); it drops the extra origins, detaches the debugger, sends no `resumed`, clears known values and requires re-registration. A refused refresh means the run dies at `exp` (see the 4c-2 carry-forward). Refresh BEFORE `exp`: the worker's own `token-expired` sends `stop`, and the hub then closes the run for good.
 - [ ] Jev disabled is a supported configuration: `classify-field` answers `null` for unflagged fields and masking is deterministic only. `jevFailures` grows with every `null`, so it is not an outage signal.
 - [ ] After a worker restart, send `runId` with `registrationComplete` and `addKnownValue`, and call `registrationComplete` (count may be 0) promptly; the run stalls fail-closed until then. Partly done (plan 4c-1): the panel sends `runId` and calls `registrationComplete(runId, 0)` after every `startRun` and refresh. Open: a worker restart without a panel refresh is not detected, and the count is always 0 until 4c-2 types values.
 - [ ] Hide pending questions when the run state says `ended`. Nothing to hide yet: the 4c-1 panel shows no pending questions (4c-2).
@@ -198,6 +198,10 @@ Code items for 4c or a follow-up:
 Must land before `RELAY_RUNS_ENABLED` is set anywhere:
 - [ ] F1: the agent's first command before the extension registers is dispatched while the hub's extension state is `unknown`, and times out after 30 s with `extension did not answer`, which is not retried. Options: add `extension did not answer` to `CONNECTION_LOST` in `lib/relay/eve-relay-browser.ts` so the first (retry-safe) snapshot is rotated and retried, and/or queue commands in `unknown` in `relay/hub.ts` with a per-waiter timer (single instance only; a multi-hub setup needs an ext-query). Treating `unknown` like `away` is not an option.
 - [ ] F2: orphan run when the panel's 15 s first-chunk timeout fires before `eve-chat` answers: the route may still create the session afterwards, and the panel's stop got a 404. Fix server-side (after `store.create` in the relay first turn, end the row and cancel the Eve turn if the request signal aborted; Next 16 abort behavior is unverified) and/or have the panel retry stop once after 15 to 20 s.
+- [ ] I1: a run the worker ends while the panel is closed is never stopped on the server. Worker-initiated end detection runs only inside an open panel's session, and `rebuildRun` returns null as soon as the worker is inactive: the server row stays live, the Eve turn keeps running, `relay/agent-token` keeps minting, and the run counts toward the hourly limit. Options: on panel open, stop every recent with no `endedReason` whose server row is live and that the worker does not hold; or have the worker call the stop route itself.
+- [ ] I2: closing the panel during Starting orphans the run. The panel page unloads after the `eve-chat` POST created the row but before `worker.startRun`, so cleanup never runs; F2's server-side abort fix does not cover it. Options: write the in-flight run id (id only) to `chrome.storage.session` before the POST and stop it on the next open if the worker does not hold it; or a server or hub reaper for relay runs whose extension never registered. Relates to 'The Starting screen has no Cancel'.
+- [ ] I4: every panel open mid-run refreshes the token at once (the estimated expiry equals the refresh threshold), and the same-run-id `startRun` detaches the debugger under any in-flight agent command, clears known values and drops allowed origins; a second window does the same. Cheap fix: have `getRunStatus` return the token's `exp` (`claims.exp`, not secret) so a rebuild uses the real expiry.
+- [ ] The participant name in the GET query string (`/api/participants?q=`): server and access logs can capture a participant name. Owner or API decision before the flag.
 - [ ] The bridge reports a `restarting` status in `getRunStatus` during a same-run-id refresh, so the panel does not have to wait out the 7 s inactive rule. A restart gap over about 8 s (a hung detach or storage call after the 5 s screenshot wait) would stop a healthy run.
 
 Other follow-ups:
@@ -206,15 +210,14 @@ Other follow-ups:
 - [ ] Dead constant `GRACE_MS` in `extension/panel/lib/run-session.ts`; the bridge-constant test reads `bridge.ts` with a regex (export `STOP_WAIT_MS` instead); no render tests for `running.tsx` copy.
 - [ ] Single-run worker: a start in a second panel window replaces the first window's worker run (the first window's session then notices the replacement and stops its server run).
 - [ ] Every panel open mid-run refreshes the token at once, which detaches the debugger, clears known values and drops allowed origins. 4c-2 must re-register values before `registrationComplete` and re-allow or re-prompt origins.
-- [ ] The participant search sends the name in a GET query string; server and access logs may capture it (owner or API decision).
 - [ ] `siteName` is the hostname for "Use this tab" and is cut to 100 UTF-16 units, which can split a surrogate pair.
 - [ ] The recents read-modify-write is serialized by a mutex within one window, not across windows.
-- [ ] `ensureSweepAlarm` re-creates the alarm on each worker start (restarts the 30 min period; check `alarms.get` first) and uses the global `chrome`.
+- [x] `ensureSweepAlarm` now checks `alarms.get` first and creates the alarm only when none exists, and the worker also sweeps once at every start. Still open: it uses the global `chrome`.
 - [ ] Cross-window start: after a successful worker start, `worker_unreachable` can leave a worker run against a stopped server run.
 - [ ] If the server stop fails after a worker-initiated end it is not retried; Stop can take 10 s or more plus the refresh before the worker stop; the elapsed timer restarts on a rebuilt run; focus drops when Stop is disabled.
 
 Minors by area:
-- Build: the token extractor does not fail when the `.dark` block is missing and ignores braces in comments or strings; the `@/lib/utils` alias also rewrites `@/lib/utils/foo` (fails at resolve); `panel.js` is about 620 KB unminified.
+- Build: the token extractor does not fail when the `.dark` block is missing and ignores braces in comments or strings; the `@/lib/utils` alias also rewrites `@/lib/utils/foo` (fails at resolve); `panel.js` is about 746 KB unminified.
 - Shell and copy: lookups for error codes use plain objects, so inherited keys (`constructor`) match (use `Object.hasOwn`); the reducer's `probeSucceeded` and `probeFailed` are unguarded outside `loading`; no tests for `ws:` or credentialed relay strings or a forged code object; the e2e console filter matches the substring `status of 401`; no focus management on the placeholder or a non-retryable error; unmapped worker strings fall to `worker_error`; a local `codeForStatus` duplicates `app-api`'s and disagrees on 404.
 - Recents: entries with a future `startedAt` never expire; stored duplicate run ids are not deduped on read; a double click can open two site tabs; `goHome` may be unused; `tabs.query` with `lastFocusedWindow` is unverified when the panel is a tab; real `chrome.tabs` flows are not e2e.
 - Search: retry goes through the debounce; stale rows show for up to 250 ms; "Sign in again" drops the chosen target; the stale-response e2e is weak; `key={recordId}` can warn on duplicates; no rendered test of the StrictMode effect order.
@@ -222,12 +225,21 @@ Minors by area:
 - Ready: dead `starting` and disabled code in `ReadyScreen`; no screen-level test (invalid, double press); a stale `invalid` alert after a model change; a single model that is not the default is unhandled; the panel assumes `config.defaultModel` equals the server's first allowed model.
 - Starter: a local `newId` that throws rejects instead of returning `ok: false`; the e2e `stopWorkerRun` is not in `finally`.
 - Session: `waitForTimeout` remains at `panel-shell.e2e.test.ts` lines near 293 to 296; the `expiresAt` value is Unix seconds (do not compare with milliseconds).
+- Final review: site buttons fail with 'The tab left the site' when the site URL redirects to another origin (www or SSO).
+- Final review: the 100-UTF-16-unit search cut can leave a lone surrogate, so `encodeURIComponent` throws and Try again repeats it.
+- Final review: Back from Ready to Details loses typed values (`goBack` drops the participant; `DetailsScreen` starts empty).
+- Final review: inline arrow handlers are not `handle`-prefixed (`participant.tsx`, `app.tsx`).
+- Final review: the panel never applies `.dark` (light only) and the extension has no manifest icons.
+- Final review: `bad_request:database` (400) shows 'check what you entered'.
+- Final review: a 401 on Start shows the signed-out copy on Ready with no sign-in action.
+- Final review: with `RELAY_RUNS_ENABLED` unset the probe gets 404 on `relay/config` and shows the non-retryable `not_found` screen with no button, a dead end (add a retry or a clearer 'not available yet' message).
 - Not covered by e2e: starting a run with entered details through the real flow; the relay-e2e CI job time against its 20 minute limit.
 
 ## Plan 4c-2 carry-forward
 
 - [ ] Running view with sections, progress and the action log (`state.run` and `getRunState.progress`).
 - [ ] Needs You cards from `getRunState.pending`; ordinary answers go through `eve-chat` `inputResponses`. Hide them once the run is `ended`.
+- [ ] Token refresh is refused while the tab is on an origin added by `allowOrigin` (only the token origin is checked), so the run then dies at `exp`; fix the refresh or re-allow the origin before the run can outlive its token.
 - [ ] Typing sensitive values into the page: `addKnownValue(runId, ...)`, then `registrationComplete(runId, count)` with the real count. Re-register after any refresh or worker restart.
 - [ ] The allow-this-site prompt shows the tab's actual URL as well as `pendingOrigin` and is never auto-approved; a prompt-injected agent can trigger holds by clicking links.
 - [ ] Review and Confirmed screens; "show me the unfilled field".

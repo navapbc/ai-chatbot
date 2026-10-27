@@ -24,7 +24,10 @@ Known limits:
 - `registrationComplete` always sends count 0 until 4c-2 types values.
 - F1: the agent's first command before the extension registers is not retried (30 s `extension did not answer`).
 - F2: if the 15 s timeout fires before `eve-chat` answers, the server may still create a run the panel cannot stop.
-- Both must be fixed before `RELAY_RUNS_ENABLED` is set anywhere; it stays unset in deployment.
+- I1: a run the worker ends while the panel is closed is never stopped on the server (worker-initiated end handling above runs only inside an open panel; the server row, the Eve turn and token minting continue).
+- I2: closing the panel during Starting orphans the run: the page unloads after the `eve-chat` POST but before `worker.startRun`, so the start cleanup never runs.
+- I4: every panel open mid-run (or a second window) refreshes the token at once, detaching the debugger under any in-flight command, clearing known values and dropping allowed origins.
+- F1, F2, I1, I2, I4 and the name in the GET query string must be settled before `RELAY_RUNS_ENABLED` is set anywhere; it stays unset in deployment.
 - One worker run at a time: a start in a second window replaces the first window's run.
 - The participant name is sent in a GET query string, which server logs may capture.
 - The Starting screen has no Cancel. Full list: `docs/browser-extension-todo.md`, "Plan 4c-1 follow-ups".
