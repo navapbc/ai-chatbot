@@ -9,6 +9,7 @@ import {
 } from '@/lib/ai/eve/input-requests';
 
 import { type RunProgress, sanitizeProgress } from '@/lib/relay/progress';
+import { redactToolInput } from '@/lib/relay/tool-input';
 
 export const EVE_TOOL_NAME_MAP: Record<string, string> = {
   gap_analysis: 'gapAnalysis',
@@ -163,6 +164,8 @@ export function translateEveEvent(
           const clean = sanitizeProgress(a.input);
           progress = clean ?? progress;
           input = clean ?? {};
+        } else if (ctx.structuredInput) {
+          input = redactToolInput(a.toolName, input);
         }
         writer.write({
           type: 'tool-input-available',

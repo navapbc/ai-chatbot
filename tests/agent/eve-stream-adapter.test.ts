@@ -519,3 +519,58 @@ describe('report_progress', () => {
     ]);
   });
 });
+
+describe('tool input redaction on relay runs', () => {
+  const fill = {
+    type: 'actions.requested',
+    data: {
+      actions: [
+        {
+          kind: 'tool-call',
+          callId: 'b1',
+          toolName: 'browser',
+          input: { command: ['fill', '@e3', '123-45-6789'] },
+        },
+      ],
+    },
+  };
+
+  it('never streams the fill value when structuredInput is set', () => {
+    const { writer, chunks } = collect();
+    translateEveEvent(fill, writer, { textId: null, generateId: gen, structuredInput: true });
+    expect(JSON.stringify(chunks)).not.toContain('123-45-6789');
+    expect(chunks[0].input).toStrictEqual({ command: ['fill', '@e3', '[hidden]'] });
+  });
+
+  it('keeps a synthesized input empty', () => {
+    const { writer, chunks } = collect();
+    translateEveEvent(
+      {
+        type: 'action.result',
+        data: { result: { kind: 'tool-result', callId: 'z', toolName: 'browser', output: {} } },
+      },
+      writer,
+      { textId: null, generateId: gen, structuredInput: true, emittedToolCallIds: new Set() },
+    );
+    expect(chunks[0].input).toStrictEqual({});
+  });
+
+  it('hides an ask_question input', () => {
+    const { writer, chunks } = collect();
+    translateEveEvent(
+      {
+        type: 'actions.requested',
+        data: { actions: [{ kind: 'tool-call', callId: 'q', toolName: 'ask_question', input: { prompt: 'SSN 123?' } }] },
+      },
+      writer,
+      { textId: null, generateId: gen, structuredInput: true },
+    );
+    expect(chunks[0].input).toStrictEqual({});
+  });
+
+  it('passes the input through unchanged without structuredInput', () => {
+    const { writer, chunks } = collect();
+    translateEveEvent(fill, writer, { textId: null, generateId: gen });
+    expect(chunks[0].input).toStrictEqual({ command: ['fill', '@e3', '123-45-6789'] });
+  });
+});
