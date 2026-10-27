@@ -32,6 +32,8 @@ import {
   sessionMapping,
   eveRun,
   type EveRun,
+  participant,
+  type ParticipantRow,
 } from './schema';
 import type { ArtifactKind } from '@/components/artifact';
 import { generateUUID } from '../utils';
@@ -895,5 +897,46 @@ export async function deleteEveRun({
       .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
   } catch (error) {
     throw new ChatSDKError('bad_request:database', 'Failed to delete eve run');
+  }
+}
+
+// Participant: prefix search over searchText (lowercase "first middle last
+// recordId") or recordId. The caller passes an already-escaped LIKE pattern
+// stem; escapeLike lives in lib/data/participant-source.ts.
+export async function searchParticipantRows({
+  pattern,
+  limit,
+}: { pattern: string; limit: number }): Promise<ParticipantRow[]> {
+  try {
+    return await db
+      .select()
+      .from(participant)
+      .where(
+        or(
+          sql`${participant.searchText} ILIKE ${`${pattern}%`}`,
+          sql`${participant.recordId} LIKE ${`${pattern}%`}`,
+        ),
+      )
+      .orderBy(asc(participant.displayName))
+      .limit(limit);
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to search participants',
+    );
+  }
+}
+
+export async function getParticipantRow(
+  recordId: string,
+): Promise<ParticipantRow | undefined> {
+  try {
+    const [row] = await db
+      .select()
+      .from(participant)
+      .where(eq(participant.recordId, recordId));
+    return row;
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to get participant');
   }
 }

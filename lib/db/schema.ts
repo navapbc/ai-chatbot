@@ -15,6 +15,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import type { PendingInputRequest } from '../ai/eve/input-requests';
 import type { RunProgress } from '../relay/progress';
+import type { Participant as ParticipantRecord } from '../data/participants';
 
 export const user = pgTable('User', {
   id: uuid('id').primaryKey().notNull().defaultRandom(),
@@ -250,3 +251,17 @@ export const eveRun = pgTable(
 );
 
 export type EveRun = InferSelectModel<typeof eveRun>;
+
+// Participant records for the extension's participant picker. The full record
+// is read only on the server; the API exposes a summary. searchText is
+// lowercase "first middle last recordId" and is what prefix search matches.
+export const participant = pgTable('Participant', {
+  recordId: text('recordId').primaryKey().notNull(),
+  displayName: text('displayName').notNull(),
+  county: text('county').notNull(),
+  searchText: text('searchText').notNull(),
+  record: jsonb('record').$type<ParticipantRecord>().notNull(),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+});
+
+export type ParticipantRow = InferSelectModel<typeof participant>;
