@@ -232,6 +232,7 @@ describe('startRun: success', () => {
       ok: true,
       runId: RUN_ID,
       expiresAt: 1_800_001_800,
+      tabId: 7,
     });
     expect(calls).toEqual([
       'tab:7',
@@ -297,6 +298,7 @@ describe('startRun: success', () => {
       ok: true,
       runId: RUN_ID,
       expiresAt: 1_800_001_800,
+      tabId: 7,
     });
     expect(d.api.stopRun).not.toHaveBeenCalled();
   });

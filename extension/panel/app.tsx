@@ -1,27 +1,23 @@
-import { useEffect, useMemo, useReducer } from 'react';
+import { useCallback, useEffect, useMemo, useReducer } from 'react';
 import { APP_ORIGIN } from '../src/config';
 import { createAppApi } from '../src/app-api';
 import { NotConnectedError } from './lib/copy';
-import { startRun } from './lib/run-starter';
+import { markRecentEnded } from './lib/recents';
 import {
-  type Action,
-  initialState,
-  reducer,
-  type Screen,
-  type Target,
-} from './lib/state';
+  createRunSession,
+  rebuildRun,
+  type SessionRun,
+} from './lib/run-session';
+import { startRun } from './lib/run-starter';
+import { type Action, initialState, reducer, type Target } from './lib/state';
 import { createWorkerApi } from './lib/worker-api';
 import { DetailsScreen } from './screens/details';
 import { ErrorScreen } from './screens/error';
 import { HomeScreen } from './screens/home';
 import { ParticipantScreen } from './screens/participant';
-import { Placeholder } from './screens/placeholder';
 import { type OnStart, ReadyScreen } from './screens/ready';
+import { RunningScreen } from './screens/running';
 import { SignedOutScreen } from './screens/signed-out';
-
-const STUB_NAMES: Partial<Record<Screen, string>> = {
-  running: 'Running',
-};
 
 const probe = async () => {
   if (!APP_ORIGIN) throw new NotConnectedError();
@@ -59,8 +55,19 @@ const createStarter =
       type: 'runStarted',
       runId: result.runId,
       expiresAt: result.expiresAt,
+      tabId: result.tabId,
     });
   };
+
+// The panel reopened mid-run: the worker's live run, if the server agrees.
+const rebuild = () => {
+  if (!APP_ORIGIN) return Promise.resolve(null);
+  return rebuildRun({
+    api: createAppApi({ origin: APP_ORIGIN }),
+    worker: createWorkerApi(),
+    now: () => Date.now(),
+  });
+};
 
 export const App = ({ onStart }: { onStart?: OnStart }) => {
   const [state, dispatch] = useReducer(reducer, initialState);
@@ -70,7 +77,15 @@ export const App = ({ onStart }: { onStart?: OnStart }) => {
     if (state.screen !== 'loading') return;
     let current = true;
     probe().then(
-      (config) => current && dispatch({ type: 'probeSucceeded', config }),
+      async (config) => {
+        const rebuilt = await rebuild();
+        if (!current) return;
+        dispatch(
+          rebuilt
+            ? { type: 'runRebuilt', config, ...rebuilt }
+            : { type: 'probeSucceeded', config },
+        );
+      },
       (error) => current && dispatch({ type: 'probeFailed', error }),
     );
     return () => {
@@ -81,6 +96,26 @@ export const App = ({ onStart }: { onStart?: OnStart }) => {
   const api = useMemo(
     () => (APP_ORIGIN ? createAppApi({ origin: APP_ORIGIN }) : null),
     [],
+  );
+
+  const createSession = useCallback(
+    (run: SessionRun) => {
+      if (!api) throw new NotConnectedError();
+      return createRunSession(
+        {
+          api,
+          worker: createWorkerApi(),
+          now: () => Date.now(),
+          setInterval: (fn, ms) => setInterval(fn, ms),
+          clearInterval: (id) => clearInterval(id),
+          setTimeout: (fn, ms) => setTimeout(fn, ms),
+          clearTimeout: (id) => clearTimeout(id),
+          markRecentEnded,
+        },
+        run,
+      );
+    },
+    [api],
   );
 
   const handleRetry = () => dispatch({ type: 'retry' });
@@ -142,10 +177,13 @@ export const App = ({ onStart }: { onStart?: OnStart }) => {
           </p>
         </section>
       ) : null}
-      {STUB_NAMES[state.screen] ? (
-        <Placeholder
-          name={STUB_NAMES[state.screen] as string}
-          onHome={handleHome}
+      {state.screen === 'running' && state.run && state.target && api ? (
+        // No Back to Home while the run is live: only Stop leaves it.
+        <RunningScreen
+          siteName={state.target.siteName}
+          run={state.run}
+          createSession={createSession}
+          onHome={() => dispatch({ type: 'runEnded' })}
         />
       ) : null}
     </main>

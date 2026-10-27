@@ -1,6 +1,7 @@
 import type { RelayConfig } from '../../../lib/relay/config';
 import { AppApiError } from '../../src/app-api';
 import { type ErrorMessage, messageFor } from './copy';
+import type { SessionRun } from './run-session';
 
 // The panel's screen state machine, pure so it can be tested without a DOM.
 // `loading` is the sign-in probe in flight; later start-flow tasks replace the
@@ -30,10 +31,12 @@ export type State = {
   participant?: Participant;
   modelId?: string;
   /**
-   * The run this panel started. `expiresAt` is the extension token's expiry
-   * as the token route returns it: Unix time in SECONDS, not milliseconds.
+   * The run this panel started (or rebuilt on reopening). `expiresAt` is the
+   * extension token's expiry as the token route returns it: Unix time in
+   * SECONDS, not milliseconds. `tabId` is the run's tab, which a token
+   * refresh needs.
    */
-  run?: { runId: string; expiresAt: number };
+  run?: SessionRun;
   error?: ErrorMessage;
 };
 
@@ -58,7 +61,16 @@ export type Action =
   | { type: 'chooseModel'; modelId: string }
   | { type: 'startRequested' }
   | { type: 'startFailed'; error: unknown }
-  | { type: 'runStarted'; runId: string; expiresAt: number }
+  | { type: 'runStarted'; runId: string; expiresAt: number; tabId: number }
+  /** The run ended and the caseworker left its screen. */
+  | { type: 'runEnded' }
+  /** The panel reopened while the worker held a live run (see rebuildRun). */
+  | {
+      type: 'runRebuilt';
+      config: RelayConfig;
+      run: SessionRun;
+      target: Target;
+    }
   | { type: 'goBack' };
 
 export const initialState: State = { screen: 'loading' };
@@ -116,7 +128,30 @@ export const reducer = (state: State, action: Action): State => {
     return {
       ...rest,
       screen: 'running',
-      run: { runId: action.runId, expiresAt: action.expiresAt },
+      run: {
+        runId: action.runId,
+        expiresAt: action.expiresAt,
+        tabId: action.tabId,
+      },
+    };
+  }
+  if (action.type === 'runEnded') {
+    if (state.screen !== 'running') return state;
+    const {
+      run: _run,
+      target: _target,
+      participant: _participant,
+      ...rest
+    } = state;
+    return { ...rest, screen: 'home' };
+  }
+  if (action.type === 'runRebuilt') {
+    if (state.screen !== 'loading') return state;
+    return {
+      screen: 'running',
+      config: action.config,
+      run: action.run,
+      target: action.target,
     };
   }
   if (action.type === 'goBack') {

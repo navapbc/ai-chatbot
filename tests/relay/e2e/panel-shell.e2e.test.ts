@@ -44,6 +44,10 @@ const eveChatBodies: unknown[] = [];
 const eveChatOrigins: (string | undefined)[] = [];
 /** The status the next POST /api/eve-chat answers with. */
 let eveChatStatus = 200;
+/** Runs eve-chat created: the fake server rows the panel reads and stops. */
+const runs = new Map<string, { ended: boolean }>();
+/** GET /api/relay/runs/:id polls, kept apart from `appCalls`. */
+const pollCalls: string[] = [];
 
 const readBody = (req: import('node:http').IncomingMessage) =>
   new Promise<string>((resolve) => {
@@ -68,6 +72,7 @@ beforeAll(async () => {
         return;
       }
       // One chunk, then the turn "keeps going": the stream stays open.
+      runs.set((eveChatBodies.at(-1) as { id: string }).id, { ended: false });
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.write('data: {"type":"start"}\n\n');
       return;
@@ -101,7 +106,36 @@ beforeAll(async () => {
       req.url.endsWith('/stop')
     ) {
       appCalls.push(`POST ${req.url}`);
-      res.writeHead(404).end();
+      const row = runs.get(req.url.split('/')[4] ?? '');
+      if (!row) {
+        res.writeHead(404).end();
+        return;
+      }
+      const alreadyEnded = row.ended;
+      row.ended = true;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ended: true, alreadyEnded }));
+      return;
+    }
+    if (req.method === 'GET' && req.url?.startsWith('/api/relay/runs/')) {
+      pollCalls.push(`GET ${req.url}`);
+      const runId = req.url.split('/')[4] ?? '';
+      const row = runs.get(runId);
+      if (!row) {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          runId,
+          origin: fixtures.origin,
+          ended: row.ended,
+          endedAt: row.ended ? new Date().toISOString() : null,
+          progress: null,
+          pending: [],
+        }),
+      );
       return;
     }
     if (req.url === '/api/relay/config') {
@@ -348,50 +382,52 @@ describe('the panel shell', () => {
     eveChatOrigins.length = 0;
     eveChatStatus = 200;
 
-    await page.getByRole('button', { name: 'Start' }).click();
-    await page.getByRole('heading', { name: 'Running' }).waitFor();
+    try {
+      await page.getByRole('button', { name: 'Start' }).click();
+      await page.getByRole('heading', { name: 'Running' }).waitFor();
 
-    expect(appCalls).toEqual(['POST /api/eve-chat', 'POST /api/relay/token']);
-    expect(eveChatOrigins).toEqual([`chrome-extension://${EXTENSION_ID}`]);
-    const body = eveChatBodies[0] as { id: string; relay: unknown };
-    expect(body.id).toMatch(UUID);
-    expect(body).toEqual({
-      id: body.id,
-      relay: { origin: fixtures.origin, participant: { recordId: 'rec-1' } },
-    });
+      expect(appCalls).toEqual(['POST /api/eve-chat', 'POST /api/relay/token']);
+      expect(eveChatOrigins).toEqual([`chrome-extension://${EXTENSION_ID}`]);
+      const body = eveChatBodies[0] as { id: string; relay: unknown };
+      expect(body.id).toMatch(UUID);
+      expect(body).toEqual({
+        id: body.id,
+        relay: { origin: fixtures.origin, participant: { recordId: 'rec-1' } },
+      });
 
-    // The worker holds the run and registered it with the real relay (the
-    // debugger attaches only once an agent asks, so `attached` stays false).
-    const status = await runStatus(page);
-    expect({ active: status.active, runId: status.runId }).toEqual({
-      active: true,
-      runId: body.id,
-    });
-    await expect
-      .poll(
-        () =>
-          relay.logs.some(
-            (l) => l.event === 'registered' && l.runId === body.id,
-          ),
-        { timeout: 10_000 },
-      )
-      .toBe(true);
-    const recents = await page.evaluate(
-      async () => (await chrome.storage.local.get('recentRuns')).recentRuns,
-    );
-    expect(recents).toEqual(
-      expect.arrayContaining([
-        {
-          runId: body.id,
-          siteName: 'localhost',
-          startedAt: expect.any(Number),
-        },
-      ]),
-    );
-
-    await stopWorkerRun(page);
-    await page.close();
-    await site.close();
+      // The worker holds the run and registered it with the real relay (the
+      // debugger attaches only once an agent asks, so `attached` stays false).
+      const status = await runStatus(page);
+      expect({ active: status.active, runId: status.runId }).toEqual({
+        active: true,
+        runId: body.id,
+      });
+      await expect
+        .poll(
+          () =>
+            relay.logs.some(
+              (l) => l.event === 'registered' && l.runId === body.id,
+            ),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+      const recents = await page.evaluate(
+        async () => (await chrome.storage.local.get('recentRuns')).recentRuns,
+      );
+      expect(recents).toEqual(
+        expect.arrayContaining([
+          {
+            runId: body.id,
+            siteName: 'localhost',
+            startedAt: expect.any(Number),
+          },
+        ]),
+      );
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
   }, 30_000);
 
   it('shows the run-limit message on 429, then Start works again', async () => {
@@ -400,33 +436,166 @@ describe('the panel shell', () => {
     eveChatBodies.length = 0;
     eveChatStatus = 429;
 
-    await page.getByRole('button', { name: 'Start' }).click();
-    await page.getByText('Too many runs right now').waitFor();
-    await page.getByRole('heading', { name: 'Ready' }).waitFor();
-    const refusedId = (eveChatBodies[0] as { id: string }).id;
-    // A run may exist once eve-chat was asked, so the server stop is called.
-    await expect.poll(() => appCalls.length).toBe(2);
-    expect(appCalls).toEqual([
-      'POST /api/eve-chat',
-      `POST /api/relay/runs/${refusedId}/stop`,
-    ]);
-    expect((await runStatus(page)).active).toBe(false);
+    try {
+      await page.getByRole('button', { name: 'Start' }).click();
+      await page.getByText('Too many runs right now').waitFor();
+      await page.getByRole('heading', { name: 'Ready' }).waitFor();
+      const refusedId = (eveChatBodies[0] as { id: string }).id;
+      // A run may exist once eve-chat was asked, so the server stop is called.
+      await expect.poll(() => appCalls.length).toBe(2);
+      expect(appCalls).toEqual([
+        'POST /api/eve-chat',
+        `POST /api/relay/runs/${refusedId}/stop`,
+      ]);
+      expect((await runStatus(page)).active).toBe(false);
 
-    eveChatStatus = 200;
-    const start = page.getByRole('button', { name: 'Start' });
-    expect(await start.isDisabled()).toBe(false);
-    await start.click();
-    await page.getByRole('heading', { name: 'Running' }).waitFor();
-    expect(appCalls.slice(2)).toEqual([
-      'POST /api/eve-chat',
-      'POST /api/relay/token',
-    ]);
-    expect((eveChatBodies[1] as { id: string }).id).not.toBe(refusedId);
-
-    await stopWorkerRun(page);
-    await page.close();
-    await site.close();
+      eveChatStatus = 200;
+      const start = page.getByRole('button', { name: 'Start' });
+      expect(await start.isDisabled()).toBe(false);
+      await start.click();
+      await page.getByRole('heading', { name: 'Running' }).waitFor();
+      expect(appCalls.slice(2)).toEqual([
+        'POST /api/eve-chat',
+        'POST /api/relay/token',
+      ]);
+      expect((eveChatBodies[1] as { id: string }).id).not.toBe(refusedId);
+    } finally {
+      eveChatStatus = 200;
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
   }, 30_000);
+
+  /** Starts a run from a fresh panel and waits until the relay has it. */
+  const startOnRealTab = async () => {
+    const { site, page } = await readyOnRealTab();
+    appCalls.length = 0;
+    eveChatBodies.length = 0;
+    eveChatStatus = 200;
+    await page.getByRole('button', { name: 'Start' }).click();
+    await page.getByRole('heading', { name: 'Running' }).waitFor();
+    const runId = (eveChatBodies[0] as { id: string }).id;
+    await expect
+      .poll(
+        () =>
+          relay.logs.some((l) => l.event === 'registered' && l.runId === runId),
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+    return { site, page, runId };
+  };
+
+  const stopCalls = (runId: string) =>
+    appCalls.filter((c) => c === `POST /api/relay/runs/${runId}/stop`).length;
+
+  it('Running shows the site, a timer and Stop; Stop ends the run on the server and the worker', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    try {
+      await page.getByText('Site: localhost').waitFor();
+      const elapsed = page.getByText(/^Elapsed: \d+:\d\d$/);
+      const first = await elapsed.textContent();
+      await expect
+        .poll(() => elapsed.textContent(), { timeout: 5_000 })
+        .not.toBe(first);
+      // No way off a live run except Stop.
+      expect(
+        await page.getByRole('button', { name: 'Back to Home' }).count(),
+      ).toBe(0);
+      // The panel polls the server's run state.
+      await expect
+        .poll(() => pollCalls.includes(`GET /api/relay/runs/${runId}`), {
+          timeout: 10_000,
+        })
+        .toBe(true);
+
+      await page.getByRole('button', { name: 'Stop' }).click();
+      await page.getByRole('heading', { name: 'Run ended' }).waitFor();
+      await page.getByText('You stopped this run.').waitFor();
+      expect(stopCalls(runId)).toBe(1);
+      expect(runs.get(runId)?.ended).toBe(true);
+      expect((await runStatus(page)).active).toBe(false);
+      const recents = await page.evaluate(
+        async () => (await chrome.storage.local.get('recentRuns')).recentRuns,
+      );
+      expect(recents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ runId, endedReason: 'user' }),
+        ]),
+      );
+
+      await page.getByRole('button', { name: 'Back to Home' }).click();
+      await page.getByRole('heading', { name: 'Home' }).waitFor();
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 30_000);
+
+  it('a run the worker ended by itself is stopped on the server once', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    try {
+      // The worker ends the run without the panel (as on leaving the origin).
+      await stopWorkerRun(page);
+      await page
+        .getByText('The run ended in the browser.', { exact: false })
+        .waitFor({ timeout: 15_000 });
+      expect(stopCalls(runId)).toBe(1);
+      expect(runs.get(runId)?.ended).toBe(true);
+      expect(await page.getByRole('button', { name: 'Stop' }).count()).toBe(0);
+      // Leaving the ended run (polling stopped with it; the unit tests pin
+      // the single stop across later polls).
+      await page.getByRole('button', { name: 'Back to Home' }).click();
+      await page.getByRole('heading', { name: 'Home' }).waitFor();
+      expect(stopCalls(runId)).toBe(1);
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 30_000);
+
+  it('rebuilds Running when the panel reopens mid-run, without a second eve-chat', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    await page.close();
+    const again = await browser.context.newPage();
+    try {
+      await again.goto(`chrome-extension://${EXTENSION_ID}/panel.html`);
+      await again.getByRole('heading', { name: 'Running' }).waitFor();
+      await again.getByText('Site: localhost').waitFor();
+      expect(appCalls.filter((c) => c === 'POST /api/eve-chat')).toHaveLength(
+        1,
+      );
+      // The expiry is unknown after reopening, so the token is refreshed at
+      // once (a same-run-id startRun) and the notice goes away.
+      await expect
+        .poll(
+          () => appCalls.filter((c) => c === 'POST /api/relay/token').length,
+          { timeout: 10_000 },
+        )
+        .toBe(2);
+      await expect
+        .poll(() => again.getByText('This run may end soon.').count(), {
+          timeout: 10_000,
+        })
+        .toBe(0);
+      const status = await runStatus(again);
+      expect({ active: status.active, runId: status.runId }).toEqual({
+        active: true,
+        runId,
+      });
+      expect(stopCalls(runId)).toBe(0);
+
+      await again.getByRole('button', { name: 'Stop' }).click();
+      await again.getByText('You stopped this run.').waitFor();
+      expect(stopCalls(runId)).toBe(1);
+    } finally {
+      await stopWorkerRun(again);
+      await again.close();
+      await site.close();
+    }
+  }, 40_000);
 
   it('saves details for 8 hours, reuses them, expires them and clears them', async () => {
     const seen: string[] = [];

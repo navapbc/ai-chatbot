@@ -442,6 +442,7 @@ describe('run status after a worker restart', () => {
       active: true,
       runId: 'run-1',
       origin: ORIGIN,
+      tabId: 1,
       attached: true,
       needsRegistration: true,
     });

@@ -84,6 +84,11 @@ export interface RunStatus {
   active: boolean;
   runId?: string;
   origin?: string;
+  /**
+   * The tab the run drives, so a reopened panel can refresh the run's token
+   * (a same-run-id startRun needs the tab).
+   */
+  tabId?: number;
   attached?: boolean;
   /**
    * True on a run rebuilt after a worker restart until the panel sends
@@ -2632,7 +2637,10 @@ async function allowOrigin(origin: unknown): Promise<BridgeResponse> {
   return { ok: true };
 }
 
-/** The run's state for the panel: ids and counts, never a token or URL. */
+/**
+ * The run's state for the panel: ids (run, tab), the origin and counts, never
+ * a token or URL.
+ */
 function getRunStatus(): RunStatus {
   const current = run;
   if (!current || current.stopped) return { ok: true, active: false };
@@ -2641,6 +2649,7 @@ function getRunStatus(): RunStatus {
     active: true,
     runId: current.runId,
     origin: current.origin,
+    tabId: current.tabId,
     attached: current.attached,
     needsRegistration: current.needsRegistration,
   };

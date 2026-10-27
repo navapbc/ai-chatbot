@@ -124,4 +124,59 @@ describe('panel reducer', () => {
     });
     expect(JSON.stringify(s)).not.toContain('save');
   });
+
+  const RUN = {
+    runId: '11111111-2222-4333-8444-555555555555',
+    expiresAt: 1_800_001_800,
+    tabId: 7,
+  };
+  const target = {
+    tabId: 7,
+    origin: 'https://example.gov',
+    siteName: 'example.gov',
+  };
+
+  it('runEnded clears the run, target and participant and goes home', () => {
+    const running = {
+      screen: 'running' as const,
+      config,
+      target,
+      participant: { kind: 'record' as const, recordId: 'r', name: 'n' },
+      modelId: 'claude-opus-5',
+      run: RUN,
+    };
+    const s = reducer(running, { type: 'runEnded' });
+    expect(s).toEqual({
+      screen: 'home',
+      config,
+      modelId: 'claude-opus-5',
+    });
+  });
+
+  it('runEnded is ignored unless running', () => {
+    const home = { screen: 'home' as const, config };
+    expect(reducer(home, { type: 'runEnded' })).toBe(home);
+  });
+
+  it('runRebuilt goes from loading to running with the config, run and target', () => {
+    const s = reducer(initialState, {
+      type: 'runRebuilt',
+      config,
+      run: { ...RUN, expiresAtEstimated: true },
+      target,
+    });
+    expect(s).toEqual({
+      screen: 'running',
+      config,
+      run: { ...RUN, expiresAtEstimated: true },
+      target,
+    });
+  });
+
+  it('runRebuilt is ignored unless loading', () => {
+    const home = { screen: 'home' as const, config };
+    expect(
+      reducer(home, { type: 'runRebuilt', config, run: RUN, target }),
+    ).toBe(home);
+  });
 });

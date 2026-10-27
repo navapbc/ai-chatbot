@@ -45,7 +45,7 @@ export type StartArgs = {
 };
 
 export type StartResult =
-  | { ok: true; runId: string; expiresAt: number }
+  | { ok: true; runId: string; expiresAt: number; tabId: number }
   | { ok: false; error: unknown; runId?: string };
 
 /** Bounds the eve-chat request: headers and the first chunk. */
@@ -186,5 +186,5 @@ const startRunNow = async (
   } catch {
     // The Recent list is a convenience; the run has started.
   }
-  return { ok: true, runId, expiresAt };
+  return { ok: true, runId, expiresAt, tabId };
 };

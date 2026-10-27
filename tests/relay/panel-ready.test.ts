@@ -212,9 +212,10 @@ describe('ready screen reducer actions', () => {
       type: 'runStarted',
       runId,
       expiresAt: 1_800_001_800,
+      tabId: 7,
     });
     expect(s.screen).toBe('running');
-    expect(s.run).toEqual({ runId, expiresAt: 1_800_001_800 });
+    expect(s.run).toEqual({ runId, expiresAt: 1_800_001_800, tabId: 7 });
     expect(s.target).toEqual(ready.target);
     expect(s.error).toBeUndefined();
   });
@@ -224,6 +225,7 @@ describe('ready screen reducer actions', () => {
       type: 'runStarted',
       runId: '11111111-2222-4333-8444-555555555555',
       expiresAt: 1,
+      tabId: 7,
     } as const;
     expect(reducer(ready, action)).toBe(ready);
     const home: State = { screen: 'home' };
