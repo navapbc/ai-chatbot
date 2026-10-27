@@ -113,7 +113,10 @@ export async function POST(request: Request) {
   } catch {
     return noStore(new ChatSDKError('offline:chat').toResponse());
   }
-  if (!run || run.relayOrigin === null) return notFound();
+  // An ended (stopped) run looks like an unknown one, as on the token routes.
+  if (!run || run.relayOrigin === null || run.endedAt !== null) {
+    return notFound();
+  }
 
   const descriptors = (fields as Record<string, unknown>[]).map(toDescriptor);
 

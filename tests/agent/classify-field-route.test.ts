@@ -203,6 +203,22 @@ describe('POST /api/relay/classify-field', () => {
     expect(guest.headers.get('Cache-Control')).toBe('no-store');
   });
 
+  it('returns a bodyless no-store 404 for an ended run without asking Jev', async () => {
+    const { getRunStore } = await import('@/lib/ai/eve/run-store');
+    expect(await getRunStore().end(USER, RUN)).toBe(true);
+    const res = await call({ runId: RUN, fields: [{ label: 'Mystery' }] });
+    expect(res.status).toBe(404);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.text()).toBe('');
+    expect(jev.askJev).not.toHaveBeenCalled();
+  });
+
+  it('still classifies for a live run', async () => {
+    const res = await call({ runId: RUN, fields: [{ label: 'Mystery' }] });
+    expect(res.status).toBe(200);
+    expect(jev.askJev).toHaveBeenCalledTimes(1);
+  });
+
   it('never runs more than 8 Jev calls at once', async () => {
     let active = 0;
     let peak = 0;
