@@ -28,6 +28,7 @@ export type State = {
   config?: RelayConfig;
   target?: Target;
   participant?: Participant;
+  modelId?: string;
   error?: ErrorMessage;
 };
 
@@ -48,7 +49,11 @@ export type Action =
       type: 'submitDetails';
       details: Record<string, string>;
       save: boolean;
-    };
+    }
+  | { type: 'chooseModel'; modelId: string }
+  | { type: 'startRequested' }
+  | { type: 'startFailed'; error: unknown }
+  | { type: 'goBack' };
 
 export const initialState: State = { screen: 'loading' };
 
@@ -84,6 +89,27 @@ export const reducer = (state: State, action: Action): State => {
       ...state,
       participant: { kind: 'details', details: action.details },
       screen: 'ready',
+    };
+  }
+  if (action.type === 'chooseModel') {
+    return { ...state, modelId: action.modelId };
+  }
+  if (action.type === 'startRequested') {
+    // Only a ready screen can start, so a second press changes nothing.
+    if (state.screen !== 'ready') return state;
+    const { error: _error, ...rest } = state;
+    return { ...rest, screen: 'starting' };
+  }
+  if (action.type === 'startFailed') {
+    if (state.screen !== 'starting') return state;
+    return { ...state, screen: 'ready', error: messageFor(action.error) };
+  }
+  if (action.type === 'goBack') {
+    if (state.screen !== 'ready') return state;
+    const { error: _error, participant, ...rest } = state;
+    return {
+      ...rest,
+      screen: participant?.kind === 'details' ? 'details' : 'participant',
     };
   }
   return state;

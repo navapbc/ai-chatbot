@@ -8,10 +8,10 @@ import { ErrorScreen } from './screens/error';
 import { HomeScreen } from './screens/home';
 import { ParticipantScreen } from './screens/participant';
 import { Placeholder } from './screens/placeholder';
+import { type OnStart, ReadyScreen } from './screens/ready';
 import { SignedOutScreen } from './screens/signed-out';
 
 const STUB_NAMES: Partial<Record<Screen, string>> = {
-  ready: 'Ready',
   starting: 'Starting',
   running: 'Running',
 };
@@ -29,7 +29,11 @@ const probe = async () => {
   }
 };
 
-export const App = () => {
+// Task 8 replaces this with the run starter; until then a start only moves the
+// panel to the starting placeholder.
+const stubStart: OnStart = () => undefined;
+
+export const App = ({ onStart = stubStart }: { onStart?: OnStart }) => {
   const [state, dispatch] = useReducer(reducer, initialState);
 
   useEffect(() => {
@@ -93,6 +97,9 @@ export const App = () => {
           }
           onBack={() => dispatch({ type: 'goto', screen: 'participant' })}
         />
+      ) : null}
+      {state.screen === 'ready' ? (
+        <ReadyScreen state={state} dispatch={dispatch} onStart={onStart} />
       ) : null}
       {STUB_NAMES[state.screen] ? (
         <Placeholder

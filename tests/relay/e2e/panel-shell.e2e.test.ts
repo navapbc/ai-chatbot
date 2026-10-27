@@ -46,7 +46,7 @@ beforeAll(async () => {
               url: 'https://example.gov/apply',
             },
           ],
-          models: [{ id: 'claude-opus-5' }],
+          models: [{ id: 'claude-opus-5' }, { id: 'claude-haiku-4-5' }],
           defaultModel: 'claude-opus-5',
         }),
       );
@@ -188,6 +188,32 @@ describe('the panel shell', () => {
 
     await page.getByRole('button', { name: /Alice/ }).click();
     await page.getByRole('heading', { name: 'Ready' }).waitFor();
+    await page.getByText('Alice <b>x</b>').waitFor();
+    await page.getByText('https://example.gov').waitFor();
+    await page.getByText('The agent works only on this site.').waitFor();
+    await page.getByText('It asks you for anything that is missing.').waitFor();
+    await page
+      .getByText('It stops before Submit — you submit the form yourself.')
+      .waitFor();
+    const model = page.getByRole('combobox', { name: 'Model' });
+    expect(await model.inputValue()).toBe('claude-opus-5');
+    await model.selectOption('claude-haiku-4-5');
+    expect(await model.inputValue()).toBe('claude-haiku-4-5');
+
+    // Back returns to the search screen.
+    await page.getByRole('button', { name: 'Back' }).click();
+    await page
+      .getByRole('searchbox', { name: 'Search participants' })
+      .waitFor();
+    await page
+      .getByRole('searchbox', { name: 'Search participants' })
+      .fill('alice');
+    await page.getByRole('button', { name: /Alice/ }).click();
+    await page.getByRole('heading', { name: 'Ready' }).waitFor();
+
+    // Start reaches the starting placeholder (the stub starter).
+    await page.getByRole('button', { name: 'Start' }).click();
+    await page.getByRole('heading', { name: 'Starting' }).waitFor();
     await page.close();
   }, 30_000);
 
