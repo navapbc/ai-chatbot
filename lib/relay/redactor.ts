@@ -1419,6 +1419,8 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
     }
     let pending = pendingVerdicts.get(key);
     if (!pending) {
+      // No new call once the tree's time is up.
+      if (Date.now() >= deadline) return Promise.resolve(undefined);
       const asked = generation;
       const run = async (): Promise<boolean | undefined> => {
         if (!(await acquireSlot(deadline))) return undefined;
