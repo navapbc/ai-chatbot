@@ -6,9 +6,15 @@ import type {
   RunSessionState,
   SessionRun,
 } from '../lib/run-session';
+import { allowedNote, showAllowSite } from '../lib/allow-site';
 import { createAnswerSender } from '../lib/answer-client';
 import { buildProgressView } from '../lib/progress-view';
 import { createControllerLifecycle } from '../lib/search-controller';
+import {
+  AllowSiteCard,
+  type AllowSiteCardDeps,
+  defaultAllowSiteDeps,
+} from './allow-site';
 import {
   answerableRequests,
   NeedsYouCard,
@@ -27,6 +33,8 @@ type Props = {
   appOrigin?: string;
   /** Sends answers to the agent's questions; defaults to the real client. */
   sendAnswers?: SendAnswers;
+  /** The allow-site card's worker and tab access; defaults to Chrome's. */
+  allowSiteDeps?: AllowSiteCardDeps;
 };
 
 const ENDED_TEXT: Record<EndedReason, string> = {
@@ -35,9 +43,6 @@ const ENDED_TEXT: Record<EndedReason, string> = {
   'worker-ended':
     'The run ended in the browser. The tab may have closed or moved to another site, or the time ran out.',
 };
-
-export const PENDING_ORIGIN_TEXT =
-  'The page moved to another site. The agent is paused until you decide.';
 
 /** Elapsed time as m:ss (minutes are not capped at 59). */
 export const formatElapsed = (ms: number): string => {
@@ -66,11 +71,20 @@ export const RunningScreen = ({
   onHome,
   appOrigin = '',
   sendAnswers,
+  allowSiteDeps,
 }: Props) => {
   const send = useMemo(
     () => sendAnswers ?? createAnswerSender(appOrigin),
     [sendAnswers, appOrigin],
   );
+  const allowDeps = useMemo(
+    () => allowSiteDeps ?? defaultAllowSiteDeps(),
+    [allowSiteDeps],
+  );
+  // Set once the caseworker allowed a site: the run can no longer be
+  // extended (a refresh is refused on an allowed origin), which stays true
+  // after the card itself goes away.
+  const [allowed, setAllowed] = useState(false);
   const [state, setState] = useState<RunSessionState | null>(null);
   const session = useRef<RunSession | null>(null);
   const startedAt = useRef(Date.now());
@@ -104,6 +118,7 @@ export const RunningScreen = ({
     void session.current?.stop();
   };
   const handleHome = () => onHome();
+  const handleAllowed = () => setAllowed(true);
 
   const stopping = state?.stopping === true;
   const questions =
@@ -111,6 +126,7 @@ export const RunningScreen = ({
       ? answerableRequests(state.pending)
       : [];
   const secondsLeft = state?.secondsLeft ?? 0;
+  const heldOn = showAllowSite(state);
 
   return (
     <section className="flex flex-col gap-4" aria-label="Running">
@@ -148,12 +164,29 @@ export const RunningScreen = ({
               {state.expiresAtEstimated ? null : ` ${endsInText(secondsLeft)}`}
             </p>
           ) : null}
-          {state?.pendingOrigin ? (
-            <p className="text-sm">{PENDING_ORIGIN_TEXT}</p>
+          {allowed && state ? (
+            <p className="text-sm">
+              {allowedNote(state.expiresAt, state.expiresAtEstimated === true)}
+            </p>
           ) : null}
         </div>
       ) : null}
-      {/* SLOT (task 5): the allow-this-site card renders here. */}
+      {heldOn && state ? (
+        // Above the questions and the progress: the agent is paused until
+        // the caseworker decides. Keyed by the origin, so a new origin gets
+        // a fresh card naming it.
+        <AllowSiteCard
+          key={heldOn}
+          origin={heldOn}
+          pendingOrigin={state.pendingOrigin}
+          stopping={stopping}
+          tabId={run.tabId}
+          holdEndsAt={state.holdEndsAt}
+          deps={allowDeps}
+          onAllowed={handleAllowed}
+          onStop={handleStop}
+        />
+      ) : null}
       {questions.length > 0 ? (
         // Answers are offered only while the agent waits on them: never
         // while it works or after it stopped (a replayed turn can briefly

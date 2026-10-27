@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createRunSession,
   GRACE_MS,
+  ORIGIN_HOLD_CAP_MS,
+  ORIGIN_HOLD_MS,
   REFRESH_BEFORE_MS,
   REFRESH_RETRY_MS,
   type RunSessionDeps,
@@ -255,6 +257,7 @@ describe('run session: polling', () => {
         pending: [],
         phase: 'working',
         actions: [],
+        expiresAt: EXPIRES,
         secondsLeft: 1800,
         stopping: false,
       },
@@ -691,6 +694,7 @@ describe('run session: stop', () => {
       pending: [],
       phase: 'ended',
       actions: [],
+      expiresAt: EXPIRES,
       secondsLeft: expect.any(Number),
       stopping: false,
     });
@@ -991,6 +995,216 @@ describe('run session: secondsLeft', () => {
   });
 });
 
+describe('run session: origin hold', () => {
+  const A = 'https://login.example.gov';
+  const B = 'https://idp.example.gov';
+  const C = 'https://mfa.example.gov';
+
+  it('mirrors the bridge hold: 60 s per origin, 120 s in total', () => {
+    expect(ORIGIN_HOLD_MS).toBe(60_000);
+    expect(ORIGIN_HOLD_CAP_MS).toBe(120_000);
+  });
+
+  it('no hold: no hold fields', async () => {
+    const t = setup();
+    await tick(4000);
+    const state = t.last();
+    expect(state?.holdSeenAt).toBeUndefined();
+    expect(state?.holdEndsAt).toBeUndefined();
+    expect(state?.holdCountdownKnown).toBeUndefined();
+    t.session.dispose();
+  });
+
+  it('a hold seen start at runtime: holdSeenAt is the first sight, the countdown is known', async () => {
+    const t = setup();
+    await tick(2000); // clear
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000); // first sight at NOW + 4000
+    expect(t.last()).toMatchObject({
+      pendingOrigin: A,
+      holdSeenAt: NOW + 4000,
+      holdCountdownKnown: true,
+      holdEndsAt: NOW + 4000 + ORIGIN_HOLD_MS,
+    });
+    await tick(4000); // the same origin again: unchanged
+    expect(t.last()).toMatchObject({
+      holdSeenAt: NOW + 4000,
+      holdEndsAt: NOW + 4000 + ORIGIN_HOLD_MS,
+    });
+    t.session.dispose();
+  });
+
+  it('the first worker answer already shows a hold: no countdown', async () => {
+    const t = setup();
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    expect(t.last()).toMatchObject({
+      pendingOrigin: A,
+      holdSeenAt: NOW + 2000,
+      holdCountdownKnown: false,
+    });
+    expect(t.last()?.holdEndsAt).toBeUndefined();
+    t.session.dispose();
+  });
+
+  it('a failed first poll does not count as seeing the run clear', async () => {
+    const t = setup();
+    t.plan.status = async () => {
+      throw new WorkerError('worker_unreachable');
+    };
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    expect(t.last()?.holdCountdownKnown).toBe(false);
+    t.session.dispose();
+  });
+
+  it('a clear answer too long before the hold leaves the countdown unknown', async () => {
+    const t = setup();
+    await tick(2000); // clear at NOW + 2000
+    t.plan.status = async () => {
+      throw new WorkerError('worker_unreachable');
+    };
+    await tick(4000); // two failed polls
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000); // 6 s after the last clear answer
+    expect(t.last()?.holdCountdownKnown).toBe(false);
+    t.session.dispose();
+  });
+
+  it('one failed poll between a clear answer and the hold keeps it known', async () => {
+    const t = setup();
+    await tick(2000); // clear at NOW + 2000
+    t.plan.status = async () => {
+      throw new WorkerError('worker_unreachable');
+    };
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000); // seen at NOW + 6000, 4 s after the clear answer
+    expect(t.last()).toMatchObject({
+      holdCountdownKnown: true,
+      holdSeenAt: NOW + 6000,
+    });
+    t.session.dispose();
+  });
+
+  it('a failed poll mid-hold changes nothing', async () => {
+    const t = setup();
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    t.plan.status = async () => {
+      throw new WorkerError('worker_unreachable');
+    };
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    expect(t.last()).toMatchObject({
+      pendingOrigin: A,
+      holdSeenAt: NOW + 4000,
+      holdCountdownKnown: true,
+    });
+    t.session.dispose();
+  });
+
+  it('a changed pending origin resets holdSeenAt; the 120 s cap counts from the first', async () => {
+    const t = setup();
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000); // A at NOW + 4000
+    await tick(44_000);
+    t.plan.status = async () => ours({ pendingOrigin: B });
+    await tick(2000); // B at NOW + 50_000
+    expect(t.last()).toMatchObject({
+      pendingOrigin: B,
+      holdSeenAt: NOW + 50_000,
+      holdCountdownKnown: true,
+      holdEndsAt: NOW + 50_000 + ORIGIN_HOLD_MS,
+    });
+    await tick(48_000);
+    t.plan.status = async () => ours({ pendingOrigin: C });
+    await tick(2000); // C at NOW + 100_000: the cap binds
+    expect(t.last()).toMatchObject({
+      pendingOrigin: C,
+      holdSeenAt: NOW + 100_000,
+      holdCountdownKnown: true,
+      holdEndsAt: NOW + 4000 + ORIGIN_HOLD_CAP_MS,
+    });
+    t.session.dispose();
+  });
+
+  it('a change in a hold whose start was not seen stays unknown', async () => {
+    const t = setup();
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: B });
+    await tick(2000);
+    expect(t.last()).toMatchObject({
+      pendingOrigin: B,
+      holdSeenAt: NOW + 4000,
+      holdCountdownKnown: false,
+    });
+    expect(t.last()?.holdEndsAt).toBeUndefined();
+    t.session.dispose();
+  });
+
+  it('a cleared hold clears the fields; a later hold starts fresh', async () => {
+    const t = setup();
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000); // unknown
+    t.plan.status = async () => ours();
+    await tick(2000);
+    expect(t.last()?.pendingOrigin).toBeUndefined();
+    expect(t.last()?.holdSeenAt).toBeUndefined();
+    expect(t.last()?.holdCountdownKnown).toBeUndefined();
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    expect(t.last()).toMatchObject({
+      pendingOrigin: A,
+      holdSeenAt: NOW + 6000,
+      holdCountdownKnown: true,
+      holdEndsAt: NOW + 6000 + ORIGIN_HOLD_MS,
+    });
+    t.session.dispose();
+  });
+
+  it('an inactive answer clears the hold and does not count as clear', async () => {
+    const t = setup();
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    t.plan.status = async () => inactive;
+    await tick(2000);
+    expect(t.last()?.holdSeenAt).toBeUndefined();
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    expect(t.last()?.holdCountdownKnown).toBe(false);
+    t.session.dispose();
+  });
+
+  it('an ended run shows no hold', async () => {
+    const t = setup();
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    await t.session.stop();
+    expect(t.last()?.status).toBe('ended');
+    expect(t.last()?.pendingOrigin).toBeUndefined();
+    expect(t.last()?.holdSeenAt).toBeUndefined();
+    expect(t.last()?.holdEndsAt).toBeUndefined();
+    t.session.dispose();
+  });
+
+  it('exposes the live expiry in seconds, updated by a refresh', async () => {
+    const t = setup({ expiresAt: NOW / 1000 + 60 });
+    expect(t.last()?.expiresAt).toBe(NOW / 1000 + 60);
+    await tick(2000); // refresh: the token route answers now + 1800
+    await tick(2000);
+    expect(t.last()?.expiresAt).toBe(Math.floor((NOW + 2000) / 1000) + 1800);
+    t.session.dispose();
+  });
+});
+
 describe('run session: no applicant data', () => {
   const STATE_KEYS = new Set([
     'status',
@@ -1000,9 +1214,13 @@ describe('run session: no applicant data', () => {
     'actions',
     'endedReason',
     'pendingOrigin',
+    'holdSeenAt',
+    'holdEndsAt',
+    'holdCountdownKnown',
     'jevFailures',
     'refreshFailed',
     'expiresAtEstimated',
+    'expiresAt',
     'secondsLeft',
     'stopping',
     'stopFailed',

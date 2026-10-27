@@ -286,3 +286,29 @@ export const HOME_COPY = {
     'The agent works on https pages only. Open the form page in this tab first.',
   cannotOpen: 'Could not open that site. Check the address and try again.',
 } as const;
+
+/**
+ * Fixed copy for the allow-this-site card. The origin and the tab text are
+ * passed in (a worker-validated https origin; the tab's origin plus path) and
+ * rendered as text. Nothing here says the site is safe: allowing it is the
+ * caseworker's decision for this run only.
+ */
+export const ALLOW_SITE_COPY = {
+  title: 'Allow this site?',
+  moved: (origin: string) =>
+    `The page moved to ${origin}. The agent is paused until you decide.`,
+  tabNow: (text: string) => `The tab is now on: ${text}`,
+  hint: 'Allow it only if you expected the form to go there. This applies to this run only.',
+  decideWithin: (seconds: number) =>
+    `Decide within ${seconds} ${seconds === 1 ? 'second' : 'seconds'}`,
+  decideSoon: 'Decide soon: the agent stops waiting after about a minute.',
+  holdOver: 'The hold ended',
+  holdEnded: 'The hold ended. The agent has stopped waiting.',
+  allow: 'Allow this site for this run',
+  allowing: 'Allowing...',
+  stop: 'Stop the run',
+  allowed: (time: string) =>
+    `Allowed. This run can no longer be extended, so it ends at ${time}.`,
+  allowedEstimated:
+    'Allowed. This run can no longer be extended, so it may end soon.',
+} as const;

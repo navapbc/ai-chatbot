@@ -51,6 +51,20 @@ export const REFRESH_BEFORE_MS = 5 * 60_000;
 export const REFRESH_RETRY_MS = 60_000;
 /** A rebuilt run's expiry is unknown: assume this little is left. */
 export const ESTIMATED_LEFT_S = 5 * 60;
+/**
+ * The bridge's origin hold (extension/src/bridge.ts ORIGIN_HOLD_MS and
+ * ORIGIN_HOLD_CAP_MS in a shipped build): 60 s per pending origin, restarted
+ * by a move to another origin, 120 s in total. The worker status carries no
+ * start time, so the panel counts from when it first saw each origin.
+ */
+export const ORIGIN_HOLD_MS = 60_000;
+export const ORIGIN_HOLD_CAP_MS = 2 * ORIGIN_HOLD_MS;
+/**
+ * A hold's countdown is known only when an accepted worker answer within
+ * this long before showed this run with no pending origin: the hold began in
+ * that gap, so a countdown from the first sight overstates by less than it.
+ */
+export const HOLD_KNOWN_GAP_MS = 2 * WORKER_POLL_MS + 1000;
 
 export type EndedReason = 'user' | 'stopped' | 'worker-ended';
 
@@ -76,10 +90,33 @@ export type RunSessionState = {
   /** Session-local log of reported actions (untrusted text, never stored). */
   actions: string[];
   endedReason?: EndedReason;
+  /** The https origin the worker holds the tab on, waiting for a decision. */
   pendingOrigin?: string;
+  /**
+   * With pendingOrigin: when this session first saw the CURRENT pending
+   * origin (ms epoch). Reset when the pending origin changes or clears.
+   */
+  holdSeenAt?: number;
+  /**
+   * With pendingOrigin: whether this session saw the hold begin, i.e. an
+   * accepted worker answer at most HOLD_KNOWN_GAP_MS before the first
+   * pending one showed this run with no pending origin. False for a hold
+   * already under way at the session's first answer (a panel opened
+   * mid-hold) and for every later origin in such a hold.
+   */
+  holdCountdownKnown?: boolean;
+  /**
+   * Only when holdCountdownKnown: when the hold ends at the latest (ms
+   * epoch), min(holdSeenAt + 60 s, first sight of the hold + 120 s). Never
+   * earlier than the bridge's own deadline, since every sight is at or after
+   * the event it sees.
+   */
+  holdEndsAt?: number;
   jevFailures?: number;
   refreshFailed?: boolean;
   expiresAtEstimated?: boolean;
+  /** The run's live expiry, Unix time in SECONDS (a refresh moves it). */
+  expiresAt: number;
   secondsLeft: number;
   stopping: boolean;
   stopFailed?: boolean;
@@ -145,6 +182,12 @@ export const createRunSession = (
   let serverPending: PendingInputRequest[] = [];
   let serverPhase: RunPhase = 'working';
   const actionLog = createActionLog();
+  // The origin hold as this session saw it (see RunSessionState). A chain is
+  // an unbroken run of accepted answers that show a pending origin.
+  let lastClearAt: number | undefined;
+  let hold:
+    | { origin: string; seenAt: number; chainSeenAt: number; known: boolean }
+    | undefined;
 
   let workerInFlight = false;
   let serverInFlight = false;
@@ -167,6 +210,7 @@ export const createRunSession = (
       pending: ended ? [] : serverPending,
       phase: ended ? 'ended' : serverPhase,
       actions: actionLog.entries(),
+      expiresAt,
       secondsLeft: secondsLeft(),
       stopping: stopping && !ended,
     };
@@ -174,6 +218,16 @@ export const createRunSession = (
     if (!ended && lastWorker?.active && lastWorker.runId === runId) {
       if (lastWorker.pendingOrigin) {
         state.pendingOrigin = lastWorker.pendingOrigin;
+      }
+      if (hold && hold.origin === lastWorker.pendingOrigin) {
+        state.holdSeenAt = hold.seenAt;
+        state.holdCountdownKnown = hold.known;
+        if (hold.known) {
+          state.holdEndsAt = Math.min(
+            hold.seenAt + ORIGIN_HOLD_MS,
+            hold.chainSeenAt + ORIGIN_HOLD_CAP_MS,
+          );
+        }
       }
       if (typeof lastWorker.jevFailures === 'number') {
         state.jevFailures = lastWorker.jevFailures;
@@ -288,7 +342,33 @@ export const createRunSession = (
     endByWorker();
   };
 
+  /** Follows the hold through one accepted answer for this run. */
+  const trackHold = (status: RunStatus) => {
+    const now = deps.now();
+    const pendingOrigin =
+      status.active && typeof status.pendingOrigin === 'string'
+        ? status.pendingOrigin
+        : undefined;
+    if (!pendingOrigin) {
+      hold = undefined;
+      lastClearAt = status.active ? now : undefined;
+      return;
+    }
+    if (hold?.origin === pendingOrigin) return;
+    if (hold) {
+      // Another origin in the same hold: the bridge restarts its wait.
+      hold = { ...hold, origin: pendingOrigin, seenAt: now };
+      return;
+    }
+    const known =
+      lastClearAt !== undefined && now - lastClearAt <= HOLD_KNOWN_GAP_MS;
+    hold = { origin: pendingOrigin, seenAt: now, chainSeenAt: now, known };
+    lastClearAt = undefined;
+  };
+
   const onWorkerStatus = (status: RunStatus) => {
+    if (status.active && status.runId === runId) trackHold(status);
+    else trackHold({ ok: true, active: false });
     if (status.active && status.runId !== runId) {
       lastWorker = status;
       endByWorker();

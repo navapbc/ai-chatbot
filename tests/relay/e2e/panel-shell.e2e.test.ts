@@ -31,6 +31,13 @@ import {
 
 const ROOT = path.resolve(__dirname, '../../..');
 const HEADED = process.env.RELAY_E2E_HEADED === '1';
+/**
+ * The bridge's origin hold in this file's build (the shipped bridge holds
+ * 60 s): long enough for the panel's 2 s worker poll to show the card and a
+ * test to press Allow, short enough that a run nobody allows ends in seconds.
+ * Only a test-hooks build takes it (the hooks change nothing the panel sees).
+ */
+const PANEL_HOLD_MS = 8_000;
 
 let out: string;
 let browser: ExtensionBrowser;
@@ -232,7 +239,16 @@ beforeAll(async () => {
   execFileSync(
     path.join(ROOT, 'node_modules/.bin/tsx'),
     ['scripts/build-extension.ts', '--out', out],
-    { cwd: ROOT, env: { ...env, APP_ORIGIN: origin }, stdio: 'ignore' },
+    {
+      cwd: ROOT,
+      env: {
+        ...env,
+        APP_ORIGIN: origin,
+        EXTENSION_TEST_HOOKS: '1',
+        EXTENSION_TEST_ORIGIN_HOLD_MS: String(PANEL_HOLD_MS),
+      },
+      stdio: 'ignore',
+    },
   );
   browser = await launchExtensionBrowser({
     extensionDir: out,
@@ -893,6 +909,134 @@ describe('the panel shell', () => {
       await site.close();
     }
   }, 90_000);
+
+  type HoldStatus = Status & { pendingOrigin?: string };
+
+  /** Sends the run's tab to the other fixture origin: the worker holds. */
+  const leaveForFrameOrigin = async (
+    site: import('playwright').Page,
+    page: import('playwright').Page,
+  ) => {
+    // A query and a fragment the card must never show.
+    const away = `${fixtures.frameOrigin}/oopif.html?case=Zelda-Quill#frag-77`;
+    await site.evaluate((u) => {
+      location.href = u;
+    }, away);
+    await expect
+      .poll(async () => ((await runStatus(page)) as HoldStatus).pendingOrigin, {
+        timeout: 5_000,
+      })
+      .toBe(fixtures.frameOrigin);
+  };
+
+  const stoppedFor = (runId: string, reason: string) =>
+    relay.logs.some(
+      (l) =>
+        l.event === 'run-stopped' &&
+        (l as { runId?: string }).runId === runId &&
+        (l as { reason?: string }).reason === reason,
+    );
+
+  it('Allow this site: names the origin and the tab URL; Allow lets the run go on', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    const seen: string[] = [];
+    page.on('console', (msg) => seen.push(msg.text()));
+    try {
+      // The progress comes from the first server poll (3 s), after the first
+      // worker poll (2 s): the panel has seen the run clear, so it sees the
+      // hold begin and can show a countdown.
+      await page.getByText('6 fields so far').waitFor();
+      await leaveForFrameOrigin(site, page);
+      const heading = page.getByRole('heading', { name: 'Allow this site?' });
+      await heading.waitFor({ timeout: 5_000 });
+      // Focus moves to the card once, when it appears.
+      expect(await page.evaluate(() => document.activeElement?.id ?? '')).toBe(
+        'allow-site-title',
+      );
+      await page
+        .getByText(
+          `The page moved to ${fixtures.frameOrigin}. The agent is paused until you decide.`,
+        )
+        .waitFor();
+      // The tab's actual URL: origin plus path, never the query or fragment.
+      await page
+        .getByText(`The tab is now on: ${fixtures.frameOrigin}/oopif.html`, {
+          exact: true,
+        })
+        .waitFor();
+      // The panel saw the hold begin (it polled the clear run first).
+      await page.getByText(/^Decide within \d+ seconds?$/).waitFor();
+      const shown = await page.locator('body').innerText();
+      expect(shown).not.toMatch(/Zelda|frag-77/);
+      // Nothing allowed yet: the worker still holds.
+      expect(((await runStatus(page)) as HoldStatus).pendingOrigin).toBe(
+        fixtures.frameOrigin,
+      );
+
+      await page
+        .getByRole('button', { name: 'Allow this site for this run' })
+        .click();
+      await expect
+        .poll(async () => (await runStatus(page)) as HoldStatus, {
+          timeout: 5_000,
+        })
+        .toMatchObject({ active: true, runId });
+      expect(
+        ((await runStatus(page)) as HoldStatus).pendingOrigin,
+      ).toBeUndefined();
+      // The P4c2-e note, which outlives the card.
+      await page
+        .getByText(
+          /^Allowed\. This run can no longer be extended, so it ends at .+\.$/,
+        )
+        .waitFor();
+      await expect.poll(() => heading.count(), { timeout: 5_000 }).toBe(0);
+
+      // Past the hold: the run goes on at the new origin.
+      await new Promise((r) => setTimeout(r, PANEL_HOLD_MS + 1_000));
+      const after = (await runStatus(page)) as HoldStatus;
+      expect({ active: after.active, runId: after.runId }).toEqual({
+        active: true,
+        runId,
+      });
+      expect(after.pendingOrigin).toBeUndefined();
+      expect(stoppedFor(runId, 'left-origin')).toBe(false);
+      await page.getByRole('heading', { name: 'Running' }).waitFor();
+      await page.getByText(/^Allowed\. This run/).waitFor();
+      for (const line of seen) expect(line).not.toMatch(/Zelda|frag-77|oopif/);
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 60_000);
+
+  it('Allow this site: nobody answers, the run ends after the hold and the card goes', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    try {
+      await page.getByText('Site: localhost').waitFor();
+      await leaveForFrameOrigin(site, page);
+      const heading = page.getByRole('heading', { name: 'Allow this site?' });
+      await heading.waitFor({ timeout: 5_000 });
+      // The hold runs out; the panel waits out WORKER_GONE_AFTER_MS (7 s).
+      await page
+        .getByText('The run ended in the browser.', { exact: false })
+        .waitFor({ timeout: PANEL_HOLD_MS + 20_000 });
+      expect(stoppedFor(runId, 'left-origin')).toBe(true);
+      expect(await heading.count()).toBe(0);
+      expect(
+        await page
+          .getByRole('button', { name: 'Allow this site for this run' })
+          .count(),
+      ).toBe(0);
+      expect((await runStatus(page)).active).toBe(false);
+      await expect.poll(() => stopCalls(runId), { timeout: 5_000 }).toBe(1);
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 60_000);
 
   it('saves details for 8 hours, reuses them, expires them and clears them', async () => {
     const seen: string[] = [];
