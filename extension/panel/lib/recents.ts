@@ -45,9 +45,9 @@ const parseRecent = (value: unknown): Recent | null => {
   }
   if ('endedReason' in entry && !isValidReason(endedReason)) return null;
   // Rebuilt from the four fields so the stored shape is exact.
-  return endedReason === undefined
-    ? { runId, siteName, startedAt }
-    : { runId, siteName, startedAt, endedReason };
+  return isValidReason(endedReason)
+    ? { runId, siteName, startedAt, endedReason }
+    : { runId, siteName, startedAt };
 };
 
 const read = async (

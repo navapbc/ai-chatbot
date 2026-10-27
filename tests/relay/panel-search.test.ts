@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppApiError } from '../../extension/src/app-api';
 import { messageFor } from '../../extension/panel/lib/copy';
 import {
+  createControllerLifecycle,
   createSearchController,
   type SearchState,
 } from '../../extension/panel/lib/search-controller';
@@ -197,5 +198,33 @@ describe('search controller', () => {
     expect(states).toHaveLength(before);
     expect(calls).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('controller lifecycle', () => {
+  it('mount, unmount, mount gives a fresh working controller', async () => {
+    const calls: string[] = [];
+    const api = {
+      searchParticipants: async (q: string) => {
+        calls.push(q);
+        return [];
+      },
+    };
+    const states: SearchState[] = [];
+    const lifecycle = createControllerLifecycle(() =>
+      createSearchController(api, (s) => states.push(s)),
+    );
+    const first = lifecycle.mount();
+    lifecycle.unmount();
+    const second = lifecycle.mount();
+    expect(second).not.toBe(first);
+    first.setQuery('old');
+    second.setQuery('new');
+    await vi.advanceTimersByTimeAsync(250);
+    expect(calls).toEqual(['new']);
+    lifecycle.unmount();
+    second.setQuery('later');
+    await vi.advanceTimersByTimeAsync(250);
+    expect(calls).toEqual(['new']);
   });
 });

@@ -1,15 +1,9 @@
-import {
-  type KeyboardEvent,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import { type KeyboardEvent, useEffect, useId, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { AppApi } from '../../src/app-api';
 import {
+  createControllerLifecycle,
   createSearchController,
   type SearchState,
 } from '../lib/search-controller';
@@ -52,21 +46,30 @@ export const ParticipantScreen = ({
   const items = useRef<(HTMLButtonElement | null)[]>([]);
   const labelId = useId();
 
-  const controller = useMemo(
-    () => createSearchController(api, setState),
-    [api],
+  const controller = useRef<ReturnType<typeof createSearchController> | null>(
+    null,
   );
-  useEffect(() => () => controller.dispose(), [controller]);
+  // Built in the effect so a StrictMode unmount/remount gets a fresh one.
+  useEffect(() => {
+    const lifecycle = createControllerLifecycle(() =>
+      createSearchController(api, setState),
+    );
+    controller.current = lifecycle.mount();
+    return () => {
+      lifecycle.unmount();
+      controller.current = null;
+    };
+  }, [api]);
   useEffect(() => {
     input.current?.focus();
   }, []);
 
   const handleChange = (next: string) => {
     setValue(next);
-    controller.setQuery(next);
+    controller.current?.setQuery(next);
   };
 
-  const handleRetry = () => controller.setQuery(value);
+  const handleRetry = () => controller.current?.setQuery(value);
 
   const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key !== 'ArrowDown') return;

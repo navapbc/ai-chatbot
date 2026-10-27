@@ -170,7 +170,7 @@ describe('the panel shell', () => {
     await page.addInitScript(() => {
       chrome.tabs.query = (async () => [
         { id: 7, url: 'https://example.gov/apply' },
-      ]) as typeof chrome.tabs.query;
+      ]) as unknown as typeof chrome.tabs.query;
     });
     await page.goto(`chrome-extension://${EXTENSION_ID}/panel.html`);
     await page.getByRole('button', { name: 'Use this tab' }).click();

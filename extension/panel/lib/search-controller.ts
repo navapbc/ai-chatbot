@@ -93,3 +93,25 @@ export const createSearchController = (
     },
   };
 };
+
+/**
+ * Mount/unmount lifecycle for an effect: every mount builds a fresh
+ * controller, every unmount disposes it for good. Safe under React
+ * StrictMode's simulated unmount and remount.
+ */
+export const createControllerLifecycle = <C extends { dispose(): void }>(
+  factory: () => C,
+) => {
+  let current: C | undefined;
+  return {
+    mount(): C {
+      current?.dispose();
+      current = factory();
+      return current;
+    },
+    unmount() {
+      current?.dispose();
+      current = undefined;
+    },
+  };
+};
