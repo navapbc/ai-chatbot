@@ -38,6 +38,7 @@ import {
 } from '@/lib/relay/run-input';
 import { getParticipantSource } from '@/lib/data/participant-source';
 import { isGuestEmail } from '@/lib/relay/route-guard';
+import { originRefusal } from '@/lib/relay/request-origin';
 import { toRelayWsUrl } from '@/lib/relay/url';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -247,6 +248,16 @@ export async function POST(request: Request) {
   let heal: { claim: string; token: string } | undefined;
   try {
     const existing = await store.get(userId, chatId);
+    // A relay turn (a first turn carrying `relay`, or any turn on a stored
+    // relay run) must come from the extension when RELAY_EXTENSION_ORIGIN is
+    // set. Checked before any claim, store write or Eve call. Web chats and
+    // web follow-ups are not touched.
+    const isRelayTurn = existing
+      ? existing.relayOrigin !== null
+      : body.relay !== undefined;
+    if (isRelayTurn && originRefusal(request, { requireOrigin: true })) {
+      return new ChatSDKError('forbidden:chat').toResponse();
+    }
     // A web chat never becomes a relay run: a relay field on its follow-up is
     // refused rather than ignored. On a relay run's follow-up it is ignored
     // (the stored origin governs).

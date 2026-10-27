@@ -7,10 +7,10 @@ const noStore = (response: Response): Response => {
 };
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ recordId: string }> },
 ) {
-  const guard = await guardRelayRoute();
+  const guard = await guardRelayRoute(request);
   if (!guard.ok) return noStore(guard.response);
 
   const { recordId } = await params;

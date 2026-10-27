@@ -40,7 +40,7 @@ const internalError = () =>
 export async function POST(request: Request) {
   if (process.env.RELAY_TOKEN_ENDPOINT_ENABLED !== '1') return notFound();
 
-  const guard = await guardRelayRoute();
+  const guard = await guardRelayRoute(request, { requireOrigin: true });
   if (!guard.ok) return noStore(guard.response);
   const { userId } = guard;
 

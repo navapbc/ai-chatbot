@@ -473,6 +473,98 @@ describe('POST /api/eve-chat relay runs', () => {
     setParticipantSourceForTests(undefined);
   });
 
+  describe('extension origin', () => {
+    const EXT = `chrome-extension://${'a'.repeat(32)}`;
+    const withOrigin = (body: unknown, origin?: string) =>
+      POST(
+        new Request('http://localhost/api/eve-chat', {
+          method: 'POST',
+          headers: origin === undefined ? {} : { Origin: origin },
+          body: JSON.stringify(body),
+        }),
+      );
+    const webBody = (id: string) => ({
+      id,
+      message: { role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+    });
+    const expectUntouched = async () => {
+      expect(eve.createEveSession).not.toHaveBeenCalled();
+      expect(eve.continueEveSession).not.toHaveBeenCalled();
+      expect(eve.openEveStream).not.toHaveBeenCalled();
+    };
+
+    beforeEach(() => {
+      vi.stubEnv('RELAY_EXTENSION_ORIGIN', EXT);
+    });
+
+    it.each([undefined, 'https://evil.example'])(
+      'refuses a relay first turn with Origin %j before the store or Eve',
+      async (origin) => {
+        const res = await withOrigin(
+          { id: RELAY_CHAT, relay: start() },
+          origin,
+        );
+        expect(res.status).toBe(403);
+        expect(await store.get(USER, RELAY_CHAT)).toBeUndefined();
+        await expectUntouched();
+      },
+    );
+
+    it.each([undefined, 'https://evil.example'])(
+      'refuses a relay follow-up with Origin %j before any claim or Eve call',
+      async (origin) => {
+        await store.create(USER, RELAY_CHAT, {
+          eveSessionId: 'sess-1',
+          continuationToken: 'tok-0',
+          relayOrigin: ORIGIN,
+        });
+        const res = await withOrigin(webBody(RELAY_CHAT), origin);
+        expect(res.status).toBe(403);
+        expect((await store.get(USER, RELAY_CHAT))?.continuationToken).toBe(
+          'tok-0',
+        );
+        await expectUntouched();
+      },
+    );
+
+    it('serves a relay first turn from the exact origin', async () => {
+      streamEvents({ type: 'turn.started' });
+      const res = await withOrigin({ id: RELAY_CHAT, relay: start() }, EXT);
+      expect(res.status).toBe(200);
+      await drain(res);
+      expect(eve.createEveSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves web chats alone, with any Origin or none', async () => {
+      streamEvents({ type: 'turn.started' });
+      await drain(
+        await withOrigin(webBody('web-1'), 'https://app.example.gov'),
+      );
+      expect(eve.createEveSession).toHaveBeenCalledTimes(1);
+
+      eve.continueEveSession.mockResolvedValue({
+        continuationToken: 'tok-1',
+        sessionId: 'sess-1',
+      });
+      streamEvents({ type: 'turn.started' });
+      const res = await withOrigin(webBody('web-1'));
+      expect(res.status).toBe(200);
+      await drain(res);
+      expect(eve.continueEveSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('checks nothing with the env unset', async () => {
+      vi.stubEnv('RELAY_EXTENSION_ORIGIN', undefined);
+      streamEvents({ type: 'turn.started' });
+      const res = await withOrigin(
+        { id: RELAY_CHAT, relay: start() },
+        'https://evil.example',
+      );
+      expect(res.status).toBe(200);
+      await drain(res);
+    });
+  });
+
   it('creates the run with the origin and sends the run reference to Eve', async () => {
     streamEvents({ type: 'turn.started' });
     const res = await startRun(start());

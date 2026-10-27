@@ -83,7 +83,7 @@ const mapLimited = async <T, R>(
 };
 
 export async function POST(request: Request) {
-  const guard = await guardRelayRoute();
+  const guard = await guardRelayRoute(request, { requireOrigin: true });
   if (!guard.ok) return noStore(guard.response);
 
   let body: unknown;
