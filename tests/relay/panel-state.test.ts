@@ -59,4 +59,29 @@ describe('panel reducer', () => {
     expect(s.screen).toBe('home');
     expect(s.config).toEqual(config);
   });
+
+  it('chooseTarget stores the target and moves to participant', () => {
+    const home = reducer(initialState, { type: 'probeSucceeded', config });
+    const target = {
+      tabId: 7,
+      origin: 'https://example.gov',
+      siteName: 'Example',
+    };
+    const s = reducer(home, { type: 'chooseTarget', target });
+    expect(s.screen).toBe('participant');
+    expect(s.target).toEqual(target);
+    expect(s.config).toEqual(config);
+  });
+
+  it('clearTarget drops the target and goes home', () => {
+    const home = reducer(initialState, { type: 'probeSucceeded', config });
+    const chosen = reducer(home, {
+      type: 'chooseTarget',
+      target: { tabId: 7, origin: 'https://example.gov', siteName: 'E' },
+    });
+    const s = reducer(chosen, { type: 'clearTarget' });
+    expect(s.screen).toBe('home');
+    expect(s.target).toBeUndefined();
+    expect(s.config).toEqual(config);
+  });
 });

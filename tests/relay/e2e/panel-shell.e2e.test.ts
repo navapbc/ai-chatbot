@@ -39,7 +39,13 @@ beforeAll(async () => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify({
-          sites: [],
+          sites: [
+            {
+              id: 'example',
+              name: 'Example Benefits',
+              url: 'https://example.gov/apply',
+            },
+          ],
           models: [{ id: 'claude-opus-5' }],
           defaultModel: 'claude-opus-5',
         }),
@@ -112,8 +118,29 @@ describe('the panel shell', () => {
     expect(expected).not.toBe('rgba(0, 0, 0, 0)');
     expect(actual).toBe(expected);
 
+    await page.evaluate(() =>
+      chrome.storage.local.set({
+        recentRuns: [
+          {
+            runId: '00000000-0000-4000-8000-000000000001',
+            siteName: 'Seeded Site',
+            startedAt: Date.now() - 5 * 60_000,
+          },
+          {
+            runId: '00000000-0000-4000-8000-000000000002',
+            siteName: 'Planted Site',
+            startedAt: Date.now() - 60_000,
+            participant: 'Jane Doe',
+          },
+        ],
+      }),
+    );
     await retry.click();
     await page.getByRole('heading', { name: 'Home' }).waitFor();
+    await page.getByRole('button', { name: 'Example Benefits' }).waitFor();
+    await page.getByRole('button', { name: 'Use this tab' }).waitFor();
+    await page.getByText('Seeded Site, 5 minutes ago').waitFor();
+    expect(await page.getByText('Planted Site').count()).toBe(0);
     expect(configCalls).toBe(2);
 
     // No console or CSP error beyond that 401.

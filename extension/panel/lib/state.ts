@@ -17,9 +17,12 @@ export type Screen =
   | 'signedOut'
   | 'error';
 
+export type Target = { tabId: number; origin: string; siteName: string };
+
 export type State = {
   screen: Screen;
   config?: RelayConfig;
+  target?: Target;
   error?: ErrorMessage;
 };
 
@@ -28,7 +31,9 @@ export type Action =
   | { type: 'probeFailed'; error: unknown }
   | { type: 'retry' }
   | { type: 'goto'; screen: Screen }
-  | { type: 'goHome' };
+  | { type: 'goHome' }
+  | { type: 'chooseTarget'; target: Target }
+  | { type: 'clearTarget' };
 
 export const initialState: State = { screen: 'loading' };
 
@@ -48,5 +53,12 @@ export const reducer = (state: State, action: Action): State => {
   if (action.type === 'retry') return { screen: 'loading' };
   if (action.type === 'goto') return { ...state, screen: action.screen };
   if (action.type === 'goHome') return { ...state, screen: 'home' };
+  if (action.type === 'chooseTarget') {
+    return { ...state, target: action.target, screen: 'participant' };
+  }
+  if (action.type === 'clearTarget') {
+    const { target: _target, ...rest } = state;
+    return { ...rest, screen: 'home' };
+  }
   return state;
 };

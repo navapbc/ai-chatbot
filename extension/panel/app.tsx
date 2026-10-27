@@ -2,13 +2,13 @@ import { useEffect, useReducer } from 'react';
 import { APP_ORIGIN } from '../src/config';
 import { createAppApi } from '../src/app-api';
 import { NotConnectedError } from './lib/copy';
-import { initialState, reducer, type Screen } from './lib/state';
+import { initialState, reducer, type Screen, type Target } from './lib/state';
 import { ErrorScreen } from './screens/error';
+import { HomeScreen } from './screens/home';
 import { Placeholder } from './screens/placeholder';
 import { SignedOutScreen } from './screens/signed-out';
 
 const STUB_NAMES: Partial<Record<Screen, string>> = {
-  home: 'Home',
   participant: 'Participant',
   details: 'Details',
   ready: 'Ready',
@@ -45,7 +45,9 @@ export const App = () => {
   }, [state.screen]);
 
   const handleRetry = () => dispatch({ type: 'retry' });
-  const handleHome = () => dispatch({ type: 'goHome' });
+  const handleHome = () => dispatch({ type: 'clearTarget' });
+  const handleChoose = (target: Target) =>
+    dispatch({ type: 'chooseTarget', target });
   const handleOpenApp = () => {
     chrome.tabs.create({ url: APP_ORIGIN });
   };
@@ -63,6 +65,9 @@ export const App = () => {
       ) : null}
       {state.screen === 'error' && state.error ? (
         <ErrorScreen error={state.error} onRetry={handleRetry} />
+      ) : null}
+      {state.screen === 'home' ? (
+        <HomeScreen sites={state.config?.sites ?? []} onChoose={handleChoose} />
       ) : null}
       {STUB_NAMES[state.screen] ? (
         <Placeholder
