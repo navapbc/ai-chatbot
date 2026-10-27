@@ -2,13 +2,20 @@ import { describe, expect, it } from 'vitest';
 import { redactToolInput } from '@/lib/relay/tool-input';
 
 const H = '[hidden]';
-const b = (argv: unknown, key = 'argv') => redactToolInput('browser', { [key]: argv });
+const b = (argv: unknown, key = 'argv') =>
+  redactToolInput('browser', { [key]: argv });
 
 describe('redactToolInput', () => {
   it('hides the value of fill, type and select', () => {
-    expect(b(['fill', '@e3', '123-45-6789'])).toStrictEqual({ argv: ['fill', '@e3', H] });
-    expect(b(['type', '@e2', 'abc'])).toStrictEqual({ argv: ['type', '@e2', H] });
-    expect(b(['select', '@e4', 'Yes'])).toStrictEqual({ argv: ['select', '@e4', H] });
+    expect(b(['fill', '@e3', '123-45-6789'])).toStrictEqual({
+      argv: ['fill', '@e3', H],
+    });
+    expect(b(['type', '@e2', 'abc'])).toStrictEqual({
+      argv: ['type', '@e2', H],
+    });
+    expect(b(['select', '@e4', 'Yes'])).toStrictEqual({
+      argv: ['select', '@e4', H],
+    });
   });
 
   it('uses the real tool key, command, and keeps it', () => {
@@ -72,8 +79,30 @@ describe('redactToolInput', () => {
   });
 
   it('is safe against polluted input', () => {
-    const evil = JSON.parse('{"__proto__":{"polluted":1},"argv":["fill","@e1","v"]}');
-    expect(redactToolInput('browser', evil)).toStrictEqual({ argv: ['fill', '@e1', H] });
+    const evil = JSON.parse(
+      '{"__proto__":{"polluted":1},"argv":["fill","@e1","v"]}',
+    );
+    expect(redactToolInput('browser', evil)).toStrictEqual({
+      argv: ['fill', '@e1', H],
+    });
     expect(({} as any).polluted).toBeUndefined();
+  });
+
+  it('hides a combined or odd element 0', () => {
+    const out = b(['fill @e3 123-45-6789']);
+    expect(out).toStrictEqual({ argv: [H] });
+    expect(JSON.stringify(out)).not.toContain('123-45-6789');
+    expect(b(['  fill', '@e1', 'x'])).toStrictEqual({ argv: [H, '@e1', H] });
+  });
+
+  it('treats a string command as {}', () => {
+    expect(
+      redactToolInput('browser', { command: 'fill @e3 123-45-6789' }),
+    ).toStrictEqual({});
+  });
+
+  it('keeps an upper-case verb and hides a non-exact ref', () => {
+    expect(b(['FILL', '@e3', 'x'])).toStrictEqual({ argv: ['FILL', '@e3', H] });
+    expect(b(['fill', '@e3 123-45-6789'])).toStrictEqual({ argv: ['fill', H] });
   });
 });

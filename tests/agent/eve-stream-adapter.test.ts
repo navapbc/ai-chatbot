@@ -566,11 +566,41 @@ describe('tool input redaction on relay runs', () => {
       { textId: null, generateId: gen, structuredInput: true },
     );
     expect(chunks[0].input).toStrictEqual({});
+    expect(JSON.stringify(chunks)).not.toContain('SSN');
+  });
+
+  it('hides a combined verb string in the stream', () => {
+    const { writer, chunks } = collect();
+    translateEveEvent(
+      {
+        type: 'actions.requested',
+        data: {
+          actions: [
+            {
+              kind: 'tool-call',
+              callId: 'c',
+              toolName: 'browser',
+              input: { command: ['fill @e3 123-45-6789'] },
+            },
+          ],
+        },
+      },
+      writer,
+      { textId: null, generateId: gen, structuredInput: true },
+    );
+    expect(JSON.stringify(chunks)).not.toContain('123-45-6789');
   });
 
   it('passes the input through unchanged without structuredInput', () => {
     const { writer, chunks } = collect();
     translateEveEvent(fill, writer, { textId: null, generateId: gen });
-    expect(chunks[0].input).toStrictEqual({ command: ['fill', '@e3', '123-45-6789'] });
+    expect(chunks).toStrictEqual([
+      {
+        type: 'tool-input-available',
+        toolCallId: 'b1',
+        toolName: 'browser',
+        input: { command: ['fill', '@e3', '123-45-6789'] },
+      },
+    ]);
   });
 });

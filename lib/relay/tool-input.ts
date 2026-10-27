@@ -5,6 +5,7 @@
 
 const HIDDEN = '[hidden]';
 const REF = /^@e\d+$/;
+const VERB = /^[a-z][a-z0-9-]{0,30}$/i;
 
 function safeUrl(raw: string): string {
   try {
@@ -19,7 +20,7 @@ function safeUrl(raw: string): string {
 function redactArgv(argv: unknown[]): string[] {
   return argv.map((el, i) => {
     if (typeof el !== 'string') return HIDDEN;
-    if (i === 0) return el;
+    if (i === 0) return VERB.test(el) ? el : HIDDEN;
     if (i === 1) {
       if (REF.test(el)) return el;
       if (argv[0] === 'open') return safeUrl(el);
