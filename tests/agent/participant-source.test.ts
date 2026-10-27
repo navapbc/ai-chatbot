@@ -19,6 +19,23 @@ describe('static participant source', () => {
     expect(results.map((r) => r.recordId)).toContain('339619');
   });
 
+  it('finds a record by last name alone', async () => {
+    const results = await source.search('Thomas', 5);
+    expect(results.map((r) => r.recordId)).toContain('339619');
+  });
+
+  it('finds a record with a middle name when the query skips it', async () => {
+    const results = await source.search('celeste thomas', 5);
+    expect(results.map((r) => r.recordId)).toContain('339619');
+    expect(
+      (await source.search('celeste nava', 5)).map((r) => r.recordId),
+    ).toContain('339619');
+  });
+
+  it('does not match a mid-word fragment', async () => {
+    expect(await source.search('eleste', 5)).toEqual([]);
+  });
+
   it('returns nothing for an empty query', async () => {
     expect(await source.search('', 5)).toEqual([]);
     expect(await source.search('   ', 5)).toEqual([]);

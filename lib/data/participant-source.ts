@@ -31,6 +31,14 @@ export const buildSearchText = (p: Participant): string =>
 export const escapeLike = (q: string): string =>
   q.replace(/[\\%_]/g, (c) => `\\${c}`);
 
+const startsWord = (text: string, token: string): boolean =>
+  text.startsWith(token) || text.includes(` ${token}`);
+
+/** Whole query is a prefix, or every token starts some word of the text. */
+export const matchesQuery = (searchText: string, q: string): boolean =>
+  searchText.startsWith(q) ||
+  q.split(/\s+/).every((token) => startsWord(searchText, token));
+
 export const createStaticParticipantSource = (
   records: Participant[],
 ): ParticipantSource => ({
@@ -38,9 +46,7 @@ export const createStaticParticipantSource = (
     const q = query.trim().toLowerCase();
     if (!q) return [];
     return records
-      .filter(
-        (p) => buildSearchText(p).startsWith(q) || p.record_id.startsWith(q),
-      )
+      .filter((p) => matchesQuery(buildSearchText(p), q))
       .map(summarize)
       .sort((a, b) => a.name.localeCompare(b.name))
       .slice(0, clampLimit(limit));
@@ -59,7 +65,8 @@ export const createDbParticipantSource = (): ParticipantSource => ({
     if (!q) return [];
     const { searchParticipantRows } = await import('@/lib/db/queries');
     const rows = await searchParticipantRows({
-      pattern: escapeLike(q),
+      whole: escapeLike(q),
+      tokens: q.split(/\s+/).map(escapeLike),
       limit: clampLimit(limit),
     });
     return rows.map((row) => ({

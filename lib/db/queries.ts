@@ -900,22 +900,31 @@ export async function deleteEveRun({
   }
 }
 
-// Participant: prefix search over searchText (lowercase "first middle last
-// recordId") or recordId. The caller passes an already-escaped LIKE pattern
-// stem; escapeLike lives in lib/data/participant-source.ts.
+// Participant: word-start search over searchText (lowercase "first middle
+// last recordId"). A row matches when the whole query is a prefix of
+// searchText, or every token starts some word of it. The caller passes
+// LIKE-escaped values; escapeLike lives in lib/data/participant-source.ts.
 export async function searchParticipantRows({
-  pattern,
+  whole,
+  tokens,
   limit,
-}: { pattern: string; limit: number }): Promise<ParticipantRow[]> {
+}: {
+  whole: string;
+  tokens: string[];
+  limit: number;
+}): Promise<ParticipantRow[]> {
   try {
+    const everyToken = and(
+      ...tokens.map(
+        (t) =>
+          sql`(${participant.searchText} ILIKE ${`${t}%`} OR ${participant.searchText} ILIKE ${`% ${t}%`})`,
+      ),
+    );
     return await db
       .select()
       .from(participant)
       .where(
-        or(
-          sql`${participant.searchText} ILIKE ${`${pattern}%`}`,
-          sql`${participant.recordId} LIKE ${`${pattern}%`}`,
-        ),
+        or(sql`${participant.searchText} ILIKE ${`${whole}%`}`, everyToken),
       )
       .orderBy(asc(participant.displayName))
       .limit(limit);
