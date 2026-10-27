@@ -1,12 +1,15 @@
-import type { AppApi } from '../../src/app-api';
+import type { PendingInputRequest } from '../../../lib/ai/eve/input-requests';
+import type { RunProgress } from '../../../lib/relay/progress';
+import type { AppApi, RunPhase, RunState } from '../../src/app-api';
 import type { RunStatus } from '../../src/bridge';
+import { createActionLog } from './action-log';
 import type { Target } from './state';
 import type { WorkerApi } from './worker-api';
 
 // Watches a run the panel started (or rebuilt after reopening) until it ends.
 //
 // - Polls the worker's getRunStatus every 2 s and the server's run state every
-//   5 s; a poll is skipped while the previous one of its kind is in flight,
+//   3 s; a poll is skipped while the previous one of its kind is in flight,
 //   and a failed poll keeps the last state (errors never end a run).
 // - The server row says `ended`: the run ended (reason `stopped`).
 // - The worker holds no run, or another run (another window replaced it),
@@ -28,7 +31,7 @@ import type { WorkerApi } from './worker-api';
 // mount sends nothing for the disposed session.
 
 export const WORKER_POLL_MS = 2000;
-export const SERVER_POLL_MS = 5000;
+export const SERVER_POLL_MS = 3000;
 /**
  * A fresh run may read inactive briefly before the worker holds it. Covered by
  * WORKER_GONE_AFTER_MS, which is longer: no separate check is needed.
@@ -60,8 +63,18 @@ export type SessionRun = {
   expiresAtEstimated?: boolean;
 };
 
+const SERVER_PHASES = new Set(['working', 'needs_you', 'review']);
+
 export type RunSessionState = {
   status: 'running' | 'ended';
+  /** Latest progress the server holds, null until the first server poll. */
+  progress: RunProgress | null;
+  /** Open questions; always empty once the run ended. */
+  pending: PendingInputRequest[];
+  /** From the server; `ended` whenever the session itself ended. */
+  phase: RunPhase;
+  /** Session-local log of reported actions (untrusted text, never stored). */
+  actions: string[];
   endedReason?: EndedReason;
   pendingOrigin?: string;
   jevFailures?: number;
@@ -95,6 +108,9 @@ export type RunSession = {
   dispose(): void;
 };
 
+const isObject = (v: unknown): v is RunProgress =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
 const ignore = async (task: () => Promise<unknown>): Promise<boolean> => {
   try {
     await task();
@@ -125,6 +141,10 @@ export const createRunSession = (
   // Reading the server once more before ending the run as worker-ended.
   let confirming = false;
   let lastWorker: RunStatus | undefined;
+  let serverProgress: RunProgress | null = null;
+  let serverPending: PendingInputRequest[] = [];
+  let serverPhase: RunPhase = 'working';
+  const actionLog = createActionLog();
 
   let workerInFlight = false;
   let serverInFlight = false;
@@ -143,6 +163,10 @@ export const createRunSession = (
   const snapshot = (): RunSessionState => {
     const state: RunSessionState = {
       status: ended ? 'ended' : 'running',
+      progress: serverProgress,
+      pending: ended ? [] : serverPending,
+      phase: ended ? 'ended' : serverPhase,
+      actions: actionLog.entries(),
       secondsLeft: secondsLeft(),
       stopping: stopping && !ended,
     };
@@ -316,18 +340,38 @@ export const createRunSession = (
     onWorkerStatus(status);
   };
 
+  /** Keeps what a live server row says; a bad shape never throws. */
+  const takeRow = (row: RunState) => {
+    serverProgress = isObject(row.progress) ? row.progress : null;
+    serverPending = Array.isArray(row.pending) ? row.pending : [];
+    serverPhase =
+      typeof row.phase === 'string' && SERVER_PHASES.has(row.phase)
+        ? (row.phase as RunPhase)
+        : 'working';
+    const actions = serverProgress?.actions;
+    if (Array.isArray(actions)) actionLog.add(actions);
+  };
+
   const pollServer = async () => {
     if (serverInFlight || halted()) return;
     serverInFlight = true;
     let rowEnded = false;
+    let row: RunState | undefined;
     try {
-      rowEnded = (await deps.api.getRunState(runId)).ended === true;
+      row = await deps.api.getRunState(runId);
+      rowEnded = row.ended === true;
     } catch {
+      row = undefined;
       rowEnded = false;
     } finally {
       serverInFlight = false;
     }
-    if (done() || !rowEnded) return;
+    if (done()) return;
+    if (row && !rowEnded) {
+      takeRow(row);
+      emit();
+    }
+    if (!rowEnded) return;
     // The worker may still hold this run: release the tab's debugger. The
     // stop names this run, so another window's run is left alone.
     void ignore(() => deps.worker.stopRun(runId));

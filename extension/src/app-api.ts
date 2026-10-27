@@ -49,6 +49,8 @@ const codeForStatus = (status: number): AppApiErrorCode => {
   return 'server_error';
 };
 
+export type RunPhase = 'working' | 'needs_you' | 'review' | 'ended';
+
 export type RunState = {
   runId: string;
   origin: string;
@@ -56,6 +58,11 @@ export type RunState = {
   endedAt: string | null;
   progress: RunProgress | null;
   pending: PendingInputRequest[];
+  /**
+   * What the panel shows. A missing or unknown value is tolerated (an older
+   * server): the session reads it as `working`.
+   */
+  phase?: RunPhase | string;
 };
 
 export type ExtensionToken = {

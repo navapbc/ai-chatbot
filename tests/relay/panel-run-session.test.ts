@@ -163,22 +163,24 @@ afterEach(() => {
 });
 
 describe('run session: polling', () => {
-  it('polls the worker every 2 s and the server every 5 s', async () => {
+  it('polls the worker every 2 s and the server every 3 s', async () => {
     const t = setup();
     expect(WORKER_POLL_MS).toBe(2000);
-    expect(SERVER_POLL_MS).toBe(5000);
+    expect(SERVER_POLL_MS).toBe(3000);
     // Nothing runs synchronously at creation.
     expect(t.calls).toEqual([]);
     await tick(1999);
     expect(count(t.calls, 'status')).toBe(0);
     await tick(1);
     expect(count(t.calls, 'status')).toBe(1);
-    await tick(3000);
-    expect(count(t.calls, 'status')).toBe(2);
+    await tick(1000);
+    expect(count(t.calls, 'status')).toBe(1);
     expect(count(t.calls, 'row')).toBe(1);
+    await tick(1000);
+    expect(count(t.calls, 'status')).toBe(2);
     await tick(5000);
-    expect(count(t.calls, 'status')).toBe(5);
-    expect(count(t.calls, 'row')).toBe(2);
+    expect(count(t.calls, 'status')).toBe(4);
+    expect(count(t.calls, 'row')).toBe(3);
     expect(t.last()?.status).toBe('running');
     t.session.dispose();
   });
@@ -198,8 +200,9 @@ describe('run session: polling', () => {
     t.plan.row = async () => liveRow();
     await tick(2000);
     expect(count(t.calls, 'status')).toBe(2);
-    await tick(3000);
     expect(count(t.calls, 'row')).toBe(2);
+    await tick(3000);
+    expect(count(t.calls, 'row')).toBe(3);
     t.session.dispose();
   });
 
@@ -248,6 +251,10 @@ describe('run session: polling', () => {
     expect(seen).toEqual([
       {
         status: 'running',
+        progress: null,
+        pending: [],
+        phase: 'working',
+        actions: [],
         secondsLeft: 1800,
         stopping: false,
       },
@@ -274,6 +281,182 @@ describe('run session: polling', () => {
     t.plan.status = async () => ours();
     await tick(2000);
     expect(count(t.calls, 'registration')).toBe(1);
+    t.session.dispose();
+  });
+});
+
+describe('run session: progress, questions and phase', () => {
+  const progress = (actions?: string[]) => ({
+    sections: [{ name: 'Contact', status: 'filling' as const, filled: 1 }],
+    current: 'Contact',
+    ...(actions ? { actions } : {}),
+  });
+  const question = (id: string) =>
+    ({ id, prompt: 'Which county?' }) as unknown as RunState['pending'][number];
+
+  it('starts with no progress, no questions, working and an empty log', () => {
+    const t = setup();
+    expect(t.last()).toMatchObject({
+      progress: null,
+      pending: [],
+      phase: 'working',
+      actions: [],
+    });
+    t.session.dispose();
+  });
+
+  it('carries the latest progress and pending from the server poll', async () => {
+    const t = setup();
+    const p1 = progress();
+    t.plan.row = async () =>
+      liveRow({ progress: p1, pending: [question('q1')], phase: 'needs_you' });
+    await tick(3000);
+    expect(t.last()).toMatchObject({
+      progress: p1,
+      pending: [question('q1')],
+      phase: 'needs_you',
+    });
+    const p2 = { ...progress(), current: 'Income' };
+    t.plan.row = async () => liveRow({ progress: p2, phase: 'working' });
+    await tick(3000);
+    expect(t.last()).toMatchObject({
+      progress: p2,
+      pending: [],
+      phase: 'working',
+    });
+    t.session.dispose();
+  });
+
+  it.each(['working', 'needs_you', 'review'] as const)(
+    'maps the server phase %s',
+    async (phase) => {
+      const t = setup();
+      t.plan.row = async () => liveRow({ phase });
+      await tick(3000);
+      expect(t.last()?.phase).toBe(phase);
+      t.session.dispose();
+    },
+  );
+
+  it('maps an unknown, non-string or missing phase to working', async () => {
+    const t = setup();
+    t.plan.row = async () => liveRow({ phase: 'review' });
+    await tick(3000);
+    expect(t.last()?.phase).toBe('review');
+    for (const phase of ['bogus', 7, null, 'ended', undefined]) {
+      t.plan.row = async () => liveRow({ phase } as Partial<RunState>);
+      await tick(3000);
+      expect(t.last()?.phase).toBe('working');
+      t.plan.row = async () => liveRow({ phase: 'review' });
+      await tick(3000);
+      expect(t.last()?.phase).toBe('review');
+    }
+    t.session.dispose();
+  });
+
+  it('a failed server poll keeps the last progress and phase', async () => {
+    const t = setup();
+    t.plan.row = async () => liveRow({ progress: progress(), phase: 'review' });
+    await tick(3000);
+    t.plan.row = async () => {
+      throw new AppApiError('network', 0);
+    };
+    await tick(9000);
+    expect(t.last()).toMatchObject({ phase: 'review', status: 'running' });
+    expect(t.last()?.progress).not.toBeNull();
+    t.session.dispose();
+  });
+
+  it('server ended: phase ended and pending empty', async () => {
+    const t = setup();
+    t.plan.row = async () =>
+      liveRow({ pending: [question('q1')], phase: 'needs_you' });
+    await tick(3000);
+    expect(t.last()?.pending).toHaveLength(1);
+    t.plan.row = async () =>
+      liveRow({
+        ended: true,
+        endedAt: 'x',
+        pending: [question('q1')],
+        phase: 'ended',
+      });
+    await tick(3000);
+    expect(t.last()).toMatchObject({
+      status: 'ended',
+      phase: 'ended',
+      pending: [],
+    });
+    t.session.dispose();
+  });
+
+  it('worker-ended: phase ended and pending empty', async () => {
+    const t = setup();
+    t.plan.row = async () =>
+      liveRow({ pending: [question('q1')], phase: 'needs_you' });
+    await tick(3000);
+    t.plan.status = async () => inactive;
+    await tick(30_000);
+    expect(t.last()).toMatchObject({
+      status: 'ended',
+      endedReason: 'worker-ended',
+      phase: 'ended',
+      pending: [],
+    });
+    t.session.dispose();
+  });
+
+  it('user Stop: phase ended and pending empty', async () => {
+    const t = setup();
+    t.plan.row = async () =>
+      liveRow({ pending: [question('q1')], phase: 'needs_you' });
+    await tick(3000);
+    await t.session.stop();
+    expect(t.last()).toMatchObject({
+      status: 'ended',
+      endedReason: 'user',
+      phase: 'ended',
+      pending: [],
+    });
+    t.session.dispose();
+  });
+
+  it('feeds the action log from every poll without repeats', async () => {
+    const t = setup();
+    t.plan.row = async () =>
+      liveRow({ progress: progress(['a', 'b', 'c', 'd', 'e']) });
+    await tick(3000);
+    expect(t.last()?.actions).toEqual(['a', 'b', 'c', 'd', 'e']);
+    await tick(3000);
+    expect(t.last()?.actions).toEqual(['a', 'b', 'c', 'd', 'e']);
+    t.plan.row = async () =>
+      liveRow({ progress: progress(['b', 'c', 'd', 'e', 'f']) });
+    await tick(3000);
+    expect(t.last()?.actions).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+    // Progress without actions, or no progress, keeps the log.
+    t.plan.row = async () => liveRow({ progress: progress() });
+    await tick(3000);
+    t.plan.row = async () => liveRow({ progress: null });
+    await tick(3000);
+    expect(t.last()?.actions).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+    t.session.dispose();
+  });
+
+  it('progress that goes backwards or repeats does not throw', async () => {
+    const t = setup();
+    for (const actions of [['a', 'b'], ['a'], [], ['a', 'b'], ['b']]) {
+      t.plan.row = async () => liveRow({ progress: progress(actions) });
+      await tick(3000);
+      expect(t.last()?.status).toBe('running');
+    }
+    t.session.dispose();
+  });
+
+  it('keeps the log after the run ended', async () => {
+    const t = setup();
+    t.plan.row = async () => liveRow({ progress: progress(['a']) });
+    await tick(3000);
+    await t.session.stop();
+    expect(t.last()?.actions).toEqual(['a']);
     t.session.dispose();
   });
 });
@@ -504,6 +687,10 @@ describe('run session: stop', () => {
     expect(t.last()).toEqual({
       status: 'ended',
       endedReason: 'user',
+      progress: null,
+      pending: [],
+      phase: 'ended',
+      actions: [],
       secondsLeft: expect.any(Number),
       stopping: false,
     });
@@ -807,6 +994,10 @@ describe('run session: secondsLeft', () => {
 describe('run session: no applicant data', () => {
   const STATE_KEYS = new Set([
     'status',
+    'progress',
+    'pending',
+    'phase',
+    'actions',
     'endedReason',
     'pendingOrigin',
     'jevFailures',
@@ -827,7 +1018,7 @@ describe('run session: no applicant data', () => {
         token: 'tok-secret',
       }) as RunStatus;
     t.plan.row = async () =>
-      ({ ...liveRow(), pending: [{ prompt: 'Zelda Quill' }] }) as RunState;
+      ({ ...liveRow(), participant: 'Zelda Quill' }) as RunState;
     await tick(10_000);
     await t.session.stop();
     expect(t.states.length).toBeGreaterThan(3);
