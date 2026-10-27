@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
@@ -56,11 +57,15 @@ function buildPanel(out: string, metafile: string | undefined) {
   const panel = path.join(ROOT, 'extension/panel');
   const tokens = path.join(panel, 'tokens.css');
   const pending = `${tokens}.${process.pid}.tmp`;
-  writeFileSync(
-    pending,
-    extractTokens(readFileSync(path.join(ROOT, 'app/globals.css'), 'utf8')),
-  );
-  renameSync(pending, tokens);
+  try {
+    writeFileSync(
+      pending,
+      extractTokens(readFileSync(path.join(ROOT, 'app/globals.css'), 'utf8')),
+    );
+    renameSync(pending, tokens);
+  } finally {
+    rmSync(pending, { force: true });
+  }
   execFileSync(
     path.join(ROOT, 'node_modules/.bin/esbuild'),
     panelEsbuildArgs(ROOT, path.join(out, 'panel.js'), metafile),
