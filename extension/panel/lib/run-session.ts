@@ -13,8 +13,9 @@ import type { WorkerApi } from './worker-api';
 //   while the server row is live: the worker ended it by itself (left the
 //   origin, token expired, debugger canceled or detached, tab closed). Those
 //   reach only the hub, so the server stop route is called once here, or the
-//   Eve turn keeps running and agent tokens keep being minted. For the first
-//   5 s an inactive worker is not an end yet, unless the run was already seen.
+//   Eve turn keeps running and agent tokens keep being minted. Another runId
+//   ends it at once; no run must be answered on two polls in a row, and not
+//   within the first 5 s unless the run was already seen.
 // - The extension token is refreshed at 5 minutes left (P4c-e): a new token,
 //   a same-run-id worker startRun on the run's tab, registrationComplete(runId,
 //   0). A refusal shows a notice and is tried again at most once a minute.
@@ -27,6 +28,8 @@ import type { WorkerApi } from './worker-api';
 export const WORKER_POLL_MS = 2000;
 export const SERVER_POLL_MS = 5000;
 export const GRACE_MS = 5000;
+/** Consecutive inactive worker answers that end the run. */
+export const INACTIVE_POLLS_TO_END = 2;
 export const REFRESH_BEFORE_MS = 5 * 60_000;
 export const REFRESH_RETRY_MS = 60_000;
 /** A rebuilt run's expiry is unknown: assume this little is left. */
@@ -104,6 +107,11 @@ export const createRunSession = (
   let stopFailed = false;
   let stopPromise: Promise<void> | undefined;
   let seenActive = false;
+  // Consecutive answered polls with no worker run. One alone is not an end:
+  // the worker answers getRunStatus outside its startRun/resumeRun queue, so
+  // a same-run restart (another panel's refresh) or a cold start briefly
+  // reads as inactive. Failed and discarded polls neither count nor reset.
+  let inactiveStreak = 0;
   let lastWorker: RunStatus | undefined;
 
   let workerInFlight = false;
@@ -196,7 +204,9 @@ export const createRunSession = (
       });
       if (halted()) return;
       // The restarted run has no registered values (plan 4b): screenshots
-      // stay refused until this arrives.
+      // stay refused until this arrives. Count 0 holds while the panel
+      // registers no known values (plan 4c-1); once it does (plan 4c-2) it
+      // must send them again first and pass the real count.
       await deps.worker.registrationComplete(runId, 0);
       if (!Number.isFinite(token.expiresAt)) throw new Error('bad expiry');
       expiresAt = token.expiresAt;
@@ -227,7 +237,9 @@ export const createRunSession = (
     }
     if (!status.active) {
       lastWorker = status;
-      if (!seenActive && deps.now() - createdAt < GRACE_MS) {
+      inactiveStreak += 1;
+      const inGrace = !seenActive && deps.now() - createdAt < GRACE_MS;
+      if (inGrace || inactiveStreak < INACTIVE_POLLS_TO_END) {
         emit();
         return;
       }
@@ -235,8 +247,12 @@ export const createRunSession = (
       return;
     }
     seenActive = true;
+    inactiveStreak = 0;
     lastWorker = status;
     if (status.needsRegistration && !registering) {
+      // Count 0: this panel registers no known values (plan 4c-1). Once it
+      // does (addKnownValue, plan 4c-2), it must send them again and pass the
+      // real count here, or screenshots resume without their scrub.
       registering = true;
       void ignore(() => deps.worker.registrationComplete(runId, 0)).then(() => {
         registering = false;

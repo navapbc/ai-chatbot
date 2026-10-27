@@ -276,10 +276,15 @@ describe('run session: polling', () => {
 });
 
 describe('run session: worker-initiated end', () => {
-  it('worker inactive after the grace: one server stop, worker-ended, recents', async () => {
+  it('worker inactive on two polls in a row after the grace: one server stop, worker-ended, recents', async () => {
     const t = setup();
     await tick(2000);
     t.plan.status = async () => inactive;
+    await tick(2000);
+    // One inactive answer may be a gap (a same-run restart from another
+    // panel, a worker cold start): not an end yet.
+    expect(t.last()?.status).toBe('running');
+    expect(t.api.stopRun).not.toHaveBeenCalled();
     await tick(2000);
     expect(t.last()).toMatchObject({
       status: 'ended',
@@ -308,6 +313,7 @@ describe('run session: worker-initiated end', () => {
     await tick(GRACE_MS + 10_000);
     expect(t.last()?.status).toBe('ended');
     expect(t.api.stopRun).toHaveBeenCalledTimes(1);
+    expect(t.calls.filter((c) => c.startsWith('serverStop'))).toHaveLength(1);
     t.session.dispose();
   });
 
@@ -351,20 +357,35 @@ describe('run session: worker-initiated end', () => {
     t.session.dispose();
   });
 
-  it('grace: an active status for this run cancels it', async () => {
+  it('a single inactive answer between active ones never ends the run', async () => {
     const t = setup();
-    t.plan.status = async () => inactive;
-    await tick(2000);
+    const answers = [ours(), inactive, ours(), inactive, ours(), inactive];
+    t.plan.status = async () => answers.shift() ?? ours();
+    await tick(14_000);
+    expect(count(t.calls, 'status')).toBe(7);
     expect(t.last()?.status).toBe('running');
-    t.plan.status = async () => ours();
-    await tick(2000);
-    // Still inside the 5 s window, but the run was seen: inactive now ends it.
-    t.plan.status = async () => inactive;
-    await tick(1000);
+    expect(t.api.stopRun).not.toHaveBeenCalled();
+    t.session.dispose();
+  });
+
+  it('a failed poll neither counts toward nor resets the inactive streak', async () => {
+    const t = setup();
+    const answers: (RunStatus | Error)[] = [
+      ours(),
+      inactive,
+      new WorkerError('worker_unreachable'),
+      inactive,
+    ];
+    t.plan.status = async () => {
+      const next = answers.shift() ?? ours();
+      if (next instanceof Error) throw next;
+      return next;
+    };
+    await tick(6000);
     expect(t.last()?.status).toBe('running');
-    await tick(1000);
-    expect(Date.now() - NOW).toBe(6000);
+    await tick(2000);
     expect(t.last()?.status).toBe('ended');
+    expect(t.api.stopRun).toHaveBeenCalledTimes(1);
     t.session.dispose();
   });
 });
@@ -683,6 +704,67 @@ describe('run session: secondsLeft', () => {
     await tick(10_000);
     expect(t.last()?.secondsLeft).toBe(1790);
     t.session.dispose();
+  });
+});
+
+describe('run session: no applicant data', () => {
+  const STATE_KEYS = new Set([
+    'status',
+    'endedReason',
+    'pendingOrigin',
+    'jevFailures',
+    'refreshFailed',
+    'expiresAtEstimated',
+    'secondsLeft',
+    'stopping',
+    'stopFailed',
+  ]);
+
+  it('every emitted state holds only the fixed keys', async () => {
+    const t = setup({ expiresAt: NOW / 1000 + 60 });
+    t.plan.status = async () =>
+      ({
+        ...ours({ pendingOrigin: 'https://login.example.gov', jevFailures: 2 }),
+        // A worker answering extra fields: none of them may pass through.
+        participant: 'Zelda Quill',
+        token: 'tok-secret',
+      }) as RunStatus;
+    t.plan.row = async () =>
+      ({ ...liveRow(), pending: [{ prompt: 'Zelda Quill' }] }) as RunState;
+    await tick(10_000);
+    await t.session.stop();
+    expect(t.states.length).toBeGreaterThan(3);
+    for (const state of t.states) {
+      for (const key of Object.keys(state)) expect(STATE_KEYS).toContain(key);
+    }
+    expect(JSON.stringify(t.states)).not.toMatch(/Zelda|tok-/);
+    t.session.dispose();
+  });
+
+  it('rebuildRun returns only ids, the origin and the hostname', async () => {
+    const rebuilt = await rebuildRun({
+      api: {
+        getRunState: async () =>
+          ({ ...liveRow(), pending: [{ prompt: 'Zelda Quill' }] }) as RunState,
+      },
+      worker: {
+        getRunStatus: async () =>
+          ({ ...ours(), participant: 'Zelda Quill' }) as RunStatus,
+      },
+      now: () => NOW,
+    });
+    expect(Object.keys(rebuilt?.run ?? {}).sort()).toEqual([
+      'expiresAt',
+      'expiresAtEstimated',
+      'runId',
+      'tabId',
+    ]);
+    expect(Object.keys(rebuilt?.target ?? {}).sort()).toEqual([
+      'origin',
+      'siteName',
+      'tabId',
+    ]);
+    expect(JSON.stringify(rebuilt)).not.toContain('Zelda');
   });
 });
 
