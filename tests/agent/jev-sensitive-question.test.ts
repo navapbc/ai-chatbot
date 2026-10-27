@@ -75,6 +75,28 @@ describe('sensitiveFieldIsSensitive', () => {
     expect(sensitiveFieldIsSensitive(noulOutcome(NOUL_THRESHOLD))).toBe(true);
     expect(sensitiveFieldIsSensitive(noulOutcome(0.99))).toBe(true);
   });
+  it.each([
+    ['NaN', Number.NaN],
+    ['undefined', undefined],
+    ['a string', '0.9'],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ])('fails toward sensitive for a noul of %s', (_n, bad) => {
+    expect(sensitiveFieldIsSensitive(noulOutcome(bad as number))).toBe(true);
+  });
+  it('fails toward sensitive when answers are missing', () => {
+    expect(
+      sensitiveFieldIsSensitive({
+        ok: true,
+        answers: {},
+      } as unknown as Outcome),
+    ).toBe(true);
+    expect(
+      sensitiveFieldIsSensitive({
+        ok: true,
+        answers: undefined,
+      } as unknown as Outcome),
+    ).toBe(true);
+  });
   it('is false below the threshold', () => {
     expect(sensitiveFieldIsSensitive(noulOutcome(NOUL_THRESHOLD - 0.01))).toBe(
       false,

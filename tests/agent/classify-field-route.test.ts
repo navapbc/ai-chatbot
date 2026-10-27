@@ -105,6 +105,15 @@ describe('POST /api/relay/classify-field', () => {
     expect((await res.json()).sensitive).toEqual([true, true]);
   });
 
+  it('fails toward sensitive when the noul is not a number', async () => {
+    jev.askJev.mockResolvedValue({
+      ok: true,
+      answers: { sensitive: { noul: Number.NaN } },
+    });
+    const res = await call({ runId: RUN, fields: fieldsFor(1) });
+    expect((await res.json()).sensitive).toEqual([true]);
+  });
+
   it('fails toward sensitive when askJev throws', async () => {
     jev.askJev.mockRejectedValue(new Error('boom'));
     const res = await call({ runId: RUN, fields: fieldsFor(2) });

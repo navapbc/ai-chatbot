@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getRunStore } from '@/lib/ai/eve/run-store';
 import { secretMatches } from '@/lib/ai/eve/loopback-attributes';
+import { readBoundedText } from '@/lib/relay/read-bounded-body';
 import {
   internalSecret,
   internalSecretMisconfigured,
@@ -62,13 +63,9 @@ export async function POST(request: Request) {
   let runId: string;
   let sessionId: string;
   try {
-    const declared = Number(request.headers.get('content-length') ?? 0);
-    if (declared > MAX_BODY_BYTES) return failure(400, 'Invalid request.');
-    const text = await request.text();
-    if (Buffer.byteLength(text) > MAX_BODY_BYTES) {
-      return failure(400, 'Invalid request.');
-    }
-    ({ runId, sessionId } = bodySchema.parse(JSON.parse(text)));
+    const read = await readBoundedText(request, MAX_BODY_BYTES);
+    if (!read.ok) return failure(400, 'Invalid request.');
+    ({ runId, sessionId } = bodySchema.parse(JSON.parse(read.text)));
   } catch {
     return failure(400, 'Invalid request.');
   }

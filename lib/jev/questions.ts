@@ -142,7 +142,7 @@ export const fieldValueQuestions = (
 /** Where a noul counts as "high". A noul is a probability in [0,1]. */
 export const NOUL_THRESHOLD = 0.5;
 
-const DESCRIPTOR_KEYS = [
+export const DESCRIPTOR_KEYS = [
   'role',
   'inputType',
   'autocomplete',
@@ -203,5 +203,14 @@ export const sensitiveFieldIsSensitive = (
   outcome: JevOutcome<ReturnType<typeof sensitiveFieldQuestions>['questions']>,
 ): boolean => {
   if (!outcome.ok) return true;
-  return outcome.answers.sensitive.noul >= NOUL_THRESHOLD;
+  // Anything but a finite number below the threshold (NaN, a string, a missing
+  // answer) is "could not tell", which counts as sensitive.
+  const noul = (
+    outcome.answers as { sensitive?: { noul?: unknown } } | undefined
+  )?.sensitive?.noul;
+  return !(
+    typeof noul === 'number' &&
+    Number.isFinite(noul) &&
+    noul < NOUL_THRESHOLD
+  );
 };

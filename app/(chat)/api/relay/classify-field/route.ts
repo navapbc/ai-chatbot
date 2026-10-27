@@ -2,10 +2,12 @@ import { getRunStore } from '@/lib/ai/eve/run-store';
 import { ChatSDKError } from '@/lib/errors';
 import { askJev, isJevEnabled } from '@/lib/jev/client';
 import {
+  DESCRIPTOR_KEYS,
   describeFieldForJev,
   sensitiveFieldIsSensitive,
   sensitiveFieldQuestions,
 } from '@/lib/jev/questions';
+import { readBoundedText } from '@/lib/relay/read-bounded-body';
 import { guardRelayRoute } from '@/lib/relay/route-guard';
 import {
   type FieldDescriptor,
@@ -21,15 +23,6 @@ const MAX_BODY_BYTES = 64 * 1024;
 const MAX_FIELDS = 50;
 const MAX_CONCURRENCY = 8;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const DESCRIPTOR_KEYS = [
-  'role',
-  'inputType',
-  'autocomplete',
-  'name',
-  'label',
-  'placeholder',
-  'description',
-] as const satisfies readonly (keyof FieldDescriptor)[];
 
 const noStore = (response: Response): Response => {
   response.headers.set('Cache-Control', 'no-store');
@@ -95,11 +88,9 @@ export async function POST(request: Request) {
 
   let body: unknown;
   try {
-    const declared = Number(request.headers.get('content-length') ?? 0);
-    if (declared > MAX_BODY_BYTES) return badRequest();
-    const text = await request.text();
-    if (Buffer.byteLength(text) > MAX_BODY_BYTES) return badRequest();
-    body = JSON.parse(text);
+    const read = await readBoundedText(request, MAX_BODY_BYTES);
+    if (!read.ok) return badRequest();
+    body = JSON.parse(read.text);
   } catch {
     return badRequest();
   }
