@@ -43,7 +43,12 @@ export type Action =
       type: 'chooseParticipant';
       participant: Extract<Participant, { kind: 'record' }>;
     }
-  | { type: 'chooseDetails' };
+  | { type: 'chooseDetails' }
+  | {
+      type: 'submitDetails';
+      details: Record<string, string>;
+      save: boolean;
+    };
 
 export const initialState: State = { screen: 'loading' };
 
@@ -74,5 +79,12 @@ export const reducer = (state: State, action: Action): State => {
     return { ...state, participant: action.participant, screen: 'ready' };
   }
   if (action.type === 'chooseDetails') return { ...state, screen: 'details' };
+  if (action.type === 'submitDetails') {
+    return {
+      ...state,
+      participant: { kind: 'details', details: action.details },
+      screen: 'ready',
+    };
+  }
   return state;
 };

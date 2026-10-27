@@ -111,4 +111,17 @@ describe('panel reducer', () => {
     const s = reducer({ screen: 'participant' }, { type: 'chooseDetails' });
     expect(s.screen).toBe('details');
   });
+
+  it('submitDetails stores the details and goes to ready', () => {
+    const s = reducer(
+      { screen: 'details' },
+      { type: 'submitDetails', details: { city: 'Fresno' }, save: true },
+    );
+    expect(s.screen).toBe('ready');
+    expect(s.participant).toEqual({
+      kind: 'details',
+      details: { city: 'Fresno' },
+    });
+    expect(JSON.stringify(s)).not.toContain('save');
+  });
 });

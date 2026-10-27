@@ -190,4 +190,103 @@ describe('the panel shell', () => {
     await page.getByRole('heading', { name: 'Ready' }).waitFor();
     await page.close();
   }, 30_000);
+
+  it('saves details for 8 hours, reuses them, expires them and clears them', async () => {
+    const seen: string[] = [];
+    const watch = (page: import('playwright').Page) => {
+      page.on('console', (msg) => seen.push(msg.text()));
+      page.on('framenavigated', (frame) => seen.push(frame.url()));
+    };
+    const stubTab = (page: import('playwright').Page) =>
+      page.addInitScript(() => {
+        chrome.tabs.query = (async () => [
+          { id: 7, url: 'https://example.gov/apply' },
+        ]) as unknown as typeof chrome.tabs.query;
+      });
+    const toDetails = async (page: import('playwright').Page) => {
+      await page.goto(`chrome-extension://${EXTENSION_ID}/panel.html`);
+      await page.getByRole('button', { name: 'Use this tab' }).click();
+      await page.getByRole('button', { name: 'Enter details instead' }).click();
+      await page.getByRole('heading', { name: 'Enter details' }).waitFor();
+    };
+
+    const page = await browser.context.newPage();
+    watch(page);
+    await stubTab(page);
+    await toDetails(page);
+    expect(
+      await page.getByRole('button', { name: 'Reuse saved details' }).count(),
+    ).toBe(0);
+    expect(
+      await page.getByRole('button', { name: 'Continue' }).isDisabled(),
+    ).toBe(true);
+    await page.getByLabel('First name').fill('Zelda');
+    await page.getByLabel('City').fill('Fresno');
+    await page
+      .getByRole('checkbox', { name: 'Save these for 8 hours' })
+      .click();
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await page.getByRole('heading', { name: 'Ready' }).waitFor();
+    await page.close();
+
+    const again = await browser.context.newPage();
+    watch(again);
+    await stubTab(again);
+    await toDetails(again);
+    await again.getByRole('button', { name: 'Reuse saved details' }).click();
+    expect(await again.getByLabel('First name').inputValue()).toBe('Zelda');
+    expect(await again.getByLabel('City').inputValue()).toBe('Fresno');
+    await again.close();
+
+    const late = await browser.context.newPage();
+    watch(late);
+    await stubTab(late);
+    await late.addInitScript(() => {
+      const real = Date.now;
+      Date.now = () => real() + 9 * 3_600_000;
+    });
+    await toDetails(late);
+    expect(
+      await late.getByRole('button', { name: 'Reuse saved details' }).count(),
+    ).toBe(0);
+    expect(
+      await late.evaluate(
+        async () =>
+          (await chrome.storage.local.get('savedDetails')).savedDetails,
+      ),
+    ).toBeUndefined();
+    await late.close();
+
+    const clear = await browser.context.newPage();
+    watch(clear);
+    await stubTab(clear);
+    await toDetails(clear);
+    await clear.getByLabel('City').fill('Reno');
+    await clear
+      .getByRole('checkbox', { name: 'Save these for 8 hours' })
+      .click();
+    await clear.getByRole('button', { name: 'Continue' }).click();
+    await clear.getByRole('heading', { name: 'Ready' }).waitFor();
+    await clear.close();
+    const last = await browser.context.newPage();
+    watch(last);
+    await stubTab(last);
+    await toDetails(last);
+    await last.getByRole('button', { name: 'Clear saved details' }).click();
+    await last.getByText('Saved details cleared.').waitFor();
+    expect(
+      await last.getByRole('button', { name: 'Reuse saved details' }).count(),
+    ).toBe(0);
+    expect(
+      await last.evaluate(
+        async () =>
+          (await chrome.storage.local.get('savedDetails')).savedDetails,
+      ),
+    ).toBeUndefined();
+    await last.close();
+
+    for (const line of seen) {
+      expect(line).not.toMatch(/Zelda|Fresno|Reno/);
+    }
+  }, 60_000);
 });

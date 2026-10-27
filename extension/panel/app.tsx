@@ -3,6 +3,7 @@ import { APP_ORIGIN } from '../src/config';
 import { createAppApi } from '../src/app-api';
 import { NotConnectedError } from './lib/copy';
 import { initialState, reducer, type Screen, type Target } from './lib/state';
+import { DetailsScreen } from './screens/details';
 import { ErrorScreen } from './screens/error';
 import { HomeScreen } from './screens/home';
 import { ParticipantScreen } from './screens/participant';
@@ -10,7 +11,6 @@ import { Placeholder } from './screens/placeholder';
 import { SignedOutScreen } from './screens/signed-out';
 
 const STUB_NAMES: Partial<Record<Screen, string>> = {
-  details: 'Details',
   ready: 'Ready',
   starting: 'Starting',
   running: 'Running',
@@ -84,6 +84,14 @@ export const App = () => {
           onDetails={() => dispatch({ type: 'chooseDetails' })}
           onBack={handleHome}
           onSignedOut={handleRetry}
+        />
+      ) : null}
+      {state.screen === 'details' ? (
+        <DetailsScreen
+          onSubmit={(details, save) =>
+            dispatch({ type: 'submitDetails', details, save })
+          }
+          onBack={() => dispatch({ type: 'goto', screen: 'participant' })}
         />
       ) : null}
       {STUB_NAMES[state.screen] ? (
