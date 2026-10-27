@@ -6,7 +6,9 @@ import type {
   RunSessionState,
   SessionRun,
 } from '../lib/run-session';
+import { buildProgressView } from '../lib/progress-view';
 import { createControllerLifecycle } from '../lib/search-controller';
+import { ProgressView } from './progress-view';
 
 type Props = {
   siteName: string;
@@ -131,6 +133,15 @@ export const RunningScreen = ({
           ) : null}
         </div>
       ) : null}
+      {!ended ? (
+        <ProgressView
+          model={buildProgressView(
+            state?.progress ?? null,
+            state?.actions ?? [],
+          )}
+        />
+      ) : null}
+      {/* SLOT (tasks 4-6): pending questions and phase cards render here. */}
       {!ended ? (
         <Button
           type="button"

@@ -21,6 +21,7 @@
     --font-geist: var(--font-system);
     --font-inter: var(--font-system);
     --font-geist-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    --font-ibm-plex-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
   * {

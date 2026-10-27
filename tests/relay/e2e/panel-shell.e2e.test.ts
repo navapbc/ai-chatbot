@@ -49,6 +49,17 @@ const runs = new Map<string, { ended: boolean }>();
 /** GET /api/relay/runs/:id polls, kept apart from `appCalls`. */
 const pollCalls: string[] = [];
 
+/** Canned progress the fake app reports for every run. */
+const CANNED_PROGRESS = {
+  sections: [
+    { name: 'Applicant', status: 'done', filled: 4, total: 4 },
+    { name: '<b>Household</b>', status: 'filling', filled: 2, total: 6 },
+    { name: 'Income', status: 'waiting', filled: 0 },
+  ],
+  current: '<b>Household</b>',
+  actions: ['Typed the household size', 'Chose the county'],
+};
+
 const readBody = (req: import('node:http').IncomingMessage) =>
   new Promise<string>((resolve) => {
     let text = '';
@@ -132,7 +143,7 @@ beforeAll(async () => {
           origin: fixtures.origin,
           ended: row.ended,
           endedAt: row.ended ? new Date().toISOString() : null,
-          progress: null,
+          progress: CANNED_PROGRESS,
           pending: [],
         }),
       );
@@ -500,6 +511,20 @@ describe('the panel shell', () => {
       await expect
         .poll(() => elapsed.textContent(), { timeout: 5_000 })
         .not.toBe(first);
+      // Canned progress: bar, collapsed done section, open active section.
+      await page.getByText('6 fields so far').waitFor();
+      await page.getByText('Section 2 of 3').waitFor();
+      const sectionList = page.getByRole('list', { name: 'Form sections' });
+      await sectionList.getByText('Applicant').waitFor();
+      await sectionList.getByText('4 of 4').waitFor();
+      await sectionList.getByText('Typed the household size').waitFor();
+      await sectionList.getByText('Chose the county').waitFor();
+      // Markup in a section name renders as text, not as an element.
+      await sectionList.getByText('<b>Household</b>').waitFor();
+      expect(await sectionList.locator('b').count()).toBe(0);
+      expect(
+        await sectionList.locator('[aria-current="step"]').count(),
+      ).toBe(1);
       // No way off a live run except Stop.
       expect(
         await page.getByRole('button', { name: 'Back to Home' }).count(),
