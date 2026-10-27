@@ -27,6 +27,13 @@ export const EXTENSION_ID = readFileSync(
 /** Isolates this run's agent-browser daemons from any the user has running. */
 const NAMESPACE = `relay-e2e-${process.pid}-${randomBytes(3).toString('hex')}`;
 
+/**
+ * The namespace of this run's agent-browser daemons. A test that drives the
+ * CLI through the tool (which reads AGENT_BROWSER_NAMESPACE) sets that
+ * variable to this, so `closeAgentSessions` stops those daemons too.
+ */
+export const AGENT_NAMESPACE = NAMESPACE;
+
 const listen = (server: Server, port = 0) =>
   new Promise<number>((resolve, reject) => {
     server.once('error', reject);
@@ -45,6 +52,12 @@ export interface Fixtures {
   origin: string;
   /** https://127.0.0.1:<port>, cross-site, so its iframe is out of process. */
   frameOrigin: string;
+  /**
+   * https://localhost:<port>, same site as `origin` but another origin, so
+   * its iframe shares the tab's renderer (and CDP session). The same server
+   * also answers as https://127.0.0.1:<port>, same site as `frameOrigin`.
+   */
+  sameSiteOrigin: string;
   formUrl: string;
   /** Value of the HttpOnly cookie set by `/set-cookie`. */
   cookieSentinel: string;
@@ -86,7 +99,15 @@ export async function serveFixtures(): Promise<Fixtures> {
   const cookieSentinel = `cookie-${randomBytes(12).toString('hex')}`;
   const form = readFileSync(path.join(FIXTURES, 'form.html'), 'utf8');
   const oopif = readFileSync(path.join(FIXTURES, 'oopif.html'), 'utf8');
+  const sensitive = readFileSync(path.join(FIXTURES, 'sensitive.html'), 'utf8');
+  const oopifSensitive = readFileSync(
+    path.join(FIXTURES, 'oopif-sensitive.html'),
+    'utf8',
+  );
+  const fixture = (name: string) =>
+    readFileSync(path.join(FIXTURES, name), 'utf8');
   let frameOrigin = '';
+  let sameSiteOrigin = '';
 
   const sendHtml = (res: ServerResponse, body: string) =>
     res
@@ -97,6 +118,20 @@ export async function serveFixtures(): Promise<Fixtures> {
     const url = new URL(req.url ?? '/', 'https://localhost');
     if (url.pathname === '/form.html') {
       sendHtml(res, form.replaceAll('{{FRAME_ORIGIN}}', frameOrigin));
+    } else if (url.pathname === '/sensitive.html') {
+      sendHtml(res, sensitive.replaceAll('{{FRAME_ORIGIN}}', frameOrigin));
+    } else if (url.pathname === '/get-submit.html') {
+      sendHtml(res, fixture('get-submit.html'));
+    } else if (url.pathname === '/samesite.html') {
+      sendHtml(
+        res,
+        fixture('samesite.html').replaceAll(
+          '{{SAME_SITE_ORIGIN}}',
+          sameSiteOrigin,
+        ),
+      );
+    } else if (url.pathname === '/inner.html') {
+      sendHtml(res, fixture('inner.html'));
     } else if (url.pathname === '/set-cookie') {
       res
         .writeHead(200, {
@@ -125,29 +160,56 @@ export async function serveFixtures(): Promise<Fixtures> {
   });
   const frame = createHttpsServer(tls, (req, res) => {
     const url = new URL(req.url ?? '/', 'https://127.0.0.1');
+    if (url.pathname === '/oopif.html') {
+      sendHtml(res, oopif);
+    } else if (url.pathname === '/oopif-sensitive.html') {
+      sendHtml(res, oopifSensitive);
+    } else if (url.pathname === '/oopif-nested.html') {
+      // Nests a frame of the same site (127.0.0.1) but another origin, so it
+      // shares this out-of-process frame's session.
+      const nested = sameSiteOrigin.replace('localhost', '127.0.0.1');
+      sendHtml(
+        res,
+        `<!doctype html><html lang="en"><title>Nesting frame</title><iframe id="nested" title="nested" src="${nested}/samesite-frame.html"></iframe></html>`,
+      );
+    } else {
+      sendHtml(
+        res,
+        '<!doctype html><html lang="en"><title>Away</title><p>Away</p></html>',
+      );
+    }
+  });
+
+  const sameSite = createHttpsServer(tls, (req, res) => {
+    const url = new URL(req.url ?? '/', 'https://localhost');
     sendHtml(
       res,
-      url.pathname === '/oopif.html'
-        ? oopif
-        : '<!doctype html><html lang="en"><title>Away</title><p>Away</p></html>',
+      url.pathname === '/samesite-frame.html'
+        ? fixture('samesite-frame.html')
+        : '<!doctype html><html lang="en"><title>Elsewhere</title></html>',
     );
   });
 
   const mainPort = await listen(main as unknown as Server);
   const framePort = await listen(frame as unknown as Server);
+  const sameSitePort = await listen(sameSite as unknown as Server);
   frameOrigin = `https://127.0.0.1:${framePort}`;
+  sameSiteOrigin = `https://localhost:${sameSitePort}`;
   const origin = `https://localhost:${mainPort}`;
   return {
     origin,
     frameOrigin,
+    sameSiteOrigin,
     formUrl: `${origin}/form.html`,
     cookieSentinel,
     async stop() {
       main.closeAllConnections();
       frame.closeAllConnections();
+      sameSite.closeAllConnections();
       await Promise.all([
         closeServer(main as unknown as Server),
         closeServer(frame as unknown as Server),
+        closeServer(sameSite as unknown as Server),
       ]);
     },
   };

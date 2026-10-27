@@ -1,0 +1,958 @@
+[
+  {
+    "id": "pw-unlabeled",
+    "field": {
+      "inputType": "password"
+    },
+    "sensitive": true,
+    "why": "password type with no label at all"
+  },
+  {
+    "id": "pw-code",
+    "field": {
+      "inputType": "password",
+      "label": "Code"
+    },
+    "sensitive": true,
+    "why": "password type with an innocuous label"
+  },
+  {
+    "id": "pw-label",
+    "field": {
+      "inputType": "password",
+      "label": "Password"
+    },
+    "sensitive": true,
+    "why": "password label and type"
+  },
+  {
+    "id": "pw-text-label",
+    "field": {
+      "inputType": "text",
+      "label": "Password"
+    },
+    "sensitive": true,
+    "why": "password label on a text input"
+  },
+  {
+    "id": "passcode",
+    "field": {
+      "label": "Passcode"
+    },
+    "sensitive": true,
+    "why": "passcode"
+  },
+  {
+    "id": "ssn",
+    "field": {
+      "label": "SSN"
+    },
+    "sensitive": true,
+    "why": "social security number abbreviation"
+  },
+  {
+    "id": "ss-hash",
+    "field": {
+      "label": "SS#"
+    },
+    "sensitive": true,
+    "why": "SSN abbreviation with hash"
+  },
+  {
+    "id": "social-sec",
+    "field": {
+      "label": "Social Sec #"
+    },
+    "sensitive": true,
+    "why": "abbreviated social security label"
+  },
+  {
+    "id": "ssn-last4",
+    "field": {
+      "label": "SSN (last 4)"
+    },
+    "sensitive": true,
+    "why": "partial SSN is still sensitive"
+  },
+  {
+    "id": "ssn-name-attr",
+    "field": {
+      "label": "Number",
+      "name": "applicant_ssn"
+    },
+    "sensitive": true,
+    "why": "signal only in name attribute"
+  },
+  {
+    "id": "ssn-autocomplete",
+    "field": {
+      "label": "ID",
+      "autocomplete": "social-security-number"
+    },
+    "sensitive": true,
+    "why": "autocomplete token contains social"
+  },
+  {
+    "id": "itin",
+    "field": {
+      "label": "ITIN"
+    },
+    "sensitive": true,
+    "why": "individual taxpayer identification number"
+  },
+  {
+    "id": "tin",
+    "field": {
+      "label": "TIN"
+    },
+    "sensitive": true,
+    "why": "tax identification number"
+  },
+  {
+    "id": "tax-id",
+    "field": {
+      "label": "Tax ID"
+    },
+    "sensitive": true,
+    "why": "tax id"
+  },
+  {
+    "id": "routing",
+    "field": {
+      "label": "Routing #"
+    },
+    "sensitive": true,
+    "why": "bank routing number"
+  },
+  {
+    "id": "acct-no",
+    "field": {
+      "label": "Acct. no."
+    },
+    "sensitive": true,
+    "why": "abbreviated account number"
+  },
+  {
+    "id": "account-number",
+    "field": {
+      "label": "Bank account number"
+    },
+    "sensitive": true,
+    "why": "bank account number"
+  },
+  {
+    "id": "card-number",
+    "field": {
+      "label": "Credit card number"
+    },
+    "sensitive": true,
+    "why": "card number"
+  },
+  {
+    "id": "cvv",
+    "field": {
+      "label": "CVV"
+    },
+    "sensitive": true,
+    "why": "card security code"
+  },
+  {
+    "id": "cc-number-ac",
+    "field": {
+      "label": "Number",
+      "autocomplete": "cc-number"
+    },
+    "sensitive": true,
+    "why": "cc-number autocomplete"
+  },
+  {
+    "id": "cc-exp-ac",
+    "field": {
+      "label": "Expires",
+      "autocomplete": "cc-exp"
+    },
+    "sensitive": true,
+    "why": "cc-exp autocomplete"
+  },
+  {
+    "id": "otp",
+    "field": {
+      "label": "Verification code",
+      "autocomplete": "one-time-code"
+    },
+    "sensitive": true,
+    "why": "one-time code"
+  },
+  {
+    "id": "pin",
+    "field": {
+      "label": "PIN"
+    },
+    "sensitive": true,
+    "why": "PIN alone is sensitive"
+  },
+  {
+    "id": "pin-code-branch",
+    "field": {
+      "label": "Pin code of branch"
+    },
+    "sensitive": true,
+    "why": "pin token is sensitive; fails toward sensitive. Postal labels use zip or postal"
+  },
+  {
+    "id": "security-answer",
+    "field": {
+      "label": "Security answer"
+    },
+    "sensitive": true,
+    "why": "security question answer"
+  },
+  {
+    "id": "a-number",
+    "field": {
+      "label": "A-Number"
+    },
+    "sensitive": true,
+    "why": "immigration alien number"
+  },
+  {
+    "id": "dl",
+    "field": {
+      "label": "Driver license no."
+    },
+    "sensitive": true,
+    "why": "driver license number"
+  },
+  {
+    "id": "dl-apos",
+    "field": {
+      "label": "Driver's license number"
+    },
+    "sensitive": true,
+    "why": "driver license with apostrophe"
+  },
+  {
+    "id": "passport",
+    "field": {
+      "label": "Passport #"
+    },
+    "sensitive": true,
+    "why": "passport number"
+  },
+  {
+    "id": "calworks",
+    "field": {
+      "label": "CalWORKs ID"
+    },
+    "sensitive": true,
+    "why": "benefit id"
+  },
+  {
+    "id": "calworks-name",
+    "field": {
+      "label": "Identifier",
+      "name": "calworks_id"
+    },
+    "sensitive": true,
+    "why": "benefit id in name attribute"
+  },
+  {
+    "id": "case-number",
+    "field": {
+      "label": "Case number"
+    },
+    "sensitive": true,
+    "why": "benefit case number"
+  },
+  {
+    "id": "conflict-name-label",
+    "field": {
+      "label": "Notes",
+      "name": "ssn"
+    },
+    "sensitive": true,
+    "why": "conflicting signals fail toward sensitive"
+  },
+  {
+    "id": "social-worker",
+    "field": {
+      "label": "Social worker name"
+    },
+    "sensitive": false,
+    "why": "near miss: social worker"
+  },
+  {
+    "id": "account-holder",
+    "field": {
+      "label": "Account holder name"
+    },
+    "sensitive": false,
+    "why": "near miss: account holder"
+  },
+  {
+    "id": "card-on-file",
+    "field": {
+      "label": "Card on file: no"
+    },
+    "sensitive": false,
+    "why": "near miss: card on file"
+  },
+  {
+    "id": "contact-method",
+    "field": {
+      "label": "Preferred contact method"
+    },
+    "sensitive": false,
+    "why": "preferred contact is not sensitive"
+  },
+  {
+    "id": "street",
+    "field": {
+      "label": "Street address"
+    },
+    "sensitive": false,
+    "why": "address is not sensitive"
+  },
+  {
+    "id": "dob",
+    "field": {
+      "label": "Date of birth"
+    },
+    "sensitive": false,
+    "why": "date of birth is not sensitive"
+  },
+  {
+    "id": "phone",
+    "field": {
+      "label": "Phone"
+    },
+    "sensitive": false,
+    "why": "phone is not sensitive"
+  },
+  {
+    "id": "email",
+    "field": {
+      "label": "Email address",
+      "autocomplete": "email"
+    },
+    "sensitive": false,
+    "why": "email is not sensitive"
+  },
+  {
+    "id": "zip",
+    "field": {
+      "label": "ZIP / postal code"
+    },
+    "sensitive": false,
+    "why": "postal code is not sensitive"
+  },
+  {
+    "id": "first-name",
+    "field": {
+      "label": "First name",
+      "autocomplete": "given-name"
+    },
+    "sensitive": false,
+    "why": "name is not sensitive"
+  },
+  {
+    "id": "cc-name",
+    "field": {
+      "label": "Name on card",
+      "autocomplete": "cc-name"
+    },
+    "sensitive": false,
+    "why": "cc-name is not sensitive"
+  },
+  {
+    "id": "a-number-of",
+    "field": {
+      "label": "Enter a number of dependents"
+    },
+    "sensitive": false,
+    "why": "a number of is a count, not an A-Number"
+  },
+  {
+    "id": "household",
+    "field": {
+      "label": "Household size"
+    },
+    "sensitive": false,
+    "why": "ordinary field"
+  },
+  {
+    "id": "employer",
+    "field": {
+      "label": "Employer name"
+    },
+    "sensitive": false,
+    "why": "ordinary field"
+  },
+  {
+    "id": "income",
+    "field": {
+      "label": "Monthly income"
+    },
+    "sensitive": false,
+    "why": "ordinary field"
+  },
+  {
+    "id": "tinted",
+    "field": {
+      "label": "Tinted windows"
+    },
+    "sensitive": false,
+    "why": "tin only as a whole word"
+  },
+  {
+    "id": "empty",
+    "field": {},
+    "sensitive": false,
+    "why": "empty descriptor"
+  },
+  {
+    "id": "textbox-role",
+    "field": {
+      "role": "textbox",
+      "inputType": "text",
+      "label": "Comments",
+      "placeholder": "Anything else?"
+    },
+    "sensitive": false,
+    "why": "ordinary textarea"
+  },
+  {
+    "id": "ein",
+    "field": {
+      "label": "EIN"
+    },
+    "sensitive": true,
+    "why": "employer id number"
+  },
+  {
+    "id": "fein",
+    "field": {
+      "label": "FEIN"
+    },
+    "sensitive": true,
+    "why": "federal employer id"
+  },
+  {
+    "id": "employer-ident",
+    "field": {
+      "label": "Employer identification number"
+    },
+    "sensitive": true,
+    "why": "long form EIN"
+  },
+  {
+    "id": "federal-id",
+    "field": {
+      "label": "Federal tax ID"
+    },
+    "sensitive": true,
+    "why": "federal tax id"
+  },
+  {
+    "id": "iban",
+    "field": {
+      "label": "IBAN"
+    },
+    "sensitive": true,
+    "why": "bank account"
+  },
+  {
+    "id": "aba",
+    "field": {
+      "label": "ABA"
+    },
+    "sensitive": true,
+    "why": "routing"
+  },
+  {
+    "id": "uscis",
+    "field": {
+      "label": "USCIS number"
+    },
+    "sensitive": true,
+    "why": "immigration"
+  },
+  {
+    "id": "alien-reg",
+    "field": {
+      "label": "Alien registration"
+    },
+    "sensitive": true,
+    "why": "immigration"
+  },
+  {
+    "id": "state-id",
+    "field": {
+      "label": "State ID"
+    },
+    "sensitive": true,
+    "why": "state id"
+  },
+  {
+    "id": "state-ident-long",
+    "field": {
+      "label": "State identification number"
+    },
+    "sensitive": true,
+    "why": "state id long form"
+  },
+  {
+    "id": "dmv-id",
+    "field": {
+      "label": "DMV ID"
+    },
+    "sensitive": true,
+    "why": "state id"
+  },
+  {
+    "id": "licence-no",
+    "field": {
+      "label": "Licence no."
+    },
+    "sensitive": true,
+    "why": "license number"
+  },
+  {
+    "id": "dl-num",
+    "field": {
+      "label": "DL num"
+    },
+    "sensitive": true,
+    "why": "driver license"
+  },
+  {
+    "id": "secret-question",
+    "field": {
+      "label": "Secret question"
+    },
+    "sensitive": true,
+    "why": "security answer"
+  },
+  {
+    "id": "security-question",
+    "field": {
+      "label": "Security question"
+    },
+    "sensitive": true,
+    "why": "security answer"
+  },
+  {
+    "id": "maiden-name",
+    "field": {
+      "label": "Mother's maiden name"
+    },
+    "sensitive": true,
+    "why": "security answer"
+  },
+  {
+    "id": "mfa-code",
+    "field": {
+      "label": "MFA code"
+    },
+    "sensitive": true,
+    "why": "one-time code"
+  },
+  {
+    "id": "2fa-code",
+    "field": {
+      "label": "2FA code"
+    },
+    "sensitive": true,
+    "why": "one-time code"
+  },
+  {
+    "id": "auth-code",
+    "field": {
+      "label": "Authentication code"
+    },
+    "sensitive": true,
+    "why": "one-time code"
+  },
+  {
+    "id": "security-code",
+    "field": {
+      "label": "Security code"
+    },
+    "sensitive": true,
+    "why": "card code"
+  },
+  {
+    "id": "cc-num",
+    "field": {
+      "label": "CC num"
+    },
+    "sensitive": true,
+    "why": "card number"
+  },
+  {
+    "id": "credit-card-bare",
+    "field": {
+      "label": "Credit card"
+    },
+    "sensitive": true,
+    "why": "bare card label"
+  },
+  {
+    "id": "debit-card-bare",
+    "field": {
+      "label": "Debit card"
+    },
+    "sensitive": true,
+    "why": "bare card label"
+  },
+  {
+    "id": "passphrase",
+    "field": {
+      "label": "Passphrase"
+    },
+    "sensitive": true,
+    "why": "password"
+  },
+  {
+    "id": "pass-phrase",
+    "field": {
+      "label": "Pass phrase"
+    },
+    "sensitive": true,
+    "why": "password"
+  },
+  {
+    "id": "pwd",
+    "field": {
+      "label": "Confirm pwd"
+    },
+    "sensitive": true,
+    "why": "password"
+  },
+  {
+    "id": "passwd",
+    "field": {
+      "name": "passwd"
+    },
+    "sensitive": true,
+    "why": "password"
+  },
+  {
+    "id": "user-pass",
+    "field": {
+      "name": "user_pass"
+    },
+    "sensitive": true,
+    "why": "password in name"
+  },
+  {
+    "id": "bank-acct",
+    "field": {
+      "label": "Bank acct"
+    },
+    "sensitive": true,
+    "why": "bank account"
+  },
+  {
+    "id": "acct-num",
+    "field": {
+      "label": "Acct num"
+    },
+    "sensitive": true,
+    "why": "bank account"
+  },
+  {
+    "id": "client-id",
+    "field": {
+      "label": "Client ID"
+    },
+    "sensitive": true,
+    "why": "benefit id"
+  },
+  {
+    "id": "member-id",
+    "field": {
+      "label": "Member ID"
+    },
+    "sensitive": true,
+    "why": "benefit id"
+  },
+  {
+    "id": "medicare",
+    "field": {
+      "label": "Medicare number"
+    },
+    "sensitive": true,
+    "why": "benefit id"
+  },
+  {
+    "id": "soc-sec-no",
+    "field": {
+      "label": "Soc Sec No"
+    },
+    "sensitive": true,
+    "why": "abbreviated SSN"
+  },
+  {
+    "id": "dotted-ssn",
+    "field": {
+      "label": "S.S.N."
+    },
+    "sensitive": true,
+    "why": "dotted SSN"
+  },
+  {
+    "id": "ssn-placeholder",
+    "field": {
+      "label": "Tax number",
+      "placeholder": "123-45-6789"
+    },
+    "sensitive": true,
+    "why": "value-shaped placeholder"
+  },
+  {
+    "id": "ssn-masked-placeholder",
+    "field": {
+      "label": "Number",
+      "placeholder": "xxx-xx-xxxx"
+    },
+    "sensitive": true,
+    "why": "masked SSN placeholder"
+  },
+  {
+    "id": "card-expiry",
+    "field": {
+      "label": "Expiration date",
+      "name": "card_expiry"
+    },
+    "sensitive": true,
+    "why": "card expiry with card signal"
+  },
+  {
+    "id": "card-expiry-ac",
+    "field": {
+      "label": "Expires MM/YY",
+      "autocomplete": "cc-exp"
+    },
+    "sensitive": true,
+    "why": "card expiry via cc autocomplete"
+  },
+  {
+    "id": "card-expiry-label",
+    "field": {
+      "label": "Credit card expiry"
+    },
+    "sensitive": true,
+    "why": "card expiry label"
+  },
+  {
+    "id": "type-padded",
+    "field": {
+      "inputType": " Password "
+    },
+    "sensitive": true,
+    "why": "input type is trimmed and case-folded"
+  },
+  {
+    "id": "social-worker-2",
+    "field": {
+      "label": "Social worker"
+    },
+    "sensitive": false,
+    "why": "near miss"
+  },
+  {
+    "id": "lease-expiry",
+    "field": {
+      "label": "Expiration date",
+      "description": "Lease end"
+    },
+    "sensitive": false,
+    "why": "expiry of a non-card field"
+  },
+  {
+    "id": "household-count",
+    "field": {
+      "label": "Number of people in household"
+    },
+    "sensitive": false,
+    "why": "count, not an id"
+  },
+  {
+    "id": "card-on-file-2",
+    "field": {
+      "label": "Credit card on file"
+    },
+    "sensitive": false,
+    "why": "near miss: card on file"
+  },
+  {
+    "id": "phone-placeholder",
+    "field": {
+      "label": "Phone",
+      "placeholder": "555-123-4567"
+    },
+    "sensitive": false,
+    "why": "phone is not SSN-shaped"
+  },
+  {
+    "id": "application-number",
+    "field": {
+      "label": "Application number"
+    },
+    "sensitive": false,
+    "why": "ruling P4: not sensitive"
+  },
+  {
+    "id": "customer-id",
+    "field": {
+      "label": "Customer ID"
+    },
+    "sensitive": false,
+    "why": "ruling P4: not sensitive"
+  },
+  {
+    "id": "ssn-underscore-placeholder",
+    "field": {
+      "placeholder": "___-__-____"
+    },
+    "sensitive": true,
+    "why": "underscore-masked SSN placeholder"
+  },
+  {
+    "id": "ssn-bullet-placeholder",
+    "field": {
+      "placeholder": "\u2022\u2022\u2022-\u2022\u2022-\u2022\u2022\u2022\u2022"
+    },
+    "sensitive": true,
+    "why": "bullet-masked SSN placeholder"
+  },
+  {
+    "id": "date-underscore-placeholder",
+    "field": {
+      "placeholder": "__/__/____"
+    },
+    "sensitive": false,
+    "why": "date placeholder, not SSN-shaped"
+  },
+  {
+    "id": "phone-underscore-placeholder",
+    "field": {
+      "placeholder": "(___) ___-____"
+    },
+    "sensitive": false,
+    "why": "phone placeholder, not SSN-shaped"
+  },
+  {
+    "id": "compact-calworksid-sens",
+    "field": {
+      "name": "calworksid"
+    },
+    "sensitive": true,
+    "why": "compact (separator-free) key form"
+  },
+  {
+    "id": "compact-cwid-sens",
+    "field": {
+      "name": "cwid"
+    },
+    "sensitive": true,
+    "why": "compact (separator-free) key form"
+  },
+  {
+    "id": "compact-pincode-sens",
+    "field": {
+      "name": "pincode"
+    },
+    "sensitive": true,
+    "why": "compact (separator-free) key form"
+  },
+  {
+    "id": "compact-ebtcard-sens",
+    "field": {
+      "name": "ebtcard"
+    },
+    "sensitive": true,
+    "why": "compact (separator-free) key form"
+  },
+  {
+    "id": "compact-ebt-sens",
+    "field": {
+      "name": "ebt"
+    },
+    "sensitive": true,
+    "why": "compact (separator-free) key form"
+  },
+  {
+    "id": "compact-idnumber-sens",
+    "field": {
+      "name": "idnumber"
+    },
+    "sensitive": true,
+    "why": "compact (separator-free) key form"
+  },
+  {
+    "id": "compact-dlnumber-sens",
+    "field": {
+      "name": "dlnumber"
+    },
+    "sensitive": true,
+    "why": "compact (separator-free) key form"
+  },
+  {
+    "id": "compact-drivinglicense-sens",
+    "field": {
+      "name": "drivinglicense"
+    },
+    "sensitive": true,
+    "why": "compact (separator-free) key form"
+  },
+  {
+    "id": "compact-pinned-ok",
+    "field": {
+      "name": "pinned"
+    },
+    "sensitive": false,
+    "why": "near miss that must stay non-sensitive"
+  },
+  {
+    "id": "compact-socialworker-ok",
+    "field": {
+      "name": "socialworker"
+    },
+    "sensitive": false,
+    "why": "near miss that must stay non-sensitive"
+  },
+  {
+    "id": "compact-membership-ok",
+    "field": {
+      "name": "membership"
+    },
+    "sensitive": false,
+    "why": "near miss that must stay non-sensitive"
+  },
+  {
+    "id": "compact-accounttype-ok",
+    "field": {
+      "name": "accounttype"
+    },
+    "sensitive": false,
+    "why": "near miss that must stay non-sensitive"
+  },
+  {
+    "id": "compact-spousename-ok",
+    "field": {
+      "name": "spousename"
+    },
+    "sensitive": false,
+    "why": "near miss that must stay non-sensitive"
+  },
+  {
+    "id": "compact-zip-ok",
+    "field": {
+      "name": "zip"
+    },
+    "sensitive": false,
+    "why": "near miss that must stay non-sensitive"
+  }
+]

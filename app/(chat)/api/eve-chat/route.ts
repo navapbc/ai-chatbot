@@ -18,6 +18,11 @@ import { toVertexModelId } from '@/lib/ai/eve/model-map';
 import { type InputAnswer, validateAnswers } from '@/lib/ai/eve/input-requests';
 import { isProductionEnvironment } from '@/lib/constants';
 import { normalizeOrigin } from '@/lib/relay/policy';
+import {
+  MAX_RELAY_TEXT_CHARS,
+  mustRefuseRelayText,
+  stripSensitiveText,
+} from '@/lib/data/sensitive-record';
 import { buildExtensionRunMessage } from '@/lib/relay/run-prompt';
 import { toRelayWsUrl } from '@/lib/relay/url';
 
@@ -62,6 +67,23 @@ function isBodyTimeout(err: unknown): boolean {
     'UND_ERR_BODY_TIMEOUT'
   );
 }
+
+// The text of a relay turn, made safe to forward. Size first: the scanners
+// are linear but their input is attacker-controlled. Then strip, then refuse
+// what is still a sensitive label followed by a value (nothing is echoed).
+type RelayText =
+  | { ok: true; text: string }
+  | { ok: false; reason: 'message_too_large' | 'sensitive_value_in_message' };
+const relayText = (text: string): RelayText => {
+  if (text.length > MAX_RELAY_TEXT_CHARS) {
+    return { ok: false, reason: 'message_too_large' };
+  }
+  const stripped = stripSensitiveText(text);
+  if (mustRefuseRelayText(stripped)) {
+    return { ok: false, reason: 'sensitive_value_in_message' };
+  }
+  return { ok: true, text: stripped };
+};
 
 export async function POST(request: Request) {
   const session = await auth();
@@ -133,6 +155,12 @@ export async function POST(request: Request) {
     let answering = false;
     if (existing && existing.relayOrigin !== null) {
       structuredInput = true;
+      // A relay run never forwards a participant record's sensitive values,
+      // on any turn. Text without a record is returned unchanged.
+      const safe = relayText(text);
+      if (!safe.ok)
+        return new ChatSDKError('bad_request:api', safe.reason).toResponse();
+      input = safe.text;
       const pending = existing.pendingRequests;
       if (hasAnswers) {
         if (pending.length === 0) {
@@ -144,6 +172,46 @@ export async function POST(request: Request) {
         const result = validateAnswers(pending, body.inputResponses);
         if (!result.ok) {
           return new ChatSDKError('bad_request:api', result.error).toResponse();
+        }
+        // A free-text answer is caseworker prose like any other relay text:
+        // it gets the same size cap and sensitive-value guard, with the
+        // question's prompt in front so its label counts. Rejected before the
+        // token claim, and pending stays as it was.
+        let answerChars = 0;
+        for (const response of result.responses) {
+          if (response.text === undefined) continue;
+          answerChars += response.text.length;
+          const prompt =
+            pending.find((p) => p.requestId === response.requestId)?.prompt ??
+            '';
+          if (answerChars > MAX_RELAY_TEXT_CHARS) {
+            return new ChatSDKError(
+              'bad_request:api',
+              'message_too_large',
+            ).toResponse();
+          }
+          // Two views of the answer are checked, because the prompt prefix can
+          // change what the scanners see: with the prompt (so the question's
+          // label counts) and on its own (what Eve actually receives).
+          const withPrompt = relayText(`${prompt}: ${response.text}`);
+          const alone = relayText(response.text);
+          const checked = withPrompt.ok ? alone : withPrompt;
+          // The raw answer is what Eve receives, so it must equal what was
+          // checked: an answer that stripping would change (a pasted record
+          // with sensitive keys) is refused, never forwarded or rewritten.
+          const strippedAnswer = stripSensitiveText(response.text);
+          if (!checked.ok || strippedAnswer !== response.text) {
+            if (checked.ok) {
+              return new ChatSDKError(
+                'bad_request:api',
+                'sensitive_value_in_message',
+              ).toResponse();
+            }
+            return new ChatSDKError(
+              'bad_request:api',
+              checked.reason,
+            ).toResponse();
+          }
         }
         // Only the validated responses go to Eve: never the client's body,
         // and never a `message` sent alongside the answers.
@@ -313,9 +381,14 @@ export async function POST(request: Request) {
         // The relay run id is the chat id.
         relayRef = { url, runId: chatId };
       }
+      let safe: ReturnType<typeof relayText> = { ok: true, text };
+      if (relayRef) safe = relayText(text);
+      if (!safe.ok)
+        return new ChatSDKError('bad_request:api', safe.reason).toResponse();
       const created = relayRef
         ? await createEveSession(
-            buildExtensionRunMessage(text),
+            // Stripped BEFORE the marker is added, and before anything is sent.
+            buildExtensionRunMessage(safe.text),
             model,
             relayRef,
           )

@@ -4,6 +4,10 @@ import { redactText, redactionTargets } from '@/lib/kernel/redact';
 import { browserIdentity } from '@/lib/kernel/session-identity';
 import { cliSessionName } from '@/lib/kernel/session-store';
 import { fetchAgentToken } from '@/lib/relay/agent-token';
+import {
+  COMMAND_REFUSED,
+  relayCommandRefusal,
+} from '@/lib/relay/command-policy';
 import { LOOPBACK_HOSTS, toRelayWsUrl } from '@/lib/relay/url';
 
 // Drives the caseworker's own browser tab through the relay. This module
@@ -166,7 +170,7 @@ export const CONNECTION_RESTORED =
 const RETRY_SAFE: Readonly<Record<string, readonly string[] | null>> = {
   snapshot: null,
   screenshot: null,
-  get: ['url', 'title', 'text'],
+  get: ['url', 'title'],
   tab: ['list'],
 };
 
@@ -201,6 +205,11 @@ export async function runRelayCommand(
   ctx: ToolContext,
   command: readonly string[],
 ): Promise<RelayCommandResult> {
+  // First, before any credential, URL or token step: a refused command never
+  // mints a token or starts the CLI. The error does not echo the argv.
+  if (relayCommandRefusal(command)) {
+    return { success: false, error: COMMAND_REFUSED, liveViewUrl: null };
+  }
   const ref = relayRunRefFrom(ctx);
   if (!ref) {
     return {

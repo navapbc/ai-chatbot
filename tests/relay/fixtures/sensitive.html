@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Sensitive Form</title>
+<h1>Benefit Application</h1>
+<form id="f" onsubmit="return false">
+  <label for="code">Code</label> <input type="password" id="code" name="code"><br>
+  <label for="ssn">Social Security Number</label> <input id="ssn" name="ssn" value="900-00-1234"><br>
+  <label for="ssn2">SSN (re-enter)</label> <input id="ssn2" name="ssn2"><br>
+  <label for="spouse">Spouse SSN</label> <input id="spouse" name="spouse_ssn" placeholder="900-00-2468"><br>
+  <input id="acct" name="acct" aria-label="Bank account ending 900-55-0001" aria-description="On file 900-55-0002" value="900-55-0003"><br>
+  <label for="city">City</label> <input id="city" name="city" value="Springfield"><br>
+  <label for="middle">Middle name</label> <input id="middle" name="middle"><br>
+</form>
+<div id="summary" role="note" aria-description="Applicant reference 900-77-4321">Summary</div>
+<p id="confirm">You entered: <span id="echo">900-77-4321</span></p>
+<iframe id="xo" title="card frame" src="{{FRAME_ORIGIN}}/oopif-sensitive.html"></iframe>
+<script>
+  document.getElementById('code').value = 'Zq7-fake-pass';
+  document.getElementById('ssn2').value = '900-00-5678';
+</script>
+</html>

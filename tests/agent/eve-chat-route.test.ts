@@ -14,6 +14,9 @@ const eve = vi.hoisted(() => ({
 vi.mock('@/lib/ai/eve/eve-client', () => eve);
 
 import { POST } from '@/app/(chat)/api/eve-chat/route';
+import { PARTICIPANTS, buildApplicationPrompt } from '@/lib/data/participants';
+import { MAX_RELAY_TEXT_CHARS, WITHHELD } from '@/lib/data/sensitive-record';
+import { extractParticipantFromText } from '@/lib/jev/participant';
 import {
   buildExtensionRunMessage,
   EXTENSION_RUN_MARKER,
@@ -418,13 +421,13 @@ describe('POST /api/eve-chat relay runs', () => {
   const RELAY_CHAT = '3f2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b';
   const ORIGIN = 'https://apply.example.gov';
 
-  const relayTurn = (relay: unknown, id = RELAY_CHAT) =>
+  const relayTurn = (relay: unknown, id = RELAY_CHAT, text = 'hi') =>
     POST(
       new Request('http://localhost/api/eve-chat', {
         method: 'POST',
         body: JSON.stringify({
           id,
-          message: { role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+          message: { role: 'user', parts: [{ type: 'text', text }] },
           relay,
         }),
       }),
@@ -463,6 +466,78 @@ describe('POST /api/eve-chat relay runs', () => {
     const sent = eve.createEveSession.mock.calls[0][0] as string;
     expect(sent.startsWith(EXTENSION_RUN_MARKER)).toBe(true);
     expect(sent.endsWith('hi')).toBe(true);
+  });
+
+  describe('sensitive record values', () => {
+    const SECRET = PARTICIPANTS[0].participant.calworks_id;
+    const opening = () =>
+      buildApplicationPrompt({
+        participant: PARTICIPANTS[0],
+        target: 'a WIC application',
+      });
+
+    it('a relay first turn sends Eve a message whose record has no calworks_id value', async () => {
+      streamEvents({ type: 'turn.started' });
+      await drain(await relayTurn({ origin: ORIGIN }, RELAY_CHAT, opening()));
+      const sent = eve.createEveSession.mock.calls[0][0] as string;
+      expect(sent).not.toContain(SECRET);
+      expect(sent).toContain(WITHHELD);
+      expect(extractParticipantFromText(sent)?.participant.calworks_id).toBe(
+        WITHHELD,
+      );
+    });
+
+    it("the caseworker's own words around the record are unchanged", async () => {
+      streamEvents({ type: 'turn.started' });
+      const text = `Before words.\n${opening()}\nAfter words.`;
+      await drain(await relayTurn({ origin: ORIGIN }, RELAY_CHAT, text));
+      const sent = eve.createEveSession.mock.calls[0][0] as string;
+      expect(sent.startsWith(EXTENSION_RUN_MARKER)).toBe(true);
+      expect(sent).toContain('Before words.\nFill out a WIC application');
+      expect(sent.endsWith('\nAfter words.')).toBe(true);
+    });
+
+    it('a web chat first turn is unchanged', async () => {
+      streamEvents({ type: 'turn.started' });
+      await drain(await turn(opening(), 'web-record-chat'));
+      expect(eve.createEveSession).toHaveBeenCalledWith(opening(), undefined);
+    });
+
+    it('a relay follow-up without a record is not rewritten', async () => {
+      await store.create(USER, RELAY_CHAT, {
+        eveSessionId: 'sess-1',
+        continuationToken: 'tok-0',
+        relayOrigin: ORIGIN,
+      });
+      eve.continueEveSession.mockResolvedValue({
+        continuationToken: 'tok-1',
+        sessionId: 'sess-1',
+      });
+      streamEvents({ type: 'turn.started' });
+      await drain(
+        await relayTurn(undefined, RELAY_CHAT, 'use 123 Main St instead'),
+      );
+      expect(eve.continueEveSession.mock.calls[0][2]).toBe(
+        'use 123 Main St instead',
+      );
+    });
+
+    it('a record pasted into a relay follow-up is stripped too', async () => {
+      await store.create(USER, RELAY_CHAT, {
+        eveSessionId: 'sess-1',
+        continuationToken: 'tok-0',
+        relayOrigin: ORIGIN,
+      });
+      eve.continueEveSession.mockResolvedValue({
+        continuationToken: 'tok-1',
+        sessionId: 'sess-1',
+      });
+      streamEvents({ type: 'turn.started' });
+      await drain(await relayTurn(undefined, RELAY_CHAT, opening()));
+      const sent = eve.continueEveSession.mock.calls[0][2] as string;
+      expect(sent).not.toContain(SECRET);
+      expect(sent).toContain(WITHHELD);
+    });
   });
 
   it('does not add the marker to a follow-up turn', async () => {
@@ -877,6 +952,87 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
     });
   });
 
+  describe('free-text answers get the prose guard', () => {
+    const phoneReq = {
+      requestId: 'call-p',
+      prompt: 'Phone number?',
+      display: 'text' as const,
+      options: [],
+      allowFreeform: true,
+    };
+    const refRequest = {
+      requestId: 'call-r',
+      prompt: 'Reference',
+      display: 'text' as const,
+      options: [],
+      allowFreeform: true,
+    };
+
+    it.each([
+      ['an SSN-shaped answer', 'call-a', '123-45-6789'],
+      ['a label and value answer', 'call-r', 'case number 1234567890'],
+      [
+        'a pasted record that stripping would change',
+        'call-r',
+        '{"record_id":"R1","participant":{"name":{"first":"A","last":"B"},"calworks_id":"zz-900"}}',
+      ],
+    ])(
+      'refuses %s without touching Eve, the token or pending',
+      async (_n, requestId, text) => {
+        await seedRelay([nameReq, refRequest]);
+        const swap = vi.spyOn(store, 'swapToken');
+        const res = await answer([
+          { requestId: 'call-a', text: requestId === 'call-a' ? text : 'Ada' },
+          { requestId: 'call-r', text: requestId === 'call-r' ? text : 'x' },
+        ]);
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.cause).toBe('sensitive_value_in_message');
+        expect(JSON.stringify(body)).not.toContain(text);
+        expect(eve.continueEveSession).not.toHaveBeenCalled();
+        expect(swap).not.toHaveBeenCalled();
+        const row = await store.get(USER, RELAY_CHAT);
+        expect(row?.continuationToken).toBe('tok-0');
+        expect(row?.pendingRequests).toEqual([nameReq, refRequest]);
+      },
+    );
+
+    it('refuses answers whose total length is over the cap', async () => {
+      const many = Array.from({ length: 200 }, (_, i) => ({
+        ...nameReq,
+        requestId: `call-${i}`,
+      }));
+      await seedRelay(many);
+      const res = await answer(
+        many.map((m) => ({ requestId: m.requestId, text: 'a'.repeat(1900) })),
+      );
+      expect(res.status).toBe(400);
+      expect((await res.json()).cause).toBe('message_too_large');
+      expect(eve.continueEveSession).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['yes', 'Yes'],
+      ['a name', 'Ada Lovelace'],
+      ['a phone number', '555-123-4567'],
+      ['a ZIP+4', '94110-1234'],
+    ])('accepts %s', async (_n, text) => {
+      await seedRelay([phoneReq, colorReq]);
+      eve.continueEveSession.mockResolvedValue({
+        continuationToken: 'tok-1',
+        sessionId: 'sess-1',
+      });
+      streamEvents({ type: 'turn.started' }, waiting('tok-1'));
+      const res = await answer([
+        { requestId: 'call-p', text },
+        { requestId: 'call-b', optionId: 'red' },
+      ]);
+      expect(res.status).toBe(200);
+      await drain(res);
+      expect(eve.continueEveSession).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('keeps pending and rolls the token back when Eve rejects the forward', async () => {
     await seedRelay();
     eve.continueEveSession.mockRejectedValue(
@@ -1161,5 +1317,95 @@ describe('POST /api/eve-chat structured questions (relay runs)', () => {
       await drain(await turn('hi', 'web-chat'));
       expect(setProgress).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('POST /api/eve-chat relay message bounds', () => {
+  const RELAY_CHAT = '4a2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b';
+  const ORIGIN = 'https://apply.example.gov';
+  const relayTurn = (text: string) =>
+    POST(
+      new Request('http://localhost/api/eve-chat', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: RELAY_CHAT,
+          message: { role: 'user', parts: [{ type: 'text', text }] },
+          relay: { origin: ORIGIN },
+        }),
+      }),
+    );
+  const followUp = (text: string) =>
+    POST(
+      new Request('http://localhost/api/eve-chat', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: RELAY_CHAT,
+          message: { role: 'user', parts: [{ type: 'text', text }] },
+        }),
+      }),
+    );
+
+  beforeEach(() => {
+    vi.stubEnv('RELAY_RUNS_ENABLED', '1');
+    vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example.gov');
+    vi.stubEnv('EVE_INTERNAL_SECRET', 'internal-secret-for-tests');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('rejects an oversized first message before Eve or the store', async () => {
+    const res = await relayTurn('{'.repeat(MAX_RELAY_TEXT_CHARS + 1));
+    expect(res.status).toBe(400);
+    expect(eve.createEveSession).not.toHaveBeenCalled();
+    expect(await store.get(USER, RELAY_CHAT)).toBeUndefined();
+  });
+
+  it('rejects an oversized follow-up without touching the token', async () => {
+    await store.create(USER, RELAY_CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+      relayOrigin: ORIGIN,
+    });
+    const res = await followUp('x'.repeat(MAX_RELAY_TEXT_CHARS + 1));
+    expect(res.status).toBe(400);
+    expect(eve.continueEveSession).not.toHaveBeenCalled();
+    expect((await store.get(USER, RELAY_CHAT))?.continuationToken).toBe(
+      'tok-0',
+    );
+  });
+
+  it('refuses a first message with a sensitive value in prose', async () => {
+    const res = await relayTurn('CalWORKs ID: 12345 SSN 123-45-6789');
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).not.toContain('123-45-6789');
+    expect(eve.createEveSession).not.toHaveBeenCalled();
+    expect(await store.get(USER, RELAY_CHAT)).toBeUndefined();
+  });
+
+  it('refuses a follow-up with a sensitive value without touching the token', async () => {
+    await store.create(USER, RELAY_CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+      relayOrigin: ORIGIN,
+    });
+    const res = await followUp('my SSN is 123-45-6789');
+    expect(res.status).toBe(400);
+    expect(eve.continueEveSession).not.toHaveBeenCalled();
+    expect((await store.get(USER, RELAY_CHAT))?.continuationToken).toBe(
+      'tok-0',
+    );
+  });
+
+  it('accepts the normal opening message', async () => {
+    streamEvents({ type: 'turn.started' });
+    const res = await relayTurn(
+      buildApplicationPrompt({
+        participant: PARTICIPANTS[0],
+        target: 'a WIC application',
+      }),
+    );
+    expect(res.status).toBe(200);
+    await drain(res);
   });
 });

@@ -1,5 +1,15 @@
+import { execFileSync } from 'node:child_process';
 import type { ToolContext } from 'eve/tools';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { _resetAgentTokenCache } from '@/lib/relay/agent-token';
 import {
   relayCredentialState,
@@ -89,6 +99,26 @@ describe('relayCredentialState', () => {
         .kind,
     ).toBe('partial');
   });
+});
+
+// Tests below that reach the real CLI (against a relay that is not there) leave
+// an agent-browser daemon behind. A private namespace scopes `close --all` to
+// the daemons this file started.
+const NAMESPACE = `relay-unit-${process.pid}`;
+beforeAll(() => {
+  process.env.AGENT_BROWSER_NAMESPACE = NAMESPACE;
+});
+afterAll(() => {
+  try {
+    execFileSync('agent-browser', ['close', '--all'], {
+      env: process.env,
+      stdio: 'ignore',
+      timeout: 15_000,
+    });
+  } catch {
+    // No daemon to close.
+  }
+  Reflect.deleteProperty(process.env, 'AGENT_BROWSER_NAMESPACE');
 });
 
 const fetchMock = vi.fn();
@@ -448,15 +478,13 @@ describe('recovery after an extension restart', () => {
     expect(ran().map((c) => c.session)).toEqual([base, base]);
   });
 
-  it('treats a ref inside a batch step or a frame command as a ref command', async () => {
+  it('treats a ref in a frame command as a ref command', async () => {
     const { run, ctx, ran } = await load((command) =>
       command[0] === 'close' ? ok() : fail(CLOSED),
     );
-    expect(
-      (await run(ctx, ['batch', '--bail', 'fill @e2 Ada', 'press Tab'])).error,
-    ).toBe(RESTORED);
+    expect((await run(ctx, ['click', '@e2'])).error).toBe(RESTORED);
     expect((await run(ctx, ['frame', '@e7'])).error).toBe(RESTORED);
-    // The batch failed and rotated; the frame command never ran.
+    // The click failed and rotated; the frame command never ran.
     expect(ran()).toHaveLength(1);
   });
 
@@ -542,12 +570,10 @@ describe('recovery after an extension restart', () => {
   it.each([
     [['press', 'Enter']],
     [['open', 'https://benefits.example.gov/next']],
-    [['click', '#submit']],
-    [['eval', 'document.title']],
-    [['get', 'cdp-url']],
-    [['tab', 'new']],
-    [['unknown-command']],
-    [['snapshot', '-s', '@e3']],
+    [['click', '@e9']],
+    [['back']],
+    [['frame', 'main']],
+    [['hover', '@e3']],
   ])('does not run %j again after a lost connection', async (command) => {
     const { run, ctx, base, ran } = await load((argv) =>
       argv[0] === 'close' ? ok() : fail(CLOSED),
@@ -566,7 +592,7 @@ describe('recovery after an extension restart', () => {
     [['snapshot', '-i']],
     [['screenshot']],
     [['get', 'title']],
-    [['get', 'text', '#status']],
+    [['get', 'url']],
     [['tab']],
     [['tab', 'list']],
   ])('retries the read-only %j once', async (command) => {
@@ -634,5 +660,110 @@ describe('recovery after an extension restart', () => {
       const result = await run(ctx, command);
       expect(JSON.stringify(result)).not.toContain(FAKE_TOKEN);
     }
+  });
+});
+
+describe('command policy in extension runs', () => {
+  const REFUSED =
+    'This command is not available in extension runs. Verify values from the snapshot, which masks sensitive fields.';
+  const relayCtx = () =>
+    ctxWith(principal({ relayUrl: 'ws://127.0.0.1:9', relayRunId: RUN }));
+
+  const load = async () => {
+    vi.resetModules();
+    const runCommand = vi.fn(async () => ({
+      success: true,
+      data: 'ok',
+      error: null,
+    }));
+    vi.doMock('@/lib/kernel/cli', () => ({ runCommand }));
+    const fetchAgentToken = vi.fn(async () => ({
+      ok: true as const,
+      token: FAKE_TOKEN,
+    }));
+    vi.doMock('@/lib/relay/agent-token', () => ({ fetchAgentToken }));
+    const mod = await import('@/lib/relay/eve-relay-browser');
+    return { run: mod.runRelayCommand, runCommand, fetchAgentToken };
+  };
+  afterEach(() => {
+    vi.doUnmock('@/lib/kernel/cli');
+    vi.doUnmock('@/lib/relay/agent-token');
+  });
+
+  it.each([
+    [['eval', 'document.title']],
+    [['get', 'text', '@e1']],
+    [['get', 'value', '@e1']],
+    [['batch', 'eval 1']],
+    [['--cdp', 'ws://evil.example', 'snapshot']],
+    [['find', 'role', 'textbox', 'text']],
+    [['wait', '--text', 'SSN: 9']],
+    [['wait', '--fn', '1']],
+    [[]],
+  ])(
+    'refuses %j without minting a token or starting the CLI',
+    async (command) => {
+      const { run, runCommand, fetchAgentToken } = await load();
+      const result = await run(relayCtx(), command);
+      expect(result).toEqual({
+        success: false,
+        error: REFUSED,
+        liveViewUrl: null,
+      });
+      expect(fetchAgentToken).not.toHaveBeenCalled();
+      expect(runCommand).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuses before the credential and URL checks, with no argv in the error', async () => {
+    const { run, fetchAgentToken } = await load();
+    const noCreds = await run(ctxWith(null), ['eval', 'SECRET-6789']);
+    expect(noCreds.error).toBe(REFUSED);
+    expect(noCreds.error).not.toContain('6789');
+    const badUrl = await run(
+      ctxWith(principal({ relayUrl: 'http://evil.example', relayRunId: RUN })),
+      ['get', 'value', '@e1'],
+    );
+    expect(badUrl.error).toBe(REFUSED);
+    expect(fetchAgentToken).not.toHaveBeenCalled();
+  });
+
+  it('runs an allowed command', async () => {
+    const { run, runCommand } = await load();
+    const result = await run(relayCtx(), ['get', 'url']);
+    expect(result.success).toBe(true);
+    expect(runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry get text after a lost connection: it never runs', async () => {
+    const { run, runCommand } = await load();
+    runCommand.mockResolvedValue({
+      success: false,
+      data: null,
+      error: 'CDP response channel closed',
+    } as never);
+    const result = await run(relayCtx(), ['get', 'text', '#status']);
+    expect(result.error).toBe(REFUSED);
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('leaves the Kernel path unpoliced', async () => {
+    vi.resetModules();
+    const runBrowserCommand = vi.fn(async () => ({
+      success: true,
+      data: 'kernel',
+      error: null,
+      liveViewUrl: null,
+    }));
+    vi.doMock('@/lib/kernel/eve-browser', () => ({ runBrowserCommand }));
+    const tool = (await import('@/agent/tools/browser')).default;
+    const result = await (
+      tool as unknown as {
+        execute: (a: unknown, c: unknown) => Promise<{ success: boolean }>;
+      }
+    ).execute({ command: ['eval', 'document.title'] }, ctxWith(null));
+    expect(runBrowserCommand).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(true);
+    vi.doUnmock('@/lib/kernel/eve-browser');
   });
 });

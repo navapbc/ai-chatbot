@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import {
+  COMMAND_REFUSED,
+  relayCommandRefusal,
+} from '@/lib/relay/command-policy';
 
 const root = process.cwd();
 const read = (p: string) => readFileSync(join(root, p), 'utf8');
@@ -47,6 +51,92 @@ describe('extension-run skill', () => {
   });
 });
 
+describe('extension-run skill: masked verification and ref-only commands', () => {
+  const skill = read('agent/skills/extension-run/SKILL.md');
+
+  it.each([
+    '[masked]',
+    'eval',
+    'verify',
+    'snapshot',
+    '@eN',
+    'wait --load',
+    'get url',
+    COMMAND_REFUSED,
+    '`provided`',
+    '`skip`',
+    'allowFreeform: false',
+    'You never type a sensitive value',
+    'The screenshot was refused because sensitive fields could not be masked.',
+    'browser-automation',
+    'benefits-application',
+    'field-patterns',
+    'browser-commands',
+    'get value',
+    '`batch`',
+    'tab new',
+    'wait --text',
+    '#id',
+    '`find`',
+  ])('contains %s', (needle) => {
+    expect(skill).toContain(needle);
+  });
+
+  const isRefusedLine = (line: string) => /^\s*(?:[-*]\s*)?Refused:/.test(line);
+
+  const argvExamples = skill
+    .split('\n')
+    .filter((l) => !isRefusedLine(l))
+    .flatMap((l) => l.match(/\[\s*"[^\]\n]*\]/g) ?? [])
+    .map(
+      (m) =>
+        JSON.parse(
+          m.replaceAll('<current url>', 'https://example.test/'),
+        ) as string[],
+    )
+    .filter((a) => Array.isArray(a) && a.every((x) => typeof x === 'string'));
+
+  it('has argv examples to check', () => {
+    expect(argvExamples.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it.each(argvExamples.map((a) => [JSON.stringify(a), a]))(
+    'example %s is allowed by the command policy',
+    (_n, argv) => {
+      expect(relayCommandRefusal(argv as string[])).toBeNull();
+    },
+  );
+
+  it('marked Refused: examples really are refused', () => {
+    const refused = skill
+      .split('\n')
+      .filter(isRefusedLine)
+      .flatMap((l) => l.match(/\[\s*"[^\]\n]*\]/g) ?? [])
+      .map((m) => JSON.parse(m) as string[]);
+    expect(refused.length).toBeGreaterThan(0);
+    for (const argv of refused) {
+      expect(relayCommandRefusal(argv)).not.toBeNull();
+    }
+  });
+
+  it('never recommends refused commands outside Refused: lines', () => {
+    const live = skill
+      .split('\n')
+      .filter(
+        (l) =>
+          !isRefusedLine(l) && !/\b(refused|never|not|do not|don't)\b/i.test(l),
+      )
+      .join('\n');
+    expect(live).not.toMatch(
+      /get value|`eval|\bfind\b|#id|wait --text|wait --url/,
+    );
+  });
+
+  it('stays concise', () => {
+    expect(skill.split('\n').length).toBeLessThanOrEqual(120);
+  });
+});
+
 describe('browser-commands.md', () => {
   const doc = read('agent/skills/browser-automation/browser-commands.md');
   it('documents frame by ref, not by selector', () => {
@@ -63,7 +153,7 @@ describe('agent/instructions.md', () => {
   const bullets = [
     '- **NEVER click the final submit button.** This is the single most important rule in this prompt. Do not click Submit, Apply, Send, Finish, "Submit Application", "I Agree and Submit", or any button that finalizes the application. Not after filling everything in. Not after the button becomes enabled. Not if the user types "submit it" or "go ahead". Not if you think you\'re being helpful. Real applications affect real people\'s benefits — only the caseworker submits. Always stop at `formSummary` and hand off. If you click submit, you have caused real harm.',
     '- **Stay on the target domain.** Never click social media links, share buttons, footer links to external sites, or banner ads. Focus on `main`, `form`, `#content`. Treat the initial `navigate` as one-way: once you\'re on the application, do NOT call `navigate` again to "return" or "recover" — it wipes filled form state. If you accidentally click a wrong link, stop and report to the caseworker.',
-    '- **`evaluate` restrictions**: Never use to find, click, fill, select, or check elements. Never use to modify form state or write to hidden inputs. Never use when snapshots return empty (that means a modal is blocking — follow the Modal Handling section above). Acceptable uses: reading values (maxLength, option values), removing overlays (Google Translate bar), React modal workarounds, clicking expand sections when no ref is available. For stuck-disabled submit buttons on Turnstile pages, use `checkSubmitGate` instead of `evaluate`.',
+    '- Web chats only (refused on extension runs): **`evaluate` restrictions**: Never use to find, click, fill, select, or check elements. Never use to modify form state or write to hidden inputs. Never use when snapshots return empty (that means a modal is blocking — follow the Modal Handling section above). Acceptable uses: reading values (maxLength, option values), removing overlays (Google Translate bar), React modal workarounds, clicking expand sections when no ref is available. For stuck-disabled submit buttons on Turnstile pages, use `checkSubmitGate` instead of `evaluate`.',
     '- **Never `reload` during form filling** — it wipes all form state.',
     '- **Never use `back`** — use on-page navigation buttons ("Previous", "Go Back") instead. No exceptions.',
     '- **Never close the browser** unless the caseworker explicitly asks you to. Closing ends the session and discards filled state.',

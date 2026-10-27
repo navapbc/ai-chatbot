@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
-import type { Frame, Page } from 'playwright';
+import type { Dialog, Frame, Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
 import {
@@ -136,6 +136,11 @@ const stirChild = (child: string) =>
       chrome.debugger.sendCommand({ tabId: tab, sessionId }, 'Runtime.enable'),
     { tab: tabId, sessionId: child },
   );
+
+interface FrameTree {
+  frame: { id: string; url: string };
+  childFrames?: FrameTree[];
+}
 
 interface CdpMessage {
   id?: number;
@@ -783,6 +788,1157 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     expect(again.success).toBe(false);
     expect(await extensionAttached(tabId)).toBe(false);
     await closeAgentSessions();
+  });
+
+  it('leaving the origin ends the run even when the agent never sent Page.enable', async () => {
+    // Record every command the extension sends to chrome.debugger, so the
+    // test shows that the bridge itself enabled Page (the agent never does):
+    // tabs.onUpdated alone would end the run, so the log is what makes this
+    // test sensitive to the bridge skipping Page.enable.
+    await browser.sw.evaluate(() => {
+      const w = globalThis as unknown as { __cdpLog?: string[] };
+      w.__cdpLog = [];
+      const dbg = chrome.debugger as unknown as {
+        sendCommand: (...a: unknown[]) => unknown;
+        __orig?: (...a: unknown[]) => unknown;
+      };
+      dbg.__orig ??= dbg.sendCommand;
+      dbg.sendCommand = (...a: unknown[]) => {
+        const d = a[0] as { tabId: number; sessionId?: string };
+        w.__cdpLog?.push(`${d.sessionId ? 'child' : 'tab'}:${String(a[1])}`);
+        return (dbg.__orig as (...x: unknown[]) => unknown)(...a);
+      };
+    });
+    const { cdp, runId } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    // Runtime and DOM only: no Page.enable, no Network.enable.
+    for (const domain of ['Runtime', 'DOM']) {
+      expect((await agent.call(`${domain}.enable`, {}, session)).error).toBe(
+        undefined,
+      );
+    }
+    const log = (await browser.sw.evaluate(
+      () => (globalThis as unknown as { __cdpLog: string[] }).__cdpLog,
+    )) as string[];
+    // Exactly one Page.enable, sent before the agent's first command.
+    expect(log.filter((m) => m === 'tab:Page.enable')).toHaveLength(1);
+    expect(log.indexOf('tab:Page.enable')).toBeLessThan(
+      log.indexOf('tab:Runtime.enable'),
+    );
+    await browser.sw.evaluate(() => {
+      const dbg = chrome.debugger as unknown as {
+        sendCommand: unknown;
+        __orig?: unknown;
+      };
+      if (dbg.__orig) dbg.sendCommand = dbg.__orig;
+    });
+    const away = `${fixtures.frameOrigin}/away.html`;
+    const started = Date.now();
+    await page.goto(away);
+    expect(await agent.closed).toEqual({ code: 1000, reason: 'run stopped' });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(
+      relay.logs.some(
+        (l) =>
+          l.event === 'run-stopped' &&
+          l.runId === runId &&
+          l.reason === 'left-origin',
+      ),
+    ).toBe(true);
+    expect(await extensionAttached(tabId)).toBe(false);
+    expect(agent.frames.filter((f) => f.includes(away))).toEqual([]);
+    await page.goto(fixtures.formUrl);
+    await closeAgentSessions();
+  });
+
+  it('the bridge enables the Page domain: page events arrive without a Page.enable from the agent', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.call('Runtime.enable', {}, session);
+    await page.reload();
+    const event = await agent.waitFor(
+      (m) => m.method === 'Page.frameNavigated' && m.sessionId === session,
+    );
+    expect(event.method).toBe('Page.frameNavigated');
+    await agent.close();
+    await bridgeMessage(browser.sw, { type: 'stopRun' });
+  });
+
+  it('Page.disable is refused and the bridge keeps the Page domain on', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.call('Runtime.enable', {}, session);
+    const reply = await agent.call('Page.disable', {}, session);
+    expect(reply.error?.message).toMatch(/not allowed/);
+    expect(reply.result).toBeUndefined();
+    // Still on: a reload reports its navigation.
+    await page.reload();
+    await agent.waitFor(
+      (m) => m.method === 'Page.frameNavigated' && m.sessionId === session,
+    );
+    await agent.close();
+    await bridgeMessage(browser.sw, { type: 'stopRun' });
+  });
+
+  it('history.pushState and a failed request still reach the agent', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.call('Page.enable', {}, session);
+    await agent.call('Network.enable', {}, session);
+    await page.evaluate(() => {
+      history.pushState({}, '', '/pushed');
+      fetch('https://localhost:1/unreachable').catch(() => {});
+    });
+    await agent.waitFor((m) => m.method === 'Page.navigatedWithinDocument');
+    await agent.waitFor((m) => m.method === 'Network.loadingFailed');
+    await agent.close();
+    await bridgeMessage(browser.sw, { type: 'stopRun' });
+    await page.goto(fixtures.formUrl);
+  });
+
+  describe('dialogs without AGENT_BROWSER_NO_AUTO_DIALOG', () => {
+    const open: Dialog[] = [];
+    const keepOpen = (d: Dialog) => {
+      open.push(d);
+    };
+    let savedNoAuto: string | undefined;
+    beforeAll(() => {
+      savedNoAuto = process.env.AGENT_BROWSER_NO_AUTO_DIALOG;
+      Reflect.deleteProperty(process.env, 'AGENT_BROWSER_NO_AUTO_DIALOG');
+      // Playwright dismisses dialogs nobody listens for; leave them open.
+      page.on('dialog', keepOpen);
+    });
+    afterAll(async () => {
+      page.off('dialog', keepOpen);
+      // Settle what Playwright still tracks (agent-browser may have answered).
+      await Promise.all(open.splice(0).map((d) => d.dismiss().catch(() => {})));
+      if (savedNoAuto !== undefined) {
+        process.env.AGENT_BROWSER_NO_AUTO_DIALOG = savedNoAuto;
+      }
+      await page.goto(fixtures.formUrl);
+    });
+
+    it('the agent hears of a dialog with an empty message', async () => {
+      const { cdp } = await startRun();
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.call('Page.enable', {}, session);
+      const opened = agent.waitFor(
+        (m) => m.method === 'Page.javascriptDialogOpening',
+      );
+      await page.evaluate(() => {
+        setTimeout(() => alert('dialog-sentinel-9'), 0);
+      });
+      expect((await opened).params).toEqual({
+        type: 'alert',
+        hasBrowserHandler: true, // Playwright's page listener handles it
+        url: '',
+        message: '',
+        defaultPrompt: '',
+      });
+      expect(
+        agent.frames.filter((f) => f.includes('dialog-sentinel-9')),
+      ).toEqual([]);
+      // Let the page move on: close the raw agent first, then the dialog.
+      await agent.close();
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await page.reload();
+    });
+
+    it('an alert raised by an out-of-scope same-site frame is auto-accepted', async () => {
+      await page.goto(`${fixtures.origin}/samesite.html`);
+      const frame = page
+        .frames()
+        .find((f) => f.url().startsWith(fixtures.sameSiteOrigin)) as Frame;
+      await frame.locator('#h').waitFor({ state: 'attached' });
+      const { cdp } = await startRun({ allowedFrameOrigins: [] });
+      expect(
+        (await agentBrowser(['snapshot', '-i'], cdp, 'ss-dialog')).success,
+      ).toBe(true);
+      await frame.evaluate(() => {
+        setTimeout(() => alert('ss-dialog-sentinel'), 50);
+      });
+      await new Promise((r) => setTimeout(r, 500));
+      const next = await agentBrowser(['get', 'title'], cdp, 'ss-dialog');
+      expect(next.success, JSON.stringify(next)).toBe(true);
+      expect(relay.frames.some((f) => f.includes('ss-dialog-sentinel'))).toBe(
+        false,
+      );
+      await closeAgentSessions();
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await page.goto(fixtures.formUrl);
+    });
+
+    it("a prompt raised by an out-of-scope frame never takes the agent's text, and the tab stays usable", async () => {
+      await page.goto(`${fixtures.origin}/samesite.html`);
+      const frame = page
+        .frames()
+        .find((f) => f.url().startsWith(fixtures.sameSiteOrigin)) as Frame;
+      await frame.locator('#h').waitFor({ state: 'attached' });
+      const { cdp } = await startRun({ allowedFrameOrigins: [] });
+      expect(
+        (await agentBrowser(['snapshot', '-i'], cdp, 'ss-prompt')).success,
+      ).toBe(true);
+      await frame.evaluate(() => {
+        setTimeout(() => {
+          (window as unknown as { __answer: unknown }).__answer =
+            prompt('question');
+        }, 50);
+      });
+      await new Promise((r) => setTimeout(r, 500));
+      const accept = await agentBrowser(
+        ['dialog', 'accept', 'hello'],
+        cdp,
+        'ss-prompt',
+      );
+      expect(JSON.stringify(accept)).not.toContain('hello');
+      // The bridge dismissed it: the frame got null, not the agent's text.
+      expect(
+        await frame.evaluate(
+          () => (window as unknown as { __answer: unknown }).__answer,
+        ),
+      ).toBeNull();
+      const next = await agentBrowser(['get', 'title'], cdp, 'ss-prompt');
+      expect(next.success, JSON.stringify(next)).toBe(true);
+      await closeAgentSessions();
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await page.goto(fixtures.formUrl);
+    });
+
+    it('an alert and a beforeunload prompt are auto-accepted and nothing hangs', async () => {
+      const { cdp } = await startRun();
+      expect(
+        (await agentBrowser(['snapshot', '-i'], cdp, 'dialogs')).success,
+      ).toBe(true);
+      await page.evaluate(() => {
+        setTimeout(() => alert('auto-sentinel'), 50);
+      });
+      await new Promise((r) => setTimeout(r, 500));
+      const next = await agentBrowser(['get', 'title'], cdp, 'dialogs');
+      expect(next.success, JSON.stringify(next)).toBe(true);
+
+      // beforeunload needs a user gesture on the page.
+      await page.evaluate(() => {
+        window.onbeforeunload = () => 'leave?';
+      });
+      await page.click('body');
+      await page.evaluate(() => {
+        setTimeout(() => {
+          location.href = '/page2.html';
+        }, 50);
+      });
+      await new Promise((r) => setTimeout(r, 800));
+      const url = await agentBrowser(['get', 'url'], cdp, 'dialogs');
+      expect(url.success, JSON.stringify(url)).toBe(true);
+      expect(JSON.stringify(url.data)).toContain('page2.html');
+      expect(
+        relay.frames.some(
+          (f) =>
+            f.includes('"Page.javascriptDialogOpening"') &&
+            f.includes('beforeunload'),
+        ),
+      ).toBe(true);
+      expect(relay.frames.filter((f) => f.includes('auto-sentinel'))).toEqual(
+        [],
+      );
+      await closeAgentSessions();
+    });
+  });
+
+  it('an unlisted event never reaches the agent', async () => {
+    const { cdp } = await startRun();
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    await agent.call('Runtime.enable', {}, session);
+    await agent.call('Page.enable', {}, session);
+    await page.evaluate(() => {
+      console.log('console-sentinel-7');
+      setTimeout(() => {
+        throw new Error('exception-sentinel-8');
+      }, 0);
+    });
+    // An allowed event after the page activity proves delivery is working.
+    await page.reload();
+    await agent.waitFor(
+      (m) => m.method === 'Page.frameNavigated' && m.sessionId === session,
+    );
+    await new Promise((r) => setTimeout(r, 300));
+    expect(
+      agent.events.filter(
+        (m) =>
+          m.method === 'Runtime.consoleAPICalled' ||
+          m.method === 'Runtime.exceptionThrown',
+      ),
+    ).toEqual([]);
+    expect(
+      agent.frames.filter(
+        (f) =>
+          f.includes('console-sentinel-7') ||
+          f.includes('exception-sentinel-8'),
+      ),
+    ).toEqual([]);
+    await agent.close();
+    await bridgeMessage(browser.sw, { type: 'stopRun' });
+  });
+
+  describe('frames that share the tab session', () => {
+    const HIDDEN_LABEL = 'Hidden frame field';
+    const HIDDEN_VALUE = 'ss-value-7f3a9c';
+    const sameSiteUrl = () => `${fixtures.origin}/samesite.html`;
+
+    /** A CDP command straight through chrome.debugger, past the bridge. */
+    const direct = (method: string, params: Record<string, unknown> = {}) =>
+      browser.sw.evaluate(
+        ({ tab, method, params }) =>
+          chrome.debugger.sendCommand({ tabId: tab }, method, params),
+        { tab: tabId, method, params },
+      ) as Promise<Record<string, unknown>>;
+
+    /** The id of the tab's frame whose URL starts with `prefix`. */
+    const frameIdFor = async (prefix: string) => {
+      const { frameTree } = (await direct('Page.getFrameTree')) as {
+        frameTree: FrameTree;
+      };
+      const walk = (tree: FrameTree): string | undefined =>
+        tree.frame.url.startsWith(prefix)
+          ? tree.frame.id
+          : (tree.childFrames ?? []).map(walk).find(Boolean);
+      const id = walk(frameTree);
+      if (!id) throw new Error(`no frame at ${prefix}`);
+      return id;
+    };
+
+    /** A frame's main-world execution context id, read past the bridge. */
+    const mainWorldOf = async (frameId: string) => {
+      const owner = await direct('DOM.getFrameOwner', { frameId });
+      const described = (await direct('DOM.describeNode', {
+        backendNodeId: owner.backendNodeId,
+      })) as { node: { contentDocument: { backendNodeId: number } } };
+      const resolved = (await direct('DOM.resolveNode', {
+        backendNodeId: described.node.contentDocument.backendNodeId,
+      })) as { object: { objectId: string } };
+      return Number(resolved.object.objectId.split('.')[1]);
+    };
+
+    const seenNothingHidden = (texts: string[]) => {
+      const all = texts.join('\n');
+      expect(all).not.toContain(HIDDEN_VALUE);
+      expect(all).not.toContain(HIDDEN_LABEL);
+    };
+
+    beforeAll(async () => {
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await page.goto(sameSiteUrl());
+      await page
+        .frameLocator('#ss')
+        .locator('#h')
+        .waitFor({ state: 'attached' });
+    });
+
+    afterAll(async () => {
+      await closeAgentSessions();
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await page.goto(fixtures.formUrl);
+    });
+
+    it('a same-site cross-origin iframe shares the tab session (no child target)', async () => {
+      const targets = (await browser.sw.evaluate(async () =>
+        (await chrome.debugger.getTargets()).map((t) => t.url),
+      )) as string[];
+      expect(targets.some((u) => u.startsWith(fixtures.sameSiteOrigin))).toBe(
+        false,
+      );
+      expect(
+        page.frames().some((f) => f.url().startsWith(fixtures.sameSiteOrigin)),
+      ).toBe(true);
+    });
+
+    it('a command targeting the out-of-scope same-site frame is refused', async () => {
+      const { cdp } = await startRun({ allowedFrameOrigins: [] });
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.call('Runtime.enable', {}, session);
+      await agent.call('DOM.enable', {}, session);
+      const ss = await frameIdFor(fixtures.sameSiteOrigin);
+      const inner = await frameIdFor(`${fixtures.origin}/inner.html`);
+      const ssContext = await mainWorldOf(ss);
+      const innerContext = await mainWorldOf(inner);
+      const refused = (reply: CdpMessage) => {
+        expect(reply.error?.message).toBe(FRAME_OUT_OF_SCOPE);
+        expect(reply.result).toBeUndefined();
+      };
+
+      // By context id.
+      refused(
+        await agent.call(
+          'Runtime.evaluate',
+          {
+            expression: 'document.querySelector("#h").value',
+            contextId: ssContext,
+            returnByValue: true,
+          },
+          session,
+        ),
+      );
+      const ok = await agent.call(
+        'Runtime.evaluate',
+        { expression: 'document.title', contextId: innerContext },
+        session,
+      );
+      expect((ok.result?.result as { value: string }).value).toBe(
+        'Inner frame',
+      );
+
+      // By frame id.
+      refused(
+        await agent.call(
+          'Accessibility.getFullAXTree',
+          { frameId: ss },
+          session,
+        ),
+      );
+      const innerTree = await agent.call(
+        'Accessibility.getFullAXTree',
+        { frameId: inner },
+        session,
+      );
+      expect(JSON.stringify(innerTree.result)).toContain('Inner field');
+      refused(
+        await agent.call(
+          'Page.navigate',
+          { frameId: ss, url: `${fixtures.origin}/inner.html` },
+          session,
+        ),
+      );
+
+      // By object id and by (guessable) backend node id.
+      const field = (await direct('Runtime.evaluate', {
+        expression: 'document.querySelector("#h")',
+        contextId: ssContext,
+      })) as { result: { objectId: string } };
+      refused(
+        await agent.call(
+          'Runtime.callFunctionOn',
+          {
+            objectId: field.result.objectId,
+            functionDeclaration: 'function () { return this.value }',
+            returnByValue: true,
+          },
+          session,
+        ),
+      );
+      const { node } = (await direct('DOM.describeNode', {
+        objectId: field.result.objectId,
+      })) as { node: { backendNodeId: number } };
+      for (const [method, params] of [
+        ['DOM.describeNode', { backendNodeId: node.backendNodeId }],
+        ['DOM.getBoxModel', { backendNodeId: node.backendNodeId }],
+        ['DOM.resolveNode', { backendNodeId: node.backendNodeId }],
+        // Wrapping the node in the top frame's world is refused too.
+        [
+          'DOM.resolveNode',
+          {
+            backendNodeId: node.backendNodeId,
+            executionContextId: await mainWorldOf(inner),
+          },
+        ],
+      ] as const) {
+        refused(await agent.call(method, params, session));
+      }
+      // The iframe element itself is in the top document: describing it
+      // (pierced) works but carries neither the frame id nor its document.
+      // Its src attribute is the top document's own content.
+      const owner = await direct('DOM.getFrameOwner', { frameId: ss });
+      const described = await agent.call(
+        'DOM.describeNode',
+        { backendNodeId: owner.backendNodeId, depth: -1, pierce: true },
+        session,
+      );
+      expect(described.error).toBeUndefined();
+      const ownerNode = described.result?.node as {
+        localName: string;
+        frameId?: string;
+        contentDocument?: unknown;
+      };
+      expect(ownerNode.localName).toBe('iframe');
+      expect(ownerNode.frameId).toBeUndefined();
+      expect(ownerNode.contentDocument).toBeUndefined();
+
+      // Several handles at once: an in-scope one cannot cover another.
+      const innerBody = (await direct('Runtime.evaluate', {
+        expression: 'document.body',
+        contextId: innerContext,
+      })) as { result: { objectId: string } };
+      for (const [method, params] of [
+        [
+          'Runtime.callFunctionOn',
+          {
+            objectId: innerBody.result.objectId,
+            executionContextId: ssContext,
+            functionDeclaration: 'function () { return 1 }',
+          },
+        ],
+        [
+          'DOM.describeNode',
+          {
+            objectId: innerBody.result.objectId,
+            backendNodeId: node.backendNodeId,
+          },
+        ],
+        [
+          'Runtime.evaluate',
+          { expression: '1', contextId: innerContext, uniqueContextId: 'x' },
+        ],
+      ] as const) {
+        refused(await agent.call(method, params, session));
+      }
+      seenNothingHidden(agent.frames);
+      await agent.close();
+    });
+
+    it('a context of a frame that has since moved to another origin is refused', async () => {
+      const { cdp } = await startRun({ allowedFrameOrigins: [] });
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.call('Runtime.enable', {}, session);
+      try {
+        const inner = await frameIdFor(`${fixtures.origin}/inner.html`);
+        const oldContext = await mainWorldOf(inner);
+        const before = await agent.call(
+          'Runtime.evaluate',
+          { expression: 'document.title', contextId: oldContext },
+          session,
+        );
+        expect(before.error).toBeUndefined();
+        const moved = `${fixtures.sameSiteOrigin}/samesite-frame.html?moved`;
+        await page.evaluate((url) => {
+          const frame = document.getElementById('inner') as HTMLIFrameElement;
+          (frame.contentWindow as Window).location.href = url;
+        }, moved);
+        await until(() => page.frames().some((f) => f.url() === moved), 5_000);
+        const after = await agent.call(
+          'Runtime.evaluate',
+          { expression: 'document.title', contextId: oldContext },
+          session,
+        );
+        // Refused by the bridge, not answered by Chrome.
+        expect(after.error?.message).toBe(FRAME_OUT_OF_SCOPE);
+        seenNothingHidden(agent.frames);
+      } finally {
+        await agent.close();
+        await bridgeMessage(browser.sw, { type: 'stopRun' });
+        await page.goto(sameSiteUrl());
+        await page
+          .frameLocator('#ss')
+          .locator('#h')
+          .waitFor({ state: 'attached' });
+      }
+    });
+
+    it('a screenshot is refused while the out-of-scope frame is present', async () => {
+      for (const [allowed, ok] of [
+        [[], false],
+        [[fixtures.sameSiteOrigin], true],
+      ] as const) {
+        const { cdp } = await startRun({ allowedFrameOrigins: [...allowed] });
+        const agent = await rawAgent(cdp);
+        const session = await agent.attach();
+        const shot = await agent.call('Page.captureScreenshot', {}, session);
+        if (ok) {
+          expect(shot.error).toBeUndefined();
+          expect(typeof shot.result?.data).toBe('string');
+        } else {
+          expect(shot.error?.message).toBe(FRAME_OUT_OF_SCOPE);
+          expect(shot.result).toBeUndefined();
+        }
+        await agent.close();
+      }
+    });
+
+    it('keys and clicks cannot reach the out-of-scope frame; in-scope input still works', async () => {
+      const hidden = page.frameLocator('#ss').locator('#h');
+      // Focus inside the out-of-scope frame (as Tab from the page would).
+      await hidden.focus();
+      const { cdp } = await startRun({ allowedFrameOrigins: [] });
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      for (const [method, params] of [
+        ['Input.insertText', { text: 'typed' }],
+        ['Input.dispatchKeyEvent', { type: 'keyDown', key: 'y', text: 'y' }],
+      ] as const) {
+        const reply = await agent.call(method, params, session);
+        expect(reply.error?.message).toBe(FRAME_OUT_OF_SCOPE);
+      }
+      // A click at a point inside the frame.
+      const box = await page.locator('#ss').boundingBox();
+      const at = {
+        x: Math.round((box?.x ?? 0) + 20),
+        y: Math.round((box?.y ?? 0) + 20),
+      };
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        const reply = await agent.call(
+          'Input.dispatchMouseEvent',
+          { type, ...at, button: 'left', clickCount: 1 },
+          session,
+        );
+        expect(reply.error?.message).toBe(FRAME_OUT_OF_SCOPE);
+      }
+      await agent.close();
+
+      // Through agent-browser: `press` into the focused frame is refused;
+      // typing and clicking in-scope fields on the same page work.
+      const pressed = await agentBrowser(['press', 'x'], cdp, 'input');
+      expect(pressed.success).toBe(false);
+      const snap = await agentBrowser(['snapshot', '-i'], cdp, 'input');
+      const top = refFor(snap, 'textbox', 'Top field');
+      expect(
+        (await agentBrowser(['fill', top, 'Grace'], cdp, 'input')).success,
+      ).toBe(true);
+      expect((await agentBrowser(['click', top], cdp, 'input')).success).toBe(
+        true,
+      );
+      expect(await page.locator('#top').inputValue()).toBe('Grace');
+      expect(await hidden.inputValue()).toBe(HIDDEN_VALUE);
+      await closeAgentSessions();
+      await page.locator('#top').fill('');
+    });
+
+    it('focus is followed through shadow roots: an out-of-scope frame in an open root, a closed root', async () => {
+      const shadowSrc = `${fixtures.sameSiteOrigin}/samesite-frame.html?shadow`;
+      await page.evaluate((src) => {
+        const open = document.createElement('div');
+        open.id = 'open-host';
+        open.attachShadow({
+          mode: 'open',
+        }).innerHTML = `<iframe title="shadow frame" src="${src}"></iframe>`;
+        const closed = document.createElement('div');
+        closed.id = 'closed-host';
+        const root = closed.attachShadow({ mode: 'closed' });
+        root.innerHTML = '<label>Closed field <input></label>';
+        (window as unknown as { __closedInput: Element }).__closedInput =
+          root.querySelector('input') as Element;
+        document.body.append(open, closed);
+      }, shadowSrc);
+      const insert = async (allowed: string[]) => {
+        const { cdp } = await startRun({ allowedFrameOrigins: allowed });
+        const agent = await rawAgent(cdp);
+        const session = await agent.attach();
+        const reply = await agent.call(
+          'Input.insertText',
+          { text: 'k' },
+          session,
+        );
+        await agent.close();
+        return reply.error?.message;
+      };
+      try {
+        await until(
+          () => page.frames().some((f) => f.url() === shadowSrc),
+          5_000,
+        );
+        const shadowFrame = page
+          .frames()
+          .find((f) => f.url() === shadowSrc) as Frame;
+        await shadowFrame.locator('#h').focus();
+        expect(await insert([])).toBe(FRAME_OUT_OF_SCOPE);
+        expect(await shadowFrame.locator('#h').inputValue()).toBe(HIDDEN_VALUE);
+
+        const focusClosed = () =>
+          page.evaluate(() =>
+            (
+              window as unknown as { __closedInput: HTMLInputElement }
+            ).__closedInput.focus(),
+          );
+        await focusClosed();
+        // Its focused element cannot be seen: refused while a frame out of
+        // scope is present...
+        expect(await insert([])).toBe(FRAME_OUT_OF_SCOPE);
+        // ...and typed normally when nothing is out of scope.
+        await focusClosed();
+        expect(await insert([fixtures.sameSiteOrigin])).toBeUndefined();
+        expect(
+          await page.evaluate(
+            () =>
+              (window as unknown as { __closedInput: HTMLInputElement })
+                .__closedInput.value,
+          ),
+        ).toBe('k');
+      } finally {
+        await page.evaluate(() => {
+          document.getElementById('open-host')?.remove();
+          document.getElementById('closed-host')?.remove();
+        });
+      }
+    });
+
+    it('with the frame origin allowed, input reaches it and costs no lookups', async () => {
+      const hidden = page.frameLocator('#ss').locator('#h');
+      // Record what the bridge itself sends to chrome.debugger.
+      await browser.sw.evaluate(() => {
+        const w = globalThis as unknown as { __cdpLog?: string[] };
+        w.__cdpLog = [];
+        const dbg = chrome.debugger as unknown as {
+          sendCommand: (...a: unknown[]) => unknown;
+          __orig?: (...a: unknown[]) => unknown;
+        };
+        dbg.__orig ??= dbg.sendCommand;
+        dbg.sendCommand = (...a: unknown[]) => {
+          w.__cdpLog?.push(String(a[1]));
+          return (dbg.__orig as (...x: unknown[]) => unknown)(...a);
+        };
+      });
+      try {
+        const { cdp } = await startRun({
+          allowedFrameOrigins: [fixtures.sameSiteOrigin],
+        });
+        const snap = await agentBrowser(['snapshot', '-i'], cdp, 'allowed-in');
+        const field = refFor(snap, 'textbox', 'Hidden frame field');
+        const top = refFor(snap, 'textbox', 'Top field');
+        await browser.sw.evaluate(() => {
+          (globalThis as unknown as { __cdpLog: string[] }).__cdpLog = [];
+        });
+        expect(
+          (await agentBrowser(['click', top], cdp, 'allowed-in')).success,
+        ).toBe(true);
+        expect(
+          (await agentBrowser(['fill', field, 'zz'], cdp, 'allowed-in'))
+            .success,
+        ).toBe(true);
+        expect(
+          (await agentBrowser(['press', 'q'], cdp, 'allowed-in')).success,
+        ).toBe(true);
+        expect(await hidden.inputValue()).toBe('zzq');
+        const log = (await browser.sw.evaluate(
+          () => (globalThis as unknown as { __cdpLog: string[] }).__cdpLog,
+        )) as string[];
+        expect(
+          log.filter(
+            (m) =>
+              m === 'DOM.getNodeForLocation' ||
+              m === 'Page.createIsolatedWorld',
+          ),
+        ).toEqual([]);
+        await closeAgentSessions();
+      } finally {
+        await browser.sw.evaluate(() => {
+          const dbg = chrome.debugger as unknown as {
+            sendCommand: unknown;
+            __orig?: unknown;
+          };
+          if (dbg.__orig) dbg.sendCommand = dbg.__orig;
+        });
+        await hidden.fill(HIDDEN_VALUE);
+      }
+    });
+
+    it('its fields do not appear in a snapshot, nor its URL in the frame tree', async () => {
+      const mark = relay.frames.length;
+      const { cdp } = await startRun({ allowedFrameOrigins: [] });
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      const tree = await agent.call('Page.getFrameTree', {}, session);
+      const treeText = JSON.stringify(tree.result);
+      expect(treeText).toContain(`${fixtures.origin}/inner.html`);
+      expect(treeText).toContain('about:srcdoc');
+      expect(treeText).not.toContain(fixtures.sameSiteOrigin);
+      await agent.close();
+
+      const snap = await agentBrowser(['snapshot', '-i'], cdp, 'samesite');
+      expect(snap.success).toBe(true);
+      const text = (snap.data as { snapshot: string }).snapshot;
+      expect(text).toContain('textbox "Top field"');
+      expect(text).toContain('textbox "Srcdoc field"');
+      expect(text).toContain('textbox "Inner field"');
+      expect(text).toContain('Iframe "samesite frame"');
+      seenNothingHidden([text, ...relay.frames.slice(mark)]);
+      await closeAgentSessions();
+    });
+
+    it('the frame is visible once its origin is allowed', async () => {
+      const { cdp } = await startRun({
+        allowedFrameOrigins: [fixtures.sameSiteOrigin],
+      });
+      const snap = await agentBrowser(['snapshot', '-i'], cdp, 'allowed');
+      expect(snap.success).toBe(true);
+      expect((snap.data as { snapshot: string }).snapshot).toContain(
+        HIDDEN_LABEL,
+      );
+      await closeAgentSessions();
+    });
+
+    it('an unknown execution context is refused', async () => {
+      const { cdp } = await startRun({ allowedFrameOrigins: [] });
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      // No Runtime.enable: the bridge looks contexts up itself, so a real
+      // frame's context still works...
+      const inner = await frameIdFor(`${fixtures.origin}/inner.html`);
+      const known = await agent.call(
+        'Runtime.evaluate',
+        { expression: 'document.title', contextId: await mainWorldOf(inner) },
+        session,
+      );
+      expect(known.error).toBeUndefined();
+      // ...and anything it cannot place is refused.
+      await agent.call('Runtime.enable', {}, session);
+      for (const [method, params] of [
+        ['Runtime.evaluate', { expression: '1', contextId: 987_654 }],
+        ['Runtime.evaluate', { expression: '1', uniqueContextId: 'nope' }],
+        [
+          'Runtime.callFunctionOn',
+          { objectId: '1.987654.1', functionDeclaration: 'function(){}' },
+        ],
+        [
+          'Runtime.callFunctionOn',
+          { objectId: 'not-an-id', functionDeclaration: 'function(){}' },
+        ],
+        [
+          'Runtime.callFunctionOn',
+          {
+            executionContextId: '3',
+            functionDeclaration: 'function(){}',
+          },
+        ],
+        ['Accessibility.getFullAXTree', { frameId: 'NOPE' }],
+      ] as const) {
+        const reply = await agent.call(method, params, session);
+        expect(reply.error?.message).toBe(FRAME_OUT_OF_SCOPE);
+      }
+      await agent.close();
+    });
+
+    it('events for the out-of-scope frame never reach the agent', async () => {
+      const { cdp } = await startRun({ allowedFrameOrigins: [] });
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      for (const domain of ['Page', 'Runtime', 'Network']) {
+        await agent.call(`${domain}.enable`, {}, session);
+      }
+      const mark = agent.frames.length;
+      const lateSs = `${fixtures.sameSiteOrigin}/samesite-frame.html?late`;
+      const lateInner = `${fixtures.origin}/inner.html?late`;
+      // No src attribute, so the parent's DOM never names the URL; the
+      // frames are navigated from script instead.
+      await page.evaluate(
+        ([ss, inner]) => {
+          for (const [id, url] of [
+            ['late-ss', ss],
+            ['late-inner', inner],
+          ]) {
+            const frame = document.createElement('iframe');
+            frame.id = id;
+            document.body.append(frame);
+            (frame.contentWindow as Window).location.href = url;
+          }
+        },
+        [lateSs, lateInner],
+      );
+      try {
+        await until(() => page.frames().some((f) => f.url() === lateSs), 5_000);
+        await (page.frames().find((f) => f.url() === lateSs) as Frame)
+          .locator('#h')
+          .waitFor({ state: 'attached' });
+        // Positive control: the in-scope frame's commit reaches the agent.
+        await agent.waitFor(
+          (m) =>
+            m.method === 'Page.frameNavigated' &&
+            (m.params?.frame as { url?: string })?.url === lateInner,
+        );
+        // A round trip after the out-of-scope frame loaded flushes its events.
+        await page.waitForTimeout(300);
+        await agent.call('Runtime.evaluate', { expression: '1' }, session);
+        const seen = agent.frames.slice(mark);
+        expect(seen.filter((f) => f.includes(fixtures.sameSiteOrigin))).toEqual(
+          [],
+        );
+        seenNothingHidden(seen);
+      } finally {
+        await page.evaluate(() => {
+          document.getElementById('late-ss')?.remove();
+          document.getElementById('late-inner')?.remove();
+        });
+        await agent.close();
+      }
+    });
+
+    it('same-origin srcdoc and same-origin iframes still work', async () => {
+      const { cdp } = await startRun({ allowedFrameOrigins: [] });
+      const snap = await agentBrowser(['snapshot', '-i'], cdp, 'fill');
+      for (const [name, value] of [
+        ['Srcdoc field', 'Ada'],
+        ['Inner field', 'Byron'],
+      ]) {
+        const filled = await agentBrowser(
+          ['fill', refFor(snap, 'textbox', name), value],
+          cdp,
+          'fill',
+        );
+        expect(filled.success).toBe(true);
+      }
+      const values = await Promise.all(
+        [
+          ['#srcdoc', '#s'],
+          ['#inner', '#i'],
+        ].map(([frame, field]) =>
+          page.frameLocator(frame).locator(field).inputValue(),
+        ),
+      );
+      expect(values).toEqual(['Ada', 'Byron']);
+      await closeAgentSessions();
+    });
+
+    it('leaving for a same-site origin still ends the run', async () => {
+      const { cdp, runId } = await startRun({ allowedFrameOrigins: [] });
+      const agent = await rawAgent(cdp);
+      await agent.attach();
+      await page.goto(`${fixtures.sameSiteOrigin}/samesite-frame.html`);
+      expect(await agent.closed).toEqual({ code: 1000, reason: 'run stopped' });
+      expect(
+        relay.logs.some(
+          (l) =>
+            l.event === 'run-stopped' &&
+            l.runId === runId &&
+            l.reason === 'left-origin',
+        ),
+      ).toBe(true);
+      seenNothingHidden(agent.frames);
+      await page.goto(sameSiteUrl());
+    });
+  });
+
+  it('a same-site frame inside an allowed out-of-process frame is scoped on the child session', async () => {
+    await page.goto(fixtures.formUrl);
+    const { cdp } = await startRun({
+      allowedFrameOrigins: [fixtures.frameOrigin],
+    });
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    const nesting = `${fixtures.frameOrigin}/oopif-nested.html`;
+    const nestedOrigin = fixtures.sameSiteOrigin.replace(
+      'localhost',
+      '127.0.0.1',
+    );
+    await agent.call(
+      'Target.setAutoAttach',
+      { autoAttach: true, flatten: true, waitForDebuggerOnStart: false },
+      session,
+    );
+    try {
+      await page.evaluate((url) => {
+        const frame = document.createElement('iframe');
+        frame.id = 'nesting';
+        frame.src = url;
+        document.body.append(frame);
+      }, nesting);
+      await until(
+        () => page.frames().some((f) => f.url().startsWith(nestedOrigin)),
+        5_000,
+      );
+      const nestedFrame = page
+        .frames()
+        .find((f) => f.url().startsWith(nestedOrigin));
+      await nestedFrame?.locator('#h').waitFor({ state: 'attached' });
+      // Find this frame's child session by asking each where it is.
+      let child = '';
+      await until(async () => {
+        const sessions = agent.events
+          .filter(
+            (m) =>
+              m.method === 'Target.attachedToTarget' &&
+              (m.params?.targetInfo as { type?: string })?.type === 'iframe',
+          )
+          .map((m) => m.params?.sessionId as string);
+        for (const candidate of sessions) {
+          const reply = await agent.call(
+            'Runtime.evaluate',
+            { expression: 'location.href', returnByValue: true },
+            candidate,
+          );
+          if ((reply.result?.result as { value?: string })?.value === nesting) {
+            child = candidate;
+          }
+        }
+        return child !== '';
+      }, 5_000);
+      await agent.call('Runtime.enable', {}, child);
+
+      // Past the bridge: the nested frame's id, context and field node, all
+      // in the child's renderer.
+      const directChild = (method: string, params: Record<string, unknown>) =>
+        browser.sw.evaluate(
+          ({ tab, sessionId, method, params }) =>
+            chrome.debugger.sendCommand(
+              { tabId: tab, sessionId },
+              method,
+              params,
+            ),
+          { tab: tabId, sessionId: child, method, params },
+        ) as Promise<Record<string, unknown>>;
+      const { frameTree } = (await directChild('Page.getFrameTree', {})) as {
+        frameTree: FrameTree;
+      };
+      const nestedId = frameTree.childFrames?.find((c) =>
+        c.frame.url.startsWith(nestedOrigin),
+      )?.frame.id as string;
+      expect(nestedId).toBeDefined();
+      const owner = await directChild('DOM.getFrameOwner', {
+        frameId: nestedId,
+      });
+      const described = (await directChild('DOM.describeNode', {
+        backendNodeId: owner.backendNodeId,
+      })) as { node: { contentDocument: { backendNodeId: number } } };
+      const doc = (await directChild('DOM.resolveNode', {
+        backendNodeId: described.node.contentDocument.backendNodeId,
+      })) as { object: { objectId: string } };
+      const nestedContext = Number(doc.object.objectId.split('.')[1]);
+      const field = (await directChild('Runtime.evaluate', {
+        expression: 'document.querySelector("#h")',
+        contextId: nestedContext,
+      })) as { result: { objectId: string } };
+      const { node } = (await directChild('DOM.describeNode', {
+        objectId: field.result.objectId,
+      })) as { node: { backendNodeId: number } };
+
+      // The child's own document still works.
+      const own = await agent.call(
+        'Runtime.evaluate',
+        { expression: 'document.title', returnByValue: true },
+        child,
+      );
+      expect((own.result?.result as { value: string }).value).toBe(
+        'Nesting frame',
+      );
+      for (const [method, params] of [
+        [
+          'Runtime.evaluate',
+          { expression: 'document.title', contextId: nestedContext },
+        ],
+        ['Accessibility.getFullAXTree', { frameId: nestedId }],
+        ['DOM.describeNode', { backendNodeId: node.backendNodeId }],
+        [
+          'Runtime.callFunctionOn',
+          {
+            objectId: field.result.objectId,
+            functionDeclaration: 'function () { return this.value }',
+          },
+        ],
+      ] as const) {
+        const reply = await agent.call(method, params, child);
+        expect(reply.error?.message).toBe(FRAME_OUT_OF_SCOPE);
+      }
+      const tree = await agent.call('Page.getFrameTree', {}, child);
+      expect(tree.error).toBeUndefined();
+      expect(JSON.stringify(tree.result)).not.toContain(nestedOrigin);
+      const all = agent.frames.join('\n');
+      expect(all).not.toContain('ss-value-7f3a9c');
+      expect(all).not.toContain('Hidden frame field');
+      expect(all).not.toContain(nestedOrigin);
+    } finally {
+      await page.evaluate(() => document.getElementById('nesting')?.remove());
+      await agent.close();
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+    }
+  });
+
+  it('input cannot reach a disallowed cross-site iframe; with its origin allowed it can', async () => {
+    await page.goto(fixtures.formUrl);
+    const box = await page.locator('#xo').boundingBox();
+    const at = {
+      x: Math.round((box?.x ?? 0) + 30),
+      y: Math.round((box?.y ?? 0) + 20),
+    };
+    const drive = async (allowed: string[]) => {
+      const { cdp } = await startRun({ allowedFrameOrigins: allowed });
+      const agent = await rawAgent(cdp);
+      const session = await agent.attach();
+      await agent.childSession(session);
+      const clicks = [];
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        clicks.push(
+          (
+            await agent.call(
+              'Input.dispatchMouseEvent',
+              { type, ...at, button: 'left', clickCount: 1 },
+              session,
+            )
+          ).error?.message,
+        );
+      }
+      await crossFrame(page).locator('#x').focus();
+      const typed = (
+        await agent.call('Input.insertText', { text: 'typed' }, session)
+      ).error?.message;
+      await agent.close();
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      return { clicks, typed };
+    };
+    try {
+      expect(await drive([])).toEqual({
+        clicks: [FRAME_OUT_OF_SCOPE, FRAME_OUT_OF_SCOPE],
+        typed: FRAME_OUT_OF_SCOPE,
+      });
+      expect(await crossValue(page)).toBe('');
+      expect(await drive([fixtures.frameOrigin])).toEqual({
+        clicks: [undefined, undefined],
+        typed: undefined,
+      });
+      expect(await crossValue(page)).toBe('typed');
+    } finally {
+      await crossFrame(page).evaluate(() => {
+        (document.querySelector('#x') as HTMLInputElement).value = '';
+      });
+    }
+  });
+
+  it('a child session whose frame navigates cross-origin stops being allowed within the same event loop turn', async () => {
+    const { cdp } = await startRun({
+      allowedFrameOrigins: [fixtures.frameOrigin],
+    });
+    const agent = await rawAgent(cdp);
+    const session = await agent.attach();
+    const { child } = await agent.childSession(session);
+    await agent.call('Page.enable', {}, child);
+    const before = await agent.call(
+      'Runtime.evaluate',
+      { expression: 'location.href', returnByValue: true },
+      child,
+    );
+    expect(before.error).toBeUndefined();
+    const mark = agent.frames.length;
+    // Same site as the frame (127.0.0.1), another origin: Chrome keeps the
+    // frame in its process, so the child session survives the move.
+    const away = `${fixtures.sameSiteOrigin.replace('localhost', '127.0.0.1')}/elsewhere?child-nav`;
+    await crossFrame(page).evaluate((url) => {
+      location.href = url;
+    }, away);
+    await until(() => page.frames().some((f) => f.url() === away), 5_000);
+    const after = await agent.call(
+      'Runtime.evaluate',
+      { expression: 'location.href', returnByValue: true },
+      child,
+    );
+    expect(after.error?.message).toBe(FRAME_OUT_OF_SCOPE);
+    // The child's own frameNavigated (which names the new URL) was dropped.
+    expect(agent.frames.slice(mark).filter((f) => f.includes(away))).toEqual(
+      [],
+    );
+    expect(
+      agent.events
+        .slice()
+        .filter(
+          (e) =>
+            e.sessionId === child &&
+            e.method === 'Page.frameNavigated' &&
+            JSON.stringify(e.params).includes('elsewhere'),
+        ),
+    ).toEqual([]);
+    await agent.close();
+    await bridgeMessage(browser.sw, { type: 'stopRun' });
+    await page.goto(fixtures.formUrl);
   });
 
   describe('in-origin page activity keeps the run alive', () => {
