@@ -317,6 +317,79 @@ describe('an https commit outside the run origins', () => {
     ).toBe(true);
     expect(socket.sent.length).toBe(sentBefore);
   });
+
+  it('refuses a command with handles before any lookup reaches the held page', async () => {
+    const socket = await attachedRun();
+    commit(`${B}/x`);
+    const callsBefore = sendCommand.mock.calls.length;
+    expect(
+      (await cdp(socket, 'DOM.describeNode', { backendNodeId: 5 })).error,
+    ).toBe(OUT_OF_SCOPE);
+    expect(
+      (
+        await cdp(socket, 'Runtime.callFunctionOn', {
+          objectId: '1.41.1',
+          functionDeclaration: 'function () { return 1; }',
+        })
+      ).error,
+    ).toBe(OUT_OF_SCOPE);
+    // Nothing at all was sent to the page: no DOM.resolveNode, no
+    // Runtime.evaluate('document') discovery, no describe.
+    expect(sendCommand.mock.calls.slice(callsBefore)).toEqual([]);
+  });
+});
+
+describe('dialogs and an allowed origin', () => {
+  const opening = {
+    frameId: 'T',
+    type: 'confirm',
+    hasBrowserHandler: false,
+    message: 'Leave Rosalind?',
+    url: `${B}/x`,
+    defaultPrompt: '',
+  };
+  const answered = () =>
+    sendCommand.mock.calls.filter(
+      ([, m]) => m === 'Page.handleJavaScriptDialog',
+    ).length;
+  const forwardedDialogs = (socket: FakeSocket) =>
+    socket.sent.filter(
+      (m) => m.type === 'event' && m.method === 'Page.javascriptDialogOpening',
+    );
+
+  it('answers a held page’s dialog itself, and leaves an allowed one to the agent', async () => {
+    const socket = await attachedRun();
+    commit(`${B}/x`);
+    bridge.onDebuggerEvent(
+      { tabId: 1 },
+      'Page.javascriptDialogOpening',
+      opening,
+    );
+    // Out of scope while held: answered by the bridge, never forwarded.
+    expect(answered()).toBe(1);
+    expect(forwardedDialogs(socket)).toEqual([]);
+    bridge.onDebuggerEvent({ tabId: 1 }, 'Page.javascriptDialogClosed', {
+      result: false,
+      userInput: '',
+    });
+
+    expect(await allow(B)).toEqual({ ok: true });
+    bridge.onDebuggerEvent(
+      { tabId: 1 },
+      'Page.javascriptDialogOpening',
+      opening,
+    );
+    // In scope now (frame scope judges B as a run origin): forwarded, blank.
+    expect(answered()).toBe(1);
+    const sent = forwardedDialogs(socket);
+    expect(sent).toHaveLength(1);
+    expect(JSON.stringify(sent)).not.toContain('Rosalind');
+    expect(
+      (await cdp(socket, 'Page.handleJavaScriptDialog', { accept: true }))
+        .error,
+    ).toBeUndefined();
+    expect(answered()).toBe(2);
+  });
 });
 
 describe('a commit that ends the run at once', () => {

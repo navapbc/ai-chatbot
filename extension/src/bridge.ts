@@ -1174,6 +1174,9 @@ async function forwardCdp(
   if (current.needsRegistration && !UNREGISTERED_METHODS.has(method)) {
     throw new Error(REGISTRATION_REFUSED);
   }
+  // Held (or ending): refused before the frame lookups below, which would
+  // otherwise talk to the held page (DOM.resolveNode, context discovery).
+  if (current.blocked) throw new Error(OUT_OF_SCOPE);
   const screenshot = method === 'Page.captureScreenshot';
   const lock = lockFor(current.tabId);
 
