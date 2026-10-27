@@ -64,10 +64,9 @@ export interface Fixtures {
   stop(): Promise<void>;
 }
 
-/** Serves the fixtures over HTTPS from a certificate generated for this run. */
-export async function serveFixtures(): Promise<Fixtures> {
+/** A self-signed certificate for localhost, generated for this run. */
+export function makeLocalhostCert(): { key: Buffer; cert: Buffer } {
   const dir = mkdtempSync(path.join(tmpdir(), 'relay-e2e-cert-'));
-  let tls: { key: Buffer; cert: Buffer };
   try {
     execFileSync(
       'openssl',
@@ -88,14 +87,18 @@ export async function serveFixtures(): Promise<Fixtures> {
       ],
       { stdio: 'ignore' },
     );
-    tls = {
+    return {
       key: readFileSync(path.join(dir, 'key.pem')),
       cert: readFileSync(path.join(dir, 'cert.pem')),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
 
+/** Serves the fixtures over HTTPS from a certificate generated for this run. */
+export async function serveFixtures(): Promise<Fixtures> {
+  const tls = makeLocalhostCert();
   const cookieSentinel = `cookie-${randomBytes(12).toString('hex')}`;
   const form = readFileSync(path.join(FIXTURES, 'form.html'), 'utf8');
   const oopif = readFileSync(path.join(FIXTURES, 'oopif.html'), 'utf8');
@@ -308,16 +311,24 @@ export interface ExtensionBrowser {
   stop(): Promise<void>;
 }
 
-/** Builds the extension and launches Chromium with it loaded. */
-export async function launchExtensionBrowser(): Promise<ExtensionBrowser> {
-  execFileSync('pnpm', ['extension:build'], { cwd: ROOT, stdio: 'ignore' });
+/**
+ * Builds the extension and launches Chromium with it loaded. Pass
+ * `extensionDir` to load an extension the caller already built (no build runs).
+ */
+export async function launchExtensionBrowser(
+  opts: { extensionDir?: string; headless?: boolean } = {},
+): Promise<ExtensionBrowser> {
+  const extensionDir = opts.extensionDir ?? EXTENSION_DIST;
+  if (!opts.extensionDir) {
+    execFileSync('pnpm', ['extension:build'], { cwd: ROOT, stdio: 'ignore' });
+  }
   const profile = mkdtempSync(path.join(tmpdir(), 'relay-e2e-profile-'));
   const context = await chromium.launchPersistentContext(profile, {
     channel: 'chromium',
-    headless: true,
+    headless: opts.headless ?? true,
     args: [
-      `--disable-extensions-except=${EXTENSION_DIST}`,
-      `--load-extension=${EXTENSION_DIST}`,
+      `--disable-extensions-except=${extensionDir}`,
+      `--load-extension=${extensionDir}`,
       '--ignore-certificate-errors',
     ],
   });
