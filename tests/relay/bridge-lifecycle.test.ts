@@ -79,6 +79,8 @@ function stubChrome() {
       id: 'ext',
       onMessage: { addListener: () => {} },
     },
+    alarms: { onAlarm: { addListener: () => {} } },
+    sidePanel: { setPanelBehavior: async () => {} },
     tabs: {
       get: async () => ({ url: `${ORIGIN}/form` }),
       onUpdated: { addListener: () => {} },
@@ -446,12 +448,20 @@ describe('run status after a worker restart', () => {
     expect((await screenshot(socket, 's1')).error).toBe(REGISTRATION_REFUSED);
     // Values can be registered again while it is set.
     expect(
-      await bridge.handleMessage({ type: 'addKnownValue', value: 'Rosalind' }),
+      await bridge.handleMessage({
+        type: 'addKnownValue',
+        runId: 'run-1',
+        value: 'Rosalind',
+      }),
     ).toEqual({ ok: true });
     expect((await screenshot(socket, 's2')).error).toBe(REGISTRATION_REFUSED);
 
     expect(
-      await bridge.handleMessage({ type: 'registrationComplete', count: 1 }),
+      await bridge.handleMessage({
+        type: 'registrationComplete',
+        runId: 'run-1',
+        count: 1,
+      }),
     ).toEqual({ ok: true });
     expect((await status()).needsRegistration).toBe(false);
     expect((await screenshot(socket, 's3')).error).not.toBe(
@@ -462,7 +472,11 @@ describe('run status after a worker restart', () => {
   it('a same-run-id restart (token refresh) after values were registered needs registration', async () => {
     const socket = await attachedRun('run-1');
     expect(
-      await bridge.handleMessage({ type: 'addKnownValue', value: 'Rosalind' }),
+      await bridge.handleMessage({
+        type: 'addKnownValue',
+        runId: 'run-1',
+        value: 'Rosalind',
+      }),
     ).toEqual({ ok: true });
     expect(await start(tokenFor('run-1', 7200))).toEqual({ ok: true });
     // Not ended on the relay: the new socket's register replaces the old one.
@@ -487,7 +501,11 @@ describe('run status after a worker restart', () => {
     expect(await start(tokenFor('run-1', 3))).toEqual({ ok: true });
     await (FakeSocket.all.at(-1) as FakeSocket).open();
     expect(
-      await bridge.handleMessage({ type: 'addKnownValue', value: 'Rosalind' }),
+      await bridge.handleMessage({
+        type: 'addKnownValue',
+        runId: 'run-1',
+        value: 'Rosalind',
+      }),
     ).toEqual({ ok: true });
     await vi.advanceTimersByTimeAsync(4_000);
     // Ended by the worker itself: no run is left to say values were lost.
@@ -503,7 +521,11 @@ describe('run status after a worker restart', () => {
     ).toBeUndefined();
     expect((await screenshot(next, 's1')).error).toBe(REGISTRATION_REFUSED);
     expect(
-      await bridge.handleMessage({ type: 'registrationComplete', count: 1 }),
+      await bridge.handleMessage({
+        type: 'registrationComplete',
+        runId: 'run-1',
+        count: 1,
+      }),
     ).toEqual({ ok: true });
     expect((await screenshot(next, 's2')).error).not.toBe(REGISTRATION_REFUSED);
   });
@@ -565,22 +587,85 @@ describe('run status after a worker restart', () => {
     expect(await status()).toEqual({ ok: true, active: false });
   });
 
+  it('binds addKnownValue and registrationComplete to the active run id', async () => {
+    const socket = await resumed();
+    const wrong = { ok: false, error: 'wrong run' };
+    for (const runId of [undefined, 42, null, 'run-2', '']) {
+      expect(
+        await bridge.handleMessage({
+          type: 'addKnownValue',
+          runId,
+          value: 'Rosalind',
+        }),
+      ).toEqual(wrong);
+      expect(
+        await bridge.handleMessage({ type: 'registrationComplete', runId }),
+      ).toEqual(wrong);
+    }
+    // Refused messages change nothing.
+    expect((await status()).needsRegistration).toBe(true);
+    expect((await screenshot(socket, 's1')).error).toBe(REGISTRATION_REFUSED);
+    expect(
+      await bridge.handleMessage({
+        type: 'addKnownValue',
+        runId: 'run-1',
+        value: 'Rosalind',
+      }),
+    ).toEqual({ ok: true });
+    // The count is still validated once the run id matches.
+    expect(
+      (
+        await bridge.handleMessage({
+          type: 'registrationComplete',
+          runId: 'run-1',
+          count: -1,
+        })
+      ).ok,
+    ).toBe(false);
+    expect(
+      await bridge.handleMessage({
+        type: 'registrationComplete',
+        runId: 'run-1',
+        count: 1,
+      }),
+    ).toEqual({ ok: true });
+    expect((await status()).needsRegistration).toBe(false);
+  });
+
   it('refuses registrationComplete without a run, or with a bad count', async () => {
     expect(
-      (await bridge.handleMessage({ type: 'registrationComplete' })).ok,
+      (
+        await bridge.handleMessage({
+          type: 'registrationComplete',
+          runId: 'run-1',
+        })
+      ).ok,
     ).toBe(false);
     await resumed();
     expect(
-      (await bridge.handleMessage({ type: 'registrationComplete', count: -1 }))
-        .ok,
+      (
+        await bridge.handleMessage({
+          type: 'registrationComplete',
+          runId: 'run-1',
+          count: -1,
+        })
+      ).ok,
     ).toBe(false);
     expect(
-      (await bridge.handleMessage({ type: 'registrationComplete', count: '1' }))
-        .ok,
+      (
+        await bridge.handleMessage({
+          type: 'registrationComplete',
+          runId: 'run-1',
+          count: '1',
+        })
+      ).ok,
     ).toBe(false);
     expect((await status()).needsRegistration).toBe(true);
     expect(
-      await bridge.handleMessage({ type: 'registrationComplete' }),
+      await bridge.handleMessage({
+        type: 'registrationComplete',
+        runId: 'run-1',
+      }),
     ).toEqual({ ok: true });
   });
 });
@@ -696,7 +781,11 @@ describe('while a resumed run needs registration (fail closed)', () => {
   it('allows every method again after registrationComplete (count 0)', async () => {
     const socket = await resumedRun();
     expect(
-      await bridge.handleMessage({ type: 'registrationComplete', count: 0 }),
+      await bridge.handleMessage({
+        type: 'registrationComplete',
+        runId: 'run-1',
+        count: 0,
+      }),
     ).toEqual({ ok: true });
     for (const method of REFUSED) {
       const reply = await cdp(socket, method);
@@ -757,7 +846,10 @@ describe('while a resumed run needs registration (fail closed)', () => {
     ]);
     expect(JSON.stringify(events)).not.toContain('Rosalind');
 
-    await bridge.handleMessage({ type: 'registrationComplete' });
+    await bridge.handleMessage({
+      type: 'registrationComplete',
+      runId: 'run-1',
+    });
     fire('Page.frameNavigated', {
       frame: { id: 'T', loaderId: 'L', url: `${ORIGIN}/form` },
     });

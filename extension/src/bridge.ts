@@ -65,10 +65,10 @@ export type BridgeMessage =
       allowedFrameOrigins?: string[];
     }
   | { type: 'stopRun' }
-  | { type: 'addKnownValue'; value: string }
+  | { type: 'addKnownValue'; runId: string; value: string }
   | { type: 'getRunStatus' }
   /** The panel re-entered the run's known values (count only, no values). */
-  | { type: 'registrationComplete'; count?: number }
+  | { type: 'registrationComplete'; runId: string; count?: number }
   /**
    * The caseworker allowed the origin the run is held on (see holdOrigin)
    * for the rest of this run: exactly `pendingOrigin`, an https origin.
@@ -2585,9 +2585,10 @@ export function onTabRemoved(tabId: number) {
  * from this extension. A value that cannot be registered is refused, and the
  * caller must not type it. Never logs or echoes the value.
  */
-function addKnownValue(value: unknown): BridgeResponse {
+function addKnownValue(runId: unknown, value: unknown): BridgeResponse {
   const current = run;
   if (!current || current.stopped) return { ok: false, error: 'no active run' };
+  if (runId !== current.runId) return { ok: false, error: 'wrong run' };
   if (typeof value !== 'string' || !current.redactor.addKnownValue(value)) {
     return { ok: false, error: 'known value not registered' };
   }
@@ -2657,9 +2658,10 @@ function getRunStatus(): RunStatus {
  * The panel re-entered the run's known values after a worker restart (it
  * sends only how many, never the values): screenshots may be taken again.
  */
-function registrationComplete(count: unknown): BridgeResponse {
+function registrationComplete(runId: unknown, count: unknown): BridgeResponse {
   const current = run;
   if (!current || current.stopped) return { ok: false, error: 'no active run' };
+  if (runId !== current.runId) return { ok: false, error: 'wrong run' };
   if (
     count !== undefined &&
     (typeof count !== 'number' || !Number.isInteger(count) || count < 0)
@@ -2676,10 +2678,11 @@ export async function handleMessage(message: unknown): Promise<BridgeResponse> {
     return startRun(message as Extract<BridgeMessage, { type: 'startRun' }>);
   }
   if (message.type === 'stopRun') return stopRun('user');
-  if (message.type === 'addKnownValue') return addKnownValue(message.value);
+  if (message.type === 'addKnownValue')
+    return addKnownValue(message.runId, message.value);
   if (message.type === 'getRunStatus') return getRunStatus();
   if (message.type === 'registrationComplete') {
-    return registrationComplete(message.count);
+    return registrationComplete(message.runId, message.count);
   }
   if (message.type === 'allowOrigin') return allowOrigin(message.origin);
   return { ok: false, error: 'unknown message type' };

@@ -140,11 +140,20 @@ async function startRun(
       .slice(registered)
       .some((l) => l.event === 'registered' && l.runId === tokens.runId),
   );
+  activeRunId = tokens.runId;
   return { cdp, runId: tokens.runId };
 }
 
-const addKnownValue = (value: unknown) =>
-  bridgeMessage(browser.sw, { type: 'addKnownValue', value });
+// The run the last startRun began: the bridge binds addKnownValue and
+// registrationComplete to the active run id.
+let activeRunId = '';
+
+const addKnownValue = (value: unknown, ...id: [unknown?]) =>
+  bridgeMessage(browser.sw, {
+    type: 'addKnownValue',
+    runId: id.length > 0 ? id[0] : activeRunId,
+    value,
+  });
 
 interface CdpMessage {
   id?: number;
@@ -990,6 +999,13 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     expect(noRun.ok).toBe(false);
     expect(JSON.stringify(noRun)).not.toContain(KNOWN);
     await startRun();
+    // Bound to the run: a missing or other run id is refused, not applied.
+    for (const wrongId of [undefined, 'other-run']) {
+      expect(await addKnownValue(KNOWN, wrongId)).toEqual({
+        ok: false,
+        error: 'wrong run',
+      });
+    }
     expect(await addKnownValue(12345)).toEqual({
       ok: false,
       error: 'known value not registered',
@@ -2511,10 +2527,18 @@ describe('redaction e2e', { timeout: 60_000 }, () => {
     // The panel registers the value again; reads resume and stay scrubbed.
     const viaPage = (message: Record<string, unknown>) =>
       bridgeMessageFromPage(browser.context, message);
-    expect(await viaPage({ type: 'addKnownValue', value: KNOWN })).toEqual({
+    expect(
+      await viaPage({ type: 'addKnownValue', runId, value: KNOWN }),
+    ).toEqual({
       ok: true,
     });
-    expect(await viaPage({ type: 'registrationComplete', count: 1 })).toEqual({
+    expect(
+      await viaPage({
+        type: 'registrationComplete',
+        runId,
+        count: 1,
+      }),
+    ).toEqual({
       ok: true,
     });
     mark = relay.frames.length;

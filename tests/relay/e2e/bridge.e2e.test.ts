@@ -2087,7 +2087,10 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     });
     expect(JSON.stringify(status)).not.toContain(relay.url);
     expect(
-      await bridgeMessage(browser.sw, { type: 'registrationComplete' }),
+      await bridgeMessage(browser.sw, {
+        type: 'registrationComplete',
+        runId,
+      }),
     ).toEqual({ ok: true });
     await bridgeMessage(browser.sw, { type: 'stopRun' });
     expect(await bridgeMessage(browser.sw, { type: 'getRunStatus' })).toEqual({
@@ -2239,6 +2242,7 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     expect(
       await bridgeMessageFromPage(browser.context, {
         type: 'registrationComplete',
+        runId,
         count: 0,
       }),
     ).toEqual({ ok: true });
