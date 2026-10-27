@@ -77,6 +77,7 @@ export interface AppApi {
   classifyFields(
     runId: string,
     fields: readonly FieldDescriptor[],
+    signal?: AbortSignal,
   ): Promise<boolean[]>;
 }
 
@@ -234,11 +235,14 @@ export const createAppApi = (opts: {
   const classifyChunk = async (
     runId: string,
     chunk: FieldDescriptor[],
+    signal?: AbortSignal,
   ): Promise<boolean[]> => {
-    const value = await request('POST', '/api/relay/classify-field', {
-      runId,
-      fields: chunk,
-    });
+    const value = await request(
+      'POST',
+      '/api/relay/classify-field',
+      { runId, fields: chunk },
+      signal,
+    );
     const sensitive = isRecord(value) ? value.sensitive : undefined;
     if (
       !Array.isArray(sensitive) ||
@@ -283,13 +287,13 @@ export const createAppApi = (opts: {
       parsed(isToken, 'POST', '/api/relay/token', {
         runId: requireRunId(runId),
       }),
-    async classifyFields(runId, fields) {
+    async classifyFields(runId, fields, signal) {
       requireRunId(runId);
       const descriptors = fields.map(toDescriptor);
       const results: boolean[] = [];
       for (let i = 0; i < descriptors.length; i += MAX_FIELDS_PER_REQUEST) {
         const chunk = descriptors.slice(i, i + MAX_FIELDS_PER_REQUEST);
-        results.push(...(await classifyChunk(runId, chunk)));
+        results.push(...(await classifyChunk(runId, chunk, signal)));
       }
       return results;
     },

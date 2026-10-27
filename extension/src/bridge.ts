@@ -41,6 +41,9 @@ import {
   ScreenshotMaskError,
   withScreenshotMask,
 } from '../../lib/relay/screenshot-mask';
+import { createAppApi } from './app-api';
+import { APP_ORIGIN } from './config';
+import { createJevClassifier, type JevClassifier } from './jev-classifier';
 import {
   type Describe,
   redactErrorMessage,
@@ -135,6 +138,11 @@ interface Run extends RunConfig {
    * stopRun, and empty on a run rebuilt after a worker restart.
    */
   redactor: Redactor;
+  /**
+   * The redactor's classifyExtra hook (the app's classify-field route), when
+   * the build has an APP_ORIGIN. Its failures() feeds the run status.
+   */
+  jev?: JevClassifier;
   /** True once a known value was registered; see addKnownValue. */
   hasKnownValues: boolean;
   /** The bridge's focus-reading isolated world in the main frame, if made. */
@@ -399,12 +407,30 @@ export async function resumeRun(): Promise<void> {
   begin({ ...config, allowedFrameOrigins: frames }, socket.url, claims, true);
 }
 
+/**
+ * A per-run Jev classifier, only when the build has an APP_ORIGIN; undefined
+ * (no hook, deterministic verdicts only) otherwise or if the origin is bad.
+ * A run resumed after a worker restart gets a fresh one (and budget).
+ */
+function jevFor(runId: string): JevClassifier | undefined {
+  if (!APP_ORIGIN) return undefined;
+  try {
+    return createJevClassifier({
+      api: createAppApi({ origin: APP_ORIGIN }),
+      runId,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 function begin(
   config: RunConfig,
   socketUrl: string,
   claims: { runId: string; origin: string; exp: number },
   resumed = false,
 ) {
+  const jev = jevFor(claims.runId);
   const current: Run = {
     ...config,
     ...claims,
@@ -416,7 +442,10 @@ function begin(
     frameScope: createFrameScope(),
     reconnectDelayMs: FIRST_RECONNECT_MS,
     announceResume: resumed,
-    redactor: createRedactor(),
+    redactor: jev
+      ? createRedactor({ classifyExtra: jev.classify })
+      : createRedactor(),
+    jev,
     hasKnownValues: false,
   };
   run = current;

@@ -336,6 +336,29 @@ describe('errors', () => {
     );
     expect(calls).toHaveLength(0);
   });
+
+  it("classifyFields: the caller's signal aborts the request as network", async () => {
+    const fetchFn = ((_u: string, init: RequestInit) =>
+      new Promise((_res, rej) => {
+        init.signal?.addEventListener('abort', () => rej(new Error('aborted')));
+      })) as unknown as typeof fetch;
+    const api = createAppApi({ origin: ORIGIN, fetch: fetchFn });
+    const ctl = new AbortController();
+    const p = caught(api.classifyFields(RUN, [{ label: 'a' }], ctl.signal));
+    ctl.abort();
+    expect((await p).code).toBe('network');
+  });
+
+  it('classifyFields: an already-aborted caller signal never calls fetch', async () => {
+    const { api, calls } = setup(() => json({ sensitive: [true] }));
+    const ctl = new AbortController();
+    ctl.abort();
+    expect(
+      (await caught(api.classifyFields(RUN, [{ label: 'a' }], ctl.signal)))
+        .code,
+    ).toBe('network');
+    expect(calls).toHaveLength(0);
+  });
 });
 
 describe('inputs', () => {
