@@ -45,7 +45,15 @@ const eveChatOrigins: (string | undefined)[] = [];
 /** The status the next POST /api/eve-chat answers with. */
 let eveChatStatus = 200;
 /** Runs eve-chat created: the fake server rows the panel reads and stops. */
-const runs = new Map<string, { ended: boolean }>();
+const runs = new Map<
+  string,
+  { ended: boolean; phase?: string; pending?: unknown[] }
+>();
+/** Answer turns (`inputResponses` bodies) POSTed to /api/eve-chat. */
+const answerBodies: unknown[] = [];
+const answerOrigins: (string | undefined)[] = [];
+/** The refusal reason the next answer turn gets as a 400, or null for 200. */
+let answerRefusal: string | null = null;
 /** GET /api/relay/runs/:id polls, kept apart from `appCalls`. */
 const pollCalls: string[] = [];
 
@@ -74,9 +82,30 @@ beforeAll(async () => {
   fixtures = await serveFixtures();
   app = createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/eve-chat') {
+      const text = await readBody(req);
+      const parsed = JSON.parse(text) as { inputResponses?: unknown };
+      if (parsed.inputResponses !== undefined) {
+        // An answer turn: the run row is left as it is.
+        answerBodies.push(parsed);
+        answerOrigins.push(req.headers.origin);
+        if (answerRefusal) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              code: 'bad_request:api',
+              message: 'The request couldn\'t be processed.',
+              cause: answerRefusal,
+            }),
+          );
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('data: {"type":"start"}\n\n');
+        return;
+      }
       appCalls.push('POST /api/eve-chat');
       eveChatOrigins.push(req.headers.origin);
-      eveChatBodies.push(JSON.parse(await readBody(req)));
+      eveChatBodies.push(parsed);
       if (eveChatStatus !== 200) {
         res.writeHead(eveChatStatus, { 'content-type': 'application/json' });
         res.end('{"code":"rate_limit:chat","message":"limit"}');
@@ -144,7 +173,8 @@ beforeAll(async () => {
           ended: row.ended,
           endedAt: row.ended ? new Date().toISOString() : null,
           progress: CANNED_PROGRESS,
-          pending: [],
+          pending: row.ended ? [] : (row.pending ?? []),
+          phase: row.ended ? 'ended' : (row.phase ?? 'working'),
         }),
       );
       return;
@@ -624,6 +654,139 @@ describe('the panel shell', () => {
       await site.close();
     }
   }, 40_000);
+
+  it('Needs You: answers a text and a sensitive question in one batch, only while the phase is needs_you', async () => {
+    const ANSWER = 'Kern-County-Answer-42';
+    const seen: string[] = [];
+    const PENDING = [
+      {
+        requestId: 'q-text',
+        prompt: 'County of residence <b>x</b>',
+        display: 'text',
+        options: [],
+        allowFreeform: true,
+      },
+      {
+        requestId: 'q-ssn',
+        prompt: 'Social Security number',
+        display: 'select',
+        options: [
+          { id: 'provided', label: 'I entered it myself' },
+          { id: 'skip', label: 'Skip' },
+        ],
+        allowFreeform: false,
+      },
+    ];
+    const { site, page, runId } = await startOnRealTab();
+    page.on('console', (msg) => seen.push(msg.text()));
+    answerBodies.length = 0;
+    answerOrigins.length = 0;
+    answerRefusal = null;
+    const row = runs.get(runId);
+    if (!row) throw new Error('no run row');
+    const card = page.getByRole('region', { name: 'The agent needs you' });
+    const pollsSince = () =>
+      pollCalls.filter((c) => c === `GET /api/relay/runs/${runId}`).length;
+    try {
+      // Pending questions while the agent works or after it stopped: no card.
+      for (const phase of ['working', 'review']) {
+        row.phase = phase;
+        row.pending = PENDING;
+        const before = pollsSince();
+        await expect
+          .poll(pollsSince, { timeout: 10_000 })
+          .toBeGreaterThan(before + 1);
+        expect(await card.count()).toBe(0);
+      }
+
+      row.phase = 'needs_you';
+      await card.waitFor({ timeout: 10_000 });
+      // The prompt is text, not markup.
+      await card.getByText('County of residence <b>x</b>').waitFor();
+      expect(await card.locator('b').count()).toBe(0);
+      await card.getByText('Social Security number').waitFor();
+      await card
+        .getByText(
+          'This one is sensitive. Type it in the page yourself, then press the button.',
+        )
+        .waitFor();
+      // No text input for the sensitive question: only the one textarea.
+      expect(await card.getByRole('textbox').count()).toBe(1);
+
+      const send = card.getByRole('button', { name: 'Send' });
+      expect(await send.isDisabled()).toBe(true);
+      const box = card.getByLabel('County of residence <b>x</b>');
+      expect(await box.getAttribute('autocomplete')).toBe('off');
+      expect(await box.getAttribute('maxlength')).toBe('2000');
+      await box.fill(ANSWER);
+      expect(await send.isDisabled()).toBe(true);
+      await card.getByRole('button', { name: 'I entered it myself' }).click();
+      expect(await send.isDisabled()).toBe(false);
+
+      // The server refuses the text: fixed copy, the text is cleared.
+      answerRefusal = 'sensitive_value_in_message';
+      await send.click();
+      await card.getByRole('alert').getByText("We can't send that here").waitFor();
+      await card
+        .getByText('Type that value in the page yourself instead.', {
+          exact: false,
+        })
+        .waitFor();
+      expect(await box.inputValue()).toBe('');
+      expect(await send.isDisabled()).toBe(true);
+      expect(answerBodies).toHaveLength(1);
+
+      // Answer again: one POST with exactly the batch.
+      answerRefusal = null;
+      await box.fill(ANSWER);
+      expect(await send.isDisabled()).toBe(false);
+      await send.click();
+      await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(answerBodies).toHaveLength(2);
+      expect(answerBodies[1]).toEqual({
+        id: runId,
+        inputResponses: [
+          { requestId: 'q-text', text: ANSWER },
+          { requestId: 'q-ssn', optionId: 'provided' },
+        ],
+      });
+      expect(answerOrigins).toEqual([
+        `chrome-extension://${EXTENSION_ID}`,
+        `chrome-extension://${EXTENSION_ID}`,
+      ]);
+      // Still the same pending set: the card stays sent and disabled.
+      const before = pollsSince();
+      await expect
+        .poll(pollsSince, { timeout: 10_000 })
+        .toBeGreaterThan(before + 1);
+      await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(await send.isDisabled()).toBe(true);
+      expect(await box.isDisabled()).toBe(true);
+      expect(answerBodies).toHaveLength(2);
+
+      // The agent took the answers: the card goes away.
+      row.phase = 'working';
+      row.pending = [];
+      await card.waitFor({ state: 'detached', timeout: 10_000 });
+
+      // The typed answer reached no console line, the title or storage.
+      expect(await page.title()).not.toContain(ANSWER);
+      expect(page.url()).not.toContain(ANSWER);
+      const stored = await page.evaluate(async () =>
+        JSON.stringify([
+          await chrome.storage.local.get(null),
+          await chrome.storage.session.get(null),
+        ]),
+      );
+      expect(stored).not.toContain(ANSWER);
+      for (const line of seen) expect(line).not.toContain(ANSWER);
+    } finally {
+      answerRefusal = null;
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 90_000);
 
   it('saves details for 8 hours, reuses them, expires them and clears them', async () => {
     const seen: string[] = [];

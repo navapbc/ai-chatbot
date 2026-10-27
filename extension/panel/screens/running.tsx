@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import type {
   EndedReason,
@@ -6,8 +6,10 @@ import type {
   RunSessionState,
   SessionRun,
 } from '../lib/run-session';
+import { createAnswerSender } from '../lib/answer-client';
 import { buildProgressView } from '../lib/progress-view';
 import { createControllerLifecycle } from '../lib/search-controller';
+import { NeedsYouCard, type SendAnswers } from './needs-you';
 import { ProgressView } from './progress-view';
 
 type Props = {
@@ -17,6 +19,10 @@ type Props = {
   createSession: (run: SessionRun) => RunSession;
   /** Leaves the ended run's screen (dispatches runEnded). */
   onHome: () => void;
+  /** The build's app origin, for the default answer sender. */
+  appOrigin?: string;
+  /** Sends answers to the agent's questions; defaults to the real client. */
+  sendAnswers?: SendAnswers;
 };
 
 const ENDED_TEXT: Record<EndedReason, string> = {
@@ -54,7 +60,13 @@ export const RunningScreen = ({
   run,
   createSession,
   onHome,
+  appOrigin = '',
+  sendAnswers,
 }: Props) => {
+  const send = useMemo(
+    () => sendAnswers ?? createAnswerSender(appOrigin),
+    [sendAnswers, appOrigin],
+  );
   const [state, setState] = useState<RunSessionState | null>(null);
   const session = useRef<RunSession | null>(null);
   const startedAt = useRef(Date.now());
@@ -133,6 +145,18 @@ export const RunningScreen = ({
           ) : null}
         </div>
       ) : null}
+      {/* SLOT (task 5): the allow-this-site card renders here. */}
+      {!ended && state?.phase === 'needs_you' && state.pending.length > 0 ? (
+        // Answers are offered only while the agent waits on them: never
+        // while it works or after it stopped (a replayed turn can briefly
+        // show a stale review).
+        <NeedsYouCard
+          key={state.pending.map((p) => p.requestId).join('\n')}
+          runId={run.runId}
+          pending={state.pending}
+          sendAnswers={send}
+        />
+      ) : null}
       {!ended ? (
         <ProgressView
           model={buildProgressView(
@@ -141,7 +165,7 @@ export const RunningScreen = ({
           )}
         />
       ) : null}
-      {/* SLOT (tasks 4-6): pending questions and phase cards render here. */}
+      {/* SLOT (task 6): the review panel renders here. */}
       {!ended ? (
         <Button
           type="button"

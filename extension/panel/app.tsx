@@ -184,6 +184,7 @@ export const App = ({ onStart }: { onStart?: OnStart }) => {
           run={state.run}
           createSession={createSession}
           onHome={() => dispatch({ type: 'runEnded' })}
+          appOrigin={APP_ORIGIN}
         />
       ) : null}
     </main>

@@ -44,6 +44,46 @@ export class StartInFlightError extends Error {
   }
 }
 
+/** The server says these questions were already answered (or replaced). */
+export class AnswerAlreadyGivenError extends Error {
+  constructor() {
+    super('already answered');
+    this.name = 'AnswerAlreadyGivenError';
+  }
+}
+
+/** The server refused an answer's text (a sensitive value, or too long). */
+export class AnswerRefusedError extends Error {
+  constructor() {
+    super('cannot send that here');
+    this.name = 'AnswerRefusedError';
+  }
+}
+
+/** The server says the run has ended. */
+export class RunEndedError extends Error {
+  constructor() {
+    super('run ended');
+    this.name = 'RunEndedError';
+  }
+}
+
+/** The panel refused to send an answer set (empty, too long, duplicated). */
+export class AnswerInvalidError extends Error {
+  constructor() {
+    super('invalid answer');
+    this.name = 'AnswerInvalidError';
+  }
+}
+
+/** An answer for one of these questions is already on its way. */
+export class AnswerInFlightError extends Error {
+  constructor() {
+    super('answer in flight');
+    this.name = 'AnswerInFlightError';
+  }
+}
+
 const GENERIC: ErrorMessage = {
   title: 'Something went wrong',
   detail:
@@ -146,7 +186,44 @@ const START_IN_FLIGHT: ErrorMessage = {
   retryable: false,
 };
 
+const ANSWER_COPY = {
+  alreadyAnswered: {
+    title: 'This question was already answered',
+    detail: 'Wait a moment for the agent to catch up.',
+    retryable: false,
+  },
+  refused: {
+    title: "We can't send that here",
+    detail:
+      'It looks like a sensitive value. Type it in the page yourself instead, then answer again.',
+    retryable: true,
+  },
+  runEnded: {
+    title: 'This run has ended',
+    detail: 'Nothing more can be sent to it.',
+    retryable: false,
+  },
+  invalid: {
+    title: 'Check your answers',
+    detail:
+      'Every question needs an answer of 2000 characters or fewer, or Skip.',
+    retryable: true,
+  },
+  inFlight: {
+    title: 'Your answers are being sent',
+    detail: 'Wait for them to finish sending.',
+    retryable: false,
+  },
+} satisfies Record<string, ErrorMessage>;
+
 export const messageFor = (error: unknown): ErrorMessage => {
+  if (error instanceof AnswerAlreadyGivenError) {
+    return { ...ANSWER_COPY.alreadyAnswered };
+  }
+  if (error instanceof AnswerRefusedError) return { ...ANSWER_COPY.refused };
+  if (error instanceof RunEndedError) return { ...ANSWER_COPY.runEnded };
+  if (error instanceof AnswerInvalidError) return { ...ANSWER_COPY.invalid };
+  if (error instanceof AnswerInFlightError) return { ...ANSWER_COPY.inFlight };
   if (error instanceof NotConnectedError) return { ...NOT_CONNECTED };
   if (error instanceof TabGoneError) return { ...WORKER.tab_not_found };
   if (error instanceof TabMovedError) return { ...WORKER.tab_out_of_scope };
