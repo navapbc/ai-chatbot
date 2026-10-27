@@ -55,10 +55,12 @@ export const classifyQuestion = (req: PendingInputRequest): QuestionKind => {
 };
 
 /**
- * The answer for a sensitive question's button. By option id when the
- * request carries `provided`/`skip`; otherwise, where free text is allowed,
- * the same word as fixed text (a constant, never caseworker-typed); otherwise
- * null: the question cannot be answered here.
+ * The answer for a sensitive question's button: by option id, and only when
+ * the request carries that option. A request flagged by its prompt alone has
+ * no such option and gets null (cannot be answered here): sending the word as
+ * free text is not done, because the skill tells the agent that free text is
+ * the field's value, so it could type "provided" over what the caseworker
+ * entered.
  */
 export const sensitiveAnswer = (
   req: PendingInputRequest,
@@ -67,9 +69,7 @@ export const sensitiveAnswer = (
   if (!isRecord(req)) return null;
   const r: Record<string, unknown> = req;
   if (typeof r.requestId !== 'string' || r.requestId === '') return null;
-  if (optionIds(r).includes(choice)) {
-    return { requestId: r.requestId, optionId: choice };
-  }
-  if (r.allowFreeform === true) return { requestId: r.requestId, text: choice };
-  return null;
+  return optionIds(r).includes(choice)
+    ? { requestId: r.requestId, optionId: choice }
+    : null;
 };

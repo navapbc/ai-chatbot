@@ -9,7 +9,11 @@ import type {
 import { createAnswerSender } from '../lib/answer-client';
 import { buildProgressView } from '../lib/progress-view';
 import { createControllerLifecycle } from '../lib/search-controller';
-import { NeedsYouCard, type SendAnswers } from './needs-you';
+import {
+  answerableRequests,
+  NeedsYouCard,
+  type SendAnswers,
+} from './needs-you';
 import { ProgressView } from './progress-view';
 
 type Props = {
@@ -102,6 +106,10 @@ export const RunningScreen = ({
   const handleHome = () => onHome();
 
   const stopping = state?.stopping === true;
+  const questions =
+    !ended && state?.phase === 'needs_you'
+      ? answerableRequests(state.pending)
+      : [];
   const secondsLeft = state?.secondsLeft ?? 0;
 
   return (
@@ -146,14 +154,14 @@ export const RunningScreen = ({
         </div>
       ) : null}
       {/* SLOT (task 5): the allow-this-site card renders here. */}
-      {!ended && state?.phase === 'needs_you' && state.pending.length > 0 ? (
+      {questions.length > 0 ? (
         // Answers are offered only while the agent waits on them: never
         // while it works or after it stopped (a replayed turn can briefly
         // show a stale review).
         <NeedsYouCard
-          key={state.pending.map((p) => p.requestId).join('\n')}
+          key={questions.map((p) => p.requestId).join('\n')}
           runId={run.runId}
-          pending={state.pending}
+          pending={questions}
           sendAnswers={send}
         />
       ) : null}

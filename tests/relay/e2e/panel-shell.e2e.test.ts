@@ -769,6 +769,23 @@ describe('the panel shell', () => {
       row.pending = [];
       await card.waitFor({ state: 'detached', timeout: 10_000 });
 
+      // A lone sensitive question (plus a malformed entry the card ignores):
+      // its button answers at once, without Send.
+      row.pending = [null, PENDING[1]];
+      row.phase = 'needs_you';
+      await card.waitFor({ timeout: 10_000 });
+      expect(await card.getByRole('textbox').count()).toBe(0);
+      await card.getByRole('button', { name: 'Skip' }).click();
+      await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(answerBodies).toHaveLength(3);
+      expect(answerBodies[2]).toEqual({
+        id: runId,
+        inputResponses: [{ requestId: 'q-ssn', optionId: 'skip' }],
+      });
+      row.phase = 'working';
+      row.pending = [];
+      await card.waitFor({ state: 'detached', timeout: 10_000 });
+
       // The typed answer reached no console line, the title or storage.
       expect(await page.title()).not.toContain(ANSWER);
       expect(page.url()).not.toContain(ANSWER);

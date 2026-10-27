@@ -149,16 +149,11 @@ describe('sensitiveAnswer', () => {
     });
   });
 
-  it('falls back to the fixed literal text when only free text is allowed', () => {
+  it('never sends the word as free text for a prompt-flagged text question', () => {
     const r = req({ prompt: 'Social Security number' });
-    expect(sensitiveAnswer(r, 'provided')).toEqual({
-      requestId: 'r1',
-      text: 'provided',
-    });
-    expect(sensitiveAnswer(r, 'skip')).toEqual({
-      requestId: 'r1',
-      text: 'skip',
-    });
+    expect(classifyQuestion(r)).toBe('sensitive');
+    expect(sensitiveAnswer(r, 'provided')).toBeNull();
+    expect(sensitiveAnswer(r, 'skip')).toBeNull();
   });
 
   it('cannot answer a flagged question with other options and no free text', () => {

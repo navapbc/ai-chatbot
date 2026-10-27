@@ -77,16 +77,24 @@ type Question = {
   labels: string[];
 };
 
+/**
+ * The requests the card can show: entries with a non-empty string requestId.
+ * The run state checks only that `pending` is an array, so the parent gates
+ * and keys the card on this list too.
+ */
+export const answerableRequests = (pending: unknown): PendingInputRequest[] =>
+  Array.isArray(pending)
+    ? pending.filter(
+        (r): r is PendingInputRequest =>
+          typeof r === 'object' &&
+          r !== null &&
+          typeof r.requestId === 'string' &&
+          r.requestId !== '',
+      )
+    : [];
+
 const toQuestions = (pending: PendingInputRequest[]): Question[] =>
-  pending
-    .filter(
-      (r) =>
-        typeof r === 'object' &&
-        r !== null &&
-        typeof r.requestId === 'string' &&
-        r.requestId !== '',
-    )
-    .map((request) => ({
+  answerableRequests(pending).map((request) => ({
       request,
       kind: classifyQuestion(request),
       prompt: cut(request.prompt, MAX_PROMPT),
