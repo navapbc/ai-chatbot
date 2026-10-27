@@ -1,6 +1,6 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpsServer } from 'node:https';
 import type { Server, ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
@@ -18,6 +18,16 @@ const ROOT = path.resolve(__dirname, '../../..');
 const FIXTURES = path.join(ROOT, 'tests/relay/fixtures');
 const EXTENSION_DIST = path.join(ROOT, 'extension/dist');
 const AGENT_BROWSER = path.join(ROOT, 'node_modules/.bin/agent-browser');
+
+/**
+ * The bridge's origin hold in the e2e build (the shipped bridge holds 60 s):
+ * short, so a run that leaves its origin still ends within seconds, and long
+ * enough for a test to see the hold and answer it. Baked in at build time
+ * through EXTENSION_TEST_ORIGIN_HOLD_MS, which only a test-hooks build takes.
+ * Every launchExtensionBrowser build uses this same value (the e2e files can
+ * build extension/dist concurrently).
+ */
+export const E2E_ORIGIN_HOLD_MS = 2_500;
 
 export const EXTENSION_ID = readFileSync(
   path.join(ROOT, 'extension/EXTENSION_ID'),
@@ -64,10 +74,9 @@ export interface Fixtures {
   stop(): Promise<void>;
 }
 
-/** Serves the fixtures over HTTPS from a certificate generated for this run. */
-export async function serveFixtures(): Promise<Fixtures> {
+/** A self-signed certificate for localhost, generated for this run. */
+export function makeLocalhostCert(): { key: Buffer; cert: Buffer } {
   const dir = mkdtempSync(path.join(tmpdir(), 'relay-e2e-cert-'));
-  let tls: { key: Buffer; cert: Buffer };
   try {
     execFileSync(
       'openssl',
@@ -88,14 +97,18 @@ export async function serveFixtures(): Promise<Fixtures> {
       ],
       { stdio: 'ignore' },
     );
-    tls = {
+    return {
       key: readFileSync(path.join(dir, 'key.pem')),
       cert: readFileSync(path.join(dir, 'cert.pem')),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
 
+/** Serves the fixtures over HTTPS from a certificate generated for this run. */
+export async function serveFixtures(): Promise<Fixtures> {
+  const tls = makeLocalhostCert();
   const cookieSentinel = `cookie-${randomBytes(12).toString('hex')}`;
   const form = readFileSync(path.join(FIXTURES, 'form.html'), 'utf8');
   const oopif = readFileSync(path.join(FIXTURES, 'oopif.html'), 'utf8');
@@ -308,16 +321,41 @@ export interface ExtensionBrowser {
   stop(): Promise<void>;
 }
 
-/** Builds the extension and launches Chromium with it loaded. */
-export async function launchExtensionBrowser(): Promise<ExtensionBrowser> {
-  execFileSync('pnpm', ['extension:build'], { cwd: ROOT, stdio: 'ignore' });
+/**
+ * Builds the extension (with the bridge's test hooks, which `bridgeMessage`
+ * needs) and launches Chromium with it loaded. Pass `extensionDir` to load an
+ * extension the caller already built (no build runs; build it with
+ * EXTENSION_TEST_HOOKS=1 if the test calls `bridgeMessage`).
+ */
+export async function launchExtensionBrowser(
+  opts: { extensionDir?: string; headless?: boolean } = {},
+): Promise<ExtensionBrowser> {
+  const extensionDir = opts.extensionDir ?? EXTENSION_DIST;
+  if (!opts.extensionDir) {
+    const { EXTENSION_RELEASE: _release, ...env } = process.env;
+    execFileSync('pnpm', ['extension:build'], {
+      cwd: ROOT,
+      env: {
+        ...env,
+        EXTENSION_TEST_HOOKS: '1',
+        EXTENSION_TEST_ORIGIN_HOLD_MS: String(E2E_ORIGIN_HOLD_MS),
+      },
+      stdio: 'ignore',
+    });
+    // An empty extension page, only in this test build: bridgeMessageFromPage
+    // reaches a worker Playwright has no handle for (after a restart).
+    writeFileSync(
+      path.join(extensionDir, TEST_PAGE),
+      '<!doctype html><html lang="en"><title>test</title></html>',
+    );
+  }
   const profile = mkdtempSync(path.join(tmpdir(), 'relay-e2e-profile-'));
   const context = await chromium.launchPersistentContext(profile, {
     channel: 'chromium',
-    headless: true,
+    headless: opts.headless ?? true,
     args: [
-      `--disable-extensions-except=${EXTENSION_DIST}`,
-      `--load-extension=${EXTENSION_DIST}`,
+      `--disable-extensions-except=${extensionDir}`,
+      `--load-extension=${extensionDir}`,
       '--ignore-certificate-errors',
     ],
   });
@@ -335,6 +373,30 @@ export async function launchExtensionBrowser(): Promise<ExtensionBrowser> {
 }
 
 export type BridgeResponse = { ok: true } | { ok: false; error: string };
+
+const TEST_PAGE = 'test-page.html';
+
+/**
+ * Sends a bridge message through chrome.runtime.sendMessage from an extension
+ * page, which also wakes the worker. For a worker restarted under the test,
+ * which Playwright reports no handle for. Needs launchExtensionBrowser's own
+ * build (it writes the page).
+ */
+export async function bridgeMessageFromPage(
+  context: BrowserContext,
+  message: Record<string, unknown>,
+): Promise<BridgeResponse> {
+  const page = await context.newPage();
+  try {
+    await page.goto(`chrome-extension://${EXTENSION_ID}/${TEST_PAGE}`);
+    return (await page.evaluate(
+      (msg) => chrome.runtime.sendMessage(msg),
+      message,
+    )) as BridgeResponse;
+  } finally {
+    await page.close();
+  }
+}
 
 /** Sends a bridge message to the service worker's onMessage handler. */
 export const bridgeMessage = (sw: Worker, message: Record<string, unknown>) =>

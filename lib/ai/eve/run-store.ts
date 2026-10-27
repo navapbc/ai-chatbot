@@ -14,6 +14,8 @@ export interface EveRunRecord {
   relayOrigin: string | null;
   pendingRequests: PendingInputRequest[];
   progress: RunProgress | null;
+  /** When the run ended (Stop); null while it is live. Set once, never moves. */
+  endedAt: Date | null;
 }
 
 /**
@@ -53,12 +55,17 @@ export interface EveRunStore {
   ): Promise<EveRunRecord>;
   /** Relay runs this user created at or after `since`. */
   countRecentRelayRuns(userId: string, since: Date): Promise<number>;
-  /** Compare-and-set on continuationToken; true when the swap happened. */
+  /**
+   * Compare-and-set on continuationToken; true when the swap happened. With
+   * `live: true` the row must also be un-ended (the eve-chat claim only; a
+   * rollback or final swap must still land on an ended row).
+   */
   swapToken(
     userId: string,
     chatId: string,
     expected: string,
     next: string,
+    opts?: { live?: boolean },
   ): Promise<boolean>;
   /**
    * Moves the cursor to streamIndex when that is greater than the stored one.
@@ -84,6 +91,12 @@ export interface EveRunStore {
     progress: RunProgress,
   ): Promise<void>;
   remove(userId: string, chatId: string): Promise<void>;
+  /**
+   * Marks the run ended. True only for the call that set it; false when it
+   * was already ended or no run exists (never creates a row). The stored time
+   * never moves on a later call. Does not gate the other writes.
+   */
+  end(userId: string, chatId: string): Promise<boolean>;
 }
 
 const copy = (r: EveRunRecord): EveRunRecord => structuredClone(r);
@@ -129,6 +142,7 @@ export function createMemoryRunStore(): EveRunStore {
         relayOrigin: init.relayOrigin ?? null,
         pendingRequests: [],
         progress: null,
+        endedAt: null,
       };
       rows.set(k, { ...copy(record), userId, chatId, createdAt: new Date() });
       return record;
@@ -141,9 +155,10 @@ export function createMemoryRunStore(): EveRunStore {
           r.createdAt >= since,
       ).length;
     },
-    async swapToken(userId, chatId, expected, next) {
+    async swapToken(userId, chatId, expected, next, opts) {
       const row = rows.get(key(userId, chatId));
       if (!row || row.continuationToken !== expected) return false;
+      if (opts?.live && row.endedAt !== null) return false;
       row.continuationToken = next;
       return true;
     },
@@ -167,6 +182,12 @@ export function createMemoryRunStore(): EveRunStore {
     },
     async remove(userId, chatId) {
       rows.delete(key(userId, chatId));
+    },
+    async end(userId, chatId) {
+      const row = rows.get(key(userId, chatId));
+      if (!row || row.endedAt !== null) return false;
+      row.endedAt = new Date();
+      return true;
     },
   };
 }

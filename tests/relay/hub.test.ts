@@ -818,6 +818,42 @@ describe('RunHub', () => {
     expect(again.closed?.reason).toBe('run stopped');
   });
 
+  it('accepts debugger-detached as a stop reason and logs it as is', async () => {
+    const { hub, logs } = makeHub();
+    const ext = new FakeSocket();
+    const agent = new FakeSocket();
+    attachExt(hub, ext);
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
+    ext.receive({ type: 'stop', reason: 'debugger-detached' });
+    await vi.waitFor(() =>
+      expect(agent.closed).toEqual({ code: 1000, reason: 'run stopped' }),
+    );
+    expect(logs).toContainEqual({
+      event: 'run-stopped',
+      runId: RUN,
+      role: 'extension',
+      reason: 'debugger-detached',
+    });
+  });
+
+  it('closes the run when a fresh socket sends register then stop', async () => {
+    // How the extension delivers a stop its run socket could not carry.
+    const { hub, logs } = makeHub();
+    const agent = new FakeSocket();
+    hub.attachAgent(RUN, ORIGIN, SUB, agent);
+    const ext = new FakeSocket();
+    hub.attachExtension(RUN, ORIGIN, SUB, ext);
+    ext.receive({ type: 'register', runId: RUN, tabId: 1, origin: ORIGIN });
+    ext.receive({ type: 'stop', reason: 'user' });
+    await vi.waitFor(() => expect(agent.closed?.reason).toBe('run stopped'));
+    expect(logs).toContainEqual({
+      event: 'run-stopped',
+      runId: RUN,
+      role: 'extension',
+      reason: 'user',
+    });
+  });
+
   it('ignores stop from an extension socket that has not registered', () => {
     const { hub } = makeHub();
     const ext = new FakeSocket();

@@ -66,6 +66,19 @@ export interface RedactorOptions {
    * as failures (the field is masked).
    */
   describeDeadlineMs?: number;
+  /**
+   * An extra sensitive-field verdict for a form field the deterministic
+   * classifier calls ordinary (see `askExtra` for which nodes). `true` masks
+   * the field exactly like a deterministic sensitive one; `false`, a throw, a
+   * rejection, a non-boolean answer or no answer within `classifyTimeoutMs`
+   * (or the tree deadline) keeps the deterministic verdict. It can only add
+   * masking. It receives a fresh descriptor of the field's own naming
+   * strings, never a value, URL parameter or other page text; the caller
+   * sanitizes it further before it leaves the worker.
+   */
+  classifyExtra?: (descriptor: FieldDescriptor) => Promise<boolean>;
+  /** Per classifyExtra() call; default 2000. */
+  classifyTimeoutMs?: number;
 }
 
 const MIN_KNOWN_LENGTH = 3;
@@ -74,6 +87,20 @@ const DEFAULT_MAX_KNOWN_VALUES = 32;
 const DEFAULT_DESCRIBE_TIMEOUT_MS = 1500;
 const DEFAULT_DESCRIBE_DEADLINE_MS = 5000;
 const DESCRIBE_CONCURRENCY = 16;
+const DEFAULT_CLASSIFY_TIMEOUT_MS = 2000;
+const CLASSIFY_CONCURRENCY = 8;
+const CLASSIFY_CACHE_SIZE = 256;
+// FieldDescriptor keys in a fixed order: the descriptor handed to
+// classifyExtra and its cache key are built from these and nothing else.
+const DESCRIPTOR_KEYS: readonly (keyof FieldDescriptor)[] = [
+  'role',
+  'inputType',
+  'autocomplete',
+  'name',
+  'label',
+  'placeholder',
+  'description',
+];
 const MAX_DEPTH = 256;
 const SEPARATORS = /[\s\-./]+/;
 const JOINERS = ['', ' ', '-', '.', '/'];
@@ -258,6 +285,13 @@ const DOM_CHILD_KEYS = [
 
 type Obj = Record<string, unknown>;
 type Describe = (backendNodeId: number) => Promise<FieldDescriptor | undefined>;
+// A DOM node copy, its unscrubbed source, and the descriptor classifyExtra
+// is asked about.
+interface DomField {
+  node: Obj;
+  src: Obj;
+  extra: FieldDescriptor;
+}
 
 const isObj = (x: unknown): x is Obj =>
   typeof x === 'object' && x !== null && !Array.isArray(x);
@@ -750,10 +784,11 @@ const isDomFieldSensitive = (attributes: unknown[]): boolean =>
 
 // Classifies from the raw source node (tag, type, attributes), then masks the
 // copy: a known value such as 'password' or 'input' must not erase the
-// signal from the scrubbed copy.
-const maskDomNode = (node: Obj, src: Obj): void => {
+// signal from the scrubbed copy. Returns the descriptor of a field
+// classifyExtra may still flag (see below), else undefined.
+const maskDomNode = (node: Obj, src: Obj): FieldDescriptor | undefined => {
   if (typeof src.nodeName !== 'string' || typeof src.nodeType !== 'number') {
-    return;
+    return undefined;
   }
   const attributes = Array.isArray(src.attributes) ? src.attributes : [];
   const map = attributeMap(attributes);
@@ -762,13 +797,19 @@ const maskDomNode = (node: Obj, src: Obj): void => {
     VALUE_ELEMENTS.has(tag) ||
     map.has('contenteditable') ||
     INPUT_ROLES.has(map.get('role') ?? '');
-  if (!holdsValue) return;
+  if (!holdsValue) return undefined;
   // A text button's value attribute is its visible label.
   const keepRootValue =
     tag === 'INPUT' &&
     BUTTON_INPUT_TYPES.has((map.get('type') ?? '').toLowerCase());
-  const sensitive = isDomFieldSensitive(attributes);
+  const descriptor = descriptorFromAttributes(attributes);
+  const sensitive = isSensitiveField(descriptor);
   maskDomSubtree(node, src, sensitive, keepRootValue && !sensitive);
+  // classifyExtra is asked about the same value-holding elements, minus an
+  // OPTION (its SELECT is asked and covers it) and a button-type INPUT (its
+  // value is its label, not entered data).
+  if (sensitive || tag === 'OPTION' || keepRootValue) return undefined;
+  return descriptor;
 };
 
 // ------------------------------------------------------- accessibility tree
@@ -1077,8 +1118,14 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
     opts?.describeTimeoutMs ?? DEFAULT_DESCRIBE_TIMEOUT_MS;
   const describeDeadlineMs =
     opts?.describeDeadlineMs ?? DEFAULT_DESCRIBE_DEADLINE_MS;
+  const classifyExtra = opts?.classifyExtra;
+  const classifyTimeoutMs =
+    opts?.classifyTimeoutMs ?? DEFAULT_CLASSIFY_TIMEOUT_MS;
   const known = new Map<string, Alternative[]>();
   let pattern: RegExp | null = null;
+  // Set only while copyOf() runs synchronously for one DOM result: the
+  // ordinary fields classifyExtra may still flag.
+  let domFields: DomField[] | null = null;
 
   const rebuild = () => {
     const all = new Map<string, number>();
@@ -1199,7 +1246,8 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
         }
         setOwn(o, name, copied);
       }
-      maskDomNode(o, source);
+      const extra = maskDomNode(o, source);
+      if (extra && domFields) domFields.push({ node: o, src: source, extra });
       out = o;
     }
     ancestors.delete(x);
@@ -1276,16 +1324,184 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
     return results;
   };
 
+  // -------------------------------------------------------- classifyExtra
+  // Verdicts (booleans only) keyed by the sanitized descriptor, least
+  // recently used first; at most CLASSIFY_CACHE_SIZE. Emptied by clear().
+  const verdicts = new Map<string, boolean>();
+  // One call per key at a time, shared by concurrent trees.
+  const pendingVerdicts = new Map<string, Promise<boolean | undefined>>();
+  // Bumped by clear(): an answer to a call made before it is not cached.
+  let generation = 0;
+  // A slot is held from the call until the hook settles, so at most
+  // CLASSIFY_CONCURRENCY calls are ever in flight, across trees.
+  let slotsInUse = 0;
+  const slotWaiters: (() => void)[] = [];
+
+  // Waits for a free slot until `until`; false when none came by then.
+  const acquireSlot = (until: number): Promise<boolean> => {
+    if (slotsInUse < CLASSIFY_CONCURRENCY) {
+      slotsInUse++;
+      return Promise.resolve(true);
+    }
+    return new Promise((resolve) => {
+      const grant = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(
+        () => {
+          const at = slotWaiters.indexOf(grant);
+          if (at >= 0) slotWaiters.splice(at, 1);
+          resolve(false);
+        },
+        Math.max(0, until - Date.now()),
+      );
+      slotWaiters.push(grant);
+    });
+  };
+
+  // Hands the slot to the next waiter, or frees it.
+  const releaseSlot = () => {
+    const next = slotWaiters.shift();
+    if (next) next();
+    else slotsInUse--;
+  };
+
+  const remember = (key: string, verdict: boolean) => {
+    verdicts.delete(key);
+    verdicts.set(key, verdict);
+    while (verdicts.size > CLASSIFY_CACHE_SIZE) {
+      const oldest = verdicts.keys().next().value;
+      if (oldest === undefined) break;
+      verdicts.delete(oldest);
+    }
+  };
+
+  // Resolves to `p`'s answer, or undefined once `ms` have passed.
+  const within = <T>(p: Promise<T>, ms: number): Promise<T | undefined> =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(undefined), Math.max(0, ms));
+      p.then((v) => {
+        clearTimeout(timer);
+        resolve(v);
+      });
+    });
+
+  // The descriptor classifyExtra sees: only the FieldDescriptor string keys,
+  // in a fixed order, each scrubbed of known values and URL parameters and
+  // masked whole when value-shaped. Never a value. Undefined when nothing
+  // names the field.
+  const extraDescriptor = (d: FieldDescriptor): FieldDescriptor | undefined => {
+    const out: FieldDescriptor = {};
+    for (const key of DESCRIPTOR_KEYS) {
+      const v = d[key];
+      if (typeof v !== 'string' || v.trim() === '') continue;
+      const s = scrub(v);
+      out[key] = hasSensitiveShape(s) ? MASK : s;
+    }
+    return Object.keys(out).length === 0 ? undefined : out;
+  };
+
+  // Cache only, never a call: true when classifyExtra already flagged a
+  // field with this descriptor. For synchronous paths and results that
+  // cannot be tied to a field (defense in depth).
+  const cachedExtra = (d: FieldDescriptor): boolean => {
+    const descriptor = extraDescriptor(d);
+    return (
+      descriptor !== undefined &&
+      verdicts.get(JSON.stringify(descriptor)) === true
+    );
+  };
+
+  // One verdict: cached, or from one bounded call. Undefined (keep the
+  // deterministic verdict) on a throw, rejection, non-boolean answer,
+  // no free slot within the call's budget (classifyTimeoutMs, cut short by
+  // `deadline`), that budget running out, or `deadline` itself.
+  const askExtra = (
+    hook: (d: FieldDescriptor) => Promise<boolean>,
+    d: FieldDescriptor,
+    deadline: number,
+  ): Promise<boolean | undefined> => {
+    const descriptor = extraDescriptor(d);
+    if (!descriptor) return Promise.resolve(undefined);
+    const key = JSON.stringify(descriptor);
+    const cached = verdicts.get(key);
+    if (cached !== undefined) {
+      remember(key, cached);
+      return Promise.resolve(cached);
+    }
+    let pending = pendingVerdicts.get(key);
+    if (!pending) {
+      // No new call once the tree's time is up.
+      if (Date.now() >= deadline) return Promise.resolve(undefined);
+      const asked = generation;
+      const run = async (): Promise<boolean | undefined> => {
+        // One budget for waiting for a slot and for the call itself, so
+        // slots held by hung calls cost a reply at most classifyTimeoutMs.
+        // The slot itself is held until the hook settles.
+        const until = Math.min(Date.now() + classifyTimeoutMs, deadline);
+        if (!(await acquireSlot(until))) return undefined;
+        const call = Promise.resolve()
+          // A fresh copy: the hook cannot reach the redactor's state.
+          .then(() => hook({ ...descriptor }))
+          .then(
+            (v) => (typeof v === 'boolean' ? v : undefined),
+            () => undefined,
+          );
+        call.then((v) => {
+          releaseSlot();
+          // Only an answer is cached, never a failure; a late one still
+          // counts for later snapshots, never for a reply already sent.
+          if (v !== undefined && asked === generation) remember(key, v);
+        });
+        return within(call, until - Date.now());
+      };
+      const started = run();
+      pending = started;
+      pendingVerdicts.set(key, started);
+      started.then(() => {
+        if (pendingVerdicts.get(key) === started) pendingVerdicts.delete(key);
+      });
+    }
+    return within(pending, deadline - Date.now());
+  };
+
+  // Every verdict, each bounded by `deadline`; resolves once all are in.
+  const askAllExtra = (
+    descriptors: FieldDescriptor[],
+    deadline: number,
+  ): Promise<(boolean | undefined)[]> => {
+    const hook = classifyExtra;
+    if (!hook || descriptors.length === 0) return Promise.resolve([]);
+    return Promise.all(descriptors.map((d) => askExtra(hook, d, deadline)));
+  };
+
   // Classifies each node from its raw source; returns the sensitive copies.
+  //
+  // classifyExtra is asked only about a node the deterministic rule leaves
+  // ordinary that is a form field by the same test the rule uses
+  // (`isFieldLike`: an INPUT_ROLES role, or a value or valuetext), with the
+  // AX descriptor (merged with describe()'s when the field was filled and
+  // vouched for). A `true` adds the node to the sensitive set, so it is
+  // masked by the same code as any other. A filled field nothing could vouch
+  // for is already sensitive and is not asked about.
   const classify = async (
     pairs: AXPair[],
     describe: Describe | undefined,
   ): Promise<Set<Obj>> => {
+    // The whole pass ends by then, classifyExtra included.
+    const deadline = Date.now() + describeDeadlineMs;
     const sensitive = new Set<Obj>();
     const asking: { pair: AXPair; id: number }[] = [];
+    const ordinaryFields: { pair: AXPair; extra: FieldDescriptor }[] = [];
     for (const pair of pairs) {
       const verdict = classifyAXNode(pair.src);
-      if (verdict === 'ordinary') continue;
+      if (verdict === 'ordinary') {
+        if (classifyExtra && isFieldLike(pair.src)) {
+          ordinaryFields.push({ pair, extra: axDescriptor(pair.src) });
+        }
+        continue;
+      }
       const id = pair.src.backendDOMNodeId;
       if (verdict === 'sensitive' || !describe || typeof id !== 'number') {
         // Fail closed: a filled field nothing can vouch for is sensitive.
@@ -1307,10 +1523,39 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
           isSensitiveField({ ...axDescriptor(pair.src), ...fromDom })
         ) {
           sensitive.add(pair.node);
+        } else if (classifyExtra) {
+          ordinaryFields.push({
+            pair,
+            extra: { ...axDescriptor(pair.src), ...fromDom },
+          });
         }
       }
     }
+    if (ordinaryFields.length > 0) {
+      // Every verdict is in (or given up) before anything is masked.
+      const extra = await askAllExtra(
+        ordinaryFields.map((f) => f.extra),
+        deadline,
+      );
+      ordinaryFields.forEach((f, i) => {
+        if (extra[i] === true) sensitive.add(f.pair.node);
+      });
+    }
     return sensitive;
+  };
+
+  // DOM counterpart: a value-holding element left ordinary (see maskDomNode)
+  // that classifyExtra flags is re-masked as sensitive, before the shape
+  // guard rebuilds the result.
+  const flagDomFields = async (fields: DomField[]): Promise<void> => {
+    const deadline = Date.now() + describeDeadlineMs;
+    const extra = await askAllExtra(
+      fields.map((f) => f.extra),
+      deadline,
+    );
+    fields.forEach((f, i) => {
+      if (extra[i] === true) maskDomSubtree(f.node, f.src, true, false);
+    });
   };
 
   const redactFullTree = async (
@@ -1343,6 +1588,9 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
     clear() {
       known.clear();
       rebuild();
+      verdicts.clear();
+      pendingVerdicts.clear();
+      generation++;
     },
 
     async redactResult(method, result, describe) {
@@ -1359,7 +1607,19 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
         ) {
           return null;
         }
-        const out = shapeGuard(method, copyOf(method, result));
+        // Collected synchronously, before any await, so concurrent calls
+        // never share the list.
+        domFields = classifyExtra ? [] : null;
+        let copied: unknown;
+        let fields: DomField[];
+        try {
+          copied = copyOf(method, result);
+          fields = domFields ?? [];
+        } finally {
+          domFields = null;
+        }
+        if (fields.length > 0) await flagDomFields(fields);
+        const out = shapeGuard(method, copied);
         if (method === 'DOM.getAttributes') {
           if (
             !isObj(out) ||
@@ -1372,7 +1632,8 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
           maskDomSubtree(
             out,
             result,
-            isDomFieldSensitive(result.attributes),
+            isDomFieldSensitive(result.attributes) ||
+              cachedExtra(descriptorFromAttributes(result.attributes)),
             false,
           );
         }
@@ -1391,7 +1652,11 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
           const pairs = axPairs([out.root], [params.root]);
           const sensitive = new Set(
             pairs
-              .filter((p) => classifyAXNode(p.src) !== 'ordinary')
+              .filter(
+                (p) =>
+                  classifyAXNode(p.src) !== 'ordinary' ||
+                  (isFieldLike(p.src) && cachedExtra(axDescriptor(p.src))),
+              )
               .map((p) => p.node),
           );
           maskAXTree(pairs, sensitive, pattern);

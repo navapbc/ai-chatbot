@@ -40,7 +40,7 @@ const internalError = () =>
 export async function POST(request: Request) {
   if (process.env.RELAY_TOKEN_ENDPOINT_ENABLED !== '1') return notFound();
 
-  const guard = await guardRelayRoute();
+  const guard = await guardRelayRoute(request, { requireOrigin: true });
   if (!guard.ok) return noStore(guard.response);
   const { userId } = guard;
 
@@ -54,7 +54,8 @@ export async function POST(request: Request) {
   let relayOrigin: string | null;
   try {
     const run = await getRunStore().get(userId, runId);
-    if (!run) return notFound();
+    // An ended (stopped) run never mints again; it looks like an unknown one.
+    if (!run || run.endedAt !== null) return notFound();
     relayOrigin = run.relayOrigin;
   } catch {
     return internalError();

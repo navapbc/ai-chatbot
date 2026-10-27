@@ -10,6 +10,7 @@ import {
   gte,
   inArray,
   isNotNull,
+  isNull,
   lt,
   or,
   type SQL,
@@ -792,17 +793,22 @@ export async function createEveRun({
   return row;
 }
 
-/** Compare-and-set on continuationToken. Returns whether the swap happened. */
+/**
+ * Compare-and-set on continuationToken. Returns whether the swap happened.
+ * With `live`, the row must also be un-ended, in the same statement.
+ */
 export async function swapEveRunToken({
   userId,
   chatId,
   expected,
   next,
+  live = false,
 }: {
   userId: string;
   chatId: string;
   expected: string;
   next: string;
+  live?: boolean;
 }): Promise<boolean> {
   try {
     const rows = await db
@@ -813,6 +819,7 @@ export async function swapEveRunToken({
           eq(eveRun.userId, userId),
           eq(eveRun.chatId, chatId),
           eq(eveRun.continuationToken, expected),
+          live ? isNull(eveRun.endedAt) : undefined,
         ),
       )
       .returning({ id: eveRun.id });
@@ -923,6 +930,34 @@ export async function deleteEveRun({
       .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
   } catch (error) {
     throw new ChatSDKError('bad_request:database', 'Failed to delete eve run');
+  }
+}
+
+/**
+ * Marks a run ended. The `endedAt IS NULL` guard makes it one atomic,
+ * idempotent statement: true only for the call that set the time, false when
+ * it was already ended or no run matches (never creates a row).
+ */
+export async function endEveRun({
+  userId,
+  chatId,
+}: { userId: string; chatId: string }): Promise<boolean> {
+  try {
+    const now = new Date();
+    const rows = await db
+      .update(eveRun)
+      .set({ endedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(eveRun.userId, userId),
+          eq(eveRun.chatId, chatId),
+          isNull(eveRun.endedAt),
+        ),
+      )
+      .returning({ id: eveRun.id });
+    return rows.length === 1;
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to end eve run');
   }
 }
 

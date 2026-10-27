@@ -107,6 +107,8 @@ describe('getRelayConfig models', () => {
   });
 });
 
+const configRequest = () => new Request('http://localhost/api/relay/config');
+
 describe('GET /api/relay/config', () => {
   beforeEach(() => {
     vi.stubEnv('RELAY_RUNS_ENABLED', '1');
@@ -119,28 +121,28 @@ describe('GET /api/relay/config', () => {
 
   it('refuses with no-store: flag off bodyless 404, 401, guest 403', async () => {
     vi.stubEnv('RELAY_RUNS_ENABLED', undefined);
-    const off = await route.GET();
+    const off = await route.GET(configRequest());
     expect(off.status).toBe(404);
     expect(await off.text()).toBe('');
     expect(off.headers.get('Cache-Control')).toBe('no-store');
 
     vi.stubEnv('RELAY_RUNS_ENABLED', '1');
     authMock.mockResolvedValue(null);
-    const unauth = await route.GET();
+    const unauth = await route.GET(configRequest());
     expect(unauth.status).toBe(401);
     expect(unauth.headers.get('Cache-Control')).toBe('no-store');
 
     authMock.mockResolvedValue({
       user: { id: 'g', email: 'guest-0123abcd@preview.local' },
     });
-    const guest = await route.GET();
+    const guest = await route.GET(configRequest());
     expect(guest.status).toBe(403);
     expect(guest.headers.get('Cache-Control')).toBe('no-store');
   });
 
   it('returns getRelayConfig with no-store', async () => {
     vi.stubEnv('RELAY_ALLOWED_MODELS', 'claude-opus-4-7');
-    const res = await route.GET();
+    const res = await route.GET(configRequest());
     expect(res.status).toBe(200);
     expect(res.headers.get('Cache-Control')).toBe('no-store');
     expect(await res.json()).toEqual(getRelayConfig());

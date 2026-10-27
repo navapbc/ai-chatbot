@@ -8,6 +8,7 @@ import {
   bridgeMessage,
   cdpUrl,
   closeAgentSessions,
+  E2E_ORIGIN_HOLD_MS,
   type ExtensionBrowser,
   type Fixtures,
   launchExtensionBrowser,
@@ -391,5 +392,131 @@ describe('CDP allowlist', { timeout: 90_000 }, () => {
         true,
       );
     }
+  });
+});
+
+/**
+ * Starts a fresh run on the form page with no allowed frame origins, so the
+ * other fixture origin is neither a run nor a frame origin, and waits for it
+ * to register.
+ */
+async function startHoldRun() {
+  await closeAgentSessions();
+  await bridgeMessage(browser.sw, { type: 'stopRun' });
+  await page.goto(fixtures.formUrl);
+  const tabId = (await browser.sw.evaluate(
+    async (u) => (await chrome.tabs.query({ url: u }))[0]?.id,
+    fixtures.formUrl,
+  )) as number;
+  const tokens = mintRunTokens(relay.secret, fixtures.origin);
+  const registered = () =>
+    relay.logs.some(
+      (l) => l.event === 'registered' && l.runId === tokens.runId,
+    );
+  expect(
+    await bridgeMessage(browser.sw, {
+      type: 'startRun',
+      relayUrl: relay.url,
+      token: tokens.extension,
+      tabId,
+      allowedFrameOrigins: [],
+    }),
+  ).toEqual({ ok: true });
+  for (let i = 0; i < 200 && !registered(); i++) await pause(50);
+  cdp = cdpUrl(relay, tokens.agent);
+  return tokens.runId;
+}
+
+const runStatus = () =>
+  bridgeMessage(browser.sw, { type: 'getRunStatus' }) as Promise<
+    Record<string, unknown>
+  >;
+
+/** Redirects the page to the other origin and waits for the hold. */
+async function redirectAndAwaitHold(url: string) {
+  await page.evaluate((u) => {
+    location.href = u;
+  }, url);
+  for (let i = 0; i < 100; i++) {
+    if ((await runStatus()).pendingOrigin === fixtures.frameOrigin) return;
+    await pause(20);
+  }
+  throw new Error('the run was not held');
+}
+
+const stoppedFor = (runId: string, reason: string) =>
+  relay.logs.some(
+    (l) =>
+      l.event === 'run-stopped' &&
+      (l as { runId?: string }).runId === runId &&
+      (l as { reason?: string }).reason === reason,
+  );
+
+describe('origin hold on a cross-origin redirect', { timeout: 90_000 }, () => {
+  it('holds the run (agent refused), then allowOrigin lets it go on at the new origin', async () => {
+    const runId = await startHoldRun();
+    const before = await run(['snapshot', '-i']);
+    expect(before.success).toBe(true);
+
+    const away = `${fixtures.frameOrigin}/oopif.html`;
+    await redirectAndAwaitHold(away);
+    const heldAt = Date.now();
+    // Held: the agent is refused and the run is alive.
+    const refused = await agentBrowser(['get', 'title'], cdp);
+    expect(refused.success).toBe(false);
+    expect(String(refused.error)).toContain('outside the allowed origin');
+    const held = await runStatus();
+    expect(
+      Date.now() - heldAt,
+      'the refusal outlasted the e2e hold; raise E2E_ORIGIN_HOLD_MS',
+    ).toBeLessThan(E2E_ORIGIN_HOLD_MS);
+    expect(held.active).toBe(true);
+    expect(held.pendingOrigin).toBe(fixtures.frameOrigin);
+    expect(
+      await bridgeMessage(browser.sw, {
+        type: 'allowOrigin',
+        origin: fixtures.frameOrigin,
+      }),
+    ).toEqual({ ok: true });
+    expect((await runStatus()).pendingOrigin).toBeUndefined();
+
+    // The agent goes on at the new origin: snapshot, fill, screenshot.
+    await page.waitForURL(away);
+    const snap = await run(['snapshot', '-i']);
+    expect(snap.success).toBe(true);
+    const field = refFor(snap, 'textbox', 'Cross-origin field');
+    expect((await run(['fill', field, 'Turing'])).success).toBe(true);
+    expect(await page.inputValue('#x')).toBe('Turing');
+    expect((await run(['screenshot'])).success).toBe(true);
+
+    // Well past the hold: the run is still alive, never stopped or detached.
+    await pause(E2E_ORIGIN_HOLD_MS * 2 + 500);
+    expect((await runStatus()).active).toBe(true);
+    expect((await run(['get', 'title'])).success).toBe(true);
+    expect(stoppedFor(runId, 'left-origin')).toBe(false);
+    expect(stoppedFor(runId, 'debugger-detached')).toBe(false);
+  });
+
+  it('with no allowOrigin the run ends with left-origin after the hold', async () => {
+    const runId = await startHoldRun();
+    expect((await run(['snapshot', '-i'])).success).toBe(true);
+    await redirectAndAwaitHold(`${fixtures.frameOrigin}/away.html`);
+    const heldAt = Date.now();
+    expect((await agentBrowser(['get', 'title'], cdp)).success).toBe(false);
+    for (let i = 0; i < 200 && !stoppedFor(runId, 'left-origin'); i++) {
+      await pause(50);
+    }
+    expect(stoppedFor(runId, 'left-origin')).toBe(true);
+    // Not before the hold ran out.
+    expect(Date.now() - heldAt).toBeGreaterThanOrEqual(
+      E2E_ORIGIN_HOLD_MS - 500,
+    );
+    expect((await runStatus()).active).toBe(false);
+    expect(
+      await bridgeMessage(browser.sw, {
+        type: 'allowOrigin',
+        origin: fixtures.frameOrigin,
+      }),
+    ).toEqual({ ok: false, error: 'no active run' });
   });
 });

@@ -92,8 +92,16 @@ export const NO_FRAME_CONTENT_METHODS: ReadonlySet<string> = new Set([
 ]);
 
 export interface ScopeOrigins {
+  /** The run origin (the token's). */
   origin: string;
+  /** Origins cross-origin iframes may have; never the tab's own document. */
   allowedFrameOrigins: readonly string[];
+  /**
+   * Run origins allowed for this run beyond `origin` (the worker's
+   * `allowOrigin`): judged exactly like `origin`, wherever it is judged. A
+   * separate list from allowedFrameOrigins, which allowOrigin never widens.
+   */
+  extraOrigins?: readonly string[];
 }
 
 export const createFrameScope = (): FrameScope => ({
@@ -140,20 +148,34 @@ export function documentOrigin(url: string): string | undefined {
   return normalizeOrigin(url) ?? REFUSED_ORIGIN;
 }
 
-const urlAllowed = (url: string, o: ScopeOrigins) =>
+/**
+ * True when the URL is in one of the run's own origins: the token origin or
+ * an extra origin allowed for this run. The single scope test for the tab's
+ * document; the bridge's inRunScope is this.
+ */
+export const inRunOrigins = (
+  url: string,
+  o: Pick<ScopeOrigins, 'origin' | 'extraOrigins'>,
+) =>
   inScope(url, o.origin) ||
+  (o.extraOrigins ?? []).some((origin) => inScope(url, origin));
+
+const urlAllowed = (url: string, o: ScopeOrigins) =>
+  inRunOrigins(url, o) ||
   o.allowedFrameOrigins.some((origin) => inScope(url, origin));
 
 /**
- * True when the frame's document is in the run origin or an allowed frame
- * origin. about:blank and about:srcdoc frames take their parent's scope. An
- * unknown frame, an unknown parent and a parent cycle are out of scope.
+ * True when the frame's document is in a run origin (the token origin or an
+ * extra one) or an allowed frame origin. about:blank and about:srcdoc frames
+ * take their parent's scope. An unknown frame, an unknown parent and a
+ * parent cycle are out of scope.
  */
 export function frameInScope(
   frames: ReadonlyMap<string, FrameInfo>,
   frameId: string,
   origin: string,
   allowedFrameOrigins: readonly string[],
+  extraOrigins: readonly string[] = [],
 ): boolean {
   const seen = new Set<string>();
   let id: string | undefined = frameId;
@@ -162,7 +184,11 @@ export function frameInScope(
     const frame = frames.get(id);
     if (!frame) return false;
     if (!inheritsScope(frame.url)) {
-      return urlAllowed(frame.url, { origin, allowedFrameOrigins });
+      return urlAllowed(frame.url, {
+        origin,
+        allowedFrameOrigins,
+        extraOrigins,
+      });
     }
     id = frame.parentId;
   }
@@ -413,6 +439,7 @@ export function scopeFrameEvent(
       frameId,
       origins.origin,
       origins.allowedFrameOrigins,
+      origins.extraOrigins,
     ) ||
       alsoKeep(frameId));
   const announceFrame = (frameId: string) => {
@@ -578,6 +605,7 @@ export function contextInScope(
       frameId,
       origins.origin,
       origins.allowedFrameOrigins,
+      origins.extraOrigins,
     ) || alsoKeep(frameId)
   );
 }

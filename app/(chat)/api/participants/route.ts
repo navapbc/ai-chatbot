@@ -12,7 +12,7 @@ const noStore = (response: Response): Response => {
 };
 
 export async function GET(request: Request) {
-  const guard = await guardRelayRoute();
+  const guard = await guardRelayRoute(request);
   if (!guard.ok) return noStore(guard.response);
 
   const params = new URL(request.url).searchParams;

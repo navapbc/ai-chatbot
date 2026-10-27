@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createRedactor,
   descriptorFromAttributes,
@@ -2163,5 +2163,679 @@ describe('hasKnownValue', () => {
         message: 'x [masked]',
       },
     );
+  });
+});
+
+describe('classifyExtra hook', () => {
+  type Hook = (d: FieldDescriptor) => Promise<boolean>;
+  const text = (node: unknown) =>
+    (node as { name?: { value?: unknown } }).name?.value;
+  const ordinaryDom = async () => ({ inputType: 'text' });
+
+  // A filled field the deterministic rule calls ordinary, with a text child
+  // that repeats its value and a node labelled by it.
+  const caseTree = () =>
+    tree(
+      textbox('1', 'Case reference', 'ABC-QX', {
+        backendDOMNodeId: 1,
+        childIds: ['2'],
+      }),
+      staticText('2', 'ABC-QX', '1'),
+      {
+        nodeId: '3',
+        ignored: false,
+        role: { type: 'role', value: 'button' },
+        name: {
+          type: 'computedString',
+          value: 'Clear ABC-QX',
+          sources: [
+            {
+              type: 'relatedElement',
+              attribute: 'aria-labelledby',
+              nativeSource: undefined,
+              value: { type: 'computedString', value: 'Clear ABC-QX' },
+              attributeValue: {
+                type: 'idrefList',
+                value: 'f1',
+                relatedNodes: [{ backendDOMNodeId: 1, text: 'ABC-QX' }],
+              },
+            },
+          ],
+        },
+        childIds: [],
+      },
+      staticText('4', 'Fill in the form', '0'),
+    );
+
+  const recorder = (answer: (d: FieldDescriptor) => unknown) => {
+    const calls: FieldDescriptor[] = [];
+    const hook = (d: FieldDescriptor) => {
+      calls.push(d);
+      return Promise.resolve(answer(d)) as Promise<boolean>;
+    };
+    return { calls, hook };
+  };
+
+  it('a node flagged by the hook is masked exactly like a deterministic sensitive node, subtree and echoes included', async () => {
+    const { calls, hook } = recorder(() => true);
+    const flagged = await createRedactor({ classifyExtra: hook }).redactResult(
+      AX,
+      caseTree(),
+      ordinaryDom,
+    );
+    expect(calls).toHaveLength(1);
+    // The same tree classified sensitive by the deterministic rule (describe
+    // reports a password input).
+    const deterministic = await createRedactor().redactResult(
+      AX,
+      caseTree(),
+      async () => ({ inputType: 'password' }),
+    );
+    expect(flagged).toEqual(deterministic);
+    expect(byId(flagged, '1').value?.value).toBe(MASK);
+    expect(text(byId(flagged, '1'))).toBe(MASK);
+    expect(text(byId(flagged, '2'))).toBe(MASK);
+    expect(text(byId(flagged, '3'))).toBe(MASK);
+    expect(text(byId(flagged, '4'))).toBe('Fill in the form');
+    expect(JSON.stringify(flagged)).not.toContain('ABC-QX');
+  });
+
+  it('a hook answering false, or no hook, leaves the ordinary node as it was', async () => {
+    const plain = await createRedactor().redactResult(
+      AX,
+      caseTree(),
+      ordinaryDom,
+    );
+    expect(byId(plain, '1').value?.value).toBe('ABC-QX');
+    const { hook } = recorder(() => false);
+    const answered = await createRedactor({
+      classifyExtra: hook,
+    }).redactResult(AX, caseTree(), ordinaryDom);
+    expect(answered).toEqual(plain);
+  });
+
+  it('is asked about an empty ordinary field and a flagged empty field is masked like a sensitive one', async () => {
+    const { calls, hook } = recorder(() => true);
+    const out = byId(
+      await createRedactor({ classifyExtra: hook }).redactResult(
+        AX,
+        tree(textbox('1', 'Case reference', '')),
+      ),
+      '1',
+    );
+    expect(calls).toEqual([{ role: 'textbox', label: 'Case reference' }]);
+    expect(out.value?.value).toBe('');
+    expect(out.name?.value).toBe(MASK);
+  });
+
+  it('is not called for nodes already sensitive nor for non-field nodes', async () => {
+    const { calls, hook } = recorder(() => true);
+    const out = await createRedactor({ classifyExtra: hook }).redactResult(
+      AX,
+      tree(
+        textbox('1', 'Social Security Number', '123-45-6789', {
+          backendDOMNodeId: 1,
+        }),
+        // describe() vouches it is a password input: sensitive already.
+        textbox('5', 'Code', 'hunter22', { backendDOMNodeId: 5 }),
+        // Bullets: sensitive already.
+        textbox('6', 'Note', '••••', { backendDOMNodeId: 6 }),
+        staticText('2', 'Case reference', '0'),
+        {
+          nodeId: '3',
+          role: { type: 'role', value: 'generic' },
+          name: str('Case reference'),
+        },
+        {
+          nodeId: '4',
+          role: { type: 'role', value: 'button' },
+          name: str('Case reference'),
+        },
+      ),
+      async (id) =>
+        id === 5 ? { inputType: 'password' } : { inputType: 'text' },
+    );
+    expect(calls).toEqual([]);
+    expect(byId(out, '1').value?.value).toBe(MASK);
+    expect(text(byId(out, '2'))).toBe('Case reference');
+  });
+
+  it('a filled field nothing vouches for stays masked whatever the hook says (fail closed first)', async () => {
+    const { calls, hook } = recorder(() => false);
+    const out = await createRedactor({ classifyExtra: hook }).redactResult(
+      AX,
+      tree(textbox('1', 'Case reference', 'ABC-QX', { backendDOMNodeId: 1 })),
+      async () => undefined,
+    );
+    expect(calls).toEqual([]);
+    expect(byId(out, '1').value?.value).toBe(MASK);
+  });
+
+  it('a hook that throws, rejects or answers a non-boolean keeps the deterministic verdict and the reply', async () => {
+    const hooks: Hook[] = [
+      () => {
+        throw new Error('sync');
+      },
+      () => Promise.reject(new Error('down')),
+      () => Promise.reject('x'),
+      () => Promise.resolve('yes' as unknown as boolean),
+      () => Promise.resolve(1 as unknown as boolean),
+      () => Promise.resolve(null as unknown as boolean),
+      () => Promise.resolve(undefined as unknown as boolean),
+      () => undefined as unknown as Promise<boolean>,
+    ];
+    const plain = await createRedactor().redactResult(
+      AX,
+      caseTree(),
+      ordinaryDom,
+    );
+    for (const classifyExtra of hooks) {
+      const out = await createRedactor({ classifyExtra }).redactResult(
+        AX,
+        caseTree(),
+        ordinaryDom,
+      );
+      expect(out).toEqual(plain);
+    }
+  });
+
+  it('a failed answer is not cached: the next snapshot asks again', async () => {
+    let n = 0;
+    const r = createRedactor({
+      classifyExtra: () => {
+        n++;
+        return n === 1
+          ? Promise.reject(new Error('blip'))
+          : Promise.resolve(true);
+      },
+    });
+    const first = await r.redactResult(AX, caseTree(), ordinaryDom);
+    expect(byId(first, '1').value?.value).toBe('ABC-QX');
+    const second = await r.redactResult(AX, caseTree(), ordinaryDom);
+    expect(n).toBe(2);
+    expect(byId(second, '1').value?.value).toBe(MASK);
+  });
+
+  it('a hanging hook times out after classifyTimeoutMs (default 2000) and keeps the deterministic verdict', async () => {
+    vi.useFakeTimers();
+    try {
+      const r = createRedactor({
+        classifyExtra: () => new Promise<boolean>(() => {}),
+        describeDeadlineMs: 60_000,
+      });
+      let done = false;
+      const pending = r.redactResult(AX, caseTree(), ordinaryDom).then((x) => {
+        done = true;
+        return x;
+      });
+      await vi.advanceTimersByTimeAsync(1990);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(done).toBe(true);
+      expect(byId(await pending, '1').value?.value).toBe('ABC-QX');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a slow hook past the tree deadline falls back without delaying the reply, and a late true never changes it', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveLate: (v: boolean) => void = () => {};
+      let calls = 0;
+      const r = createRedactor({
+        classifyExtra: () => {
+          calls++;
+          return new Promise<boolean>((resolve) => {
+            resolveLate = resolve;
+          });
+        },
+        classifyTimeoutMs: 10_000,
+        describeDeadlineMs: 100,
+      });
+      let reply: unknown;
+      const pending = r.redactResult(AX, caseTree(), ordinaryDom).then((x) => {
+        reply = x;
+      });
+      await vi.advanceTimersByTimeAsync(110);
+      await pending;
+      expect(reply).toBeDefined();
+      const frozen = structuredClone(reply);
+      expect(byId(reply, '1').value?.value).toBe('ABC-QX');
+      resolveLate(true);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(reply).toEqual(frozen);
+      // The late answer still counts for the next snapshot, at no cost.
+      const next = await r.redactResult(AX, caseTree(), ordinaryDom);
+      expect(calls).toBe(1);
+      expect(byId(next, '1').value?.value).toBe(MASK);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('caches verdicts: an identical node and a second snapshot cost no extra call', async () => {
+    const { calls, hook } = recorder(() => true);
+    const r = createRedactor({ classifyExtra: hook });
+    const twice = tree(
+      textbox('1', 'Case reference', 'A1B2', { backendDOMNodeId: 1 }),
+      textbox('2', 'Case reference', 'C3D4', { backendDOMNodeId: 2 }),
+    );
+    const out = await r.redactResult(AX, twice, ordinaryDom);
+    expect(calls).toHaveLength(1);
+    expect(byId(out, '1').value?.value).toBe(MASK);
+    expect(byId(out, '2').value?.value).toBe(MASK);
+    await r.redactResult(AX, twice, ordinaryDom);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('the 257th distinct descriptor evicts the oldest', async () => {
+    const { calls, hook } = recorder(() => false);
+    const r = createRedactor({ classifyExtra: hook });
+    const field = (i: number) => tree(textbox('1', `Field ${i}`, ''));
+    for (let i = 0; i < 257; i++) await r.redactResult(AX, field(i));
+    expect(calls).toHaveLength(257);
+    // Field 1 is still cached; field 0 was evicted.
+    await r.redactResult(AX, field(1));
+    expect(calls).toHaveLength(257);
+    await r.redactResult(AX, field(0));
+    expect(calls).toHaveLength(258);
+  });
+
+  it('clear() empties the verdict cache', async () => {
+    const { calls, hook } = recorder(() => true);
+    const r = createRedactor({ classifyExtra: hook });
+    await r.redactResult(AX, caseTree(), ordinaryDom);
+    r.clear();
+    await r.redactResult(AX, caseTree(), ordinaryDom);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('never has more than 8 calls in flight, across concurrent trees', async () => {
+    let inFlight = 0;
+    let max = 0;
+    let total = 0;
+    const r = createRedactor({
+      classifyExtra: async () => {
+        total++;
+        inFlight++;
+        max = Math.max(max, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        inFlight--;
+        return false;
+      },
+    });
+    const many = (prefix: string) => {
+      const nodes: AXNode[] = [];
+      for (let i = 0; i < 30; i++) {
+        nodes.push(textbox(String(i), `${prefix} ${i}`, ''));
+      }
+      return { nodes };
+    };
+    await Promise.all([
+      r.redactResult(AX, many('Alpha')),
+      r.redactResult(AX, many('Beta')),
+    ]);
+    expect(total).toBe(60);
+    expect(max).toBe(8);
+  });
+
+  it('hands over a fresh descriptor with the strings the classifier read and no value', async () => {
+    const seen: FieldDescriptor[] = [];
+    const r = createRedactor({
+      classifyExtra: async (d) => {
+        seen.push({ ...d });
+        // A hook cannot change what the redactor caches or masks.
+        (d as Record<string, unknown>).label = 'SSN';
+        return false;
+      },
+    });
+    const node = textbox('1', 'Case reference', 'ABC-QX', {
+      backendDOMNodeId: 1,
+      description: str('As printed on the letter'),
+      name: {
+        type: 'computedString',
+        value: 'Case reference',
+        sources: [
+          {
+            type: 'placeholder',
+            attribute: 'placeholder',
+            attributeValue: { type: 'string', value: 'AA-AAAA' },
+          },
+        ],
+      },
+    });
+    const fromDom = async () =>
+      ({
+        inputType: 'text',
+        autocomplete: 'off',
+        name: 'case_ref',
+        value: 'ABC-QX',
+      }) as FieldDescriptor;
+    const out = await r.redactResult(AX, tree(node), fromDom);
+    expect(seen).toHaveLength(1);
+    expect(Object.hasOwn(seen[0], 'value')).toBe(false);
+    expect(seen[0]).toEqual({
+      role: 'textbox',
+      inputType: 'text',
+      autocomplete: 'off',
+      name: 'case_ref',
+      label: 'Case reference',
+      placeholder: 'AA-AAAA',
+      description: 'As printed on the letter',
+    });
+    expect(JSON.stringify(seen)).not.toContain('ABC-QX');
+    expect(byId(out, '1').value?.value).toBe('ABC-QX');
+    // The mutation did not poison the cache key: the next snapshot hits.
+    await r.redactResult(AX, tree(node), fromDom);
+    expect(seen).toHaveLength(1);
+  });
+
+  it('never hands a registered value, a value shape or a URL parameter to the hook', async () => {
+    const seen: FieldDescriptor[] = [];
+    const r = createRedactor({
+      classifyExtra: async (d) => {
+        seen.push(d);
+        return false;
+      },
+    });
+    r.addKnownValue('Zebulon');
+    await r.redactResult(
+      AX,
+      tree(
+        textbox('1', 'Notes for Zebulon', ''),
+        textbox('2', 'Ref 987654321', ''),
+        textbox('3', 'See https://x.test/a?q=111223333 for help', ''),
+      ),
+    );
+    const all = JSON.stringify(seen);
+    expect(seen).toHaveLength(3);
+    expect(all).not.toContain('Zebulon');
+    expect(all).not.toContain('987654321');
+    expect(all).not.toContain('111223333');
+  });
+
+  describe('DOM nodes', () => {
+    const input = (attributes: string[], children: unknown[] = []) => ({
+      node: {
+        nodeType: 1,
+        nodeName: 'DIV',
+        attributes: [],
+        children: [
+          { nodeType: 1, nodeName: 'INPUT', attributes, children },
+          { nodeType: 3, nodeName: '#text', nodeValue: 'Ordinary text' },
+        ],
+      },
+    });
+    const fieldOf = (out: unknown) =>
+      (out as { node: { children: { attributes: string[] }[] } }).node
+        .children[0];
+
+    it('a field flagged by the hook keeps only the sensitive allowlist', async () => {
+      const { calls, hook } = recorder(() => true);
+      const out = await createRedactor({ classifyExtra: hook }).redactResult(
+        'DOM.describeNode',
+        input([
+          'type',
+          'text',
+          'name',
+          'field_17',
+          'aria-label',
+          'Case reference',
+          'title',
+          'As printed',
+          'data-x',
+          'ABC-QX',
+          'value',
+          'ABC-QX',
+        ]),
+      );
+      expect(calls).toEqual([
+        {
+          inputType: 'text',
+          name: 'field_17',
+          label: 'Case reference',
+          description: 'As printed',
+        },
+      ]);
+      expect(fieldOf(out).attributes).toEqual([
+        'type',
+        'text',
+        'name',
+        'field_17',
+        'aria-label',
+        MASK,
+        'title',
+        MASK,
+        'data-x',
+        MASK,
+        'value',
+        MASK,
+      ]);
+      expect(JSON.stringify(out)).toContain('Ordinary text');
+      expect(JSON.stringify(out)).not.toContain('ABC-QX');
+    });
+
+    it('a flagged textarea is masked identically to a deterministic sensitive one', async () => {
+      const make = (label: string) => ({
+        node: {
+          nodeType: 1,
+          nodeName: 'TEXTAREA',
+          attributes: ['aria-label', label, 'title', 'Notes', 'rows', '3'],
+          children: [{ nodeType: 3, nodeName: '#text', nodeValue: 'hello' }],
+        },
+      });
+      const flagged = await createRedactor({
+        classifyExtra: async () => true,
+      }).redactResult('DOM.describeNode', make('Case reference'));
+      const deterministic = await createRedactor().redactResult(
+        'DOM.describeNode',
+        make('Password'),
+      );
+      expect(flagged).toEqual(deterministic);
+    });
+
+    it('the hook is not called for a button input, and the reply is unchanged', async () => {
+      const button = () =>
+        input(['type', 'submit', 'aria-label', 'Case', 'value', 'Send']);
+      const plain = await createRedactor().redactResult(
+        'DOM.describeNode',
+        button(),
+      );
+      const { calls, hook } = recorder(() => false);
+      const answered = await createRedactor({
+        classifyExtra: hook,
+      }).redactResult('DOM.describeNode', button());
+      expect(answered).toEqual(plain);
+      // Button inputs and options are not asked about (see the predicate).
+      expect(calls).toEqual([]);
+    });
+
+    it('is not called for non-field elements, options, sensitive fields or empty descriptors', async () => {
+      const { calls, hook } = recorder(() => true);
+      const out = await createRedactor({ classifyExtra: hook }).redactResult(
+        'DOM.describeNode',
+        {
+          node: {
+            nodeType: 1,
+            nodeName: 'DIV',
+            attributes: ['aria-label', 'Case reference'],
+            children: [
+              {
+                nodeType: 1,
+                nodeName: 'SELECT',
+                attributes: ['name', 'county'],
+                children: [
+                  {
+                    nodeType: 1,
+                    nodeName: 'OPTION',
+                    attributes: ['value', 'a', 'label', 'Alpha'],
+                  },
+                ],
+              },
+              {
+                nodeType: 1,
+                nodeName: 'INPUT',
+                attributes: ['type', 'password', 'name', 'pw'],
+              },
+              { nodeType: 1, nodeName: 'INPUT', attributes: ['value', 'x'] },
+            ],
+          },
+        },
+      );
+      expect(calls).toEqual([{ name: 'county' }]);
+      const json = JSON.stringify(out);
+      expect(json).toContain('Case reference');
+    });
+
+    it('a failing hook keeps the deterministic DOM masking', async () => {
+      const attrs = ['type', 'text', 'aria-label', 'Case', 'value', 'ABC-QX'];
+      const plain = await createRedactor().redactResult(
+        'DOM.describeNode',
+        input(attrs),
+      );
+      const out = await createRedactor({
+        classifyExtra: () => Promise.reject(new Error('down')),
+      }).redactResult('DOM.describeNode', input(attrs));
+      expect(out).toEqual(plain);
+    });
+  });
+});
+
+describe('classifyExtra hook, fix round 1', () => {
+  const text = (node: unknown) =>
+    (node as { name?: { value?: unknown } }).name?.value;
+  it('slots held by hung calls cost a reply at most classifyTimeoutMs, and free up once the calls settle', async () => {
+    vi.useFakeTimers();
+    try {
+      const hung: ((v: boolean) => void)[] = [];
+      const asked: string[] = [];
+      const r = createRedactor({
+        classifyExtra: (d) => {
+          asked.push(String(d.label));
+          if (hung.length < 8) {
+            return new Promise<boolean>((resolve) => hung.push(resolve));
+          }
+          return Promise.resolve(true);
+        },
+        classifyTimeoutMs: 2000,
+        describeDeadlineMs: 60_000,
+      });
+      const eight: AXNode[] = [];
+      for (let i = 0; i < 8; i++)
+        eight.push(textbox(String(i), `Hung ${i}`, ''));
+      const first = r.redactResult(AX, { nodes: eight });
+      await vi.advanceTimersByTimeAsync(2010);
+      await first;
+      expect(hung).toHaveLength(8);
+
+      // Every slot is held: a new field waits at most classifyTimeoutMs.
+      let done = false;
+      const fresh = () => tree(textbox('1', 'Fresh field', ''));
+      const pending = r.redactResult(AX, fresh()).then((x) => {
+        done = true;
+        return x;
+      });
+      await vi.advanceTimersByTimeAsync(1990);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(done).toBe(true);
+      expect(text(byId(await pending, '1'))).toBe('Fresh field');
+      expect(asked).not.toContain('Fresh field');
+
+      // The hung calls settle: their slots are free again.
+      for (const resolve of hung) resolve(false);
+      await vi.advanceTimersByTimeAsync(0);
+      const again = r.redactResult(AX, fresh());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(text(byId(await again, '1'))).toBe(MASK);
+      expect(asked).toContain('Fresh field');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  describe('cache-only paths (no new calls)', () => {
+    const attributes = [
+      'type',
+      'text',
+      'name',
+      'field_17',
+      'aria-label',
+      'Case reference',
+      'value',
+      'ABC-QX',
+    ];
+
+    it('DOM.getAttributes masks a field the hook already flagged to the sensitive allowlist', async () => {
+      let calls = 0;
+      const r = createRedactor({
+        classifyExtra: async () => {
+          calls++;
+          return true;
+        },
+      });
+      await r.redactResult('DOM.describeNode', {
+        node: { nodeType: 1, nodeName: 'INPUT', attributes },
+      });
+      expect(calls).toBe(1);
+      const out = await r.redactResult('DOM.getAttributes', { attributes });
+      expect((out as { attributes: string[] }).attributes).toEqual([
+        'type',
+        'text',
+        'name',
+        'field_17',
+        'aria-label',
+        MASK,
+        'value',
+        MASK,
+      ]);
+      expect(calls).toBe(1);
+    });
+
+    it('DOM.getAttributes leaves an uncached field to the deterministic rule and never calls the hook', async () => {
+      let calls = 0;
+      const r = createRedactor({
+        classifyExtra: async () => {
+          calls++;
+          return true;
+        },
+      });
+      const out = await r.redactResult('DOM.getAttributes', { attributes });
+      expect((out as { attributes: string[] }).attributes).toEqual([
+        'type',
+        'text',
+        'name',
+        'field_17',
+        'aria-label',
+        'Case reference',
+        'value',
+        MASK,
+      ]);
+      expect(calls).toBe(0);
+    });
+
+    it('Accessibility.loadComplete masks a field-like root the hook already flagged, and never calls the hook', async () => {
+      let calls = 0;
+      const r = createRedactor({
+        classifyExtra: async () => {
+          calls++;
+          return true;
+        },
+      });
+      const root = () => textbox('1', 'Case reference', '');
+      const before = r.redactEvent('Accessibility.loadComplete', {
+        root: root(),
+      }) as { root: AXNode & { name: { value: unknown } } };
+      expect(before.root.name.value).toBe('Case reference');
+      expect(calls).toBe(0);
+      await r.redactResult(AX, tree(root()));
+      expect(calls).toBe(1);
+      const after = r.redactEvent('Accessibility.loadComplete', {
+        root: root(),
+      }) as { root: AXNode & { name: { value: unknown } } };
+      expect(after.root.name.value).toBe(MASK);
+      expect(calls).toBe(1);
+    });
   });
 });

@@ -8,6 +8,7 @@ import {
   type FrameScope,
   frameInScope,
   framesOfTree,
+  inRunOrigins,
   NO_FRAME_CONTENT_METHODS,
   pruneAXTree,
   pruneDescribedNode,
@@ -41,6 +42,9 @@ import {
   ScreenshotMaskError,
   withScreenshotMask,
 } from '../../lib/relay/screenshot-mask';
+import { createAppApi } from './app-api';
+import { APP_ORIGIN } from './config';
+import { createJevClassifier, type JevClassifier } from './jev-classifier';
 import {
   type Describe,
   redactErrorMessage,
@@ -61,9 +65,48 @@ export type BridgeMessage =
       allowedFrameOrigins?: string[];
     }
   | { type: 'stopRun' }
-  | { type: 'addKnownValue'; value: string };
+  | { type: 'addKnownValue'; value: string }
+  | { type: 'getRunStatus' }
+  /** The panel re-entered the run's known values (count only, no values). */
+  | { type: 'registrationComplete'; count?: number }
+  /**
+   * The caseworker allowed the origin the run is held on (see holdOrigin)
+   * for the rest of this run: exactly `pendingOrigin`, an https origin.
+   */
+  | { type: 'allowOrigin'; origin: string };
 
-export type BridgeResponse = { ok: true } | { ok: false; error: string };
+/**
+ * The bridge's run state for the panel. Ids and counts only: never the
+ * token, the relay URL or a known value.
+ */
+export interface RunStatus {
+  ok: true;
+  active: boolean;
+  runId?: string;
+  origin?: string;
+  attached?: boolean;
+  /**
+   * True on a run rebuilt after a worker restart until the panel sends
+   * `registrationComplete`: the known values died with the old worker, so
+   * screenshots are refused meanwhile.
+   */
+  needsRegistration?: boolean;
+  /** Jev classify() calls that failed (P4b-e); absent without Jev. */
+  jevFailures?: number;
+  /** Requests made to the app's classify-field route; absent without Jev. */
+  jevRequests?: number;
+  /**
+   * The https origin (origin only: never a path or query) the tab went to
+   * outside the run's origins, while the run is held waiting for
+   * `allowOrigin`; absent when not held.
+   */
+  pendingOrigin?: string;
+}
+
+export type BridgeResponse =
+  | { ok: true }
+  | { ok: false; error: string }
+  | RunStatus;
 
 interface RunConfig {
   relayUrl: string;
@@ -106,9 +149,28 @@ interface Run extends RunConfig {
   attached: boolean;
   /**
    * Set synchronously the moment the tab leaves scope, before any await, so
-   * no command or event gets through while the run is being torn down.
+   * no command or event gets through while the run is held (see
+   * holdOrigin) or being torn down. Not terminal: a hold that ends with the
+   * tab back in scope, or an allowed origin, clears it, so a check after an
+   * await must compare `scopeEpoch` too (see requireSameScope).
    */
   blocked: boolean;
+  /** Bumped every time a hold starts or moves to another origin. */
+  scopeEpoch: number;
+  /**
+   * Run origins allowed by `allowOrigin` for this run only, beyond the
+   * token's `origin` (at most MAX_EXTRA_ORIGINS). Memory only, never in
+   * chrome.storage: a run rebuilt after a worker restart has none, so if its
+   * tab is on one it ends with `left-origin` (see connect). Not a frame
+   * origin list: allowedFrameOrigins is never widened.
+   */
+  extraOrigins: string[];
+  /** The https origin the tab is held on, waiting for `allowOrigin`. */
+  pendingOrigin: string | null;
+  /** Ends a hold that no `allowOrigin` or return to scope answered. */
+  holdTimer?: ReturnType<typeof setTimeout>;
+  /** Epoch ms the current hold began, across origins, for the total cap. */
+  holdStartedAt?: number;
   /** The tab's main frame id (its target id), known once attached. */
   mainFrameId?: string;
   /** Child (iframe, worker) sessions of the tab, keyed by CDP sessionId. */
@@ -135,8 +197,25 @@ interface Run extends RunConfig {
    * stopRun, and empty on a run rebuilt after a worker restart.
    */
   redactor: Redactor;
+  /**
+   * The redactor's classifyExtra hook (the app's classify-field route), when
+   * the build has an APP_ORIGIN. Its failures() feeds the run status.
+   */
+  jev?: JevClassifier;
   /** True once a known value was registered; see addKnownValue. */
   hasKnownValues: boolean;
+  /**
+   * Set on a run rebuilt after a worker restart (its known values were lost
+   * with the old worker) until the panel sends `registrationComplete`.
+   * Screenshots are refused while it is set.
+   */
+  needsRegistration: boolean;
+  /** The socket `register` was sent on; see send/stop delivery. */
+  registeredWs?: WebSocket;
+  /** The relay closed the run (a final close code): no stop is owed. */
+  relayClosed: boolean;
+  /** Ends the run unless the tab is re-attached in time (P4b-d). */
+  detachTimer?: ReturnType<typeof setTimeout>;
   /** The bridge's focus-reading isolated world in the main frame, if made. */
   focusWorld?: number;
   /**
@@ -147,11 +226,90 @@ interface Run extends RunConfig {
 }
 
 const STORAGE_KEY = 'run';
+/**
+ * Run ids this worker has begun (ids only: never a token or a value), most
+ * recent last, in chrome.storage.session so a worker restart keeps them.
+ * A startRun for one of them, with no live run of that id to ask, needs
+ * re-registration: whatever ended the earlier run (token expiry, a detach,
+ * a stop) also dropped its known values.
+ */
+const BEGUN_KEY = 'begunRuns';
+const BEGUN_CAP = 20;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost']);
 const OUT_OF_SCOPE = 'tab is outside the allowed origin';
 const FRAME_OUT_OF_SCOPE = 'frame is outside the allowed origins';
 const FIRST_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30_000;
+// A stop the socket could not carry is retried this long at most (P4b).
+const PENDING_STOP_MS = 30_000;
+// A non-user detach ends the run unless the tab is re-attached in time.
+const DETACH_GRACE_MS = 5_000;
+const REGISTRATION_REFUSED = 'registration required';
+const ORIGIN_NOT_PENDING = 'origin not pending';
+// esbuild defines this only in a test-hooks build given
+// EXTENSION_TEST_ORIGIN_HOLD_MS (scripts/extension-build-config.ts), so the
+// e2e suites see a hold end in seconds. Undeclared everywhere else: 60 s.
+declare const __ORIGIN_HOLD_MS__: number | undefined;
+/**
+ * How long a run is held after the tab leaves for another https origin,
+ * waiting for `allowOrigin` (or the tab to come back), before it ends with
+ * `left-origin`. Each move to yet another origin restarts it, up to
+ * ORIGIN_HOLD_CAP_MS in total.
+ */
+const ORIGIN_HOLD_MS =
+  typeof __ORIGIN_HOLD_MS__ === 'number' ? __ORIGIN_HOLD_MS__ : 60_000;
+const ORIGIN_HOLD_CAP_MS = 2 * ORIGIN_HOLD_MS;
+const MAX_EXTRA_ORIGINS = 3;
+/**
+ * While a run needs registration (its redactor lost the known values in a
+ * worker restart), the agent may send only these: methods whose result is
+ * empty (no page text) and which keep the run's session alive. Everything
+ * else, including any method not listed here, is refused with
+ * REGISTRATION_REFUSED: DOM.*, Accessibility.*, Runtime.evaluate and
+ * callFunctionOn, Page.captureScreenshot, getFrameTree and navigate, ...
+ */
+const UNREGISTERED_METHODS: ReadonlySet<string> = new Set([
+  'Runtime.enable',
+  'Runtime.runIfWaitingForDebugger',
+  'Page.enable',
+  'Page.bringToFront',
+  'Page.handleJavaScriptDialog',
+  'Network.enable',
+  'DOM.enable',
+  'Accessibility.enable',
+  'Target.setAutoAttach',
+  'Input.insertText',
+  'Input.dispatchKeyEvent',
+  'Input.dispatchMouseEvent',
+]);
+/**
+ * Events forwarded while a run needs registration: the allowed events
+ * (ALLOWED_EVENT_METHODS) that carry no URL, title, origin, stack or other
+ * page text. Dropped meanwhile: Page.frameNavigated, navigatedWithinDocument,
+ * frameRequestedNavigation, frameStartedNavigating and frameAttached (URL or
+ * stack), Network.requestWillBeSent and responseReceived (URL),
+ * Runtime.executionContextCreated (origin, name). The two dialog events are
+ * rebuilt with empty text by filterEvent; the Target events are forwarded
+ * with their URL and title blanked (see withoutTargetUrl).
+ */
+const UNREGISTERED_EVENTS: ReadonlySet<string> = new Set([
+  'DOM.documentUpdated',
+  'Network.loadingFailed',
+  'Network.loadingFinished',
+  'Network.requestServedFromCache',
+  'Page.domContentEventFired',
+  'Page.frameDetached',
+  'Page.frameStartedLoading',
+  'Page.frameStoppedLoading',
+  'Page.javascriptDialogClosed',
+  'Page.javascriptDialogOpening',
+  'Page.loadEventFired',
+  'Runtime.executionContextDestroyed',
+  'Runtime.executionContextsCleared',
+  'Target.attachedToTarget',
+  'Target.detachedFromTarget',
+  'Target.targetInfoChanged',
+]);
 // Relay close codes that end the run: normal (run closed, replaced) and
 // policy (refused). Anything else is a dropped connection.
 const FINAL_CLOSE_CODES = new Set([1000, 1008]);
@@ -266,6 +424,12 @@ async function tabTarget(tabId: number) {
   return targets.find((t) => t.tabId === tabId && t.type === 'page');
 }
 
+/** A target as the agent sees it; URL and title blank while unregistered. */
+const agentTargetInfo = (current: Run, t: chrome.debugger.TargetInfo) => {
+  const info = targetInfo(t);
+  return current.needsRegistration ? { ...info, url: '', title: '' } : info;
+};
+
 const targetInfo = (t: chrome.debugger.TargetInfo) => ({
   targetId: t.id,
   type: t.type,
@@ -287,7 +451,29 @@ function send(current: Run, message: ExtensionToRelay) {
 
 // --- run lifecycle -----------------------------------------------------------
 
-export async function startRun(
+/**
+ * startRun, stopRun and resumeRun run one at a time, in call order, behind
+ * this chain, so two of them can never interleave their awaits and leave two
+ * runs (and two sockets). The internal stops (left origin, tab closed, token
+ * expiry, relay close, detach) do not queue: each ends the run it observed,
+ * synchronously, through endRun, and a queued one would end a newer run.
+ */
+let lifecycle: Promise<unknown> = Promise.resolve();
+
+function serialized<T>(task: () => Promise<T>): Promise<T> {
+  const result = lifecycle.then(task);
+  // A failed call must not poison the calls queued behind it.
+  lifecycle = result.catch(() => {});
+  return result;
+}
+
+export function startRun(
+  msg: Extract<BridgeMessage, { type: 'startRun' }>,
+): Promise<BridgeResponse> {
+  return serialized(() => startRunNow(msg));
+}
+
+async function startRunNow(
   msg: Extract<BridgeMessage, { type: 'startRun' }>,
 ): Promise<BridgeResponse> {
   if (typeof msg.relayUrl !== 'string' || typeof msg.token !== 'string') {
@@ -311,7 +497,27 @@ export async function startRun(
   if (url === null) return { ok: false, error: 'tab not found' };
   if (!inScope(url, claims.origin)) return { ok: false, error: OUT_OF_SCOPE };
 
-  await stopRun('replaced');
+  // A run restarted under the same run id (e.g. a refreshed token) is not
+  // ended on the relay: its new socket's `register` replaces the old one
+  // there, while a `stop` would close the run for good (and refuse the new
+  // socket). Its known values are cleared with the old run, so the panel
+  // must register them again before screenshots are allowed.
+  // A live run of the same id says exactly whether values were lost; with
+  // none (it ended on its own, or the worker restarted) the record of begun
+  // run ids decides, failing closed.
+  const previous = run;
+  const sameRun = previous !== undefined && previous.runId === claims.runId;
+  const begun = await readBegunRuns();
+  const valuesLost = sameRun
+    ? previous.hasKnownValues || previous.needsRegistration
+    : begun.includes(claims.runId);
+  await chrome.storage.session.set({
+    [BEGUN_KEY]: [
+      ...begun.filter((id) => id !== claims.runId),
+      claims.runId,
+    ].slice(-BEGUN_CAP),
+  });
+  await endRun('replaced', { notifyRelay: !sameRun });
   const config: RunConfig = {
     relayUrl: msg.relayUrl,
     token: msg.token,
@@ -319,16 +525,46 @@ export async function startRun(
     allowedFrameOrigins,
   };
   await chrome.storage.session.set({ [STORAGE_KEY]: config });
-  begin(config, socket.url, claims);
+  begin(config, socket.url, claims, false, valuesLost);
   return { ok: true };
 }
 
+/** The begun run ids; empty when unreadable or malformed. */
+async function readBegunRuns(): Promise<string[]> {
+  try {
+    const stored = await chrome.storage.session.get(BEGUN_KEY);
+    const ids: unknown = stored[BEGUN_KEY];
+    return Array.isArray(ids)
+      ? ids.filter((id): id is string => typeof id === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Ends the run: tells the relay to close it (so the agent is cut off at once
- * rather than held for the resume window), closes the socket, detaches.
+ * Ends the run (queued behind any startRun/resumeRun in flight): tells the
+ * relay to close it (so the agent is cut off at once rather than held for
+ * the resume window), closes the socket, detaches.
  */
-export async function stopRun(
-  reason: StopReason = 'user',
+export function stopRun(reason: StopReason = 'user'): Promise<BridgeResponse> {
+  return serialized(() => endRun(reason));
+}
+
+/**
+ * Ends whatever run is current, now. The synchronous part (forgetting the
+ * run, blocking it, clearing its redactor and timers, stopping its Jev
+ * classifier, telling the relay) completes before the first await, so a
+ * caller that checked `run === current` ends exactly that run.
+ *
+ * The relay is told with a `stop` frame on the run's socket when that socket
+ * is open; otherwise the stop is queued for delivery on a short-lived socket
+ * (see queueStop). Not when the relay itself closed the run, or when
+ * `notifyRelay` is false.
+ */
+async function endRun(
+  reason: StopReason,
+  opts: { notifyRelay?: boolean } = {},
 ): Promise<BridgeResponse> {
   const current = run;
   run = undefined;
@@ -339,9 +575,23 @@ export async function stopRun(
     current.blocked = true;
     current.redactor.clear();
     current.hasKnownValues = false;
+    current.jev?.stop();
     clearTimeout(current.reconnectTimer);
     clearTimeout(current.expiryTimer);
-    send(current, { type: 'stop', reason });
+    clearTimeout(current.detachTimer);
+    clearTimeout(current.holdTimer);
+    // Allowed origins are for this run only.
+    current.extraOrigins = [];
+    current.pendingOrigin = null;
+    if (opts.notifyRelay !== false && !current.relayClosed) {
+      if (current.ws?.readyState === WebSocket.OPEN) {
+        // The hub ignores everything before `register`.
+        if (current.registeredWs !== current.ws) sendRegister(current);
+        send(current, { type: 'stop', reason });
+      } else {
+        queueStop(current, reason);
+      }
+    }
     try {
       current.ws?.close(1000, 'run stopped');
     } catch {
@@ -350,10 +600,14 @@ export async function stopRun(
     // Let a screenshot in flight restore the page while the debugger is
     // still attached (it sees `stopped` and skips its capture); bounded, so
     // a hung page cannot hold the stop.
+    let waited: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       screenshotsIdle(current.tabId),
-      new Promise((resolve) => setTimeout(resolve, STOP_WAIT_MS)),
+      new Promise((resolve) => {
+        waited = setTimeout(resolve, STOP_WAIT_MS);
+      }),
     ]);
+    clearTimeout(waited);
     dropChildren(current);
     // The mask's worlds die with the run's debugger session; a newer run (if
     // one started meanwhile) tracks its own.
@@ -370,19 +624,90 @@ export async function stopRun(
   return { ok: true };
 }
 
+/** True when the URL is in one of the run's origins (token or allowed). */
+const inRunScope = (current: Run, url: string) => inRunOrigins(url, current);
+
 /**
- * The tab left the run origin. Terminal in plan 1: block synchronously, then
- * stop the run; a later relay `attach` finds no run and the tab is never
- * re-attached, even if it comes back.
+ * The tab is heading to, or committed, `url` outside the run's origins.
+ * Blocks synchronously either way. An https URL holds the run on its origin
+ * (see holdOrigin); anything else (http, about:, chrome:, data:, blob:,
+ * javascript:, unparsable) ends it at once with `left-origin`.
  */
-function leaveOrigin(current: Run) {
-  if (current.blocked) return;
+function leaveOrigin(current: Run, url: string) {
+  if (current.stopped || run !== current) return;
+  const origin = normalizeOrigin(url);
+  if (origin === null) {
+    endLeftOrigin(current);
+    return;
+  }
+  holdOrigin(current, origin);
+}
+
+/** Ends the run for leaving its origins; a later `attach` finds no run. */
+function endLeftOrigin(current: Run) {
   current.blocked = true;
-  if (run === current) void stopRun('left-origin');
+  if (run === current && !current.stopped) void endRun('left-origin');
+}
+
+/**
+ * Holds the run on `origin` instead of ending it (a login redirect, say):
+ * every agent command is refused and nothing is forwarded, while the bridge
+ * keeps tracking frames, dialogs and children. The hold ends when the tab
+ * commits a URL in the run's origins again, when `allowOrigin` names this
+ * origin, or with `left-origin` after ORIGIN_HOLD_MS (restarted by a move to
+ * another origin, ORIGIN_HOLD_CAP_MS in total). Another page of the same
+ * origin changes nothing.
+ */
+function holdOrigin(current: Run, origin: string) {
+  if (current.pendingOrigin === origin) return;
+  const now = Date.now();
+  current.blocked = true;
+  current.scopeEpoch += 1;
+  current.pendingOrigin = origin;
+  current.holdStartedAt ??= now;
+  clearTimeout(current.holdTimer);
+  current.holdTimer = undefined;
+  const wait = Math.min(
+    ORIGIN_HOLD_MS,
+    current.holdStartedAt + ORIGIN_HOLD_CAP_MS - now,
+  );
+  if (wait <= 0) {
+    endLeftOrigin(current);
+    return;
+  }
+  current.holdTimer = setTimeout(() => {
+    current.holdTimer = undefined;
+    if (current.pendingOrigin !== null) endLeftOrigin(current);
+  }, wait);
+}
+
+/** Ends a hold: the tab is back in scope, or its origin was allowed. */
+function releaseHold(current: Run) {
+  if (current.pendingOrigin === null || current.stopped) return;
+  clearTimeout(current.holdTimer);
+  current.holdTimer = undefined;
+  current.holdStartedAt = undefined;
+  current.pendingOrigin = null;
+  current.blocked = false;
+}
+
+/**
+ * Throws unless the run is live and its tab has not left scope since
+ * `epoch`: a hold may have started and ended while the caller awaited, and
+ * whatever it read meanwhile may be the other origin's.
+ */
+function requireSameScope(current: Run, epoch: number) {
+  if (current.blocked || current.stopped || current.scopeEpoch !== epoch) {
+    throw new Error(OUT_OF_SCOPE);
+  }
 }
 
 /** Picks up a run persisted before a service worker restart. */
-export async function resumeRun(): Promise<void> {
+export function resumeRun(): Promise<void> {
+  return serialized(resumeRunNow);
+}
+
+async function resumeRunNow(): Promise<void> {
   if (run) return;
   const stored = await chrome.storage.session.get(STORAGE_KEY);
   const config = stored[STORAGE_KEY] as RunConfig | undefined;
@@ -399,12 +724,32 @@ export async function resumeRun(): Promise<void> {
   begin({ ...config, allowedFrameOrigins: frames }, socket.url, claims, true);
 }
 
+/**
+ * A per-run Jev classifier, only when the build has an APP_ORIGIN; undefined
+ * (no hook, deterministic verdicts only) otherwise or if the origin is bad.
+ * A run resumed after a worker restart gets a fresh one (and budget).
+ */
+function jevFor(runId: string): JevClassifier | undefined {
+  if (!APP_ORIGIN) return undefined;
+  try {
+    return createJevClassifier({
+      api: createAppApi({ origin: APP_ORIGIN }),
+      runId,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 function begin(
   config: RunConfig,
   socketUrl: string,
   claims: { runId: string; origin: string; exp: number },
   resumed = false,
+  // The known values lived in a dead worker's memory, or in a replaced run.
+  needsRegistration = resumed,
 ) {
+  const jev = jevFor(claims.runId);
   const current: Run = {
     ...config,
     ...claims,
@@ -412,17 +757,27 @@ function begin(
     stopped: false,
     attached: false,
     blocked: false,
+    scopeEpoch: 0,
+    extraOrigins: [],
+    pendingOrigin: null,
     children: new Map(),
     frameScope: createFrameScope(),
     reconnectDelayMs: FIRST_RECONNECT_MS,
     announceResume: resumed,
-    redactor: createRedactor(),
+    redactor: jev
+      ? createRedactor({ classifyExtra: jev.classify })
+      : createRedactor(),
+    jev,
     hasKnownValues: false,
+    needsRegistration,
+    relayClosed: false,
   };
+  // A stop still queued for this run id would close the run just begun.
+  dropPendingStops(current.runId);
   run = current;
   current.expiryTimer = setTimeout(
     () => {
-      if (run === current) void stopRun('token-expired');
+      if (run === current) void endRun('token-expired');
     },
     Math.max(0, current.exp * 1000 - Date.now()),
   );
@@ -432,7 +787,7 @@ function begin(
 function connect(current: Run) {
   if (current.stopped || run !== current) return;
   if (current.exp <= nowSeconds()) {
-    void stopRun('token-expired');
+    void endRun('token-expired');
     return;
   }
   const url = new URL(current.socketUrl);
@@ -450,21 +805,23 @@ function connect(current: Run) {
     const tab = await tabUrl(current.tabId);
     if (current.ws !== ws || current.stopped) return;
     if (tab === null) {
-      void stopRun();
+      void endRun('user');
       return;
     }
-    // The tab left the origin while the socket was down: the run is over.
-    if (!inScope(tab, current.origin)) {
-      leaveOrigin(current);
-      return;
+    // The tab left the run's origins while the socket was down.
+    if (!inRunScope(current, tab)) {
+      // A run rebuilt after a worker restart lost its allowed origins with
+      // the old worker (they are never persisted): it is not held, it ends.
+      if (current.announceResume) {
+        endLeftOrigin(current);
+        return;
+      }
+      leaveOrigin(current, tab);
+      // Held: still register, so the run can go on once the hold ends.
+      if (run !== current || current.stopped) return;
     }
     current.reconnectDelayMs = FIRST_RECONNECT_MS;
-    send(current, {
-      type: 'register',
-      runId: current.runId,
-      tabId: current.tabId,
-      origin: current.origin,
-    });
+    sendRegister(current);
     if (current.announceResume) {
       current.announceResume = false;
       send(current, { type: 'resumed' });
@@ -501,11 +858,150 @@ function connect(current: Run) {
     current.ws = undefined;
     if (current.stopped || run !== current) return;
     if (FINAL_CLOSE_CODES.has(event.code)) {
-      void stopRun();
+      // The relay ended (or refused) the run: no stop is owed to it.
+      current.relayClosed = true;
+      void endRun('user');
       return;
     }
     scheduleReconnect(current);
   };
+}
+
+function sendRegister(current: Run) {
+  current.registeredWs = current.ws;
+  send(current, {
+    type: 'register',
+    runId: current.runId,
+    tabId: current.tabId,
+    origin: current.origin,
+  });
+}
+
+// --- stop delivery -------------------------------------------------------------
+
+/**
+ * A `stop` the run's socket could not carry (it was connecting, or down
+ * between reconnects) when the run ended. The run itself is already gone
+ * (torn down locally at once); this keeps only what one short-lived socket
+ * needs to tell the relay: it opens with the run's token, sends `register`
+ * (the hub ignores anything before it) and then `stop` as its first frame
+ * after that, and closes. Failed attempts retry with the reconnect backoff.
+ * Dropped once the token expires, after PENDING_STOP_MS, when the relay
+ * refuses the socket with a final close code (the run is already closed or
+ * the token is refused), or when a run with the same id begins. Memory only:
+ * a worker restart loses it. Never logged: its URL carries the token.
+ */
+interface PendingStop {
+  runId: string;
+  tabId: number;
+  origin: string;
+  token: string;
+  socketUrl: string;
+  reason: StopReason;
+  /** Epoch ms after which the stop is dropped: 30 s or token expiry. */
+  dropAt: number;
+  delayMs: number;
+  ws?: WebSocket;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+const pendingStops = new Set<PendingStop>();
+
+function queueStop(current: Run, reason: StopReason) {
+  const dropAt = Math.min(Date.now() + PENDING_STOP_MS, current.exp * 1000);
+  if (dropAt <= Date.now()) return;
+  const pending: PendingStop = {
+    runId: current.runId,
+    tabId: current.tabId,
+    origin: current.origin,
+    token: current.token,
+    socketUrl: current.socketUrl,
+    reason,
+    dropAt,
+    delayMs: FIRST_RECONNECT_MS,
+  };
+  pendingStops.add(pending);
+  deliverStop(pending);
+}
+
+function dropStop(pending: PendingStop) {
+  pendingStops.delete(pending);
+  clearTimeout(pending.timer);
+  const ws = pending.ws;
+  pending.ws = undefined;
+  try {
+    ws?.close(1000, 'run stopped');
+  } catch {
+    // Already closed.
+  }
+}
+
+function dropPendingStops(runId: string) {
+  for (const pending of [...pendingStops]) {
+    if (pending.runId === runId) dropStop(pending);
+  }
+}
+
+function deliverStop(pending: PendingStop) {
+  if (!pendingStops.has(pending)) return;
+  if (Date.now() >= pending.dropAt) {
+    dropStop(pending);
+    return;
+  }
+  const url = new URL(pending.socketUrl);
+  url.searchParams.set('token', pending.token);
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(url.toString());
+  } catch {
+    retryStop(pending);
+    return;
+  }
+  pending.ws = ws;
+  ws.onopen = () => {
+    if (pending.ws !== ws) return;
+    try {
+      ws.send(
+        JSON.stringify({
+          type: 'register',
+          runId: pending.runId,
+          tabId: pending.tabId,
+          origin: pending.origin,
+        } satisfies ExtensionToRelay),
+      );
+      ws.send(
+        JSON.stringify({
+          type: 'stop',
+          reason: pending.reason,
+        } satisfies ExtensionToRelay),
+      );
+    } catch {
+      // The close handler retries.
+      return;
+    }
+    // Delivered: sends queued before close() go out ahead of the close.
+    dropStop(pending);
+  };
+  ws.onclose = (event) => {
+    if (pending.ws !== ws) return;
+    pending.ws = undefined;
+    if (FINAL_CLOSE_CODES.has(event.code)) {
+      dropStop(pending);
+      return;
+    }
+    retryStop(pending);
+  };
+}
+
+function retryStop(pending: PendingStop) {
+  if (!pendingStops.has(pending)) return;
+  const delay = Math.min(pending.delayMs, pending.dropAt - Date.now());
+  if (delay <= 0) {
+    dropStop(pending);
+    return;
+  }
+  pending.delayMs = Math.min(pending.delayMs * 2, MAX_RECONNECT_MS);
+  pending.timer = setTimeout(() => deliverStop(pending), delay);
 }
 
 function scheduleReconnect(current: Run) {
@@ -518,13 +1014,14 @@ function scheduleReconnect(current: Run) {
 
 // --- commands ----------------------------------------------------------------
 
-/** Fails (and ends the run) unless the tab is still in scope. */
+/** Fails (and holds or ends the run) unless the tab is still in scope. */
 async function requireTabInScope(current: Run) {
   if (current.blocked) throw new Error(OUT_OF_SCOPE);
   const url = await tabUrl(current.tabId);
   if (url === null) throw new Error('tab closed');
-  if (current.blocked || !inScope(url, current.origin)) {
-    leaveOrigin(current);
+  if (current.blocked) throw new Error(OUT_OF_SCOPE);
+  if (!inRunScope(current, url)) {
+    leaveOrigin(current, url);
     throw new Error(OUT_OF_SCOPE);
   }
 }
@@ -534,7 +1031,7 @@ async function requireTabInScope(current: Run) {
 // same-site cross-origin iframes) are judged per command and per event
 // through `frameScope` (a frame child has its own too); see resolveFrames.
 const frameAllowed = (current: Run, url: string) =>
-  inScope(url, current.origin) ||
+  inRunScope(current, url) ||
   current.allowedFrameOrigins.some((origin) => inScope(url, origin));
 
 /** A child is in scope by its URL, once its Page domain is enabled. */
@@ -563,9 +1060,14 @@ const frameAllowedIn = (current: Run, scope: FrameScope, frameId: string) =>
     frameId,
     current.origin,
     current.allowedFrameOrigins,
+    current.extraOrigins,
   ) || childFrameAllowed(current, frameId);
 
-/** True when a context is known, of an allowed origin, in an allowed frame. */
+/**
+ * True when a context is known, of an allowed origin, in an allowed frame.
+ * `current` is the ScopeOrigins here (and for scopeFrameEvent): its origin,
+ * extraOrigins and allowedFrameOrigins.
+ */
 const contextAllowedIn = (current: Run, scope: FrameScope, contextId: number) =>
   contextInScope(scope, current, contextId, (frameId) =>
     childFrameAllowed(current, frameId),
@@ -576,13 +1078,17 @@ async function handleCommand(
   msg: RelayToExtension,
 ): Promise<unknown> {
   if (current.stopped) throw new Error('run stopped');
+  // Taken before any await: a reply computed across a hold is refused.
+  const epoch = current.scopeEpoch;
   switch (msg.type) {
     case 'listTargets': {
       await requireTabInScope(current);
       const target = await tabTarget(current.tabId);
-      return redact(current, 'Target.getTargets', {
-        targetInfos: target ? [targetInfo(target)] : [],
+      const result = await redact(current, 'Target.getTargets', {
+        targetInfos: target ? [agentTargetInfo(current, target)] : [],
       });
+      requireSameScope(current, epoch);
+      return result;
     }
     case 'attach': {
       const target = await tabTarget(current.tabId);
@@ -640,18 +1146,25 @@ async function handleCommand(
         await chrome.debugger.detach({ tabId: current.tabId }).catch(() => {});
         throw new Error('could not read the frame tree');
       }
-      if (current.blocked || current.stopped) {
+      // A hold that came and went meanwhile may have seeded the other
+      // origin's frame tree: refuse, the agent attaches again.
+      if (current.blocked || current.stopped || current.scopeEpoch !== epoch) {
         await chrome.debugger.detach({ tabId: current.tabId }).catch(() => {});
         throw new Error(OUT_OF_SCOPE);
       }
       current.attached = true;
+      // Re-attached in time: the detach no longer ends the run (P4b-d).
+      clearTimeout(current.detachTimer);
+      current.detachTimer = undefined;
       current.mainFrameId = target.id;
       return redact(current, 'Target.attachToTarget', {
         sessionId: tabSessionId(current.tabId),
-        targetInfo: targetInfo({ ...target, attached: true }),
+        targetInfo: agentTargetInfo(current, { ...target, attached: true }),
       });
     }
     case 'createTarget': {
+      // Agent-initiated URLs stay bound to the token origin, as at the hub
+      // (relay/hub.ts checkCommand on agent.origin): see forwardCdp.
       const check = checkCommand(
         { method: 'Target.createTarget', params: { url: msg.url } },
         { origin: current.origin },
@@ -662,7 +1175,7 @@ async function handleCommand(
     case 'closeTarget':
       throw new Error('closing the registered tab is not allowed');
     case 'cdp':
-      return forwardCdp(current, msg);
+      return forwardCdp(current, msg, epoch);
     default:
       throw new Error('unknown command');
   }
@@ -671,17 +1184,32 @@ async function handleCommand(
 async function forwardCdp(
   current: Run,
   msg: Extract<RelayToExtension, { type: 'cdp' }>,
+  epoch: number,
 ): Promise<unknown> {
   const { sessionId, method, params } = msg;
   if (typeof method !== 'string' || !isMethodAllowed(method)) {
     throw new Error(`method not allowed: ${String(method)}`);
   }
+  // Page.navigate's URL stays bound to the token origin, not the extra
+  // origins: the hub refuses any other (relay/hub.ts, checkCommand on the
+  // agent token's origin) and the protocol does not tell it about allowed
+  // origins, so an allowed origin is reached only by the page's own
+  // navigation (the redirect that caused the hold). See the Task 10 notes.
   const check = checkCommand({ method, params }, { origin: current.origin });
   if (!check.ok) throw new Error(check.reason);
   if (params !== undefined && !isObject(params)) {
     throw new Error('invalid params');
   }
 
+  // After a worker restart the redactor has lost the known values, so
+  // nothing that can carry page text may go up until the panel re-registers
+  // them (fail closed: unlisted methods are refused too).
+  if (current.needsRegistration && !UNREGISTERED_METHODS.has(method)) {
+    throw new Error(REGISTRATION_REFUSED);
+  }
+  // Held (or ending): refused before the frame lookups below, which would
+  // otherwise talk to the held page (DOM.resolveNode, context discovery).
+  if (current.blocked) throw new Error(OUT_OF_SCOPE);
   const screenshot = method === 'Page.captureScreenshot';
   const lock = lockFor(current.tabId);
 
@@ -748,6 +1276,9 @@ async function forwardCdp(
   for (;;) {
     if (!screenshot) await untilNoScreenshot(lock);
     await requireTabInScope(current);
+    // In scope now is not enough: a hold that came and went (A -> B -> A)
+    // while this command awaited means the page is a new document.
+    requireSameScope(current, epoch);
     if (!framesInScope()) throw new Error(FRAME_OUT_OF_SCOPE);
     if (!current.attached) throw new Error('not attached');
     if (screenshot || !lock.writer) break;
@@ -770,6 +1301,7 @@ async function forwardCdp(
   // frame out of scope is present, checked right before each capture (no
   // await in between) and again after it, when the image is discarded.
   const capture = async () => {
+    requireSameScope(current, epoch);
     if (outOfScopeFramePresent(current)) throw new Error(FRAME_OUT_OF_SCOPE);
     const shot = await sendIt();
     if (outOfScopeFramePresent(current)) throw new Error(FRAME_OUT_OF_SCOPE);
@@ -804,6 +1336,9 @@ async function forwardCdp(
           }
         }
       }
+      // Checked unconditionally, with no await before the send: the input
+      // guard above may have awaited, and a scope bounce refuses the command.
+      requireSameScope(current, epoch);
       pending = sendIt();
     } catch (error) {
       // A throw before the send must not leak the hold.
@@ -822,8 +1357,9 @@ async function forwardCdp(
     describeVia(debuggee, child),
   );
   // The redaction may have waited on describe(); a run that ended meanwhile
-  // sends nothing more.
-  if (current.blocked || current.stopped) throw new Error(OUT_OF_SCOPE);
+  // sends nothing more, nor one whose tab left scope at any point since the
+  // command arrived (a hold may have come and gone).
+  requireSameScope(current, epoch);
   if (!framesInScope()) throw new Error(FRAME_OUT_OF_SCOPE);
   return result;
 }
@@ -1601,7 +2137,8 @@ async function captureMasked(
     isCoveredFrame,
     isSensitiveValue,
     hasKnownValue,
-    knownValuesRegistered: () => current.hasKnownValues,
+    knownValuesRegistered: () =>
+      current.hasKnownValues || current.needsRegistration,
   };
   const masks = [
     createMaskSession({
@@ -1889,7 +2426,10 @@ export function onDebuggerEvent(
 ) {
   const current = run;
   if (!current || source.tabId !== current.tabId) return;
-  if (current.blocked) return;
+  // A run being torn down tracks nothing more. A held run (blocked, see
+  // holdOrigin) keeps tracking frames, dialogs and children below, so its
+  // state is current if the hold ends, and forwards nothing.
+  if (current.stopped) return;
   // Frame scope is kept from every raw tab event, sent on or not, even
   // between chrome.debugger.attach and the end of the attach (the frame
   // tree read there then supersedes it).
@@ -1914,15 +2454,28 @@ export function onDebuggerEvent(
 
   if (source.sessionId === undefined) {
     const navUrl = mainFrameNavigationUrl(current, method, params);
-    if (navUrl !== undefined && !inScope(navUrl, current.origin)) {
-      // Drop the event that would reveal the new document, then stop.
-      leaveOrigin(current);
+    if (navUrl !== undefined && !inRunScope(current, navUrl)) {
+      // Drop the event that would reveal the new document, then hold or
+      // stop. While held, only a commit moves the hold (a pre-commit signal
+      // may never commit).
+      if (current.pendingOrigin === null || !PRE_COMMIT_EVENTS.has(method)) {
+        leaveOrigin(current, navUrl);
+      }
       return;
+    }
+    // Back in scope: the hold ends on the commit itself, in order with the
+    // held document's events (all dropped before it).
+    if (navUrl !== undefined && method === 'Page.frameNavigated') {
+      releaseHold(current);
     }
   }
 
   trackChildren(current, method, params, source.sessionId);
   resumeIfPaused(current, method, params);
+  // The bridge's own isolated worlds are tracked whether or not it is held.
+  const bridgeWorldEvent = isMaskWorldEvent(source.sessionId, method, params);
+  // Held (or torn down): tracked above, never forwarded.
+  if (current.blocked) return;
 
   const lifecycle = LIFECYCLE_EVENTS.has(method);
   let forwarded: unknown = params;
@@ -1939,7 +2492,7 @@ export function onDebuggerEvent(
     }
   }
 
-  if (isMaskWorldEvent(source.sessionId, method, params)) return;
+  if (bridgeWorldEvent) return;
   // An event about a frame (or context) out of scope, or a navigation
   // heading out of scope (it names its destination before committing), is
   // dropped, on the tab or a frame child.
@@ -1947,6 +2500,13 @@ export function onDebuggerEvent(
 
   const filtered = filterEvent(method, forwarded);
   if (!filtered) return;
+  // Unregistered (see UNREGISTERED_EVENTS): only events with no page text.
+  if (current.needsRegistration) {
+    if (!UNREGISTERED_EVENTS.has(filtered.method)) return;
+    if (LIFECYCLE_EVENTS.has(filtered.method)) {
+      filtered.params = withoutTargetUrl(filtered.params);
+    }
+  }
   // Routing and scope above used the raw params; only what is sent is
   // redacted. `null` means the event cannot be redacted: drop it.
   const redacted = redactEventParams(
@@ -1972,12 +2532,21 @@ export function onDebuggerDetach(
   // The caseworker dismissed Chrome's debugging infobar: the run is over.
   if (reason === 'canceled_by_user') {
     current.blocked = true;
-    void stopRun('debugger-canceled');
+    void endRun('debugger-canceled');
     return;
   }
   const announced = current.attached;
   current.attached = false;
   dropChildren(current);
+  // P4b-d: the tab must be attached again (the agent re-attaches through the
+  // relay) within the grace period, or the run ends.
+  clearTimeout(current.detachTimer);
+  current.detachTimer = setTimeout(() => {
+    current.detachTimer = undefined;
+    if (run === current && !current.attached) {
+      void endRun('debugger-detached');
+    }
+  }, DETACH_GRACE_MS);
   // The agent was never given this session (a failed attach): say nothing.
   if (!announced) return;
   send(current, {
@@ -1987,18 +2556,25 @@ export function onDebuggerDetach(
   });
 }
 
-/** Ends the run the moment the tab commits a URL outside scope. */
+/** Holds (or ends) the run the moment the tab commits a URL outside scope. */
 export function onTabUpdated(tabId: number, info: { url?: string }) {
   const current = run;
   if (!current || tabId !== current.tabId || info.url === undefined) return;
-  if (!inScope(info.url, current.origin)) leaveOrigin(current);
+  if (!inRunScope(current, info.url)) {
+    leaveOrigin(current, info.url);
+    return;
+  }
+  // Back in scope. An attached tab is released by its Page.frameNavigated
+  // instead: tabs.onUpdated is not ordered with the debugger's events, so
+  // the held document's late events could otherwise be forwarded.
+  if (!current.attached) releaseHold(current);
 }
 
 export function onTabRemoved(tabId: number) {
   const current = run;
   if (!current || tabId !== current.tabId) return;
   send(current, { type: 'tabClosed' });
-  void stopRun();
+  void endRun('user');
 }
 
 // --- messages ----------------------------------------------------------------
@@ -2019,6 +2595,81 @@ function addKnownValue(value: unknown): BridgeResponse {
   return { ok: true };
 }
 
+/**
+ * Lets the run go on at the origin it is held on (plan 4c's panel asks the
+ * caseworker). Only an exact https origin equal to `pendingOrigin`, with the
+ * tab still on it (or back in scope), at most MAX_EXTRA_ORIGINS per run; it
+ * holds for this run only and is never persisted (see Run.extraOrigins).
+ * Anything else changes nothing. The relay is not told: agent-initiated
+ * navigation stays bound to the token origin (see forwardCdp).
+ */
+async function allowOrigin(origin: unknown): Promise<BridgeResponse> {
+  const current = run;
+  if (!current || current.stopped) return { ok: false, error: 'no active run' };
+  const pending = () =>
+    run === current &&
+    !current.stopped &&
+    typeof origin === 'string' &&
+    normalizeOrigin(origin) === origin &&
+    current.pendingOrigin === origin;
+  if (!pending()) return { ok: false, error: ORIGIN_NOT_PENDING };
+  if (current.extraOrigins.length >= MAX_EXTRA_ORIGINS) {
+    return { ok: false, error: 'too many allowed origins' };
+  }
+  const url = await tabUrl(current.tabId);
+  // Re-checked after the await: the hold may have moved or ended.
+  if (
+    !pending() ||
+    typeof origin !== 'string' ||
+    url === null ||
+    !(inScope(url, origin) || inRunScope(current, url))
+  ) {
+    return { ok: false, error: ORIGIN_NOT_PENDING };
+  }
+  current.extraOrigins.push(origin);
+  releaseHold(current);
+  return { ok: true };
+}
+
+/** The run's state for the panel: ids and counts, never a token or URL. */
+function getRunStatus(): RunStatus {
+  const current = run;
+  if (!current || current.stopped) return { ok: true, active: false };
+  const status: RunStatus = {
+    ok: true,
+    active: true,
+    runId: current.runId,
+    origin: current.origin,
+    attached: current.attached,
+    needsRegistration: current.needsRegistration,
+  };
+  if (current.jev) {
+    status.jevFailures = current.jev.failures();
+    status.jevRequests = current.jev.requests();
+  }
+  if (current.pendingOrigin !== null) {
+    status.pendingOrigin = current.pendingOrigin;
+  }
+  return status;
+}
+
+/**
+ * The panel re-entered the run's known values after a worker restart (it
+ * sends only how many, never the values): screenshots may be taken again.
+ */
+function registrationComplete(count: unknown): BridgeResponse {
+  const current = run;
+  if (!current || current.stopped) return { ok: false, error: 'no active run' };
+  if (
+    count !== undefined &&
+    (typeof count !== 'number' || !Number.isInteger(count) || count < 0)
+  ) {
+    return { ok: false, error: 'count must be a non-negative integer' };
+  }
+  current.needsRegistration = false;
+  return { ok: true };
+}
+
 export async function handleMessage(message: unknown): Promise<BridgeResponse> {
   if (!isObject(message)) return { ok: false, error: 'invalid message' };
   if (message.type === 'startRun') {
@@ -2026,5 +2677,10 @@ export async function handleMessage(message: unknown): Promise<BridgeResponse> {
   }
   if (message.type === 'stopRun') return stopRun('user');
   if (message.type === 'addKnownValue') return addKnownValue(message.value);
+  if (message.type === 'getRunStatus') return getRunStatus();
+  if (message.type === 'registrationComplete') {
+    return registrationComplete(message.count);
+  }
+  if (message.type === 'allowOrigin') return allowOrigin(message.origin);
   return { ok: false, error: 'unknown message type' };
 }

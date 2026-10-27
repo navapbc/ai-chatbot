@@ -6,8 +6,8 @@ const noStore = (response: Response): Response => {
   return response;
 };
 
-export async function GET() {
-  const guard = await guardRelayRoute();
+export async function GET(request: Request) {
+  const guard = await guardRelayRoute(request);
   if (!guard.ok) return noStore(guard.response);
   return noStore(Response.json(getRelayConfig()));
 }

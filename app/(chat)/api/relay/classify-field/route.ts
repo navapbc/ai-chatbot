@@ -4,7 +4,7 @@ import { askJev, isJevEnabled } from '@/lib/jev/client';
 import {
   DESCRIPTOR_KEYS,
   describeFieldForJev,
-  sensitiveFieldIsSensitive,
+  NOUL_THRESHOLD,
   sensitiveFieldQuestions,
 } from '@/lib/jev/questions';
 import { readBoundedText } from '@/lib/relay/read-bounded-body';
@@ -17,7 +17,14 @@ import {
 // Runtime classification of form fields the deterministic rules (in the
 // extension) did not catch. The caller sends field descriptors only; this
 // route never sees a typed value, and nothing here logs a descriptor or a
-// verdict. Every failure resolves to "sensitive".
+// verdict.
+//
+// One verdict per field: `true` when the deterministic rules flag it (no Jev
+// call), `true`/`false` when Jev answered with a finite noul, and `null` (no
+// verdict) when Jev is disabled, fails, times out or answers malformed, and
+// for a descriptor with nothing left to ask about. The extension caches every
+// boolean for the rest of the run, so a failure must never be a boolean: on
+// `null` it keeps the deterministic verdict and caches nothing.
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_FIELDS = 50;
@@ -46,19 +53,26 @@ const toDescriptor = (raw: Record<string, unknown>): FieldDescriptor => {
   return out;
 };
 
-const classify = async (descriptor: FieldDescriptor): Promise<boolean> => {
+type Verdict = boolean | null;
+
+const classify = async (descriptor: FieldDescriptor): Promise<Verdict> => {
   try {
     if (isSensitiveField(descriptor)) return true;
-    if (Object.keys(describeFieldForJev(descriptor)).length === 0) return true;
+    if (Object.keys(describeFieldForJev(descriptor)).length === 0) return null;
     const { state, questions } = sensitiveFieldQuestions(descriptor);
     const outcome = await askJev({
       state,
       questions,
       feature: 'sensitive-field',
     });
-    return sensitiveFieldIsSensitive(outcome);
+    if (!outcome.ok) return null;
+    const noul = (
+      outcome.answers as { sensitive?: { noul?: unknown } } | undefined
+    )?.sensitive?.noul;
+    if (typeof noul !== 'number' || !Number.isFinite(noul)) return null;
+    return noul >= NOUL_THRESHOLD;
   } catch {
-    return true;
+    return null;
   }
 };
 
@@ -83,7 +97,7 @@ const mapLimited = async <T, R>(
 };
 
 export async function POST(request: Request) {
-  const guard = await guardRelayRoute();
+  const guard = await guardRelayRoute(request, { requireOrigin: true });
   if (!guard.ok) return noStore(guard.response);
 
   let body: unknown;
@@ -113,12 +127,19 @@ export async function POST(request: Request) {
   } catch {
     return noStore(new ChatSDKError('offline:chat').toResponse());
   }
-  if (!run || run.relayOrigin === null) return notFound();
+  // An ended (stopped) run looks like an unknown one, as on the token routes.
+  if (!run || run.relayOrigin === null || run.endedAt !== null) {
+    return notFound();
+  }
 
   const descriptors = (fields as Record<string, unknown>[]).map(toDescriptor);
 
+  // Jev off: the deterministic verdict, and no verdict for everything else.
   if (!isJevEnabled('sensitive-field')) {
-    return noStore(Response.json({ sensitive: descriptors.map(() => true) }));
+    const sensitive: Verdict[] = descriptors.map((d) =>
+      isSensitiveField(d) ? true : null,
+    );
+    return noStore(Response.json({ sensitive }));
   }
 
   const sensitive = await mapLimited(descriptors, MAX_CONCURRENCY, classify);

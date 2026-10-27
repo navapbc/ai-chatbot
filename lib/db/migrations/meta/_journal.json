@@ -78,6 +78,13 @@
       "when": 1793106437148,
       "tag": "0009_luxuriant_jack_power",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793113150346,
+      "tag": "0010_needy_quasimodo",
+      "breakpoints": true
     }
   ]
 }

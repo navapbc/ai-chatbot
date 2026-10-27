@@ -9,6 +9,7 @@ import {
 } from '@/lib/ai/eve/run-store';
 import { setLiveViewUrl } from '@/lib/ai/eve/live-view-store';
 import {
+  cancelEveTurn,
   createEveSession,
   continueEveSession,
   openEveStream,
@@ -38,6 +39,7 @@ import {
 } from '@/lib/relay/run-input';
 import { getParticipantSource } from '@/lib/data/participant-source';
 import { isGuestEmail } from '@/lib/relay/route-guard';
+import { originRefusal } from '@/lib/relay/request-origin';
 import { toRelayWsUrl } from '@/lib/relay/url';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -80,6 +82,15 @@ function isBodyTimeout(err: unknown): boolean {
     (err as { cause?: { code?: string } } | null)?.cause?.code ===
     'UND_ERR_BODY_TIMEOUT'
   );
+}
+
+/** Cancels a stream body without ever throwing or leaving a rejection. */
+function closeQuietly(body: ReadableStream<Uint8Array>): void {
+  try {
+    body.cancel().catch(() => {});
+  } catch {
+    /* not cancellable (already locked, or not a real stream) */
+  }
 }
 
 // The text of a relay turn, made safe to forward. Size first: the scanners
@@ -184,6 +195,24 @@ async function prepareRelayStart(
   };
 }
 
+/**
+ * Cancels the session's turn when the relay run has ended. Never throws; a
+ * failure logs one fixed line (no ids, no error text), as the Stop route does.
+ */
+async function cancelIfEnded(
+  store: EveRunStore,
+  userId: string,
+  chatId: string,
+  eveSessionId: string,
+): Promise<void> {
+  try {
+    if (!(await store.get(userId, chatId))?.endedAt) return;
+    await cancelEveTurn(eveSessionId);
+  } catch {
+    console.error('[relay-stop] cancel failed');
+  }
+}
+
 export async function POST(request: Request) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -247,6 +276,26 @@ export async function POST(request: Request) {
   let heal: { claim: string; token: string } | undefined;
   try {
     const existing = await store.get(userId, chatId);
+    // A relay turn (a first turn carrying `relay`, or any turn on a stored
+    // relay run) must come from the extension when RELAY_EXTENSION_ORIGIN is
+    // set. Checked before any claim, store write or Eve call. Web chats and
+    // web follow-ups are not touched.
+    const isRelayTurn = existing
+      ? existing.relayOrigin !== null
+      : body.relay !== undefined;
+    if (isRelayTurn && originRefusal(request, { requireOrigin: true })) {
+      return new ChatSDKError('forbidden:chat').toResponse();
+    }
+    // A stopped relay run takes no more turns (P4b-c): refused before any
+    // other check, the token claim, a store write or an Eve call. The
+    // caseworker starts a new run. Web chats are not touched.
+    if (
+      existing &&
+      existing.relayOrigin !== null &&
+      existing.endedAt !== null
+    ) {
+      return new ChatSDKError('bad_request:api', 'run_ended').toResponse();
+    }
     // A web chat never becomes a relay run: a relay field on its follow-up is
     // refused rather than ignored. On a relay run's follow-up it is ignored
     // (the stored origin governs).
@@ -384,14 +433,24 @@ export async function POST(request: Request) {
         return new ChatSDKError('offline:chat').toResponse();
       }
       const claim = `${CLAIM_PREFIX}${generateUUID()}`;
+      const isRelayRun = existing.relayOrigin !== null;
+      // On a relay run the claim also requires the row to be un-ended, in the
+      // same compare-and-set, so a Stop that lands after the read above
+      // cannot be followed by a turn. Only the claim is guarded: the rollback
+      // and the final swap below must land on an ended row too, or a Stop
+      // mid-turn would strand the row on a claim.
       if (
         !(await store.swapToken(
           userId,
           chatId,
           existing.continuationToken,
           claim,
+          isRelayRun ? { live: true } : undefined,
         ))
       ) {
+        if (isRelayRun && (await store.get(userId, chatId))?.endedAt) {
+          return new ChatSDKError('bad_request:api', 'run_ended').toResponse();
+        }
         return new ChatSDKError('offline:chat').toResponse();
       }
       let nextToken: string;
@@ -471,6 +530,12 @@ export async function POST(request: Request) {
           swapErr,
         });
       }
+      // A Stop that landed between the claim and Eve accepting the turn found
+      // no turn to cancel. Re-read after the final swap, and cancel this turn
+      // if the run ended meanwhile. Best-effort: never fails the request.
+      if (isRelayRun) {
+        await cancelIfEnded(store, userId, chatId, existing.eveSessionId);
+      }
       sessionId = existing.eveSessionId;
       startIndex = existing.streamIndex;
     } else {
@@ -549,13 +614,49 @@ export async function POST(request: Request) {
       const deadline = Date.now() + RECONNECT_BUDGET_MS;
       let reconnects = 0;
 
+      // A relay run's panel rebuilds itself from the row (progress, pending
+      // questions, which also drive answer validation, the cursor and the
+      // claim heal), and those are persisted only by this loop. So once Eve has
+      // accepted the turn the loop must read on to session.waiting even when
+      // the side panel closes mid-turn.
+      //
+      // How a gone client shows up here, read from ai@7.0.42's
+      // createUIMessageStream: execute starts when the stream is built and is
+      // given no abort signal; writer.write goes through `safeEnqueue`, which
+      // swallows the enqueue error once the response body is cancelled. So a
+      // cancel does not stop this loop, and `request.signal` is deliberately
+      // not used: wiring it in would be the thing that stops the read (and it
+      // must never reach Eve: Stop cancels a turn, a closed panel does not).
+      // The one remaining way a client failure can end the read is a write
+      // that throws (a different writer, an SDK change), so relay runs write
+      // through this best-effort proxy: the first throw stops client writes
+      // for the rest of the turn and the read carries on. The proxy wraps the
+      // write itself, not translateEveEvent, so an event whose write threw
+      // still returns its token, questions and progress to persist. Web chats
+      // keep the SDK writer: a throwing write still ends their read.
+      let clientGone = false;
+      const out = structuredInput
+        ? {
+            write: (part: Parameters<typeof writer.write>[0]) => {
+              if (clientGone) return;
+              try {
+                writer.write(part);
+              } catch {
+                clientGone = true;
+              }
+            },
+          }
+        : writer;
+
       while (!done) {
+        let body: ReadableStream<Uint8Array> | null = null;
         try {
           const res = await openEveStream(sessionId, consumed);
           if (!res.body) throw new Error('Eve stream returned no body');
+          body = res.body;
           for await (const event of parseNdjson(res.body)) {
             consumed++;
-            const r = translateEveEvent(event, writer, ctx);
+            const r = translateEveEvent(event, out, ctx);
             ctx.textId = r.textId;
             ctx.reasoningId = r.reasoningId;
             if (r.liveViewUrl) {
@@ -638,6 +739,14 @@ export async function POST(request: Request) {
             resumeFrom: consumed,
             reconnects,
           });
+        } finally {
+          // Eve holds its stream open past session.waiting, and parseNdjson
+          // only releases its reader lock, so a relay read closes the body
+          // itself rather than leave a connection to Eve open. Reading is
+          // over by now (the generator has returned), and closing a stream
+          // read never cancels the turn. Best-effort: never throws or
+          // rejects. Web chats are left as they were.
+          if (structuredInput && body) closeQuietly(body);
         }
       }
     },

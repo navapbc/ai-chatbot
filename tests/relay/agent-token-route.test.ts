@@ -216,6 +216,15 @@ describe('POST /api/relay/agent-token', () => {
     },
   );
 
+  it('returns 404 for an ended run, even for its own session', async () => {
+    await seed();
+    expect(await store.end('u1', RUN_ID)).toBe(true);
+    await expectBodylessNoStore404(
+      await post({ runId: RUN_ID, sessionId: SESSION }),
+    );
+    expect(logged).toEqual([]);
+  });
+
   it('refuses the orphan session of a lost first-turn race', async () => {
     // Two first turns raced: both created an Eve session carrying this run
     // id, the winner stored its session, the loser's store.create failed.
