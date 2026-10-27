@@ -1,6 +1,13 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import {
+  ConfirmedScreen,
+  STOP_FAILED_TEXT,
+} from '../../extension/panel/screens/confirmed';
+import {
   buildReviewModel,
+  isConfirming,
   reviewActions,
 } from '../../extension/panel/lib/review-model';
 
@@ -91,5 +98,37 @@ describe('reviewActions', () => {
   });
   it('is empty for junk', () => {
     expect(reviewActions(undefined as never)).toEqual([]);
+  });
+});
+
+describe('isConfirming', () => {
+  it('is true only for a run ended through "I submitted it"', () => {
+    expect(isConfirming({ endedReason: 'submitted' })).toBe(true);
+    expect(isConfirming({ endedReason: 'user' })).toBe(false);
+    expect(isConfirming({})).toBe(false);
+    expect(isConfirming(null)).toBe(false);
+  });
+});
+
+describe('ConfirmedScreen', () => {
+  const html = (stopFailed: boolean) =>
+    renderToStaticMarkup(
+      createElement(ConfirmedScreen, {
+        siteName: 'example.gov',
+        stopFailed,
+        onStartAnother: () => {},
+        onHome: () => {},
+      }),
+    );
+  it('says what the caseworker said, with no stop notice when the stop worked', () => {
+    const out = html(false);
+    expect(out).toContain('You said you submitted the form on example.gov.');
+    expect(out).not.toContain('could not reach');
+    expect(out).not.toContain('>Stop<');
+  });
+  it('shows the fixed notice, and no Stop button, when the stop failed', () => {
+    const out = html(true);
+    expect(out).toContain(STOP_FAILED_TEXT.replace(/'/g, '&#x27;'));
+    expect(out).not.toContain('>Stop<');
   });
 });

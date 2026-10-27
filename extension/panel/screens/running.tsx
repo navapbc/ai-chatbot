@@ -21,6 +21,7 @@ import {
   type SendAnswers,
 } from './needs-you';
 import { ProgressView } from './progress-view';
+import { isConfirming } from '../lib/review-model';
 import { ReviewPanel } from './review';
 
 type Props = {
@@ -31,7 +32,7 @@ type Props = {
   /** Leaves the ended run's screen (dispatches runEnded). */
   onHome: () => void;
   /** "I submitted it": the run was stopped; show Confirmed. */
-  onConfirmed: () => void;
+  onConfirmed: (stopFailed: boolean) => void;
   /** The build's app origin, for the default answer sender. */
   appOrigin?: string;
   /** Sends answers to the agent's questions; defaults to the real client. */
@@ -94,13 +95,17 @@ export const RunningScreen = ({
   const session = useRef<RunSession | null>(null);
   const startedAt = useRef(Date.now());
   const [now, setNow] = useState(() => Date.now());
+  const latest = useRef<RunSessionState | null>(null);
   const homeButton = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const lifecycle = createControllerLifecycle(() => createSession(run));
     const current = lifecycle.mount();
     session.current = current;
-    current.subscribe(setState);
+    current.subscribe((next) => {
+      latest.current = next;
+      setState(next);
+    });
     return () => {
       lifecycle.unmount();
       session.current = null;
@@ -126,7 +131,7 @@ export const RunningScreen = ({
     // Confirmed follows whether or not either stop worked: the caseworker
     // did submit. A failed stop shows a notice only while this screen lives.
     await session.current?.stop('submitted');
-    onConfirmed();
+    onConfirmed(latest.current?.stopFailed === true);
   };
   const handleHome = () => onHome();
   const handleAllowed = () => setAllowed(true);
@@ -143,6 +148,9 @@ export const RunningScreen = ({
   // input anywhere in the panel.
   const showReview =
     !ended && state?.phase === 'review' && !state.pendingOrigin && !heldOn;
+
+  // Confirmed follows at once; nothing to show in between.
+  if (isConfirming(state)) return null;
 
   return (
     <section className="flex flex-col gap-4" aria-label="Running">
@@ -227,7 +235,6 @@ export const RunningScreen = ({
           progress={state?.progress ?? null}
           actions={state?.actions ?? []}
           stopping={stopping}
-          stopFailed={state?.stopFailed === true}
           onSubmitted={handleSubmitted}
           onStop={handleStop}
         />

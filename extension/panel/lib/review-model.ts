@@ -50,3 +50,10 @@ export const reviewActions = (actions: unknown): string[] =>
         .slice(-MAX_ACTIONS)
         .map((a) => cut(a, MAX_ACTION))
     : [];
+
+/**
+ * A run ended through "I submitted it" goes straight to Confirmed, so the
+ * running screen shows nothing for it instead of flashing "Run ended".
+ */
+export const isConfirming = (state: { endedReason?: string } | null): boolean =>
+  state?.endedReason === 'submitted';

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import type { RunProgress } from '../../../lib/relay/progress';
 import { buildReviewModel, reviewActions } from '../lib/review-model';
@@ -6,8 +7,6 @@ type Props = {
   progress: RunProgress | null;
   actions: string[];
   stopping: boolean;
-  /** The stop could not be confirmed (shown after "I submitted it"). */
-  stopFailed: boolean;
   onSubmitted: () => void;
   onStop: () => void;
 };
@@ -19,10 +18,14 @@ export const ReviewPanel = ({
   progress,
   actions,
   stopping,
-  stopFailed,
   onSubmitted,
   onStop,
 }: Props) => {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  // Once, when the panel appears: not on every poll.
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
   const model = buildReviewModel(progress);
   const log = reviewActions(actions);
   return (
@@ -30,7 +33,9 @@ export const ReviewPanel = ({
       aria-label="Ready for your review"
       className="flex flex-col gap-3 rounded-xl border border-accent bg-background p-3"
     >
-      <h3 className="text-base font-semibold">Ready for your review</h3>
+      <h3 ref={headingRef} tabIndex={-1} className="text-base font-semibold">
+        Ready for your review
+      </h3>
       <p className="text-sm">
         The agent has stopped. It has not submitted the form.
       </p>
@@ -77,11 +82,6 @@ export const ReviewPanel = ({
       <p className="text-sm">
         Check the form on the page, then submit it there yourself.
       </p>
-      {stopFailed ? (
-        <p role="status" className="text-sm">
-          We could not reach the app or the extension to confirm the stop.
-        </p>
-      ) : null}
       <div className="flex flex-col gap-2">
         <Button
           type="button"

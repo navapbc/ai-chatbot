@@ -59,6 +59,8 @@ const runs = new Map<
 /** Answer turns (`inputResponses` bodies) POSTed to /api/eve-chat. */
 const answerBodies: unknown[] = [];
 const answerOrigins: (string | undefined)[] = [];
+/** When set, the fake app answers POST /stop with a 500 (row still ends). */
+let stopFails = false;
 /** The refusal reason the next answer turn gets as a 400, or null for 200. */
 let answerRefusal: string | null = null;
 /** GET /api/relay/runs/:id polls, kept apart from `appCalls`. */
@@ -160,6 +162,10 @@ beforeAll(async () => {
       }
       const alreadyEnded = row.ended;
       row.ended = true;
+      if (stopFails) {
+        res.writeHead(500).end();
+        return;
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ended: true, alreadyEnded }));
       return;
@@ -406,6 +412,18 @@ describe('the panel shell', () => {
     const page = await browser.context.newPage();
     // The panel is a tab here: "Use this tab" must see the site's real tab
     // (the worker checks its real URL), not the panel itself.
+    // Counts the panel's worker stop messages (the worker has no log of them).
+    await page.addInitScript(() => {
+      const w = window as unknown as { __workerStops: number };
+      w.__workerStops = 0;
+      const send = chrome.runtime.sendMessage.bind(chrome.runtime);
+      chrome.runtime.sendMessage = ((...args: unknown[]) => {
+        if ((args[0] as { type?: string })?.type === 'stopRun') {
+          w.__workerStops += 1;
+        }
+        return (send as (...a: unknown[]) => unknown)(...args);
+      }) as typeof chrome.runtime.sendMessage;
+    });
     await page.addInitScript((origin: string) => {
       const query = chrome.tabs.query.bind(chrome.tabs);
       chrome.tabs.query = (async () =>
@@ -662,8 +680,18 @@ describe('the panel shell', () => {
         .getByText('You said you submitted the form on localhost.')
         .waitFor();
       expect(stopCalls(runId)).toBe(1);
+      expect(
+        await page.evaluate(
+          () => (window as unknown as { __workerStops: number }).__workerStops,
+        ),
+      ).toBe(1);
       expect(row.ended).toBe(true);
       expect((await runStatus(page)).active).toBe(false);
+      // The stop worked: no stop notice. Focus is on the Confirmed heading.
+      expect(await page.getByText(/could not reach/).count()).toBe(0);
+      expect(
+        await page.evaluate(() => document.activeElement?.textContent),
+      ).toBe('Submitted');
       const recents = await page.evaluate(
         async () => (await chrome.storage.local.get('recentRuns')).recentRuns,
       );
@@ -688,8 +716,9 @@ describe('the panel shell', () => {
     }
   }, 60_000);
 
-  it('Confirmed: Back to Home clears the person and the site', async () => {
+  it('Confirmed: a failing server stop still confirms, with the stop notice; Back to Home clears the person and the site', async () => {
     const { site, page, runId } = await startOnRealTab();
+    stopFails = true;
     const row = runs.get(runId);
     if (!row) throw new Error('no run row');
     try {
@@ -698,6 +727,12 @@ describe('the panel shell', () => {
         .getByRole('button', { name: 'I submitted it' })
         .click({ timeout: 10_000 });
       await page.getByRole('heading', { name: 'Submitted' }).waitFor();
+      await page
+        .getByText(
+          'We could not reach the app or the extension to confirm the stop. The agent may still be working: check the page and use Stop if it is.',
+        )
+        .waitFor();
+      expect(await page.getByRole('button', { name: 'Stop' }).count()).toBe(0);
       await page.getByRole('button', { name: 'Back to Home' }).click();
       await page.getByRole('heading', { name: 'Home' }).waitFor();
       expect(await page.getByText('Alice', { exact: false }).count()).toBe(0);
@@ -705,6 +740,7 @@ describe('the panel shell', () => {
         await page.getByRole('button', { name: 'Use this tab' }).count(),
       ).toBe(1);
     } finally {
+      stopFails = false;
       await stopWorkerRun(page);
       await page.close();
       await site.close();

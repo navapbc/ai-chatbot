@@ -168,21 +168,34 @@ describe('panel reducer', () => {
   };
 
   it('runConfirmed goes to confirmed, clears the run, keeps target and participant', () => {
-    const s = reducer(runningState, { type: 'runConfirmed' });
+    const s = reducer(runningState, {
+      type: 'runConfirmed',
+      stopFailed: false,
+    });
     expect(s.screen).toBe('confirmed');
+    expect(s.confirmed).toEqual({ stopFailed: false });
     expect(s.run).toBeUndefined();
     expect(s.target).toEqual(target);
     expect(s.participant).toEqual(runningState.participant);
   });
 
+  it('runConfirmed carries stopFailed; startAnother and clearTarget drop it', () => {
+    const c = reducer(runningState, { type: 'runConfirmed', stopFailed: true });
+    expect(c.confirmed).toEqual({ stopFailed: true });
+    expect(reducer(c, { type: 'startAnother' }).confirmed).toBeUndefined();
+    expect(reducer(c, { type: 'clearTarget' }).confirmed).toBeUndefined();
+  });
+
   it('runConfirmed is ignored unless running', () => {
     const home = { screen: 'home' as const, config };
-    expect(reducer(home, { type: 'runConfirmed' })).toBe(home);
+    expect(reducer(home, { type: 'runConfirmed', stopFailed: false })).toBe(
+      home,
+    );
   });
 
   it('startAnother goes to ready keeping target, participant and config, clearing error', () => {
     const confirmed = {
-      ...reducer(runningState, { type: 'runConfirmed' }),
+      ...reducer(runningState, { type: 'runConfirmed', stopFailed: false }),
       error: { title: 't', detail: 'd', retryable: false },
     };
     const s = reducer(confirmed, { type: 'startAnother' });
@@ -199,7 +212,10 @@ describe('panel reducer', () => {
   });
 
   it('clearTarget from confirmed clears target, participant and run', () => {
-    const confirmed = reducer(runningState, { type: 'runConfirmed' });
+    const confirmed = reducer(runningState, {
+      type: 'runConfirmed',
+      stopFailed: false,
+    });
     expect(reducer(confirmed, { type: 'clearTarget' })).toEqual({
       screen: 'home',
       config,

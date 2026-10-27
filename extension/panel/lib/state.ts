@@ -39,6 +39,8 @@ export type State = {
    */
   run?: SessionRun;
   error?: ErrorMessage;
+  /** Set on the Confirmed screen: whether the stop could be confirmed. */
+  confirmed?: { stopFailed: boolean };
 };
 
 export type Action =
@@ -66,7 +68,7 @@ export type Action =
   /** The run ended and the caseworker left its screen. */
   | { type: 'runEnded' }
   /** The caseworker said they submitted; the run is over. */
-  | { type: 'runConfirmed' }
+  | { type: 'runConfirmed'; stopFailed: boolean }
   /** From Confirmed: the same person and site, back on Ready. */
   | { type: 'startAnother' }
   /** The panel reopened while the worker held a live run (see rebuildRun). */
@@ -104,6 +106,7 @@ export const reducer = (state: State, action: Action): State => {
       target: _target,
       participant: _participant,
       run: _run,
+      confirmed: _confirmed,
       ...rest
     } = state;
     return { ...rest, screen: 'home' };
@@ -158,11 +161,15 @@ export const reducer = (state: State, action: Action): State => {
   if (action.type === 'runConfirmed') {
     if (state.screen !== 'running') return state;
     const { run: _run, error: _error, ...rest } = state;
-    return { ...rest, screen: 'confirmed' };
+    return {
+      ...rest,
+      screen: 'confirmed',
+      confirmed: { stopFailed: action.stopFailed },
+    };
   }
   if (action.type === 'startAnother') {
     if (state.screen !== 'confirmed') return state;
-    const { run: _run, error: _error, ...rest } = state;
+    const { run: _run, error: _error, confirmed: _confirmed, ...rest } = state;
     return { ...rest, screen: 'ready' };
   }
   if (action.type === 'runRebuilt') {

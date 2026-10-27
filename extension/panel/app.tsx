@@ -185,13 +185,16 @@ export const App = ({ onStart }: { onStart?: OnStart }) => {
           run={state.run}
           createSession={createSession}
           onHome={() => dispatch({ type: 'runEnded' })}
-          onConfirmed={() => dispatch({ type: 'runConfirmed' })}
+          onConfirmed={(stopFailed) =>
+            dispatch({ type: 'runConfirmed', stopFailed })
+          }
           appOrigin={APP_ORIGIN}
         />
       ) : null}
       {state.screen === 'confirmed' && state.target ? (
         <ConfirmedScreen
           siteName={state.target.siteName}
+          stopFailed={state.confirmed?.stopFailed === true}
           onStartAnother={() => dispatch({ type: 'startAnother' })}
           onHome={handleHome}
         />
