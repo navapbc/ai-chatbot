@@ -78,7 +78,7 @@ export interface AppApi {
     runId: string,
     fields: readonly FieldDescriptor[],
     signal?: AbortSignal,
-  ): Promise<boolean[]>;
+  ): Promise<(boolean | null)[]>;
 }
 
 // Kept equal to DESCRIPTOR_KEYS in lib/jev/questions.ts by a test: that module
@@ -236,7 +236,7 @@ export const createAppApi = (opts: {
     runId: string,
     chunk: FieldDescriptor[],
     signal?: AbortSignal,
-  ): Promise<boolean[]> => {
+  ): Promise<(boolean | null)[]> => {
     const value = await request(
       'POST',
       '/api/relay/classify-field',
@@ -247,11 +247,12 @@ export const createAppApi = (opts: {
     if (
       !Array.isArray(sensitive) ||
       sensitive.length !== chunk.length ||
-      !sensitive.every((s) => typeof s === 'boolean')
+      // `null` is the route's "no verdict" (Jev off or failing).
+      !sensitive.every((s) => typeof s === 'boolean' || s === null)
     ) {
       throw serverError();
     }
-    return sensitive as boolean[];
+    return sensitive as (boolean | null)[];
   };
 
   return {
@@ -290,7 +291,7 @@ export const createAppApi = (opts: {
     async classifyFields(runId, fields, signal) {
       requireRunId(runId);
       const descriptors = fields.map(toDescriptor);
-      const results: boolean[] = [];
+      const results: (boolean | null)[] = [];
       for (let i = 0; i < descriptors.length; i += MAX_FIELDS_PER_REQUEST) {
         const chunk = descriptors.slice(i, i + MAX_FIELDS_PER_REQUEST);
         results.push(...(await classifyChunk(runId, chunk, signal)));

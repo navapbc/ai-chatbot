@@ -6,10 +6,11 @@ import { type AppApi, DESCRIPTOR_KEYS } from './app-api';
 // calls ordinary is sensitive. Jev only adds masking (P4b-e).
 //
 // The redactor caches every boolean the hook returns for the rest of the run,
-// so a failure must never answer `false`: every failure (the request failing
-// or timing out, a malformed answer, the budget running out) REJECTS, the
-// redactor keeps the deterministic verdict without caching it, and the
-// failure is counted. Nothing here logs, and no descriptor text outlives the
+// so a failure must never answer a boolean: every failure (the request
+// failing or timing out, a malformed answer, the budget running out) and
+// every `null` the route answers for a field (no verdict: Jev disabled or
+// failing) REJECTS that classify() call, the redactor keeps the
+// deterministic verdict without caching it, and the failure is counted. Nothing here logs, and no descriptor text outlives the
 // batch it is sent in.
 
 /** Most descriptors per request (the route refuses more). */
@@ -105,13 +106,18 @@ export const createJevClassifier = (opts: {
       if (
         !Array.isArray(results) ||
         results.length !== entries.length ||
-        !results.every((r) => typeof r === 'boolean')
+        !results.every((r) => typeof r === 'boolean' || r === null)
       ) {
         fail(entries);
         return;
       }
       entries.forEach((entry, i) => {
-        for (const w of entry.waiters) w.resolve(results[i]);
+        const verdict = results[i] as boolean | null;
+        if (verdict === null) {
+          fail([entry]);
+          return;
+        }
+        for (const w of entry.waiters) w.resolve(verdict);
       });
     };
     const deadline = setTimeout(() => {
@@ -119,7 +125,7 @@ export const createJevClassifier = (opts: {
       finish(undefined);
     }, REQUEST_TIMEOUT_MS);
     inFlight.add(cancel);
-    let call: Promise<boolean[]>;
+    let call: Promise<(boolean | null)[]>;
     try {
       call = api.classifyFields(
         runId,

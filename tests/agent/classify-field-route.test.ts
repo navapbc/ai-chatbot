@@ -63,7 +63,7 @@ beforeEach(async () => {
 });
 
 describe('POST /api/relay/classify-field', () => {
-  it('returns one boolean per field in order, skipping Jev for deterministic hits', async () => {
+  it('returns one verdict per field in order, skipping Jev for deterministic hits', async () => {
     jev.askJev.mockImplementation(async ({ state }) =>
       noul(state.label === 'Mystery' ? 0.99 : 0),
     );
@@ -99,37 +99,64 @@ describe('POST /api/relay/classify-field', () => {
     expect(jev.askJev.mock.calls[0][0].state).toEqual({ label: 'Ref 9999' });
   });
 
-  it('fails toward sensitive when Jev reports failure', async () => {
+  it('answers null (no verdict) when Jev reports failure', async () => {
     jev.askJev.mockResolvedValue({ ok: false, reason: 'timeout' });
     const res = await call({ runId: RUN, fields: fieldsFor(2) });
-    expect((await res.json()).sensitive).toEqual([true, true]);
+    expect((await res.json()).sensitive).toEqual([null, null]);
   });
 
-  it('fails toward sensitive when the noul is not a number', async () => {
-    jev.askJev.mockResolvedValue({
-      ok: true,
-      answers: { sensitive: { noul: Number.NaN } },
-    });
+  it('answers null when the noul is not a finite number', async () => {
+    for (const bad of [
+      Number.NaN,
+      undefined,
+      '0.1',
+      Number.POSITIVE_INFINITY,
+    ]) {
+      jev.askJev.mockResolvedValue({
+        ok: true,
+        answers: { sensitive: { noul: bad } },
+      });
+      const res = await call({ runId: RUN, fields: fieldsFor(1) });
+      expect((await res.json()).sensitive).toEqual([null]);
+    }
+  });
+
+  it('answers null when the answer is missing', async () => {
+    jev.askJev.mockResolvedValue({ ok: true, answers: {} });
     const res = await call({ runId: RUN, fields: fieldsFor(1) });
-    expect((await res.json()).sensitive).toEqual([true]);
+    expect((await res.json()).sensitive).toEqual([null]);
   });
 
-  it('fails toward sensitive when askJev throws', async () => {
+  it('answers null when askJev throws', async () => {
     jev.askJev.mockRejectedValue(new Error('boom'));
     const res = await call({ runId: RUN, fields: fieldsFor(2) });
-    expect((await res.json()).sensitive).toEqual([true, true]);
+    expect((await res.json()).sensitive).toEqual([null, null]);
   });
 
-  it('treats an empty descriptor as sensitive without calling Jev', async () => {
+  it('answers true at the threshold and false just under it', async () => {
+    jev.askJev.mockImplementation(async ({ state }) =>
+      noul(state.label === 'Nickname' ? 0.5 : 0.49),
+    );
+    const res = await call({
+      runId: RUN,
+      fields: [{ label: 'Nickname' }, { label: 'Favorite color' }],
+    });
+    expect((await res.json()).sensitive).toEqual([true, false]);
+  });
+
+  it('answers null for an empty descriptor without calling Jev', async () => {
     const res = await call({ runId: RUN, fields: [{ value: 'x' }] });
-    expect((await res.json()).sensitive).toEqual([true]);
+    expect((await res.json()).sensitive).toEqual([null]);
     expect(jev.askJev).not.toHaveBeenCalled();
   });
 
-  it('answers true for every field when the Jev feature is off', async () => {
+  it('with the Jev feature off: true for deterministic hits, null otherwise', async () => {
     jev.isJevEnabled.mockReturnValue(false);
-    const res = await call({ runId: RUN, fields: fieldsFor(3) });
-    expect((await res.json()).sensitive).toEqual([true, true, true]);
+    const res = await call({
+      runId: RUN,
+      fields: [{ label: 'Social Security Number' }, ...fieldsFor(2)],
+    });
+    expect((await res.json()).sensitive).toEqual([true, null, null]);
     expect(jev.askJev).not.toHaveBeenCalled();
   });
 

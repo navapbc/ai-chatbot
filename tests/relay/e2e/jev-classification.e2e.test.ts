@@ -34,7 +34,9 @@ import {
 // snapshot the agent receives masks it. With the app failing (500) the
 // snapshot still works and the field stays visible (deterministic verdict),
 // and once the app recovers a later snapshot in the SAME run masks it, so the
-// failure was not cached.
+// failure was not cached. The same holds for a `null` answer (the route's
+// "no verdict", e.g. Jev disabled): the field stays visible and nothing is
+// cached.
 //
 // Auth is the real extension's: the caseworker signs in with a first-party
 // navigation to the fake app (a SameSite=Lax session cookie), and the fake
@@ -54,7 +56,8 @@ const EXTENSION_ORIGIN = `chrome-extension://${EXTENSION_ID}`;
 
 interface FakeApp {
   origin: string;
-  mode: 'ok' | 'fail';
+  /** ok: a boolean per field; fail: 500; none: null (no verdict) for all. */
+  mode: 'ok' | 'fail' | 'none';
   /** Raw bodies of every classify-field request that passed auth. */
   bodies: string[];
   /** Requests refused for a missing cookie or Origin. */
@@ -120,9 +123,11 @@ async function startFakeApp(): Promise<FakeApp> {
       };
       send(res, 200, {
         sensitive: fields.map((f) =>
-          String(f.label ?? '')
-            .toLowerCase()
-            .includes('reference code'),
+          app.mode === 'none'
+            ? null
+            : String(f.label ?? '')
+                .toLowerCase()
+                .includes('reference code'),
         ),
       });
       return;
@@ -297,6 +302,28 @@ describe('worker Jev classification e2e', { timeout: 90_000 }, () => {
     expect(snap.includes(MASK)).toBe(true);
     // Nothing else up the relay carried the value either.
     expect(relay.frames.some((f) => f.includes(VALUE))).toBe(false);
+    expectBodiesValueFree();
+    expect(app.refused).toBe(0);
+    expect(await bridgeMessage(browser.sw, { type: 'stopRun' })).toEqual({
+      ok: true,
+    });
+  });
+
+  it('with the app answering null the field stays visible, and a later answer masks it', async () => {
+    app.mode = 'none';
+    const before = app.bodies.length;
+    const cdp = await startRun();
+    const unanswered = await snapshot(cdp, 'jev-null');
+    await closeAgentSessions();
+    // Positive control: the hook did ask, and got no verdict.
+    expect(app.bodies.length).toBeGreaterThan(before);
+    expect(unanswered.includes(VALUE)).toBe(true);
+
+    app.mode = 'ok';
+    const answered = await snapshot(cdp, 'jev-null-answered');
+    await closeAgentSessions();
+    expect(answered.includes(VALUE)).toBe(false);
+    expect(answered.includes(MASK)).toBe(true);
     expectBodiesValueFree();
     expect(app.refused).toBe(0);
     expect(await bridgeMessage(browser.sw, { type: 'stopRun' })).toEqual({

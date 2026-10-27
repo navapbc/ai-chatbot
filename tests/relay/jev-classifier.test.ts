@@ -16,8 +16,9 @@ type Call = {
  * `respond` (default: sensitive when the label contains "secret").
  */
 const fakeApi = (
-  respond: (call: Call) => Promise<boolean[]> | boolean[] = (c) =>
-    c.fields.map((f) => (f.label ?? '').includes('secret')),
+  respond: (call: Call) => Promise<(boolean | null)[]> | (boolean | null)[] = (
+    c,
+  ) => c.fields.map((f) => (f.label ?? '').includes('secret')),
 ) => {
   const calls: Call[] = [];
   const classifyFields = vi.fn(
@@ -206,6 +207,48 @@ describe('failure rejects and is counted, never false', () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(await second).toBe(true);
     expect(jev.failures()).toBe(1);
+  });
+});
+
+describe('a null (no verdict) answer', () => {
+  it('rejects that descriptor and counts it; booleans in the batch resolve', async () => {
+    const { api } = fakeApi(() => [true, null, false]);
+    const jev = createJevClassifier({ api, runId: RUN });
+    const a = settle(jev.classify({ label: 'a' }));
+    const b = settle(jev.classify({ label: 'b' }));
+    const c = settle(jev.classify({ label: 'c' }));
+    await vi.advanceTimersByTimeAsync(10);
+    const [ra, rb, rc] = await Promise.all([a, b, c]);
+    expect(ra).toEqual({ ok: true, value: true });
+    expect(rb.ok).toBe(false);
+    expect(rc).toEqual({ ok: true, value: false });
+    expect(jev.failures()).toBe(1);
+  });
+
+  it('counts every waiter sharing the null descriptor', async () => {
+    const { api } = fakeApi(() => [null]);
+    const jev = createJevClassifier({ api, runId: RUN });
+    const a = settle(jev.classify({ label: 'same' }));
+    const b = settle(jev.classify({ label: 'same' }));
+    await vi.advanceTimersByTimeAsync(10);
+    expect((await Promise.all([a, b])).map((r) => r.ok)).toEqual([
+      false,
+      false,
+    ]);
+    expect(jev.failures()).toBe(2);
+  });
+
+  it('a later boolean answer for the same descriptor resolves', async () => {
+    let verdict: boolean | null = null;
+    const { api } = fakeApi((c) => c.fields.map(() => verdict));
+    const jev = createJevClassifier({ api, runId: RUN });
+    const first = settle(jev.classify({ label: 'a' }));
+    await vi.advanceTimersByTimeAsync(10);
+    expect((await first).ok).toBe(false);
+    verdict = true;
+    const second = jev.classify({ label: 'a' });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await second).toBe(true);
   });
 });
 

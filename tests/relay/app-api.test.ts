@@ -216,6 +216,26 @@ describe('classifyFields', () => {
     );
   });
 
+  it('passes null (no verdict) entries through alongside booleans', async () => {
+    const { api } = setup(() => json({ sensitive: [true, null, false] }));
+    expect(
+      await api.classifyFields(RUN, [
+        { label: 'a' },
+        { label: 'b' },
+        { label: 'c' },
+      ]),
+    ).toEqual([true, null, false]);
+  });
+
+  it('entries other than boolean or null are server_error', async () => {
+    for (const bad of [0, 'null', {}, [true]]) {
+      const { api } = setup(() => json({ sensitive: [bad] }));
+      expect(
+        (await caught(api.classifyFields(RUN, [{ label: 'a' }]))).code,
+      ).toBe('server_error');
+    }
+  });
+
   it('keeps the descriptor key list in step with the server', () => {
     expect([...CLIENT_KEYS]).toEqual([...DESCRIPTOR_KEYS]);
   });
