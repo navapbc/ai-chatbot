@@ -20,17 +20,18 @@ Nothing here has been applied. The relay stays off until `RELAY_ENABLED` is `tru
 - [ ] Create Secret Manager secrets: `relay-token-secret-{dev,preview,prod}` (32+ characters) and `eve-internal-secret-{dev,preview,prod}`.
 - [ ] Grant `roles/logging.configWriter` to the deploy service account, or set `relay_exclude_request_logs = false` knowingly (that leaves token-bearing request URLs in Cloud Logging).
 - [ ] Set the GitHub repository variable `RELAY_ENABLED=true` only after the two items above. Turning it off later plans a destroy; on dev and prod deletion protection makes that apply fail.
-- [ ] Do not set `RELAY_TOKEN_ENDPOINT_ENABLED` anywhere until plan 4 binds runs to users.
+- [ ] Do not set `RELAY_TOKEN_ENDPOINT_ENABLED` anywhere until the extension can authenticate to the app (plan 4b; runs are now user-bound).
+- [ ] Before deploying plan 4a: apply migrations 0008 (Participant) and 0009 (partial unique index on `EveRun.chatId`; fails if production holds duplicate relay rows per chat id, so check first), run `scripts/seed-participants.ts`, and make sure `EVE_INTERNAL_SECRET` is at least 32 characters.
 - [ ] Only if running more than one relay instance: create `relay-redis-url-<env>` and first close the multi-instance gaps listed under plan 5.
 - [ ] Run the manual cloud check (plan task 11) after the first apply: e2e against the deployed relay, compare round trip, snapshot and fill times with the spike (56 ms, about 600 ms, about 240 ms), and search the Eve Postgres world for relay token strings.
 
 ## Open Questions
 
-- [ ] Which benefits sites appear on the Home screen, and where is that list configured?
-- [ ] Which models may caseworkers choose between?
+- [ ] Which benefits sites appear on the Home screen? The list is configured in `config/relay-sites.json`, which is currently empty (plan 4a).
+- [ ] Which models may caseworkers choose between? Mechanism exists: `RELAY_ALLOWED_MODELS`; the owner picks the values.
 - [ ] Which field categories count as sensitive beyond SSN and bank details?
 - [ ] Distribution: Chrome Enterprise force-install or an unlisted store listing, and which IT team owns it?
-- [ ] Does the mock participant table live in the Neon project already in use or a new one?
+- [x] The participant table lives in the app's existing Neon database (`Participant`, migration 0008).
 - [ ] IT: do managed Chrome policies set `runtime_blocked_hosts` for this extension, `DisableScreenshots`, or DLP screenshot rules? Any of these breaks `chrome.debugger` on Chrome 155 and later.
 - [ ] IT: can a Chrome launch flag be set for caseworkers, and how do they start Chrome today?
 
@@ -82,24 +83,47 @@ Landed on `feat/sensitive-redaction-impl`; see `docs/changes/2026-10-26-add-sens
 
 ## Plan 4: Side Panel And App API
 
-- [ ] The six screens, the participant API on Neon, and saved details with the 8-hour limit.
-- [ ] Runtime Jev classification of fields from the worker (needs the authenticated route; build the request with `describeFieldForJev` from `lib/jev/questions.ts`). Update the Jev section of `CLAUDE.md` when the runtime call site lands.
+- [ ] The six screens and saved details with the 8-hour limit (the participant API on Neon is done, plan 4a).
+- [x] Runtime Jev route `app/(chat)/api/relay/classify-field/route.ts` (plan 4a); `CLAUDE.md` updated.
+- [ ] 4b: the worker calls classify-field (build the request with `describeFieldForJev`) and ORs the verdict with the deterministic `isSensitiveField`, so Jev can only escalate masking.
 - [ ] Typing sensitive values from the panel into the page, and registering them with the worker through `addKnownValue`. Values are lost on a worker restart, so the panel re-registers them after each restart.
-- [ ] Server-built opening message: the unstripped participant record currently transits the browser to the Next server before the route strips it.
-- [ ] Adapter redaction of tool inputs (`fill` values and `ask_question` inputs) in the client stream.
-- [ ] The panel must not render or log raw tool inputs.
+- [x] Server-built opening message (plan 4a): the unstripped participant record currently transits the browser to the Next server before the route strips it. Fixed: the server builds it from the stored participant.
+- [x] Adapter redaction of tool inputs in the client stream on relay runs (plan 4a). Residuals: see "Plan 4a follow-ups".
+- [ ] 4b: the panel must not render or log raw tool inputs (the client stream no longer carries them on relay runs, but `ask_question` and worker-side data still must not be logged).
 - [ ] A `calworks_id`-style panel flow: the field is stripped from the record, so the caseworker supplies it in the panel.
-- [ ] Bind runs to users before enabling the token route: server-created runs, `runId` to `userId`, origin from the stored run, refuse guest sessions, rate limiting, a `sub` claim with a hub peer check. (Token refresh for the agent leg is no longer needed: it fetches on demand.)
-- [ ] The public `app/(chat)/api/relay/token/route.ts` still mints and returns an `agentToken`. Before `RELAY_TOKEN_ENDPOINT_ENABLED` is set anywhere, make it mint only the role its caller needs (the extension token); the agent leg gets its token from the internal agent-token route.
-- [ ] Chat-id squatting on the internal token route: another user who creates an `EveRun` row for the same chat id first makes the route 404 for the real owner, and if a run id leaks, that user can obtain an agent token for the run with an origin they chose (hijack). The session binding (the route mints only for the Eve session stored on the row) narrows this to the squatter's own session but does not stop it; fix with user binding, plus a partial unique index on `EveRun.chatId` where `relayOrigin` is not null, or a relay-only store lookup.
-- [ ] `EVE_INTERNAL_SECRET` has no minimum-length check.
-- [ ] The agent-token route reads an unbounded JSON body after authentication.
+- [x] Bind runs to users before enabling the token route (plan 4a): server-created runs, `runId` to `userId`, origin from the stored run, guests refused, soft run limit (`RELAY_MAX_RUNS_PER_HOUR`), a `sub` claim with a hub peer check. (Token refresh for the agent leg is no longer needed: it fetches on demand.)
+- [x] (plan 4a) The public `app/(chat)/api/relay/token/route.ts` now mints only the extension token. Was: it minted and returned an `agentToken`. Before `RELAY_TOKEN_ENDPOINT_ENABLED` is set anywhere, make it mint only the role its caller needs (the extension token); the agent leg gets its token from the internal agent-token route.
+- [x] (plan 4a: relay-only lookup, partial unique index, other-user refusal before session creation) Chat-id squatting on the internal token route: another user who creates an `EveRun` row for the same chat id first makes the route 404 for the real owner, and if a run id leaks, that user can obtain an agent token for the run with an origin they chose (hijack). The session binding (the route mints only for the Eve session stored on the row) narrows this to the squatter's own session but does not stop it; fix with user binding, plus a partial unique index on `EveRun.chatId` where `relayOrigin` is not null, or a relay-only store lookup.
+- [x] `EVE_INTERNAL_SECRET` minimum length (32; shorter is treated as unset). Owner: the deployed secret must meet it.
+- [x] The agent-token route reads its body through a bounded reader (`lib/relay/read-bounded-body.ts`).
 - [ ] Per-run "Allow this site?" approval for a redirect (leaving the origin currently ends the run, which breaks login redirects).
 - [ ] Serialize `startRun` so concurrent calls cannot orphan a run.
-- [ ] Mint-side claim validation and refusing an empty secret in `mintRelayToken`; log a value-free line on route misconfiguration; `Cache-Control: no-store` on error responses.
+- [x] Mint-side claim validation and refusing an empty secret in `mintRelayToken`; value-free log line on route misconfiguration; `Cache-Control: no-store` on error responses.
 - [ ] Gate the service-worker test hooks (`bridgeHandleMessage`, `bridgeOnDebuggerDetach`) behind a build define before real extension pages exist.
 - [ ] A Stop issued while the socket is reconnecting drops the `stop` frame; send it on reopen.
 - [ ] Decide whether a detach for reasons other than `canceled_by_user` should end the run.
+
+- [ ] 4b: the panel; saved details; typing sensitive values plus `addKnownValue`; the "Allow this site?" flow; `startRun` serialization; service-worker hook gating; Stop while reconnecting; the detach decision (all as listed above).
+- [ ] 4b: how the extension authenticates to the app: CORS, cookies, SameSite.
+- [ ] 4b: decide whether `action_label` text is needed in tool-card inputs (they are `{}` on relay runs; it would need a deliberately sanitized field).
+
+### Plan 4a follow-ups
+
+Known residuals:
+- [ ] Reasoning and text deltas stream model text; a model could echo a typed value and nothing masks it.
+- [ ] An SSN in an `open` URL path survives tool-input redaction (the agent's own input; `tool-output-available` is redacted only by the worker upstream).
+- [ ] Orphan Eve session if two users race on the same new chat id (the pre-check is not atomic).
+- [ ] The run limit is a soft cap: check-then-create, concurrent first turns can exceed it.
+- [ ] A Jev prompt injection can only suppress an escalation, never un-mask a deterministically sensitive field.
+
+Deferred minors:
+- [ ] Participant search and routes: the source caps neither query length nor token count (the route caps 100 characters); `ILIKE '% t%'` scans sequentially (pg_trgm if the table grows); static and DB case folding differ for odd Unicode; the SQL path is untested without a database; no `recordId` length cap; a NUL byte in `q` gives an unhandled 500 without `no-store`; the `noStore` helper is duplicated; the list route has no summarize backstop; seed script import order.
+- [ ] Run store: DB store and the unique index are untested against Postgres; the memory store's fail-closed branch is unreachable.
+- [ ] `eve-chat`: the details key check and the prose guard disagree on zero-width and full-width spellings (still refused); the default model is not forced into the allowlist; DOB is non-sensitive and CIN is sensitive (owner rulings to confirm).
+- [ ] Tokens and hub: no upper length bound on `sub`; extra body keys are ignored, not refused; `sub` travels in bus frames, so older-hub frames count as a mismatch; the Eve-side callers treat a short secret as unset silently (only the route logs).
+- [ ] Classify route: the bounded reader does not cancel the body on the up-front `Content-Length` refusal and does not release the lock in `finally`; `describeFieldForJev` runs twice; the descriptor allowlist is duplicated; a store read failure answers `offline:chat`, distinguishable from a 404.
+- [ ] Tool-input redaction: element 0 can be any short letters-and-hyphens token (restricting it to the command-policy verbs would close that); non-ref second arguments degrade to `[hidden]`; the `open` pathname is kept verbatim.
+- [ ] Config route: the returned URL is the original string, not `parsed.href`; no maximum URL length; no tests for uppercase scheme, whitespace, port or `https:///`; the source-grep test is brittle.
 
 ## Plan 5: Rollout
 
