@@ -235,6 +235,7 @@ export const RunningScreen = ({
           progress={state?.progress ?? null}
           actions={state?.actions ?? []}
           stopping={stopping}
+          openedMidRun={run.expiresAtEstimated === true}
           onSubmitted={handleSubmitted}
           onStop={handleStop}
         />

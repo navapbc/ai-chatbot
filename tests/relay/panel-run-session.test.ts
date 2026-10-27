@@ -16,6 +16,7 @@ import {
   WORKER_GONE_AFTER_MS,
   WORKER_POLL_MS,
 } from '../../extension/panel/lib/run-session';
+import type { PendingInputRequest } from '../../lib/ai/eve/input-requests';
 import { createControllerLifecycle } from '../../extension/panel/lib/search-controller';
 import {
   AppApiError,
@@ -1484,5 +1485,95 @@ describe('rebuildRun', () => {
         ),
       ),
     ).toBeNull();
+  });
+});
+
+describe('a reopened panel lands on the right card', () => {
+  const rebuiltSetup = async (
+    status: () => Promise<RunStatus>,
+    row: () => Promise<RunState>,
+  ) => {
+    const calls: string[] = [];
+    const rebuilt = await rebuildRun({
+      api: {
+        getRunState: vi.fn(async (id: string) => {
+          calls.push(`row:${id}`);
+          return row();
+        }),
+      },
+      worker: {
+        getRunStatus: vi.fn(async () => {
+          calls.push('status');
+          return status();
+        }),
+        stopRun: vi.fn(async () => {}),
+      },
+      now: () => NOW,
+    });
+    if (!rebuilt) throw new Error('not rebuilt');
+    const t = setup(rebuilt.run);
+    t.plan.status = status;
+    t.plan.row = row;
+    return { t, rebuilt, calls };
+  };
+  const question = {
+    requestId: 'r1',
+    prompt: 'Which income?',
+    options: ['a', 'b'],
+  } as unknown as PendingInputRequest;
+
+  it('pending questions land on needs_you with an empty log', async () => {
+    const { t, rebuilt } = await rebuiltSetup(
+      async () => ours(),
+      async () =>
+        liveRow({
+          phase: 'needs_you',
+          pending: [question],
+          progress: { actions: ['clicked A'], sections: [] },
+        } as Partial<RunState>),
+    );
+    expect(rebuilt.run.expiresAtEstimated).toBe(true);
+    expect(t.last().actions).toEqual([]);
+    expect(t.last().progress).toBeNull();
+    await tick(SERVER_POLL_MS);
+    expect(t.last().phase).toBe('needs_you');
+    expect(t.last().pending).toHaveLength(1);
+    expect(t.last().progress).not.toBeNull();
+    t.session.dispose();
+  });
+
+  it('phase review lands on review', async () => {
+    const { t } = await rebuiltSetup(
+      async () => ours(),
+      async () => liveRow({ phase: 'review' } as Partial<RunState>),
+    );
+    await tick(SERVER_POLL_MS);
+    expect(t.last().phase).toBe('review');
+    t.session.dispose();
+  });
+
+  it('a worker origin hold shows the pending origin on the first poll', async () => {
+    const { t } = await rebuiltSetup(
+      async () => ours({ pendingOrigin: 'https://other.example.gov' }),
+      async () => liveRow(),
+    );
+    await tick(WORKER_POLL_MS);
+    expect(t.last().pendingOrigin).toBe('https://other.example.gov');
+    expect(t.last().holdCountdownKnown).toBe(false);
+    t.session.dispose();
+  });
+
+  it('an ended row is not rebuilt, and a rebuild calls only the status and the row', async () => {
+    const ended = await rebuildRun({
+      api: { getRunState: async () => liveRow({ ended: true }) },
+      worker: { getRunStatus: async () => ours(), stopRun: async () => {} },
+      now: () => NOW,
+    });
+    expect(ended).toBeNull();
+    const { calls } = await rebuiltSetup(
+      async () => ours(),
+      async () => liveRow(),
+    );
+    expect(calls).toEqual(['status', `row:${RUN_ID}`]);
   });
 });

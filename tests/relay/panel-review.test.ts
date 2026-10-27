@@ -9,6 +9,7 @@ import {
   buildReviewModel,
   isConfirming,
   reviewActions,
+  reviewLogNote,
 } from '../../extension/panel/lib/review-model';
 
 const sec = (
@@ -130,5 +131,14 @@ describe('ConfirmedScreen', () => {
     const out = html(true);
     expect(out).toContain(STOP_FAILED_TEXT.replace(/'/g, '&#x27;'));
     expect(out).not.toContain('>Stop<');
+  });
+});
+
+describe('reviewLogNote', () => {
+  it('notes a mid-run open as fixed text, only then', () => {
+    expect(reviewLogNote(false)).toBeNull();
+    expect(reviewLogNote(true)).toBe(
+      'The panel was opened while the run was under way, so steps before then are not shown.',
+    );
   });
 });

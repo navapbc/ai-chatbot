@@ -1,12 +1,18 @@
 import { useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import type { RunProgress } from '../../../lib/relay/progress';
-import { buildReviewModel, reviewActions } from '../lib/review-model';
+import {
+  buildReviewModel,
+  reviewActions,
+  reviewLogNote,
+} from '../lib/review-model';
 
 type Props = {
   progress: RunProgress | null;
   actions: string[];
   stopping: boolean;
+  /** The panel was rebuilt mid-run: the log starts empty. */
+  openedMidRun?: boolean;
   onSubmitted: () => void;
   onStop: () => void;
 };
@@ -18,6 +24,7 @@ export const ReviewPanel = ({
   progress,
   actions,
   stopping,
+  openedMidRun = false,
   onSubmitted,
   onStop,
 }: Props) => {
@@ -28,6 +35,7 @@ export const ReviewPanel = ({
   }, []);
   const model = buildReviewModel(progress);
   const log = reviewActions(actions);
+  const note = reviewLogNote(openedMidRun);
   return (
     <section
       aria-label="Ready for your review"
@@ -64,6 +72,7 @@ export const ReviewPanel = ({
         <summary className="cursor-pointer font-medium">
           What the agent did
         </summary>
+        {note ? <p className="mt-1">{note}</p> : null}
         {log.length === 0 ? (
           <p className="mt-1">The panel did not see the agent's steps.</p>
         ) : (

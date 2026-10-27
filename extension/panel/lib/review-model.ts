@@ -51,6 +51,12 @@ export const reviewActions = (actions: unknown): string[] =>
         .map((a) => cut(a, MAX_ACTION))
     : [];
 
+/** Fixed copy for a panel opened while the run was under way (text only). */
+export const reviewLogNote = (openedMidRun: boolean): string | null =>
+  openedMidRun
+    ? 'The panel was opened while the run was under way, so steps before then are not shown.'
+    : null;
+
 /**
  * A run ended through "I submitted it" goes straight to Confirmed, so the
  * running screen shows nothing for it instead of flashing "Run ended".
