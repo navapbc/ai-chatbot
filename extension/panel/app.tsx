@@ -11,6 +11,7 @@ import {
 import { startRun } from './lib/run-starter';
 import { type Action, initialState, reducer, type Target } from './lib/state';
 import { createWorkerApi } from './lib/worker-api';
+import { ConfirmedScreen } from './screens/confirmed';
 import { DetailsScreen } from './screens/details';
 import { ErrorScreen } from './screens/error';
 import { HomeScreen } from './screens/home';
@@ -184,7 +185,15 @@ export const App = ({ onStart }: { onStart?: OnStart }) => {
           run={state.run}
           createSession={createSession}
           onHome={() => dispatch({ type: 'runEnded' })}
+          onConfirmed={() => dispatch({ type: 'runConfirmed' })}
           appOrigin={APP_ORIGIN}
+        />
+      ) : null}
+      {state.screen === 'confirmed' && state.target ? (
+        <ConfirmedScreen
+          siteName={state.target.siteName}
+          onStartAnother={() => dispatch({ type: 'startAnother' })}
+          onHome={handleHome}
         />
       ) : null}
     </main>

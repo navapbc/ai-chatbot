@@ -158,6 +158,55 @@ describe('panel reducer', () => {
     expect(reducer(home, { type: 'runEnded' })).toBe(home);
   });
 
+  const runningState = {
+    screen: 'running' as const,
+    config,
+    target,
+    participant: { kind: 'record' as const, recordId: 'r', name: 'n' },
+    modelId: 'claude-opus-5',
+    run: RUN,
+  };
+
+  it('runConfirmed goes to confirmed, clears the run, keeps target and participant', () => {
+    const s = reducer(runningState, { type: 'runConfirmed' });
+    expect(s.screen).toBe('confirmed');
+    expect(s.run).toBeUndefined();
+    expect(s.target).toEqual(target);
+    expect(s.participant).toEqual(runningState.participant);
+  });
+
+  it('runConfirmed is ignored unless running', () => {
+    const home = { screen: 'home' as const, config };
+    expect(reducer(home, { type: 'runConfirmed' })).toBe(home);
+  });
+
+  it('startAnother goes to ready keeping target, participant and config, clearing error', () => {
+    const confirmed = {
+      ...reducer(runningState, { type: 'runConfirmed' }),
+      error: { title: 't', detail: 'd', retryable: false },
+    };
+    const s = reducer(confirmed, { type: 'startAnother' });
+    expect(s.screen).toBe('ready');
+    expect(s.target).toEqual(target);
+    expect(s.participant).toEqual(runningState.participant);
+    expect(s.config).toEqual(config);
+    expect(s.error).toBeUndefined();
+    expect(s.run).toBeUndefined();
+  });
+
+  it('startAnother is ignored unless confirmed', () => {
+    expect(reducer(runningState, { type: 'startAnother' })).toBe(runningState);
+  });
+
+  it('clearTarget from confirmed clears target, participant and run', () => {
+    const confirmed = reducer(runningState, { type: 'runConfirmed' });
+    expect(reducer(confirmed, { type: 'clearTarget' })).toEqual({
+      screen: 'home',
+      config,
+      modelId: 'claude-opus-5',
+    });
+  });
+
   it('runRebuilt goes from loading to running with the config, run and target', () => {
     const s = reducer(initialState, {
       type: 'runRebuilt',

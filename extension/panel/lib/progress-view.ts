@@ -63,14 +63,14 @@ const toActions = (v: unknown): string[] =>
         .map((a) => cut(a, MAX_ACTION))
     : [];
 
-type Clean = {
+export type Clean = {
   name: string;
   status: SectionStatus;
   filled: number;
   total?: number;
 };
 
-const cleanSection = (raw: unknown): Clean => {
+export const cleanSection = (raw: unknown): Clean => {
   const s = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<
     string,
     unknown

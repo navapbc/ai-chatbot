@@ -54,7 +54,7 @@ let eveChatStatus = 200;
 /** Runs eve-chat created: the fake server rows the panel reads and stops. */
 const runs = new Map<
   string,
-  { ended: boolean; phase?: string; pending?: unknown[] }
+  { ended: boolean; phase?: string; pending?: unknown[]; progress?: unknown }
 >();
 /** Answer turns (`inputResponses` bodies) POSTed to /api/eve-chat. */
 const answerBodies: unknown[] = [];
@@ -179,7 +179,7 @@ beforeAll(async () => {
           origin: fixtures.origin,
           ended: row.ended,
           endedAt: row.ended ? new Date().toISOString() : null,
-          progress: CANNED_PROGRESS,
+          progress: row.progress ?? CANNED_PROGRESS,
           pending: row.ended ? [] : (row.pending ?? []),
           phase: row.ended ? 'ended' : (row.phase ?? 'working'),
         }),
@@ -606,6 +606,111 @@ describe('the panel shell', () => {
     }
   }, 30_000);
 
+  it('Review: shows only while the phase is review; I submitted it stops both sides and confirms; Start another and Back to Home', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    const row = runs.get(runId);
+    if (!row) throw new Error('no run row');
+    try {
+      await page.getByText('6 fields so far').waitFor();
+      const heading = page.getByRole('heading', {
+        name: 'Ready for your review',
+      });
+      // Working: no review panel.
+      expect(await heading.count()).toBe(0);
+      row.progress = {
+        sections: [
+          { name: 'Applicant', status: 'done', filled: 4, total: 4 },
+          { name: 'Income', status: 'needs_you', filled: 1, total: 3 },
+        ],
+        actions: ['Typed the income'],
+      };
+      row.phase = 'review';
+      await heading.waitFor({ timeout: 8_000 });
+      await page
+        .getByText('The agent has stopped. It has not submitted the form.')
+        .waitFor();
+      const left = page.getByRole('region', { name: 'Ready for your review' });
+      await left.getByText('Income', { exact: true }).waitFor();
+      await left.getByText('1 of 3').waitFor();
+      expect(await left.getByText('Applicant', { exact: true }).count()).toBe(
+        0,
+      );
+      // The action log is collapsed by default and shows the agent's steps.
+      const details = left.locator('details');
+      expect(
+        await details.evaluate((d) => (d as HTMLDetailsElement).open),
+      ).toBe(false);
+      await details.locator('summary').click();
+      await details.getByText('Typed the income').waitFor();
+      await page
+        .getByText('Check the form on the page, then submit it there yourself.')
+        .waitFor();
+      expect(await page.getByText(/unfilled field/i).count()).toBe(0);
+      expect(await page.getByRole('button', { name: 'Show me' }).count()).toBe(
+        0,
+      );
+
+      // Back to working: the panel goes away.
+      row.phase = 'working';
+      await expect.poll(() => heading.count(), { timeout: 8_000 }).toBe(0);
+      row.phase = 'review';
+      await heading.waitFor({ timeout: 8_000 });
+
+      await page.getByRole('button', { name: 'I submitted it' }).click();
+      await page.getByRole('heading', { name: 'Submitted' }).waitFor();
+      await page
+        .getByText('You said you submitted the form on localhost.')
+        .waitFor();
+      expect(stopCalls(runId)).toBe(1);
+      expect(row.ended).toBe(true);
+      expect((await runStatus(page)).active).toBe(false);
+      const recents = await page.evaluate(
+        async () => (await chrome.storage.local.get('recentRuns')).recentRuns,
+      );
+      expect(recents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ runId, endedReason: 'submitted' }),
+        ]),
+      );
+
+      // Another form for the same person on the same site.
+      await page
+        .getByRole('button', { name: 'Start another form for this person' })
+        .click();
+      await page.getByRole('heading', { name: 'Ready' }).waitFor();
+      await page.getByText('Alice', { exact: false }).first().waitFor();
+      await page.getByText('localhost', { exact: false }).first().waitFor();
+      await page.getByRole('button', { name: 'Start' }).waitFor();
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 60_000);
+
+  it('Confirmed: Back to Home clears the person and the site', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    const row = runs.get(runId);
+    if (!row) throw new Error('no run row');
+    try {
+      row.phase = 'review';
+      await page
+        .getByRole('button', { name: 'I submitted it' })
+        .click({ timeout: 10_000 });
+      await page.getByRole('heading', { name: 'Submitted' }).waitFor();
+      await page.getByRole('button', { name: 'Back to Home' }).click();
+      await page.getByRole('heading', { name: 'Home' }).waitFor();
+      expect(await page.getByText('Alice', { exact: false }).count()).toBe(0);
+      expect(
+        await page.getByRole('button', { name: 'Use this tab' }).count(),
+      ).toBe(1);
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 40_000);
+
   it('a run the worker ended by itself is stopped on the server once', async () => {
     const { site, page, runId } = await startOnRealTab();
     try {
@@ -978,6 +1083,22 @@ describe('the panel shell', () => {
       expect(((await runStatus(page)) as HoldStatus).pendingOrigin).toBe(
         fixtures.frameOrigin,
       );
+
+      // A hold takes precedence: a review phase shows no review panel.
+      const heldRun = runs.get(runId);
+      if (heldRun) heldRun.phase = 'review';
+      // Wait for the panel's next server poll to have read the review phase.
+      const polled = pollCalls.length;
+      await expect
+        .poll(() => pollCalls.length, { timeout: 5_000 })
+        .toBeGreaterThan(polled);
+      expect(await heading.count()).toBe(1);
+      expect(
+        await page
+          .getByRole('heading', { name: 'Ready for your review' })
+          .count(),
+      ).toBe(0);
+      if (heldRun) heldRun.phase = 'working';
 
       await page
         .getByRole('button', { name: 'Allow this site for this run' })

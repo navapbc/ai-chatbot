@@ -72,7 +72,7 @@ export const ORIGIN_HOLD_CAP_MS = 2 * ORIGIN_HOLD_MS;
  */
 export const HOLD_KNOWN_GAP_MS = 2 * WORKER_POLL_MS + 1000;
 
-export type EndedReason = 'user' | 'stopped' | 'worker-ended';
+export type EndedReason = 'user' | 'submitted' | 'stopped' | 'worker-ended';
 
 export type SessionRun = {
   runId: string;
@@ -147,7 +147,8 @@ export type RunSessionDeps = {
 
 export type RunSession = {
   subscribe(cb: (state: RunSessionState) => void): () => void;
-  stop(): Promise<void>;
+  /** `submitted` only when the caseworker pressed "I submitted it". */
+  stop(reason?: 'user' | 'submitted'): Promise<void>;
   dispose(): void;
 };
 
@@ -464,14 +465,14 @@ export const createRunSession = (
     finish('stopped');
   };
 
-  const stopNow = async () => {
+  const stopNow = async (reason: 'user' | 'submitted') => {
     let failed = !(await ignore(() => deps.api.stopRun(runId)));
     // A refresh in flight would restart the worker after its stop.
     if (refreshPromise) await refreshPromise;
     // Scoped to this run: a run another window started is left alone.
     if (!(await ignore(() => deps.worker.stopRun(runId)))) failed = true;
     stopFailed = failed;
-    finish('user');
+    finish(reason);
   };
 
   return {
@@ -483,12 +484,12 @@ export const createRunSession = (
         listeners.delete(cb);
       };
     },
-    stop() {
+    stop(reason = 'user') {
       if (stopPromise) return stopPromise;
       if (ended) return Promise.resolve();
       stopping = true;
       emit();
-      stopPromise = stopNow();
+      stopPromise = stopNow(reason);
       return stopPromise;
     },
     dispose() {

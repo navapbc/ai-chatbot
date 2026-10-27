@@ -21,6 +21,7 @@ import {
   type SendAnswers,
 } from './needs-you';
 import { ProgressView } from './progress-view';
+import { ReviewPanel } from './review';
 
 type Props = {
   siteName: string;
@@ -29,6 +30,8 @@ type Props = {
   createSession: (run: SessionRun) => RunSession;
   /** Leaves the ended run's screen (dispatches runEnded). */
   onHome: () => void;
+  /** "I submitted it": the run was stopped; show Confirmed. */
+  onConfirmed: () => void;
   /** The build's app origin, for the default answer sender. */
   appOrigin?: string;
   /** Sends answers to the agent's questions; defaults to the real client. */
@@ -39,6 +42,7 @@ type Props = {
 
 const ENDED_TEXT: Record<EndedReason, string> = {
   user: 'You stopped this run.',
+  submitted: 'You said you submitted the form.',
   stopped: 'This run was stopped.',
   'worker-ended':
     'The run ended in the browser. The tab may have closed or moved to another site, or the time ran out.',
@@ -69,6 +73,7 @@ export const RunningScreen = ({
   run,
   createSession,
   onHome,
+  onConfirmed,
   appOrigin = '',
   sendAnswers,
   allowSiteDeps,
@@ -117,6 +122,12 @@ export const RunningScreen = ({
   const handleStop = () => {
     void session.current?.stop();
   };
+  const handleSubmitted = async () => {
+    // Confirmed follows whether or not either stop worked: the caseworker
+    // did submit. A failed stop shows a notice only while this screen lives.
+    await session.current?.stop('submitted');
+    onConfirmed();
+  };
   const handleHome = () => onHome();
   const handleAllowed = () => setAllowed(true);
 
@@ -127,6 +138,11 @@ export const RunningScreen = ({
       : [];
   const secondsLeft = state?.secondsLeft ?? 0;
   const heldOn = showAllowSite(state);
+  // Only for an agent that stopped with nothing pending, and never during a
+  // hold (the allow-site card comes first). A stale review has no follow-up
+  // input anywhere in the panel.
+  const showReview =
+    !ended && state?.phase === 'review' && !state.pendingOrigin && !heldOn;
 
   return (
     <section className="flex flex-col gap-4" aria-label="Running">
@@ -206,7 +222,16 @@ export const RunningScreen = ({
           )}
         />
       ) : null}
-      {/* SLOT (task 6): the review panel renders here. */}
+      {showReview ? (
+        <ReviewPanel
+          progress={state?.progress ?? null}
+          actions={state?.actions ?? []}
+          stopping={stopping}
+          stopFailed={state?.stopFailed === true}
+          onSubmitted={handleSubmitted}
+          onStop={handleStop}
+        />
+      ) : null}
       {!ended ? (
         <Button
           type="button"

@@ -423,6 +423,56 @@ describe('run session: progress, questions and phase', () => {
     t.session.dispose();
   });
 
+  it("stop('submitted'): server stop then worker stop once each, ends submitted", async () => {
+    const t = setup();
+    await tick(3000);
+    const order: string[] = [];
+    t.api.stopRun.mockImplementation(async () => {
+      order.push('server');
+      return { ended: true, alreadyEnded: false };
+    });
+    t.worker.stopRun.mockImplementation(async () => {
+      order.push('worker');
+    });
+    await t.session.stop('submitted');
+    expect(order).toEqual(['server', 'worker']);
+    expect(t.last()).toMatchObject({
+      status: 'ended',
+      endedReason: 'submitted',
+    });
+    expect(t.markRecentEnded).toHaveBeenCalledWith(RUN_ID, 'submitted');
+    t.session.dispose();
+  });
+
+  it('stop() defaults to the user reason', async () => {
+    const t = setup();
+    await t.session.stop();
+    expect(t.markRecentEnded).toHaveBeenCalledWith(RUN_ID, 'user');
+    t.session.dispose();
+  });
+
+  it("stop('submitted') with a failing server stop still ends and sets stopFailed", async () => {
+    const t = setup();
+    t.api.stopRun.mockRejectedValue(new AppApiError('network', 0));
+    await t.session.stop('submitted');
+    expect(t.last()).toMatchObject({
+      status: 'ended',
+      endedReason: 'submitted',
+      stopFailed: true,
+    });
+    expect(t.worker.stopRun).toHaveBeenCalledTimes(1);
+    t.session.dispose();
+  });
+
+  it('a double press calls each stop once', async () => {
+    const t = setup();
+    await Promise.all([t.session.stop('submitted'), t.session.stop('user')]);
+    expect(t.api.stopRun).toHaveBeenCalledTimes(1);
+    expect(t.worker.stopRun).toHaveBeenCalledTimes(1);
+    expect(t.last()?.endedReason).toBe('submitted');
+    t.session.dispose();
+  });
+
   it('feeds the action log from every poll without repeats', async () => {
     const t = setup();
     t.plan.row = async () =>
