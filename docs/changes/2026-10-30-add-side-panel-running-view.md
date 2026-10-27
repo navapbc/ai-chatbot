@@ -1,4 +1,4 @@
-# Add side panel running view
+# Add Side Panel Running View
 
 ## Summary
 

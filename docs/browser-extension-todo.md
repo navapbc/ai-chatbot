@@ -180,7 +180,7 @@ Contracts the panel must honor:
 - [x] (plan 4c-1: the run session polls `getRunStatus` every 2 s and treats 7 s of continuous inactivity for its run as an end; an extra read of the server first) Call the server Stop for worker-initiated ends too (only while a panel is open; see I1 under 'Must land before') (`left-origin`, `token-expired`, `debugger-canceled`, `debugger-detached`, tab closed). Those tell only the hub: the server row stays live, the Eve turn keeps running and `relay/agent-token` keeps minting. The bridge has no push, so poll `getRunStatus` to notice an end.
 - [x] (plan 4c-1: refresh at 5 min left, retry every 60 s, then `registrationComplete(runId, 0)`) Token refresh (a same-run-id `startRun`): it is refused when the tab is on an origin added by `allowOrigin` (only the token origin is checked); it drops the extra origins, detaches the debugger, sends no `resumed`, clears known values and requires re-registration. A refused refresh means the run dies at `exp` (see the 4c-2 carry-forward). Refresh BEFORE `exp`: the worker's own `token-expired` sends `stop`, and the hub then closes the run for good.
 - [ ] Jev disabled is a supported configuration: `classify-field` answers `null` for unflagged fields and masking is deterministic only. `jevFailures` grows with every `null`, so it is not an outage signal.
-- [ ] After a worker restart, send `runId` with `registrationComplete` and `addKnownValue`, and call `registrationComplete` (count may be 0) promptly; the run stalls fail-closed until then. Partly done (plan 4c-1): the panel sends `runId` and calls `registrationComplete(runId, 0)` after every `startRun` and refresh. Open: a worker restart without a panel refresh is not detected, and the count is always 0 until 4c-2 types values.
+- [ ] After a worker restart, send `runId` with `registrationComplete` and `addKnownValue`, and call `registrationComplete` (count may be 0) promptly; the run stalls fail-closed until then. Partly done (plan 4c-1): the panel sends `runId` and calls `registrationComplete(runId, 0)` after every `startRun` and refresh. Open: a worker restart without a panel refresh is not detected, and the count is always 0 until 4c-3 types values.
 - [x] Hide pending questions when the run state says `ended` (done in plan 4c-2: the route returns `[]` once ended and the panel shows no cards).
 - [x] The allow-origin prompt shows the tab's actual URL (origin plus path) as well as `pendingOrigin`, and is never auto-approved (plan 4c-2). A prompt-injected agent can still trigger holds by clicking links; the card shows where the tab is.
 - [ ] During a hold the Eve tool returns the out-of-scope refusal; the agent should be told to wait and retry.
@@ -209,7 +209,7 @@ Other follow-ups:
 - [ ] The session's `workerGone` branch for a row that already ended skips the scoped worker stop.
 - [ ] Dead constant `GRACE_MS` in `extension/panel/lib/run-session.ts`; the bridge-constant test reads `bridge.ts` with a regex (export `STOP_WAIT_MS` instead); no render tests for `running.tsx` copy.
 - [ ] Single-run worker: a start in a second panel window replaces the first window's worker run (the first window's session then notices the replacement and stops its server run).
-- [ ] Every panel open mid-run refreshes the token at once, which detaches the debugger, clears known values and drops allowed origins. 4c-2 must re-register values before `registrationComplete` and re-allow or re-prompt origins.
+- [ ] Every panel open mid-run refreshes the token at once, which detaches the debugger, clears known values and drops allowed origins. 4c-3 must re-register values before `registrationComplete` and re-allow or re-prompt origins.
 - [ ] `siteName` is the hostname for "Use this tab" and is cut to 100 UTF-16 units, which can split a surrogate pair.
 - [ ] The recents read-modify-write is serialized by a mutex within one window, not across windows.
 - [x] `ensureSweepAlarm` now checks `alarms.get` first and creates the alarm only when none exists, and the worker also sweeps once at every start. Still open: it uses the global `chrome`.
@@ -244,12 +244,12 @@ Minors by area:
 - [x] The allow-this-site prompt shows the tab's actual URL as well as `pendingOrigin` and is never auto-approved (plan 4c-2).
 - [x] Review and Confirmed screens (plan 4c-2; 'I submitted it' is manual).
 - [ ] "Show me the unfilled field" (plan 4c-3), automatic submit detection and the confirmation number (plan 4c-3).
-- [ ] The Eve tool waits and retries during an origin hold instead of returning the out-of-scope refusal.
+- [ ] The Eve tool waits and retries during an origin hold instead of returning the out-of-scope refusal. Panel consequence: if the agent ends its turn on the refusal, the hold clearing shows Review ("The agent has stopped") and nothing in the panel can resume it, so Allow achieves nothing.
 
 ## Plan 4c-2 Follow-ups
 
 - [ ] The panel-shell e2e now takes about 154 s; check it against the relay-e2e CI job's 20 minute limit, and consider splitting the Needs You scenario (about 55 s of its 90 s budget).
-- [ ] A stale `review` phase can show after a replayed turn: a follow-up arriving between turn A's final swap and its `session.waiting` replays A's waiting and leaves `turnIdle` true while B runs, and "I submitted it" then cancels B. Root fix: hold the claim until `session.waiting` (see the claim item above). The panel offers no follow-up input while `working`.
+- [ ] A stale `review` phase can show after a replayed turn: a follow-up arriving between turn A's final swap and its `session.waiting` replays A's waiting and leaves `turnIdle` true while B runs, and "I submitted it" then cancels B. Root fix: hold the claim until `session.waiting` (see the claim item above). The panel offers no follow-up input while `working`. The variant a panel answer can reach instead ends on a re-asked, already-answered Needs You card; a cheap guard is to show `needs_you` only when `turnIdle` too, with idle written after `advance` (optional: the review judged the current ordering acceptable).
 - [ ] The Confirmed stop-failed copy mentions a Stop control that is not on that screen.
 - [ ] `turnIdle` is written before the cursor `advance`, so `review` can show a moment before the cursor moves; write it after, in a `finally`. The rollback branch where the row was not idle has no test.
 - [ ] A free-text sensitive question has no panel path until plan 4c-3 (dead-end card). A bare SSN or short ID in a free-text answer can pass the server's prose guard; the card only warns.

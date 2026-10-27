@@ -310,7 +310,7 @@ export const createRunSession = (
       if (done()) return;
       // The restarted run has no registered values (plan 4b): screenshots
       // stay refused until this arrives. Count 0 holds while the panel
-      // registers no known values (plan 4c-1); once it does (plan 4c-2) it
+      // registers no known values (plan 4c-1); once it does (plan 4c-3) it
       // must send them again first and pass the real count. A failure here is
       // retried by the poll, which sees `needsRegistration`.
       await ignore(() => deps.worker.registrationComplete(runId, 0));
@@ -396,7 +396,7 @@ export const createRunSession = (
     lastWorker = status;
     if (status.needsRegistration && !registering) {
       // Count 0: this panel registers no known values (plan 4c-1). Once it
-      // does (addKnownValue, plan 4c-2), it must send them again and pass the
+      // does (addKnownValue, plan 4c-3), it must send them again and pass the
       // real count here, or screenshots resume without their scrub.
       registering = true;
       void ignore(() => deps.worker.registrationComplete(runId, 0)).then(() => {
