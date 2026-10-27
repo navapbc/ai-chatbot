@@ -2,6 +2,7 @@ import 'server-only';
 
 import {
   advanceEveRun,
+  countRecentRelayRuns,
   createEveRun,
   deleteEveRun,
   getEveRun,
@@ -17,16 +18,26 @@ import {
   type EveRunStore,
 } from './run-store';
 
-const UNIQUE_CONSTRAINT = 'EveRun_userId_chatId_unique';
+// (userId, chatId) constraint, and the one-relay-run-per-chatId partial index.
+const UNIQUE_CONSTRAINTS = new Set([
+  'EveRun_userId_chatId_unique',
+  'EveRun_chatId_relay_unique',
+]);
 
-/** Postgres unique violation (23505) on the (userId, chatId) constraint. */
+/** Postgres unique violation (23505) on one of the EveRun unique indexes. */
 const isDuplicateRun = (error: unknown): boolean => {
   for (let e = error, depth = 0; e && depth < 3; depth++) {
     const { code, constraint_name } = e as {
       code?: unknown;
       constraint_name?: unknown;
     };
-    if (code === '23505' && constraint_name === UNIQUE_CONSTRAINT) return true;
+    if (
+      code === '23505' &&
+      typeof constraint_name === 'string' &&
+      UNIQUE_CONSTRAINTS.has(constraint_name)
+    ) {
+      return true;
+    }
     e = (e as { cause?: unknown }).cause;
   }
   return false;
@@ -60,6 +71,8 @@ export function createDbRunStore(): EveRunStore {
         throw error;
       }
     },
+    countRecentRelayRuns: (userId, since) =>
+      countRecentRelayRuns({ userId, since }),
     swapToken: (userId, chatId, expected, next) =>
       swapEveRunToken({ userId, chatId, expected, next }),
     advance: (userId, chatId, update) =>

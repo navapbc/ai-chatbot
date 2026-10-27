@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "EveRun_chatId_relay_unique" ON "EveRun" USING btree ("chatId") WHERE "EveRun"."relayOrigin" IS NOT NULL;

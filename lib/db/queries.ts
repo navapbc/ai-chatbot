@@ -9,6 +9,7 @@ import {
   gt,
   gte,
   inArray,
+  isNotNull,
   lt,
   or,
   type SQL,
@@ -710,9 +711,9 @@ export async function getEveRun({
 }
 
 /**
- * Looks a run up by chatId alone, for the internal token route. chatId is
- * only unique per user, so if two users hold the same chatId this fails
- * closed and returns undefined rather than picking one.
+ * Looks up the relay run with this chat id, for the token route. Web rows are
+ * ignored. A partial unique index allows one relay run per chat id; if more
+ * than one ever came back this fails closed and returns undefined.
  */
 export async function getEveRunByChatId({
   chatId,
@@ -721,13 +722,38 @@ export async function getEveRunByChatId({
     const rows = await db
       .select()
       .from(eveRun)
-      .where(eq(eveRun.chatId, chatId))
+      .where(and(eq(eveRun.chatId, chatId), isNotNull(eveRun.relayOrigin)))
       .limit(2);
     return rows.length === 1 ? rows[0] : undefined;
   } catch (error) {
     throw new ChatSDKError(
       'bad_request:database',
       'Failed to get eve run by chat id',
+    );
+  }
+}
+
+/** Relay runs a user created at or after `since`, for the hourly run limit. */
+export async function countRecentRelayRuns({
+  userId,
+  since,
+}: { userId: string; since: Date }): Promise<number> {
+  try {
+    const [row] = await db
+      .select({ count: count(eveRun.id) })
+      .from(eveRun)
+      .where(
+        and(
+          eq(eveRun.userId, userId),
+          isNotNull(eveRun.relayOrigin),
+          gte(eveRun.createdAt, since),
+        ),
+      );
+    return row?.count ?? 0;
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to count recent relay runs',
     );
   }
 }

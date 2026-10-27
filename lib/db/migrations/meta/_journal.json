@@ -71,6 +71,13 @@
       "when": 1793106139262,
       "tag": "0008_ambiguous_bloodstorm",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793106437148,
+      "tag": "0009_luxuriant_jack_power",
+      "breakpoints": true
     }
   ]
 }

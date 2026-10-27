@@ -1,4 +1,4 @@
-import type { InferSelectModel } from 'drizzle-orm';
+import { type InferSelectModel, sql } from 'drizzle-orm';
 import {
   pgTable,
   varchar,
@@ -12,6 +12,7 @@ import {
   unique,
   integer,
   jsonb,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import type { PendingInputRequest } from '../ai/eve/input-requests';
 import type { RunProgress } from '../relay/progress';
@@ -247,6 +248,10 @@ export const eveRun = pgTable(
       table.userId,
       table.chatId,
     ),
+    // One relay run per chat id across all users; web rows are unaffected.
+    relayChatUnique: uniqueIndex('EveRun_chatId_relay_unique')
+      .on(table.chatId)
+      .where(sql`${table.relayOrigin} IS NOT NULL`),
   }),
 );
 

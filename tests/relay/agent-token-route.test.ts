@@ -159,16 +159,14 @@ describe('POST /api/relay/agent-token', () => {
     expect(winner.status).toBe(200);
   });
 
-  it('returns 404 when two users hold the chat id', async () => {
+  it('ignores a web row another user holds on the chat id', async () => {
     await seed();
     await store.create('u2', RUN_ID, {
       eveSessionId: 's2',
       continuationToken: 't2',
-      relayOrigin: ORIGIN,
     });
-    await expectBodylessNoStore404(
-      await post({ runId: RUN_ID, sessionId: SESSION }),
-    );
+    const res = await post({ runId: RUN_ID, sessionId: SESSION });
+    expect(res.status).toBe(200);
   });
 
   it.each([undefined, 'short'])(
