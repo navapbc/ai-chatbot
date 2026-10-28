@@ -66,6 +66,10 @@ const attach = vi.fn(async () => {
   }
 });
 const detach = vi.fn(async () => {});
+// Read once per arm attach step queued (attachForReview looks up the target).
+const getTargets = vi.fn(async () => [
+  { tabId: 1, type: 'page', id: 'T', title: '', url: '', attached: false },
+]);
 const sendCommand = vi.fn(
   async (
     _debuggee: { tabId: number; sessionId?: string },
@@ -100,6 +104,7 @@ beforeEach(async () => {
   sendCommand.mockClear();
   attach.mockClear();
   detach.mockClear();
+  getTargets.mockClear();
   vi.stubGlobal('WebSocket', FakeSocket);
   const storage = new Map<string, unknown>();
   vi.stubGlobal('chrome', {
@@ -117,16 +122,7 @@ beforeEach(async () => {
       },
     },
     debugger: {
-      getTargets: async () => [
-        {
-          tabId: 1,
-          type: 'page',
-          id: 'T',
-          title: '',
-          url: '',
-          attached: false,
-        },
-      ],
+      getTargets,
       attach,
       detach,
       sendCommand,
@@ -184,6 +180,7 @@ const disarm = (runId = 'run-1') =>
 type Status = {
   active: boolean;
   attached?: boolean;
+  armed?: boolean;
   pendingOrigin?: string;
   needsRegistration?: boolean;
   submitted?: { at: number };
@@ -684,5 +681,149 @@ describe('the watch attaches on demand when the agent is not attached', () => {
     await agentAttach(socket, 'a2');
     submitPost();
     expect(await status()).not.toHaveProperty('submitted');
+  });
+});
+
+describe('concurrent arms share one attach', () => {
+  it('five arms during a held attach queue one step and attach once', async () => {
+    await startedRun();
+    const gate = deferred();
+    fake.attachGate = gate.promise;
+    const lookups = getTargets.mock.calls.length;
+    const arms = [arm(), arm(), arm(), arm(), arm()];
+    await new Promise((r) => setTimeout(r, 0));
+    expect(attach).toHaveBeenCalledTimes(1);
+    // One attachForReview, so one queued step.
+    expect(getTargets.mock.calls.length).toBe(lookups + 1);
+    gate.resolve(undefined);
+    expect(await Promise.all(arms)).toEqual(
+      Array.from({ length: 5 }, () => ({ ok: true })),
+    );
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(getTargets.mock.calls.length).toBe(lookups + 1);
+    expect((await status()).armed).toBe(true);
+  });
+
+  it('concurrent arms behind a failing attach all answer not attached; the next arm tries again', async () => {
+    await startedRun();
+    fake.attachFails = true;
+    expect(await Promise.all([arm(), arm(), arm()])).toEqual(
+      Array.from({ length: 3 }, () => ({ ok: false, error: 'not attached' })),
+    );
+    expect(attach).toHaveBeenCalledTimes(1);
+    fake.attachFails = false;
+    expect(await arm()).toEqual({ ok: true });
+    expect(attach).toHaveBeenCalledTimes(2);
+  });
+
+  it('an arm after a disarm does not join the earlier arm: it ends armed', async () => {
+    await startedRun();
+    const gate = deferred();
+    fake.attachGate = gate.promise;
+    const first = arm();
+    await new Promise((r) => setTimeout(r, 0));
+    const disarming = disarm();
+    const second = arm();
+    gate.resolve(undefined);
+    expect(await first).toEqual({ ok: false, error: 'not attached' });
+    expect(await disarming).toEqual({ ok: true });
+    expect(await second).toEqual({ ok: true });
+    expect((await status()).armed).toBe(true);
+    submitPost();
+    expect((await status()).submitted).toBeDefined();
+  });
+});
+
+describe('the status reports whether the watch is armed', () => {
+  it('false before arming, true after, false after disarm', async () => {
+    await startedRun();
+    expect((await status()).armed).toBe(false);
+    await arm();
+    expect((await status()).armed).toBe(true);
+    await disarm();
+    expect((await status()).armed).toBe(false);
+  });
+
+  it('true under the agent attach; false after a debugger detach', async () => {
+    await attachedRun();
+    await arm();
+    expect((await status()).armed).toBe(true);
+    bridge.onDebuggerDetach({ tabId: 1 }, 'target_closed');
+    expect((await status()).armed).toBe(false);
+  });
+
+  it('false after an agent attach that took the review attach over and failed', async () => {
+    const socket = await startedRun();
+    await arm();
+    expect((await status()).armed).toBe(true);
+    fake.attachFails = true;
+    expect(
+      (await ask(socket, { id: 'a', type: 'attach', targetId: 'T' })).error,
+    ).toBeDefined();
+    expect(await status()).toMatchObject({ attached: false, armed: false });
+    // Arming again attaches for the watch again.
+    fake.attachFails = false;
+    expect(await arm()).toEqual({ ok: true });
+    expect((await status()).armed).toBe(true);
+  });
+
+  it('false on the new run after a token refresh', async () => {
+    await startedRun();
+    await arm();
+    await startedRun();
+    expect((await status()).armed).toBe(false);
+  });
+});
+
+describe('arming with reset', () => {
+  const armReset = () =>
+    bridge.handleMessage({
+      type: 'armSubmitWatch',
+      runId: 'run-1',
+      reset: true,
+    });
+
+  it('forgets a seen submission with no attach or detach; a later one counts again', async () => {
+    await startedRun();
+    await arm();
+    submitPost();
+    expect((await status()).submitted).toBeDefined();
+    const attaches = attach.mock.calls.length;
+    const detaches = detach.mock.calls.length;
+    const sends = sendCommand.mock.calls.length;
+    expect(await armReset()).toEqual({ ok: true });
+    expect(await status()).toMatchObject({ armed: true });
+    expect((await status()).submitted).toBeUndefined();
+    expect(attach.mock.calls.length).toBe(attaches);
+    expect(detach.mock.calls.length).toBe(detaches);
+    expect(sendCommand.mock.calls.length).toBe(sends);
+    submitPost(`${ORIGIN}/again`);
+    expect((await status()).submitted).toBeDefined();
+  });
+
+  it('forgets a pending request too', async () => {
+    await attachedRun();
+    await arm();
+    requested('formSubmissionPost');
+    expect(await armReset()).toEqual({ ok: true });
+    committed();
+    expect((await status()).submitted).toBeUndefined();
+  });
+
+  it('without reset, arming keeps what was seen', async () => {
+    await startedRun();
+    await arm();
+    submitPost();
+    expect(await arm()).toEqual({ ok: true });
+    expect((await status()).submitted).toBeDefined();
+  });
+
+  it('while unarmed it arms as usual', async () => {
+    await startedRun();
+    expect(await armReset()).toEqual({ ok: true });
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect((await status()).armed).toBe(true);
+    submitPost();
+    expect((await status()).submitted).toBeDefined();
   });
 });

@@ -1217,3 +1217,35 @@ describe("typeSensitive under the submit watch's attach (Review)", () => {
     expect(inserts()).toHaveLength(0);
   });
 });
+
+describe('typeSensitive when the watch is disarmed under it', () => {
+  it('fails closed with not attached; the value stays registered', async () => {
+    const socket = await startedRun();
+    expect(
+      await bridge.handleMessage({ type: 'armSubmitWatch', runId: 'run-1' }),
+    ).toEqual({ ok: true });
+    const gate = deferred();
+    const axStarted = deferred<void>();
+    fake.axGate = gate.promise;
+    fake.axStarted = () => axStarted.resolve();
+    const typing = type();
+    await axStarted.promise;
+    expect(
+      await bridge.handleMessage({ type: 'disarmSubmitWatch', runId: 'run-1' }),
+    ).toEqual({ ok: true });
+    gate.resolve(undefined);
+    expect(await typing).toEqual({ ok: false, error: 'not attached' });
+    expect(inserts()).toHaveLength(0);
+    // Still registered: the agent attaches later and an echo is scrubbed.
+    expect(
+      (await ask(socket, { id: 'a', type: 'attach', targetId: 'T' })).error,
+    ).toBeUndefined();
+    fake.pageText = `You entered ${VALUE}`;
+    const echoed = await ask(
+      socket,
+      tabCommand('e1', 'Runtime.evaluate', { expression: 'x' }),
+    );
+    expect(echoed.error).toBeUndefined();
+    expect(JSON.stringify(echoed)).not.toContain(VALUE);
+  });
+});

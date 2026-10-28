@@ -581,6 +581,7 @@ describe('run status after a worker restart', () => {
       tabId: 1,
       attached: true,
       needsRegistration: true,
+      armed: false,
     });
     expect((await screenshot(socket, 's1')).error).toBe(REGISTRATION_REFUSED);
     // Values can be registered again while it is set.

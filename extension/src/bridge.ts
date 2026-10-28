@@ -106,9 +106,10 @@ export type BridgeMessage =
   /**
    * Watches the run's tab for a form submission while the panel is in
    * Review (see armSubmitWatch); `getRunStatus` reports it as `submitted`.
-   * Idempotent. Answers `{ ok: true }` or a fixed refusal.
+   * Idempotent. With `reset`, first forgets what the watch saw (keeping its
+   * attach). Answers `{ ok: true }` or a fixed refusal.
    */
-  | { type: 'armSubmitWatch'; runId: string }
+  | { type: 'armSubmitWatch'; runId: string; reset?: boolean }
   /** Stops the watch and forgets what it saw (see disarmSubmitWatch). */
   | { type: 'disarmSubmitWatch'; runId: string };
 
@@ -175,6 +176,12 @@ export interface RunStatus {
    * text. A "Next" in a multi-step form looks the same.
    */
   submitted?: { at: number };
+  /**
+   * True while the submit watch is armed and the tab is held for it (the
+   * agent's attach or the watch's own). False once a detach, a failed agent
+   * attach or a token refresh lost it, so the panel knows to arm again.
+   */
+  armed?: boolean;
 }
 
 export type BridgeResponse =
@@ -265,6 +272,12 @@ interface Run extends RunConfig {
   submitWatch?: SubmitWatch;
   /** Bumped by every disarm, so an arm queued before it does not land. */
   watchGeneration: number;
+  /**
+   * The arm attach in flight and the watch generation it started in, so
+   * concurrent arms (the panel re-arms on every poll) share one queued
+   * attach step instead of each queueing their own.
+   */
+  armInFlight?: { generation: number; done: Promise<void> };
   /**
    * This run's attach chain (see queuedAttach): created in begin, so a run
    * never inherits a stuck chain from an earlier one.
@@ -3779,11 +3792,21 @@ type WatchRefusal =
  * so `{ ok: true }` always means the tab is watched.
  *
  * Idempotent: arming again keeps what the watch saw, and re-attaches if
- * the attach was lost (a debugger detach disarms the watch). A token
- * refresh is an endRun plus begin: the watch is lost with the old run and
- * the panel arms it again. Never throws, never logs.
+ * the attach was lost (a debugger detach disarms the watch; the status's
+ * `armed` then reads false). Arms that arrive while an arm attach of the
+ * same watch generation is in flight wait for it rather than queueing
+ * another attach step, so a panel re-arming on every poll cannot grow the
+ * attach queue behind a hung attach. A token refresh is an endRun plus
+ * begin: the watch is lost with the old run and the panel arms it again.
+ *
+ * With `reset`, the seen submission and any pending request are forgotten
+ * first (before the held check: forgetting is always safe), with no CDP
+ * call and the attach kept; then it arms as above. Never throws, never logs.
  */
-async function armSubmitWatch(runId: unknown): Promise<BridgeResponse> {
+async function armSubmitWatch(
+  runId: unknown,
+  reset = false,
+): Promise<BridgeResponse> {
   const refuse = (error: WatchRefusal): BridgeResponse => ({
     ok: false,
     error,
@@ -3791,13 +3814,31 @@ async function armSubmitWatch(runId: unknown): Promise<BridgeResponse> {
   const current = run;
   if (!current || current.stopped) return refuse('no active run');
   if (runId !== current.runId) return refuse('wrong run');
+  if (reset && current.submitWatch) {
+    current.submitWatch.pending = undefined;
+    current.submitWatch.submitted = undefined;
+  }
   if (current.blocked) return refuse('run is held');
   if (current.attached || current.reviewAttached) {
     current.submitWatch ??= {};
     return { ok: true };
   }
+  const generation = current.watchGeneration;
+  let flight = current.armInFlight;
+  if (flight === undefined || flight.generation !== generation) {
+    const done = attachForReview(current, current.scopeEpoch, generation);
+    const started = { generation, done };
+    flight = started;
+    current.armInFlight = started;
+    // Cleared once it settles (either way), unless a newer arm replaced it.
+    void done
+      .catch(() => {})
+      .finally(() => {
+        if (current.armInFlight === started) current.armInFlight = undefined;
+      });
+  }
   try {
-    await attachForReview(current, current.scopeEpoch, current.watchGeneration);
+    await flight.done;
   } catch {
     if (run !== current || current.stopped) return refuse('no active run');
     if (current.blocked) return refuse('run is held');
@@ -3946,6 +3987,9 @@ function getRunStatus(): RunStatus {
     attached: current.attached,
     needsRegistration: current.needsRegistration,
     exp: current.exp,
+    armed:
+      current.submitWatch !== undefined &&
+      (current.attached || current.reviewAttached),
   };
   if (current.jev) {
     status.jevFailures = current.jev.failures();
@@ -4001,7 +4045,9 @@ export async function handleMessage(message: unknown): Promise<BridgeResponse> {
   if (message.type === 'showUnfilledField') {
     return showUnfilledField(message.runId);
   }
-  if (message.type === 'armSubmitWatch') return armSubmitWatch(message.runId);
+  if (message.type === 'armSubmitWatch') {
+    return armSubmitWatch(message.runId, message.reset === true);
+  }
   if (message.type === 'disarmSubmitWatch') {
     return disarmSubmitWatch(message.runId);
   }

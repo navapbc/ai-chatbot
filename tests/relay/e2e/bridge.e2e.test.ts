@@ -2595,6 +2595,7 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       attached?: boolean;
       pendingOrigin?: string;
       submitted?: { at: number };
+      armed?: boolean;
     };
     const watchStatus = () =>
       bridgeMessage(browser.sw, {
@@ -2654,6 +2655,24 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
         expect(JSON.stringify(seen)).not.toContain('/submitted');
         expect(JSON.stringify(seen)).not.toContain('Done');
         expect(seen.attached).toBe(false);
+        expect(seen.armed).toBe(true);
+        // A reset forgets it and keeps the attach.
+        expect(
+          await bridgeMessage(browser.sw, {
+            type: 'armSubmitWatch',
+            runId,
+            reset: true,
+          }),
+        ).toEqual({ ok: true });
+        expect(await watchStatus()).toMatchObject({ armed: true });
+        expect((await watchStatus()).submitted).toBeUndefined();
+        expect(await extensionAttached(tabId)).toBe(true);
+        await page.goto(fixtures.formUrl);
+        await page.evaluate(() =>
+          (document.getElementById('post') as HTMLFormElement).requestSubmit(),
+        );
+        await page.waitForURL(`${fixtures.origin}/submitted`);
+        await becomesSubmitted();
         // Disarm clears it and lets go of the watch's attach.
         expect(await disarm(runId)).toEqual({ ok: true });
         expect((await watchStatus()).submitted).toBeUndefined();
@@ -2881,6 +2900,7 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       attached: true,
       needsRegistration: false,
       exp: expect.any(Number),
+      armed: false,
     });
     expect(JSON.stringify(status)).not.toContain(relay.url);
     expect(

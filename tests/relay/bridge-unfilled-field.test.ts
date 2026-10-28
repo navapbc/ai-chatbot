@@ -157,7 +157,7 @@ const sendCommand = vi.fn(
         }
         return { result: { type: 'undefined' } };
       }
-      case 'DOM.describeNode':
+      case 'DOM.describeNode': {
         if (params.objectId === CANDIDATE) {
           return {
             node: {
@@ -192,6 +192,7 @@ const sendCommand = vi.fn(
           };
         }
         return {};
+      }
       case 'DOM.getFrameOwner':
         return params.frameId === 'S' ? { backendNodeId: 50 } : {};
       case 'DOM.resolveNode':
@@ -891,5 +892,27 @@ describe("showUnfilledField under the submit watch's attach (Review)", () => {
     expect(await disarm()).toEqual({ ok: true });
     await vi.advanceTimersByTimeAsync(7_000);
     expect(sentTo('Overlay.hideHighlight')).toHaveLength(0);
+  });
+});
+
+describe('showUnfilledField when the watch is disarmed under it', () => {
+  it('fails closed with not attached and draws no highlight', async () => {
+    await startedRun();
+    expect(
+      await bridge.handleMessage({ type: 'armSubmitWatch', runId: 'run-1' }),
+    ).toEqual({ ok: true });
+    const gate = deferred();
+    const axStarted = deferred<void>();
+    fake.axGate = gate.promise;
+    fake.axStarted = () => axStarted.resolve();
+    const scanning = show();
+    await axStarted.promise;
+    expect(
+      await bridge.handleMessage({ type: 'disarmSubmitWatch', runId: 'run-1' }),
+    ).toEqual({ ok: true });
+    gate.resolve(undefined);
+    expect(await scanning).toEqual({ ok: false, error: 'not attached' });
+    expect(sentTo('Overlay.highlightNode')).toHaveLength(0);
+    expect(focusCalls()).toHaveLength(0);
   });
 });
