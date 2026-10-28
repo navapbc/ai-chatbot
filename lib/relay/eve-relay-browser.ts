@@ -151,12 +151,13 @@ function withSessionQueue<T>(key: string, fn: () => Promise<T>): Promise<T> {
  *   socket closed under a pending command.
  * - `CDP error (<Domain.method>): <message>` where the whole message is a
  *   relay or extension transport error: `not attached` (extension,
- *   bridge.ts), `tab or extension disconnected` and `extension restarted`
- *   (relay/hub.ts).
+ *   bridge.ts), `tab or extension disconnected`, `extension restarted` and
+ *   `extension did not answer` (relay/hub.ts; the agent attached before the
+ *   extension registered, so the first command timed out).
  * - `ECONNRESET` / `EPIPE` leading the text (socket-level errors).
  */
 const CONNECTION_LOST =
-  /^(?:CDP response channel closed$|CDP error \([\w.]+\): (?:not attached|tab or extension disconnected|extension restarted)$|(?:ECONNRESET|EPIPE)\b)/;
+  /^(?:CDP response channel closed$|CDP error \([\w.]+\): (?:not attached|tab or extension disconnected|extension restarted|extension did not answer)$|(?:ECONNRESET|EPIPE)\b)/;
 const ELEMENT_REF = /@e\d+/;
 const CLOSE_TIMEOUT_MS = 5_000;
 export const CONNECTION_RESTORED =

@@ -464,6 +464,54 @@ describe('recovery after an extension restart', () => {
     ]);
   });
 
+  const NO_ANSWER = 'CDP error (Target.getTargets): extension did not answer';
+
+  it('retries a first snapshot the unregistered extension never answered', async () => {
+    let first = true;
+    const { run, ctx, base, ran } = await load((command) => {
+      if (command[0] === 'close') return ok();
+      if (first) {
+        first = false;
+        return fail(NO_ANSWER);
+      }
+      return ok('fresh snapshot');
+    });
+    const result = await run(ctx, ['snapshot', '-i']);
+    expect(result).toMatchObject({ success: true, data: 'fresh snapshot' });
+    expect(ran().map((c) => c.session)).toEqual([base, `${base}-r1`]);
+  });
+
+  it('does not replay a click the unregistered extension never answered', async () => {
+    const { run, ctx, ran } = await load(() => fail(NO_ANSWER));
+    const result = await run(ctx, ['click', '@e3']);
+    expect(result).toEqual({
+      success: false,
+      error: RESTORED,
+      liveViewUrl: null,
+    });
+    expect(ran()).toHaveLength(1);
+    // Refs are void until a new snapshot succeeds.
+    expect((await run(ctx, ['click', '@e4'])).error).toBe(RESTORED);
+    expect(ran()).toHaveLength(1);
+  });
+
+  it('returns a second consecutive no-answer failure without retrying again', async () => {
+    const { run, ctx, ran } = await load((command) =>
+      command[0] === 'close' ? ok() : fail(NO_ANSWER),
+    );
+    const result = await run(ctx, ['snapshot', '-i']);
+    expect(result).toMatchObject({ success: false, error: NO_ANSWER });
+    expect(ran()).toHaveLength(2);
+  });
+
+  it('does not retry the phrase when it is not the whole transport error', async () => {
+    const { run, ctx, ran } = await load(() =>
+      fail('page said: extension did not answer'),
+    );
+    await run(ctx, ['snapshot', '-i']);
+    expect(ran()).toHaveLength(1);
+  });
+
   it('retries only once', async () => {
     const { run, ctx, ran } = await load((command) =>
       command[0] === 'close' ? ok() : fail(CLOSED),
