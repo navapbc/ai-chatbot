@@ -6,7 +6,7 @@ import {
   TabGoneError,
   TabMovedError,
 } from '../../extension/panel/lib/copy';
-import { startRun } from '../../extension/panel/lib/run-starter';
+import { startingRunId, startRun } from '../../extension/panel/lib/run-starter';
 import type { StartRequest } from '../../extension/panel/lib/start-request';
 import {
   type WorkerApi,
@@ -555,6 +555,119 @@ describe('startRun: after the run exists', () => {
     expect(!result.ok && (result.error as WorkerError).code).toBe(
       'worker_error',
     );
+  });
+});
+
+describe('startRun: the recent is recorded before the request', () => {
+  const recentAt = () => store.recentRuns as Record<string, unknown>[];
+
+  it('exists, with no end reason, before the POST resolves', async () => {
+    const { deps: d } = deps();
+    let seen: unknown;
+    let starting: string | undefined;
+    const fetchFn = d.fetch;
+    const spy = vi.fn(
+      async (url: string, init?: RequestInit): Promise<Response> => {
+        seen = JSON.parse(JSON.stringify(store.recentRuns ?? null));
+        starting = startingRunId();
+        return fetchFn(url, init);
+      },
+    );
+    const result = await startRun(
+      { ...d, fetch: spy as unknown as typeof fetch },
+      args(),
+    );
+    expect(result.ok).toBe(true);
+    expect(seen).toEqual([
+      { runId: RUN_ID, siteName: 'Example Benefits', startedAt: NOW },
+    ]);
+    // The sweep's exclusion: set while starting, cleared after.
+    expect(starting).toBe(RUN_ID);
+    expect(startingRunId()).toBeUndefined();
+  });
+
+  it('a success leaves exactly one recent, unended', async () => {
+    const { deps: d } = deps();
+    await startRun(d, args());
+    expect(recentAt()).toEqual([
+      { runId: RUN_ID, siteName: 'Example Benefits', startedAt: NOW },
+    ]);
+  });
+
+  it('no recent when the tab check fails (no run id yet)', async () => {
+    await startRun(deps({ tab: undefined }).deps, args());
+    expect(store.recentRuns).toBeUndefined();
+  });
+
+  it('a failure after the run exists stops it and marks the recent start-failed', async () => {
+    const worker = makeWorker({
+      registrationComplete: vi.fn(async () => {
+        throw new WorkerError('wrong_run');
+      }),
+    });
+    const { deps: d } = deps({ worker });
+    const result = await startRun(d, args());
+    expect(result.ok).toBe(false);
+    expect(d.api.stopRun).toHaveBeenCalledWith(RUN_ID);
+    expect(worker.stopRun).toHaveBeenCalledWith(RUN_ID);
+    expect(recentAt()).toEqual([
+      {
+        runId: RUN_ID,
+        siteName: 'Example Benefits',
+        startedAt: NOW,
+        endedReason: 'start-failed',
+      },
+    ]);
+    expect(startingRunId()).toBeUndefined();
+  });
+
+  it('a 4xx refusal is start-failed even when the stop 404s (no row was made)', async () => {
+    const api = makeApi({
+      stopRun: vi.fn(async () => {
+        throw new AppApiError('not_found', 404);
+      }),
+    });
+    const { deps: d } = deps({ api, plan: { kind: 'status', status: 429 } });
+    await startRun(d, args());
+    expect(recentAt()[0].endedReason).toBe('start-failed');
+  });
+
+  it('a timeout whose stop 404s leaves the recent unended for the sweep', async () => {
+    vi.useFakeTimers();
+    const api = makeApi({
+      stopRun: vi.fn(async () => {
+        throw new AppApiError('not_found', 404);
+      }),
+    });
+    const { deps: d } = deps({ api, plan: { kind: 'hang' } });
+    const pending = startRun(d, args());
+    await vi.advanceTimersByTimeAsync(15_000);
+    const result = await pending;
+    expect(!result.ok && (result.error as AppApiError).code).toBe('network');
+    // The row may still be created after the 404: the sweep must see it.
+    expect(recentAt()).toEqual([
+      { runId: RUN_ID, siteName: 'Example Benefits', startedAt: NOW },
+    ]);
+  });
+
+  it('a 5xx whose stop fails leaves the recent unended for the sweep', async () => {
+    const api = makeApi({
+      stopRun: vi.fn(async () => {
+        throw new AppApiError('network', 0);
+      }),
+    });
+    const { deps: d } = deps({ api, plan: { kind: 'status', status: 502 } });
+    await startRun(d, args());
+    expect(recentAt()[0].endedReason).toBeUndefined();
+  });
+
+  it('a timeout whose stop succeeds marks the recent start-failed', async () => {
+    vi.useFakeTimers();
+    const { deps: d } = deps({ plan: { kind: 'hang' } });
+    const pending = startRun(d, args());
+    await vi.advanceTimersByTimeAsync(15_000);
+    await pending;
+    expect(recentAt()[0].endedReason).toBe('start-failed');
   });
 });
 

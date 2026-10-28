@@ -34,7 +34,6 @@ const recordId = PARTICIPANTS[0].record_id;
 
 type Call = (origin?: string) => Promise<Response>;
 const gets: [string, Call][] = [
-  ['participants search', (o) => list.GET(get('/api/participants?q=a', o))],
   [
     'participants detail',
     (o) =>
@@ -45,6 +44,17 @@ const gets: [string, Call][] = [
   ['relay config', (o) => config.GET(get('/api/relay/config', o))],
 ];
 const posts: [string, Call][] = [
+  [
+    'participants search',
+    (o) =>
+      list.POST(
+        new Request('http://localhost/api/participants', {
+          method: 'POST',
+          headers: headers(o),
+          body: JSON.stringify({ q: 'a' }),
+        }),
+      ),
+  ],
   ['relay token', (o) => token.POST(post('/api/relay/token', o))],
   [
     'classify-field',

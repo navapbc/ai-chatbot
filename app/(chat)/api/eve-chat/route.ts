@@ -608,6 +608,28 @@ export async function POST(request: Request) {
         });
         return new ChatSDKError('offline:chat').toResponse();
       }
+      // Relay first turn only, checked once, right after the row exists: a
+      // panel that timed out or closed while the (slow) session create ran has
+      // already tried its Stop, which found no row. Nobody is left to stop this
+      // run, so end it here and cancel the turn Eve just accepted. This is not
+      // the read-loop disconnect rule (an open run keeps reading after the
+      // client goes); the run never opened. Next 16 propagates a client abort
+      // to `request.signal` unverified, so the panel's orphan sweep is the
+      // backstop. The row is ours (create just succeeded), so another user's or
+      // an already-ended row is never touched.
+      if (relayStart && request.signal.aborted) {
+        try {
+          await store.end(userId, chatId);
+        } catch {
+          console.error('[eve-chat] abort end failed');
+        }
+        try {
+          await cancelEveTurn(sessionId);
+        } catch {
+          console.error('[relay-stop] cancel failed');
+        }
+        return new Response(null, { status: 499 });
+      }
     }
   } catch (err) {
     // Eve server unreachable or errored on session create/continue, or the run

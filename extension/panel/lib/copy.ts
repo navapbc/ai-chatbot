@@ -315,6 +315,8 @@ export const HOME_COPY = {
   httpsOnly:
     'The agent works on https pages only. Open the form page in this tab first.',
   cannotOpen: 'Could not open that site. Check the address and try again.',
+  /** After a recent's site and time, for any end (a swept run included). */
+  ended: ' (ended)',
 } as const;
 
 /**
@@ -339,8 +341,4 @@ export const ALLOW_SITE_COPY = {
   allow: 'Allow this site for this run',
   allowing: 'Allowing...',
   stop: 'Stop the run',
-  allowed: (time: string) =>
-    `Allowed. While the tab stays on that site this run cannot be extended and ends at ${time}.`,
-  allowedEstimated:
-    'Allowed. While the tab stays on that site this run cannot be extended and may end soon.',
 } as const;

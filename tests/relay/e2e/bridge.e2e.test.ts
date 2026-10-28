@@ -21,6 +21,7 @@ import {
   startRelay,
 } from '../helpers/harness';
 import { FIELD_KIND, TYPE_INTO } from '../../../extension/src/typing-scripts';
+import { mintRelayToken } from '../../../lib/relay/token';
 
 // End-to-end: agent-browser -> relay -> extension -> the caseworker's tab.
 // Run alone with `pnpm extension:build && pnpm test:relay e2e`.
@@ -2225,6 +2226,111 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     }
   });
 
+  it('after a same-run refresh typeSensitive attaches for itself, never for the agent', async () => {
+    const tokens = mintRunTokens(relay.secret, fixtures.origin);
+    const start = async (token: string) => {
+      const before = relay.logs.length;
+      expect(
+        await bridgeMessage(browser.sw, {
+          type: 'startRun',
+          relayUrl: relay.url,
+          token,
+          tabId,
+          allowedFrameOrigins: [fixtures.frameOrigin],
+        }),
+      ).toEqual({ ok: true });
+      await until(() =>
+        relay.logs
+          .slice(before)
+          .some((l) => l.event === 'registered' && l.runId === tokens.runId),
+      );
+    };
+    await start(tokens.extension);
+    const cdp = cdpUrl(relay, tokens.agent);
+    expect(
+      (await agentBrowser(['snapshot', '-i'], cdp, 'refresh-typing')).success,
+    ).toBe(true);
+    // One agent per run at the hub: the raw client below takes its place.
+    await closeAgentSessions();
+    await until(() =>
+      relay.logs.some(
+        (l) => l.event === 'agent-detached' && l.runId === tokens.runId,
+      ),
+    );
+    // The token refresh: same run id, the run restarts detached.
+    await start(
+      mintRelayToken(
+        {
+          runId: tokens.runId,
+          role: 'extension',
+          origin: fixtures.origin,
+          sub: 'e2e-user',
+        },
+        relay.secret,
+      ),
+    );
+    expect(await extensionAttached(tabId)).toBe(false);
+    await page.evaluate(() => {
+      document.body.insertAdjacentHTML(
+        'beforeend',
+        '<div id="refresh-typing"><label for="r17">Social Security Number' +
+          '</label><input id="r17" name="field_17"></div>',
+      );
+    });
+    const value = 'Quill-7731-Zebra';
+    const agent = await rawAgent(cdp);
+    try {
+      await page.focus('#r17');
+      expect(
+        await bridgeMessage(browser.sw, {
+          type: 'typeSensitive',
+          runId: tokens.runId,
+          value,
+        }),
+      ).toEqual({ ok: true });
+      expect(await page.inputValue('#r17')).toBe(value);
+      // Let go again, and the agent-facing flag never moved.
+      expect(await extensionAttached(tabId)).toBe(false);
+      expect(
+        await bridgeMessage(browser.sw, { type: 'getRunStatus' }),
+      ).toMatchObject({ active: true, runId: tokens.runId, attached: false });
+      const refused = await agent.call(
+        'Runtime.evaluate',
+        { expression: '1' },
+        `tab-${tabId}`,
+      );
+      expect(refused.error?.message).toContain('not attached');
+      // The extension's own detach starts no detach grace: the run is still
+      // there after it would have ended.
+      await new Promise((r) => setTimeout(r, 5_500));
+      expect(
+        await bridgeMessage(browser.sw, { type: 'getRunStatus' }),
+      ).toMatchObject({ active: true, runId: tokens.runId });
+      // The agent attaches later, as usual, and sees no trace of the value.
+      const sessionId = await agent.attach();
+      const echoed = await agent.call(
+        'Runtime.evaluate',
+        {
+          expression: `document.getElementById('r17').value`,
+          returnByValue: true,
+        },
+        sessionId,
+      );
+      expect(echoed.error).toBeUndefined();
+      expect(JSON.stringify(echoed)).not.toContain(value);
+      expect(
+        await bridgeMessage(browser.sw, { type: 'getRunStatus' }),
+      ).toMatchObject({ attached: true });
+    } finally {
+      await agent.close();
+      await page.evaluate(() =>
+        document.getElementById('refresh-typing')?.remove(),
+      );
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await closeAgentSessions();
+    }
+  });
+
   it('stopRun closes the agent at once and detaches', async () => {
     const { cdp } = await startRun();
     expect((await agentBrowser(['snapshot', '-i'], cdp, 'stop')).success).toBe(
@@ -2283,6 +2389,7 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     const status = await bridgeMessage(browser.sw, { type: 'getRunStatus' });
     // Exactly these keys: no token, no relay URL (this build has no Jev).
     // The tab id lets a reopened panel refresh the run's token.
+    // `exp` is the token's own expiry in Unix seconds, for the same reason.
     expect(status).toEqual({
       ok: true,
       active: true,
@@ -2291,6 +2398,7 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       tabId: expect.any(Number),
       attached: true,
       needsRegistration: false,
+      exp: expect.any(Number),
     });
     expect(JSON.stringify(status)).not.toContain(relay.url);
     expect(

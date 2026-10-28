@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mintRelayToken } from '../../../lib/relay/token';
 import { extractTokens } from '../../../scripts/extension-build-config';
 import {
@@ -37,6 +37,12 @@ import {
 // agent-browser through the relay. Fill it in goes to the real worker; the
 // secret must appear nowhere the fake app, the console, storage, the panel or
 // any relay frame can show it, including after a same-run token refresh.
+//
+// Reliability (plan 4d): one scenario drives the same way (panel as a tab,
+// real worker, real relay, real page, fake app) through a panel closed during
+// a hung Starting (the next open stops its run once), typing after a token
+// refresh with the agent silent, an allowed extra origin surviving a refresh,
+// and a later open that must not stop the run the worker holds.
 
 const ROOT = path.resolve(__dirname, '../../..');
 const HEADED = process.env.RELAY_E2E_HEADED === '1';
@@ -70,6 +76,11 @@ const answerBodies: unknown[] = [];
 /** Every request the fake app saw: method, URL, headers and body text. */
 const appRequests: string[] = [];
 const answerOrigins: (string | undefined)[] = [];
+/**
+ * When set, POST /api/eve-chat creates the run row and then never answers
+ * (a first turn that hangs while the panel is on Starting).
+ */
+let eveChatHang = false;
 /** When set, the fake app answers POST /stop with a 500 (row still ends). */
 let stopFails = false;
 /** The refusal reason the next answer turn gets as a 400, or null for 200. */
@@ -127,6 +138,10 @@ beforeAll(async () => {
       appCalls.push('POST /api/eve-chat');
       eveChatOrigins.push(req.headers.origin);
       eveChatBodies.push(parsed);
+      if (eveChatHang) {
+        runs.set((eveChatBodies.at(-1) as { id: string }).id, { ended: false });
+        return;
+      }
       if (eveChatStatus !== 200) {
         res.writeHead(eveChatStatus, { 'content-type': 'application/json' });
         res.end('{"code":"rate_limit:chat","message":"limit"}');
@@ -227,8 +242,8 @@ beforeAll(async () => {
       );
       return;
     }
-    if (req.url?.startsWith('/api/participants?q=')) {
-      const q = new URL(req.url, 'http://x').searchParams.get('q');
+    if (req.method === 'POST' && req.url === '/api/participants') {
+      const q = (JSON.parse(raw || '{}') as { q?: string }).q ?? null;
       const body = (name: string) =>
         JSON.stringify({
           participants: [{ recordId: 'rec-1', name, county: 'Kern' }],
@@ -283,6 +298,15 @@ afterAll(async () => {
   if (out) rmSync(out, { recursive: true, force: true });
 });
 
+// Every panel open sweeps unended recents older than 90 s (orphan-sweep.ts).
+// Runs earlier tests left unended would be stopped by a later test's panel,
+// adding stop calls to its exact `appCalls` and, for a run the fake app has
+// no row for, a 404 console error. Each test starts with no recents.
+beforeEach(async () => {
+  const sw = browser.context.serviceWorkers()[0] ?? browser.sw;
+  await sw.evaluate(() => chrome.storage.local.remove('recentRuns'));
+});
+
 describe('the panel shell', () => {
   it('shows signed out, then Home after Try again', async () => {
     const page = await browser.context.newPage();
@@ -320,6 +344,11 @@ describe('the panel shell', () => {
     expect(expected).not.toBe('rgba(0, 0, 0, 0)');
     expect(actual).toBe(expected);
 
+    // The seeded recent has no end reason and the worker holds nothing, so
+    // the open-time sweep stops it: give the fake app its row (else the stop
+    // is a 404, which Chromium logs as a console error).
+    const seededId = '00000000-0000-4000-8000-000000000001';
+    runs.set(seededId, { ended: false });
     await page.evaluate(() =>
       chrome.storage.local.set({
         recentRuns: [
@@ -344,6 +373,20 @@ describe('the panel shell', () => {
     await page.getByText('Seeded Site, 5 minutes ago').waitFor();
     expect(await page.getByText('Planted Site').count()).toBe(0);
     expect(configCalls).toBe(2);
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          async () =>
+            (
+              (await chrome.storage.local.get('recentRuns')).recentRuns as {
+                endedReason?: string;
+              }[]
+            )?.[0]?.endedReason,
+        ),
+      )
+      .toBe('swept');
+    expect(appCalls).toContain(`POST /api/relay/runs/${seededId}/stop`);
+    expect(runs.get(seededId)?.ended).toBe(true);
 
     // No console or CSP error beyond that 401.
     expect(errors).toEqual([]);
@@ -372,6 +415,17 @@ describe('the panel shell', () => {
     expect(await page.getByText('Stale Al').count()).toBe(0);
     expect(await page.locator('main b').count()).toBe(0);
     await page.getByText('1 result').waitFor();
+    // The term rode a POST body: no request URL the app saw contains it.
+    const searches = appRequests
+      .map((r) => JSON.parse(r) as [string, string, unknown, string])
+      .filter(([, url]) => url.startsWith('/api/participants'));
+    expect(searches.length).toBeGreaterThan(0);
+    for (const [method, url, , body] of searches) {
+      expect(method).toBe('POST');
+      expect(url).toBe('/api/participants');
+      expect(url).not.toMatch(/al/i);
+    }
+    expect(searches.some(([, , , body]) => body.includes('alice'))).toBe(true);
 
     await page.getByRole('button', { name: /Alice/ }).click();
     await page.getByRole('heading', { name: 'Ready' }).waitFor();
@@ -783,7 +837,7 @@ describe('the panel shell', () => {
     }
   }, 40_000);
 
-  it('rebuilds Running when the panel reopens mid-run, without a second eve-chat', async () => {
+  it('rebuilds Running when the panel reopens mid-run, without a second eve-chat or a token refresh', async () => {
     const { site, page, runId } = await startOnRealTab();
     await page.close();
     const again = await browser.context.newPage();
@@ -794,19 +848,13 @@ describe('the panel shell', () => {
       expect(appCalls.filter((c) => c === 'POST /api/eve-chat')).toHaveLength(
         1,
       );
-      // The expiry is unknown after reopening, so the token is refreshed at
-      // once (a same-run-id startRun) and the notice goes away.
-      await expect
-        .poll(
-          () => appCalls.filter((c) => c === 'POST /api/relay/token').length,
-          { timeout: 10_000 },
-        )
-        .toBe(2);
-      await expect
-        .poll(() => again.getByText('This run may end soon.').count(), {
-          timeout: 10_000,
-        })
-        .toBe(0);
+      // The worker reports the token's real expiry, so reopening mid-run does
+      // not refresh the token (a same-run-id startRun) and shows no notice.
+      await again.waitForTimeout(5_000);
+      expect(appCalls.filter((c) => c === 'POST /api/relay/token').length).toBe(
+        1,
+      );
+      expect(await again.getByText('This run may end soon.').count()).toBe(0);
       const status = await runStatus(again);
       expect({ active: status.active, runId: status.runId }).toEqual({
         active: true,
@@ -1506,12 +1554,6 @@ describe('the panel shell', () => {
           { timeout: 5_000 },
         )
         .toEqual({ active: true, runId, held: null });
-      // The P4c2-e note, which outlives the card.
-      await page
-        .getByText(
-          /^Allowed\. While the tab stays on that site this run cannot be extended and ends at .+\.$/,
-        )
-        .waitFor();
       await expect.poll(() => heading.count(), { timeout: 5_000 }).toBe(0);
 
       // Past the hold: the run goes on at the new origin.
@@ -1524,7 +1566,6 @@ describe('the panel shell', () => {
       expect(after.pendingOrigin).toBeUndefined();
       expect(stoppedFor(runId, 'left-origin')).toBe(false);
       await page.getByRole('heading', { name: 'Running' }).waitFor();
-      await page.getByText(/^Allowed\. While the tab stays/).waitFor();
       for (const line of seen) expect(line).not.toMatch(/Zelda|frag-77|oopif/);
     } finally {
       await stopWorkerRun(page);
@@ -1686,6 +1727,236 @@ describe('the panel shell', () => {
       await site.close();
     }
   }, 90_000);
+
+  it('survives the reliability faults: an orphaned start is swept once, typing and an allowed origin survive a refresh, a held run is never swept', async () => {
+    const SECRET = 'Rv7-Papaya-Value-318';
+    const PENDING = [
+      {
+        requestId: 'q-ssn',
+        prompt: 'Social Security number',
+        display: 'select',
+        options: [
+          { id: 'provided', label: 'I entered it myself' },
+          { id: 'skip', label: 'Skip' },
+        ],
+        allowFreeform: false,
+      },
+    ];
+    const stopsSeen = (id: string) =>
+      appRequests
+        .map((r) => JSON.parse(r) as [string, string])
+        .filter(
+          ([method, url]) =>
+            method === 'POST' && url === `/api/relay/runs/${id}/stop`,
+        ).length;
+    /** Moves every stored recent back in time; `extra` are added as given. */
+    const ageRecents = (ms: number, extra: object[] = []) =>
+      (browser.context.serviceWorkers()[0] ?? browser.sw).evaluate(
+        async ([age, more]: [number, object[]]) => {
+          const list =
+            ((await chrome.storage.local.get('recentRuns')).recentRuns as {
+              startedAt: number;
+            }[]) ?? [];
+          await chrome.storage.local.set({
+            recentRuns: [
+              ...list.map((r) => ({ ...r, startedAt: Date.now() - age })),
+              ...more,
+            ],
+          });
+        },
+        [ms, extra] as [number, object[]],
+      );
+    const recentOf = (id: string) =>
+      (browser.context.serviceWorkers()[0] ?? browser.sw).evaluate(
+        async (runId: string) => {
+          const found = (
+            (await chrome.storage.local.get('recentRuns')).recentRuns as {
+              runId: string;
+              endedReason?: string;
+            }[]
+          ).find((r) => r.runId === runId);
+          return found ? (found.endedReason ?? 'unended') : 'none';
+        },
+        id,
+      );
+    const refresh = async (page: import('playwright').Page, runId: string) => {
+      const registrations = () =>
+        relay.logs.filter((l) => l.event === 'registered' && l.runId === runId)
+          .length;
+      const before = registrations();
+      const tabId = ((await runStatus(page)) as Status & { tabId: number })
+        .tabId;
+      const token = mintRelayToken(
+        { runId, role: 'extension', origin: fixtures.origin, sub: 'e2e-user' },
+        relay.secret,
+        { now: Math.floor(Date.now() / 1000) },
+      );
+      const reply = await page.evaluate(
+        ([relayUrl, t, tab, id]) =>
+          chrome.runtime
+            .sendMessage({ type: 'startRun', relayUrl, token: t, tabId: tab })
+            .then((r: unknown) =>
+              chrome.runtime
+                .sendMessage({
+                  type: 'registrationComplete',
+                  runId: id,
+                  count: 0,
+                })
+                .then(() => r),
+            ),
+        [relay.url, token, tabId, runId] as const,
+      );
+      expect(reply).toEqual({ ok: true });
+      await expect
+        .poll(registrations, { timeout: 10_000 })
+        .toBeGreaterThan(before);
+    };
+
+    // (4a) A panel closed on a hung Starting leaves a recent with no end.
+    const first = await readyOnRealTab();
+    eveChatBodies.length = 0;
+    eveChatHang = true;
+    let orphanId: string;
+    try {
+      await first.page.getByRole('button', { name: 'Start' }).click();
+      await expect.poll(() => eveChatBodies.length).toBe(1);
+      orphanId = (eveChatBodies[0] as { id: string }).id;
+      expect(runs.has(orphanId)).toBe(true);
+      expect(await recentOf(orphanId)).toBe('unended');
+      expect((await runStatus(first.page)).active).toBe(false);
+    } finally {
+      eveChatHang = false;
+      await first.page.close();
+      await first.site.close();
+    }
+    // Past the 90 s age gate (seeded, not waited out), with no stop yet.
+    await ageRecents(5 * 60_000);
+    expect(stopsSeen(orphanId)).toBe(0);
+
+    // The next open sweeps it: one stop, marked swept. Then a real run starts.
+    const { site, page, runId } = await startOnRealTab();
+    try {
+      // The sweep is fire and forget: wait for it rather than assume it ran.
+      await expect.poll(() => stopsSeen(orphanId)).toBe(1);
+      expect(runs.get(orphanId)?.ended).toBe(true);
+      await expect.poll(() => recentOf(orphanId)).toBe('swept');
+      expect(stopsSeen(runId)).toBe(0);
+
+      const row = runs.get(runId);
+      if (!row) throw new Error('no run row');
+      answerBodies.length = 0;
+      answerRefusal = null;
+
+      // (3) After a refresh, with the agent silent, Fill it in types.
+      await site.evaluate(() => {
+        document.body.insertAdjacentHTML(
+          'beforeend',
+          '<label for="rv-ssn">Social Security Number</label>' +
+            '<input id="rv-ssn" name="field_21">',
+        );
+      });
+      await refresh(page, runId);
+      row.pending = PENDING;
+      row.phase = 'needs_you';
+      const card = page.getByRole('region', { name: 'The agent needs you' });
+      await card.waitFor({ timeout: 10_000 });
+      await card.getByLabel('Value to fill in').fill(SECRET);
+      await site.focus('#rv-ssn');
+      await card.getByRole('button', { name: 'Fill it in' }).click();
+      await card.getByText('Filled in.').waitFor();
+      expect(await site.inputValue('#rv-ssn')).toBe(SECRET);
+      await card.getByRole('button', { name: 'Send' }).click();
+      await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(answerBodies).toEqual([
+        {
+          id: runId,
+          inputResponses: [{ requestId: 'q-ssn', optionId: 'provided' }],
+        },
+      ]);
+      row.phase = 'working';
+      row.pending = [];
+      await card.waitFor({ state: 'detached', timeout: 10_000 });
+      expect(await page.evaluate(() => document.body.innerHTML)).not.toContain(
+        SECRET,
+      );
+      expect(((await runStatus(page)) as Status).runId).toBe(runId);
+
+      // (2) The tab moves to another origin; Allow; then a refresh keeps it.
+      await page.getByText('6 fields so far').waitFor();
+      await leaveForFrameOrigin(site, page);
+      await page
+        .getByRole('button', { name: 'Allow this site for this run' })
+        .click();
+      await expect
+        .poll(
+          async () => ((await runStatus(page)) as HoldStatus).pendingOrigin,
+          { timeout: 5_000 },
+        )
+        .toBeUndefined();
+      await refresh(page, runId);
+      const status = (await runStatus(page)) as HoldStatus;
+      expect({
+        active: status.active,
+        runId: status.runId,
+        held: status.pendingOrigin ?? null,
+      }).toEqual({ active: true, runId, held: null });
+      const agentToken = mintRelayToken(
+        { runId, role: 'agent', origin: fixtures.origin, sub: 'e2e-user' },
+        relay.secret,
+        { now: Math.floor(Date.now() / 1000) },
+      );
+      await closeAgentSessions();
+      try {
+        const cdp = cdpUrl(relay, agentToken);
+        expect(
+          (await agentBrowser(['snapshot', '-i'], cdp, 'reliability')).success,
+        ).toBe(true);
+        expect(
+          (await agentBrowser(['get', 'title'], cdp, 'reliability')).success,
+        ).toBe(true);
+      } finally {
+        await closeAgentSessions();
+      }
+      expect((await runStatus(page)).active).toBe(true);
+      expect(stoppedFor(runId, 'left-origin')).toBe(false);
+
+      // (4b) A later open: the run the worker holds is never stopped, and an
+      // older orphan is. Both recents are past the age gate.
+      const lateId = '00000000-0000-4000-8000-0000000000c1';
+      runs.set(lateId, { ended: false });
+      await ageRecents(3 * 60_000, [
+        {
+          runId: lateId,
+          siteName: 'Orphan',
+          startedAt: Date.now() - 10 * 60_000,
+        },
+      ]);
+      const reopened = await browser.context.newPage();
+      try {
+        await reopened.goto(`chrome-extension://${EXTENSION_ID}/panel.html`);
+        await reopened.getByRole('heading', { name: 'Running' }).waitFor();
+        await expect
+          .poll(() => recentOf(lateId), { timeout: 10_000 })
+          .toBe('swept');
+        expect(stopsSeen(lateId)).toBe(1);
+        expect(stopsSeen(orphanId)).toBe(1);
+        expect(stopsSeen(runId)).toBe(0);
+        expect(runs.get(runId)?.ended).toBe(false);
+        expect(await recentOf(runId)).toBe('unended');
+        const held = await runStatus(reopened);
+        expect({ active: held.active, runId: held.runId }).toEqual({
+          active: true,
+          runId,
+        });
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 120_000);
 
   it('saves details for 8 hours, reuses them, expires them and clears them', async () => {
     const seen: string[] = [];

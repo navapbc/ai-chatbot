@@ -44,12 +44,14 @@ const caught = async (p: Promise<unknown>): Promise<AppApiError> => {
 afterEach(() => vi.useRealTimers());
 
 describe('request shape', () => {
-  it('searchParticipants GETs with an encoded query', async () => {
+  it('searchParticipants POSTs the term in the body, never the URL', async () => {
     const { api, calls } = setup(() => json({ participants: [] }));
     await api.searchParticipants('a b&c=d', undefined);
-    expect(calls[0].url).toBe(`${ORIGIN}/api/participants?q=a%20b%26c%3Dd`);
-    expect(calls[0].init.method ?? 'GET').toBe('GET');
-    expect(calls[0].init.body).toBeUndefined();
+    expect(calls[0].url).toBe(`${ORIGIN}/api/participants`);
+    expect(calls[0].init.method).toBe('POST');
+    expect(calls[0].init.credentials).toBe('include');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ q: 'a b&c=d' });
+    expect(headersOf(calls[0]).get('Content-Type')).toBe('application/json');
   });
 
   it('every request carries the fixed options and headers', async () => {

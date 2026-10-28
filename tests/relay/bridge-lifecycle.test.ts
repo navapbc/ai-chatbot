@@ -238,6 +238,101 @@ describe('startRun serialization', () => {
   });
 });
 
+describe('run status: exp and restarting', () => {
+  it('reports the token exp in Unix seconds and nothing secret', async () => {
+    const token = tokenFor('run-1', 1500);
+    const exp = JSON.parse(
+      Buffer.from(token.split('.')[0], 'base64url').toString(),
+    ).exp;
+    expect(await start(token)).toEqual({ ok: true });
+    const got = await status();
+    expect(got.exp).toBe(exp);
+    expect(JSON.stringify(got)).not.toContain('sig');
+  });
+
+  /** Holds the first storage.session.set after `arm()` until released. */
+  const gateSet = () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const session = (
+      (globalThis as unknown as { chrome: unknown }).chrome as {
+        storage: {
+          session: { set: (i: Record<string, unknown>) => Promise<void> };
+        };
+      }
+    ).storage.session;
+    const original = session.set;
+    let armed = false;
+    session.set = async (items) => {
+      if (armed && 'run' in items) {
+        armed = false;
+        await gate;
+      }
+      return original(items);
+    };
+    return {
+      arm: () => {
+        armed = true;
+      },
+      release,
+    };
+  };
+
+  it('is restarting from a same-run startRun until begin finishes', async () => {
+    await attachedRun('run-1');
+    const g = gateSet();
+    g.arm();
+    const second = start(tokenFor('run-1'));
+    await vi.waitFor(async () =>
+      expect(await status()).toEqual({
+        ok: true,
+        active: false,
+        restarting: true,
+        runId: 'run-1',
+      }),
+    );
+    g.release();
+    expect(await second).toEqual({ ok: true });
+    expect(await status()).toMatchObject({ active: true, runId: 'run-1' });
+    expect((await status()).restarting).toBeUndefined();
+  });
+
+  it('clears restarting when the same-run startRun throws', async () => {
+    await attachedRun('run-1');
+    const session = (
+      (globalThis as unknown as { chrome: unknown }).chrome as {
+        storage: {
+          session: { set: (i: Record<string, unknown>) => Promise<void> };
+        };
+      }
+    ).storage.session;
+    const original = session.set;
+    let calls = 0;
+    session.set = async (items) => {
+      calls += 1;
+      // The begun-run record (call 1) passes; the config write (call 2) fails.
+      if (calls === 2) throw new Error('storage down');
+      return original(items);
+    };
+    await expect(start(tokenFor('run-1'))).rejects.toThrow('storage down');
+    expect(await status()).toEqual({ ok: true, active: false });
+  });
+
+  it('a different run id is not restarting, so the old run reads as gone', async () => {
+    await attachedRun('run-1');
+    const g = gateSet();
+    g.arm();
+    const second = start(tokenFor('run-2'));
+    await vi.waitFor(async () =>
+      expect(await status()).toEqual({ ok: true, active: false }),
+    );
+    g.release();
+    await second;
+  });
+});
+
 describe('stopRun scoped to a run id', () => {
   const stop = (runId?: string) =>
     bridge.handleMessage(
@@ -478,6 +573,7 @@ describe('run status after a worker restart', () => {
     const socket = await resumed();
     const before = await status();
     expect(before).toEqual({
+      exp: expect.any(Number),
       ok: true,
       active: true,
       runId: 'run-1',

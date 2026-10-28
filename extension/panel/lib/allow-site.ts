@@ -178,26 +178,3 @@ export const createAllowSiteController = (
 };
 
 export type AllowSiteController = ReturnType<typeof createAllowSiteController>;
-
-const defaultClock = () =>
-  new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
-
-/** The expiry (Unix SECONDS) as hour:minute in the given format. */
-export const formatClock = (
-  expiresAt: number,
-  format: Intl.DateTimeFormat = defaultClock(),
-): string => format.format(new Date(expiresAt * 1000));
-
-/**
- * The P4c2-e note after an allow: a refresh is refused while the tab is on
- * an allowed extra origin, so the run ends at its current expiry. An
- * estimated or unusable expiry gives no time rather than an invented one.
- */
-export const allowedNote = (
-  expiresAt: number,
-  estimated: boolean,
-  format?: Intl.DateTimeFormat,
-): string =>
-  estimated || !Number.isFinite(expiresAt)
-    ? ALLOW_SITE_COPY.allowedEstimated
-    : ALLOW_SITE_COPY.allowed(formatClock(expiresAt, format));

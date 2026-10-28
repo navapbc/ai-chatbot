@@ -1,10 +1,14 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addRecent,
   formatAgo,
   loadRecents,
   markRecentEnded,
   type Recent,
+  type RecentEndedReason,
+  START_FAILED,
+  SWEPT,
+  visibleRecents,
 } from '../../extension/panel/lib/recents';
 
 const KEY = 'recentRuns';
@@ -147,8 +151,44 @@ describe('recents', () => {
 
   it('markRecentEnded ignores an invalid reason', async () => {
     await addRecent(rec(1), NOW);
-    await markRecentEnded(id(1), 'Not Valid!');
+    await markRecentEnded(id(1), 'Not Valid!' as RecentEndedReason);
     expect((await loadRecents(NOW))[0].endedReason).toBeUndefined();
+  });
+});
+
+describe('recents: start-failed and swept', () => {
+  it('stores both new reasons, keeping exactly the four keys', async () => {
+    await addRecent(rec(1), NOW);
+    await addRecent(rec(2), NOW);
+    await markRecentEnded(id(1), START_FAILED);
+    await markRecentEnded(id(2), SWEPT);
+    const list = await loadRecents(NOW);
+    expect(list.find((r) => r.runId === id(1))?.endedReason).toBe(
+      'start-failed',
+    );
+    expect(list.find((r) => r.runId === id(2))?.endedReason).toBe('swept');
+    for (const entry of store[KEY] as Record<string, unknown>[]) {
+      expect(Object.keys(entry).sort()).toEqual([
+        'endedReason',
+        'runId',
+        'siteName',
+        'startedAt',
+      ]);
+    }
+  });
+
+  it('Home hides start-failed and still lists swept, ended and live runs', () => {
+    const list = [
+      rec(1),
+      rec(2, { endedReason: 'start-failed' }),
+      rec(3, { endedReason: 'swept' }),
+      rec(4, { endedReason: 'user' }),
+    ];
+    expect(visibleRecents(list).map((r) => r.runId)).toEqual([
+      id(1),
+      id(3),
+      id(4),
+    ]);
   });
 });
 
@@ -191,6 +231,84 @@ describe('recents: read-modify-write is serialized', () => {
     const list = await loadRecents(NOW);
     expect(list.map((r) => r.runId).sort()).toEqual([id(1), id(2)]);
     expect(list.find((r) => r.runId === id(1))?.endedReason).toBe('stopped');
+  });
+
+  // Two panel windows: two module instances, so two separate chains. Only
+  // the Web Lock shared by every extension page keeps them from interleaving.
+  const twoWindows = async () => {
+    const path = '../../extension/panel/lib/recents';
+    vi.resetModules();
+    const a: typeof import('../../extension/panel/lib/recents') = await import(
+      path
+    );
+    vi.resetModules();
+    const b: typeof import('../../extension/panel/lib/recents') = await import(
+      path
+    );
+    return { a, b };
+  };
+  const interleave = async () => {
+    const { a, b } = await twoWindows();
+    await a.addRecent(rec(1), NOW);
+    slow();
+    // Window A's sweep marks run 1 while window B records a new start.
+    await Promise.all([
+      a.markRecentEnded(id(1), 'swept'),
+      b.addRecent(rec(2), NOW),
+    ]);
+    return loadRecents(NOW);
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('without a shared lock, two windows lose an update (the test can fail)', async () => {
+    vi.stubGlobal('navigator', {});
+    const list = await interleave();
+    const ids = list.map((r) => r.runId).sort();
+    const swept = list.find((r) => r.runId === id(1))?.endedReason === 'swept';
+    expect(ids.length === 2 && swept).toBe(false);
+  });
+
+  it('with the shared Web Lock, two windows both land', async () => {
+    expect(typeof navigator.locks?.request).toBe('function');
+    const list = await interleave();
+    expect(list.map((r) => r.runId).sort()).toEqual([id(1), id(2)]);
+    expect(list.find((r) => r.runId === id(1))?.endedReason).toBe('swept');
+  });
+
+  it("a window's cleaning write-back never drops another window's new recent", async () => {
+    const { a, b } = await twoWindows();
+    // A dirty list: one entry past 24 hours, so loadRecents writes back.
+    store[KEY] = [rec(1), rec(3, { startedAt: NOW - 25 * HOUR })];
+    const local = (
+      globalThis as unknown as {
+        chrome: { storage: { local: Record<string, unknown> } };
+      }
+    ).chrome.storage.local;
+    const get = local.get as (key: string) => Promise<unknown>;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let first = true;
+    local.get = async (key: string) => {
+      const value = await get(key);
+      if (first) {
+        // Window B's read: it sees the old list, then waits.
+        first = false;
+        await gate;
+      }
+      return value;
+    };
+    const loading = b.loadRecents(NOW);
+    // Window A records a start between B's read and B's write-back.
+    await a.addRecent(rec(2), NOW);
+    release();
+    await loading;
+    const ids = (await loadRecents(NOW)).map((r) => r.runId).sort();
+    expect(ids).toEqual([id(1), id(2)]);
   });
 
   it('a failed call does not block the next one', async () => {

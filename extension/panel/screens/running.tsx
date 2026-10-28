@@ -6,7 +6,7 @@ import type {
   RunSessionState,
   SessionRun,
 } from '../lib/run-session';
-import { allowedNote, showAllowSite } from '../lib/allow-site';
+import { showAllowSite } from '../lib/allow-site';
 import { createAnswerSender } from '../lib/answer-client';
 import { buildProgressView } from '../lib/progress-view';
 import { createControllerLifecycle } from '../lib/search-controller';
@@ -87,10 +87,6 @@ export const RunningScreen = ({
     () => allowSiteDeps ?? defaultAllowSiteDeps(),
     [allowSiteDeps],
   );
-  // Set once the caseworker allowed a site: the run can no longer be
-  // extended (a refresh is refused on an allowed origin), which stays true
-  // after the card itself goes away.
-  const [allowed, setAllowed] = useState(false);
   const [state, setState] = useState<RunSessionState | null>(null);
   const session = useRef<RunSession | null>(null);
   const startedAt = useRef(Date.now());
@@ -134,7 +130,8 @@ export const RunningScreen = ({
     onConfirmed(latest.current?.stopFailed === true);
   };
   const handleHome = () => onHome();
-  const handleAllowed = () => setAllowed(true);
+  // The card goes away on its own; a refresh keeps an allowed origin.
+  const handleAllowed = () => {};
 
   const stopping = state?.stopping === true;
   const questions =
@@ -186,11 +183,6 @@ export const RunningScreen = ({
             <p className="text-sm">
               We could not extend this run. It ends at its original time.
               {state.expiresAtEstimated ? null : ` ${endsInText(secondsLeft)}`}
-            </p>
-          ) : null}
-          {allowed && state ? (
-            <p className="text-sm">
-              {allowedNote(state.expiresAt, state.expiresAtEstimated === true)}
             </p>
           ) : null}
         </div>

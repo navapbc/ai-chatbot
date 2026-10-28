@@ -3,7 +3,12 @@ import { Button } from '@/components/ui/button';
 import type { RelaySite } from '../../../lib/relay/config';
 import { normalizeOrigin } from '../../../lib/relay/policy';
 import { HOME_COPY } from '../lib/copy';
-import { formatAgo, loadRecents, type Recent } from '../lib/recents';
+import {
+  formatAgo,
+  loadRecents,
+  type Recent,
+  visibleRecents,
+} from '../lib/recents';
 import type { Target } from '../lib/state';
 
 type Props = {
@@ -17,7 +22,7 @@ export const HomeScreen = ({ sites, onChoose }: Props) => {
 
   useEffect(() => {
     let current = true;
-    loadRecents().then((list) => current && setRecents(list));
+    loadRecents().then((list) => current && setRecents(visibleRecents(list)));
     return () => {
       current = false;
     };
@@ -101,7 +106,7 @@ export const HomeScreen = ({ sites, onChoose }: Props) => {
             {recents.map((r) => (
               <li key={r.runId}>
                 {r.siteName}, {formatAgo(now, r.startedAt)}
-                {r.endedReason ? ' (ended)' : ''}
+                {r.endedReason ? HOME_COPY.ended : ''}
               </li>
             ))}
           </ul>

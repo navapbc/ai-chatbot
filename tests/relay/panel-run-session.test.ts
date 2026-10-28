@@ -1022,6 +1022,63 @@ describe('run session: token refresh', () => {
   });
 });
 
+describe('run session: restarting worker', () => {
+  const restarting = (runId?: string): RunStatus => ({
+    ok: true,
+    active: false,
+    restarting: true,
+    ...(runId ? { runId } : {}),
+  });
+
+  it('an inactive restarting status for 10 s does not end the session', async () => {
+    const t = setup();
+    t.plan.status = async () => restarting(RUN_ID);
+    await tick(10_000);
+    expect(t.last()?.status).toBe('running');
+    expect(t.worker.stopRun).not.toHaveBeenCalled();
+    t.session.dispose();
+  });
+
+  it('a restarting status without a run id (a worker resume) also holds', async () => {
+    const t = setup();
+    t.plan.status = async () => restarting();
+    await tick(20_000);
+    expect(t.last()?.status).toBe('running');
+    t.session.dispose();
+  });
+
+  it('after 30 s of continuous restarting the 7 s rule applies and the run ends', async () => {
+    const t = setup();
+    t.plan.status = async () => restarting(RUN_ID);
+    await tick(30_000);
+    expect(t.last()?.status).toBe('running');
+    await tick(WORKER_GONE_AFTER_MS + 4000);
+    expect(t.last()).toMatchObject({
+      status: 'ended',
+      endedReason: 'worker-ended',
+    });
+    t.session.dispose();
+  });
+
+  it('restarting for another run id does not hold this run', async () => {
+    const t = setup();
+    t.plan.status = async () => restarting('other-run');
+    await tick(WORKER_GONE_AFTER_MS + 4000);
+    expect(t.last()?.status).toBe('ended');
+    t.session.dispose();
+  });
+
+  it('a plain inactive status after a restart still ends at 7 s', async () => {
+    const t = setup();
+    t.plan.status = async () => restarting(RUN_ID);
+    await tick(10_000);
+    t.plan.status = async () => inactive;
+    await tick(WORKER_GONE_AFTER_MS + 4000);
+    expect(t.last()?.status).toBe('ended');
+    t.session.dispose();
+  });
+});
+
 describe('run session: secondsLeft', () => {
   it('converts the SECONDS expiry against the millisecond clock', () => {
     const t = setup();
@@ -1385,6 +1442,19 @@ describe('run session: dispose', () => {
 });
 
 describe('rebuildRun', () => {
+  const rebuiltSetupFor = async (exp: number | undefined) => {
+    const rebuilt = await rebuildRun({
+      api: { getRunState: async () => liveRow() },
+      worker: {
+        getRunStatus: async () => ours(exp === undefined ? {} : { exp }),
+        stopRun: async () => {},
+      },
+      now: () => NOW,
+    });
+    if (!rebuilt) throw new Error('not rebuilt');
+    const t = setup(rebuilt.run);
+    return { t, rebuilt };
+  };
   const deps = (
     status: () => Promise<RunStatus>,
     row: () => Promise<RunState>,
@@ -1412,6 +1482,36 @@ describe('rebuildRun', () => {
       target: { tabId: 7, origin: ORIGIN, siteName: 'example.gov' },
     });
     expect(d.api.getRunState).toHaveBeenCalledWith(RUN_ID);
+  });
+
+  it('uses the worker-reported exp, not an estimate', async () => {
+    const exp = NOW / 1000 + 25 * 60;
+    const d = deps(
+      async () => ours({ exp }),
+      async () => liveRow(),
+    );
+    const rebuilt = await rebuildRun(d);
+    expect(rebuilt?.run).toEqual({ runId: RUN_ID, tabId: 7, expiresAt: exp });
+    expect(rebuilt?.run.expiresAtEstimated).toBeUndefined();
+  });
+
+  it('a panel opened with exp 25 minutes away does not refresh', async () => {
+    const exp = NOW / 1000 + 25 * 60;
+    const { t, rebuilt } = await rebuiltSetupFor(exp);
+    expect(rebuilt.run.expiresAtEstimated).toBeUndefined();
+    expect(t.last()?.expiresAtEstimated).toBeUndefined();
+    await tick(4000);
+    expect(t.worker.startRun).not.toHaveBeenCalled();
+    expect(t.api.getExtensionToken).not.toHaveBeenCalled();
+    t.session.dispose();
+  });
+
+  it('without exp the estimate and the first-poll refresh remain', async () => {
+    const { t, rebuilt } = await rebuiltSetupFor(undefined);
+    expect(rebuilt.run.expiresAtEstimated).toBe(true);
+    await tick(2000);
+    expect(t.api.getExtensionToken).toHaveBeenCalledTimes(1);
+    t.session.dispose();
   });
 
   it('an inactive worker rebuilds nothing and asks the server nothing', async () => {

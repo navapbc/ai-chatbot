@@ -31,6 +31,8 @@ Also refused: `get text|html|attr|styles|count`, `snapshot -s`, `scroll --select
 
 After a click that navigates, confirm it with `wait --load` then `get url`: `["wait", "--load", "networkidle"]` then `["get", "url"]`. A URL may show `[masked]` where it echoes a sensitive value; the path stays readable.
 
+If the tab leaves the site, the caseworker's panel holds the run while they decide (up to about two minutes) and commands are refused with "tab is outside the allowed origin". During that origin hold the `browser` tool waits and then tells you what to do: do not end your turn on the refusal. If the hold ends the run, you will be told.
+
 ## Verifying Values
 
 Verify a filled value from the next `snapshot`, never with `get value` or `eval`. Both are refused. Compare the field's value in the snapshot to what you typed. Sensitive fields show their value as `[masked]` once filled and empty when not filled; that is the whole check.

@@ -151,12 +151,13 @@ function withSessionQueue<T>(key: string, fn: () => Promise<T>): Promise<T> {
  *   socket closed under a pending command.
  * - `CDP error (<Domain.method>): <message>` where the whole message is a
  *   relay or extension transport error: `not attached` (extension,
- *   bridge.ts), `tab or extension disconnected` and `extension restarted`
- *   (relay/hub.ts).
+ *   bridge.ts), `tab or extension disconnected`, `extension restarted` and
+ *   `extension did not answer` (relay/hub.ts; the agent attached before the
+ *   extension registered, so the first command timed out).
  * - `ECONNRESET` / `EPIPE` leading the text (socket-level errors).
  */
 const CONNECTION_LOST =
-  /^(?:CDP response channel closed$|CDP error \([\w.]+\): (?:not attached|tab or extension disconnected|extension restarted)$|(?:ECONNRESET|EPIPE)\b)/;
+  /^(?:CDP response channel closed$|CDP error \([\w.]+\): (?:not attached|tab or extension disconnected|extension restarted|extension did not answer)$|(?:ECONNRESET|EPIPE)\b)/;
 const ELEMENT_REF = /@e\d+/;
 const CLOSE_TIMEOUT_MS = 5_000;
 export const CONNECTION_RESTORED =
@@ -173,6 +174,59 @@ const RETRY_SAFE: Readonly<Record<string, readonly string[] | null>> = {
   get: ['url', 'title'],
   tab: ['list'],
 };
+
+// --- waiting out an origin hold -------------------------------------------
+//
+// When the caseworker's tab leaves the run's origin, the extension holds the
+// run (60 s, restarted by a move to another origin, 120 s cap) and refuses
+// every command before sending it, until the tab returns, the caseworker
+// allows the origin, or the hold expires and ends the run (`left-origin`).
+// The tool waits that out rather than handing the agent a refusal it would
+// end its turn on. A refused command is not always unexecuted (the bridge
+// refuses a reply computed across a hold), so only a retry-safe command is
+// run again; anything else gets CONNECTION_RESTORED and is never replayed.
+
+/**
+ * The bridge's hold refusal (`OUT_OF_SCOPE` in extension/src/bridge.ts) as
+ * agent-browser reports it. Anchored like CONNECTION_LOST so page text cannot
+ * start a wait. `frame is outside the allowed origins` is a per-frame
+ * refusal, not a hold, and does not match.
+ */
+const HOLD_REFUSED =
+  /^CDP error \([\w.]+\): tab is outside the allowed origin$/;
+/**
+ * The poll: retry-safe, allowed by the command policy, carries no selector or
+ * text, and is refused by the bridge for as long as the hold lasts.
+ */
+export const HOLD_POLL_COMMAND: readonly string[] = ['get', 'url'];
+export const HOLD_POLL_INTERVAL_MS = 3_000;
+/**
+ * Just above the extension's hold cap (2 x 60 s), so a hold that ends on its
+ * own is seen ending. Not shortened for a tool or token limit: Eve sets no
+ * per-tool timeout (a relay command may already take COMMAND_TIMEOUT_MS), the
+ * relay checks the agent token only when a socket connects (its `exp` is not
+ * enforced on the daemon's open connection), and a redial with
+ * an expired token fails the poll with another error, which ends the wait.
+ */
+export const HOLD_WAIT_MS = 125_000;
+export const HOLD_MAX_POLLS = Math.floor(HOLD_WAIT_MS / HOLD_POLL_INTERVAL_MS);
+/** A refused poll answers at once; this bounds a hung one. */
+const HOLD_POLL_TIMEOUT_MS = 5_000;
+
+/** Resolves after `ms`, or at once (false) when `signal` aborts. */
+const pause = (ms: number, signal?: AbortSignal) =>
+  new Promise<boolean>((resolve) => {
+    if (signal?.aborted) return resolve(false);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve(true);
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 
 /**
  * Restarts seen per run id. Like the session queue above, this and
@@ -292,7 +346,34 @@ export async function runRelayCommand(
       }
       return result;
     };
-    const result = await execute(command, sessionName(base, generation));
+    const current = sessionName(base, generation);
+    const result = await execute(command, current);
+    if (!result.success && HOLD_REFUSED.test(result.error ?? '')) {
+      // Same daemon and session name: the connection is fine, the bridge is
+      // refusing. Other commands of this session wait behind the queue.
+      const signal = ctx.abortSignal as AbortSignal | undefined;
+      const deadline = Date.now() + HOLD_WAIT_MS;
+      for (let poll = 0; poll < HOLD_MAX_POLLS; poll++) {
+        if (!(await pause(HOLD_POLL_INTERVAL_MS, signal))) return result;
+        if (Date.now() > deadline) return result;
+        const probe = await execute(
+          HOLD_POLL_COMMAND,
+          current,
+          HOLD_POLL_TIMEOUT_MS,
+        );
+        if (probe.success) {
+          // The page may be another document now (refs are void until a
+          // snapshot), and an action may have run before its reply was
+          // refused: only a read runs again, once.
+          needsSnapshot.add(ref.runId);
+          if (!retrySafe(command)) return restored();
+          return settle(await execute(command, current));
+        }
+        // The run ended or the connection went: say so, never wait on.
+        if (!HOLD_REFUSED.test(probe.error ?? '')) return probe;
+      }
+      return result;
+    }
     if (result.success || !CONNECTION_LOST.test(result.error ?? '')) {
       return settle(result);
     }

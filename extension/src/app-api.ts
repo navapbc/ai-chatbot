@@ -264,12 +264,8 @@ export const createAppApi = (opts: {
 
   return {
     async searchParticipants(q, signal) {
-      const value = await request(
-        'GET',
-        `/api/participants?q=${encodeURIComponent(q)}`,
-        undefined,
-        signal,
-      );
+      // The term goes in the body: a name must never appear in a URL.
+      const value = await request('POST', '/api/participants', { q }, signal);
       const list = isRecord(value) ? value.participants : undefined;
       if (!Array.isArray(list) || !list.every(isSummary)) throw serverError();
       return list;

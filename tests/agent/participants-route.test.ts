@@ -9,8 +9,11 @@ const { createStaticParticipantSource, setParticipantSourceForTests } =
 const list = await import('@/app/(chat)/api/participants/route');
 const detail = await import('@/app/(chat)/api/participants/[recordId]/route');
 
-const searchRequest = (qs: string) =>
-  new Request(`http://localhost/api/participants${qs}`);
+const searchRequest = (body: unknown, raw = false) =>
+  new Request('http://localhost/api/participants', {
+    method: 'POST',
+    body: raw ? (body as string) : JSON.stringify(body),
+  });
 const detailCall = (recordId: string) =>
   detail.GET(new Request(`http://localhost/api/participants/${recordId}`), {
     params: Promise.resolve({ recordId }),
@@ -33,7 +36,7 @@ describe('participant routes', () => {
 
   it('passes guard refusals through with no-store', async () => {
     vi.stubEnv('RELAY_RUNS_ENABLED', undefined);
-    const res = await list.GET(searchRequest('?q=a'));
+    const res = await list.POST(searchRequest({ q: 'a' }));
     expect(res.status).toBe(404);
     expect(res.headers.get('Cache-Control')).toBe('no-store');
 
@@ -45,7 +48,7 @@ describe('participant routes', () => {
   });
 
   it('searches and returns summaries only', async () => {
-    const res = await list.GET(searchRequest('?q=sawyer'));
+    const res = await list.POST(searchRequest({ q: 'sawyer' }));
     expect(res.status).toBe(200);
     expect(res.headers.get('Cache-Control')).toBe('no-store');
     const body = await res.json();
@@ -55,30 +58,58 @@ describe('participant routes', () => {
     }
   });
 
+  it('has no GET handler, so Next answers 405 and no term rides a URL', () => {
+    expect((list as Record<string, unknown>).GET).toBeUndefined();
+  });
+
   it('answers an empty list for a missing q', async () => {
-    const res = await list.GET(searchRequest(''));
+    const res = await list.POST(searchRequest({}));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ participants: [] });
   });
 
   it('rejects q over 100 characters', async () => {
-    const res = await list.GET(searchRequest(`?q=${'a'.repeat(101)}`));
+    const res = await list.POST(searchRequest({ q: 'a'.repeat(101) }));
     expect(res.status).toBe(400);
     expect(res.headers.get('Cache-Control')).toBe('no-store');
-    const ok = await list.GET(searchRequest(`?q=${'a'.repeat(100)}`));
+    const ok = await list.POST(searchRequest({ q: 'a'.repeat(100) }));
     expect(ok.status).toBe(200);
   });
 
-  it('rejects a non-numeric limit and clamps a large one', async () => {
-    const bad = await list.GET(searchRequest('?q=a&limit=abc'));
-    expect(bad.status).toBe(400);
+  it('rejects bad JSON, a non-object, a non-string q and an oversized body', async () => {
+    for (const raw of ['{', '[]', 'null', '"a"', '{"q":5}']) {
+      const res = await list.POST(searchRequest(raw, true));
+      expect(res.status).toBe(400);
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+    }
+    const big = await list.POST(
+      searchRequest({ q: 'a', pad: 'x'.repeat(5000) }),
+    );
+    expect(big.status).toBe(400);
+  });
+
+  it('rejects a non-integer limit and clamps a large one', async () => {
+    for (const limit of ['abc', '5', -1, 1.5, null]) {
+      const bad = await list.POST(searchRequest({ q: 'a', limit }));
+      expect(bad.status).toBe(400);
+    }
 
     const search = vi.fn().mockResolvedValue([]);
     setParticipantSourceForTests({ search, get: vi.fn() });
-    await list.GET(searchRequest('?q=a&limit=500'));
+    await list.POST(searchRequest({ q: 'a', limit: 500 }));
     expect(search).toHaveBeenLastCalledWith('a', 20);
-    await list.GET(searchRequest('?q=a'));
+    await list.POST(searchRequest({ q: ' a ', limit: 3 }));
+    expect(search).toHaveBeenLastCalledWith('a', 3);
+    await list.POST(searchRequest({ q: 'a' }));
     expect(search).toHaveBeenLastCalledWith('a', 10);
+  });
+
+  it('refuses a guest', async () => {
+    authMock.mockResolvedValue({
+      user: { id: 'g', email: 'guest-0123abcd@preview.local' },
+    });
+    const res = await list.POST(searchRequest({ q: 'a' }));
+    expect(res.status).toBe(403);
   });
 
   it('returns the three summary keys and leaks nothing else', async () => {
