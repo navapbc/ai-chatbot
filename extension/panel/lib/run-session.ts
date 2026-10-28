@@ -4,7 +4,11 @@ import type { AppApi, RunPhase, RunState } from '../../src/app-api';
 import type { RunStatus } from '../../src/bridge';
 import { createActionLog } from './action-log';
 import type { Target } from './state';
-import type { WorkerApi } from './worker-api';
+import {
+  type Confirmation,
+  reduceConfirmation,
+  type WorkerApi,
+} from './worker-api';
 
 // Watches a run the panel started (or rebuilt after reopening) until it ends.
 //
@@ -25,6 +29,17 @@ import type { WorkerApi } from './worker-api';
 //   0). A refusal shows a notice and is tried again at most once a minute.
 // - stop(): the server stop, then the worker stop (P4c-f). Every worker stop
 //   names this run, so it never ends another window's run.
+// - The submit watch (plan 4c-4): while the server phase is `review` the
+//   worker's submit watch is armed (`reset` on entering review), re-armed when
+//   a poll shows it lost (`armed: false`), and disarmed on leaving review or
+//   when the run ends. Every arm and disarm goes through one chain (one call
+//   at a time), and an arm is sent only while review still wants it, so no
+//   arm follows a disarm. A submission the worker saw counts only from polls
+//   issued after the last reset arm succeeded. With a number after a
+//   `confirmation` label the run is stopped as submitted at once (the number
+//   copied first); otherwise, once the number read is over (a number after
+//   another label, or CONFIRMATION_WAIT_MS with none), the caseworker is
+//   asked. A wrong stop cannot be undone, so only that one label stops it.
 //
 // Nothing here ever sees an applicant value: only ids, origins and counts.
 // No I/O runs at creation (only timers), so a StrictMode mount, dispose and
@@ -74,7 +89,26 @@ export const ORIGIN_HOLD_CAP_MS = 2 * ORIGIN_HOLD_MS;
  */
 export const HOLD_KNOWN_GAP_MS = 2 * WORKER_POLL_MS + 1000;
 
+/**
+ * The worker's number read ends within this of the submission
+ * (extension/src/bridge.ts CONFIRMATION_READ_MS; a test compares them). The
+ * status cannot tell "not read yet" from "none found", so the panel waits
+ * this long from first seeing a submission before it asks.
+ */
+export const CONFIRMATION_WAIT_MS = 12_000;
+
 export type EndedReason = 'user' | 'submitted' | 'stopped' | 'worker-ended';
+
+/** How a submission was confirmed: from the page, or the caseworker's word. */
+export type ConfirmedHow = 'detected' | 'manual';
+
+/**
+ * A submission the worker saw while in review: `checking` while the number
+ * read may still answer, `ask` once the caseworker must say.
+ */
+export type SubmissionView =
+  | { stage: 'checking' }
+  | { stage: 'ask'; confirmation?: Confirmation };
 
 export type SessionRun = {
   runId: string;
@@ -128,6 +162,15 @@ export type RunSessionState = {
   secondsLeft: number;
   stopping: boolean;
   stopFailed?: boolean;
+  /** Review only: a submission the worker saw, while the panel decides. */
+  submission?: SubmissionView;
+  /** Ended as submitted: how it was confirmed. */
+  confirmedHow?: ConfirmedHow;
+  /**
+   * Ended as submitted from the page: the number it showed, for the
+   * Confirmed screen only (never stored, logged or sent anywhere).
+   */
+  confirmation?: Confirmation;
 };
 
 type Timer = ReturnType<typeof setTimeout>;
@@ -136,7 +179,12 @@ export type RunSessionDeps = {
   api: Pick<AppApi, 'getRunState' | 'stopRun' | 'getExtensionToken'>;
   worker: Pick<
     WorkerApi,
-    'getRunStatus' | 'stopRun' | 'startRun' | 'registrationComplete'
+    | 'getRunStatus'
+    | 'stopRun'
+    | 'startRun'
+    | 'registrationComplete'
+    | 'armSubmitWatch'
+    | 'disarmSubmitWatch'
   >;
   /** Milliseconds. */
   now: () => number;
@@ -151,6 +199,10 @@ export type RunSession = {
   subscribe(cb: (state: RunSessionState) => void): () => void;
   /** `submitted` only when the caseworker pressed "I submitted it". */
   stop(reason?: 'user' | 'submitted'): Promise<void>;
+  /** "Yes" to "Did you submit the form?": stops as a detected submission. */
+  confirmSubmission(): Promise<void>;
+  /** "No": forgets the submission and watches for the next one. */
+  dismissSubmission(): void;
   dispose(): void;
 };
 
@@ -203,6 +255,28 @@ export const createRunSession = (
   let serverInFlight = false;
   let registering = false;
 
+  // The submit watch (see the top of this file).
+  let wantArmed = false;
+  let watchUsed = false;
+  let watchChain: Promise<void> = Promise.resolve();
+  let armQueued = false;
+  let armInFlight = false;
+  // A reset arm is owed: no submission counts until one succeeds.
+  let resetPending = false;
+  let resetGeneration = 0;
+  // Worker polls are numbered when issued. A submission counts only from a
+  // poll issued at or after countFrom, a re-arm only from one issued at or
+  // after rearmFrom (an older one may predate the arm that just landed).
+  let pollSeq = 0;
+  let countFrom = Number.POSITIVE_INFINITY;
+  let rearmFrom = 0;
+  let dismissedAt: number | undefined;
+  let seen: { at: number; confirmation?: Confirmation } | undefined;
+  let asking = false;
+  let askTimer: Timer | undefined;
+  let confirmedHow: ConfirmedHow | undefined;
+  let confirmation: Confirmation | undefined;
+
   let refreshPromise: Promise<void> | undefined;
   let refreshFailed = false;
   let refreshFailedAt: number | undefined;
@@ -246,6 +320,17 @@ export const createRunSession = (
     if (refreshFailed && !ended) state.refreshFailed = true;
     if (estimated && !ended) state.expiresAtEstimated = true;
     if (stopFailed) state.stopFailed = true;
+    if (!ended && !stopping && seen) {
+      state.submission = asking
+        ? seen.confirmation
+          ? { stage: 'ask', confirmation: { ...seen.confirmation } }
+          : { stage: 'ask' }
+        : { stage: 'checking' };
+    }
+    if (ended && endedReason === 'submitted' && confirmedHow) {
+      state.confirmedHow = confirmedHow;
+      if (confirmation) state.confirmation = { ...confirmation };
+    }
     return state;
   };
 
@@ -271,10 +356,35 @@ export const createRunSession = (
     serverTimer = undefined;
   };
 
+  const clearSubmission = () => {
+    seen = undefined;
+    asking = false;
+    if (askTimer !== undefined) deps.clearTimeout(askTimer);
+    askTimer = undefined;
+  };
+
+  /** Queues one watch call behind the others; the chain never rejects. */
+  const enqueueWatch = (task: () => Promise<void>) => {
+    watchChain = watchChain.then(task).catch(() => {});
+  };
+
+  const enqueueDisarm = () => {
+    if (!watchUsed) return;
+    enqueueWatch(async () => {
+      // Review came back meanwhile: the reset arm queued after this wins.
+      if (wantArmed) return;
+      await ignore(() => deps.worker.disarmSubmitWatch(runId));
+    });
+  };
+
   const finish = (reason: EndedReason) => {
     ended = true;
     endedReason = reason;
     stopTimers();
+    wantArmed = false;
+    clearSubmission();
+    // Best effort: the worker stop already ended the watch with the run.
+    enqueueDisarm();
     void ignore(() => deps.markRecentEnded(runId, reason));
     emit();
   };
@@ -290,6 +400,111 @@ export const createRunSession = (
   const done = () => stopping || ended || disposed;
   /** No new poll starts, and worker answers are ignored, while this holds. */
   const halted = () => done() || confirming;
+
+  const enqueueArm = () => {
+    if (armQueued) return;
+    armQueued = true;
+    enqueueWatch(async () => {
+      armQueued = false;
+      // Checked right before the send: a disarm queued meanwhile, a stop or
+      // a refresh (which replaces the worker run) wins. The poll arms again.
+      if (!wantArmed || done() || refreshPromise) return;
+      const reset = resetPending;
+      const generation = resetGeneration;
+      watchUsed = true;
+      armInFlight = true;
+      let ok = false;
+      try {
+        const result = await deps.worker.armSubmitWatch(
+          runId,
+          reset ? { reset: true } : undefined,
+        );
+        ok = result.ok === true;
+      } catch {
+        ok = false;
+      } finally {
+        armInFlight = false;
+        rearmFrom = pollSeq + 1;
+      }
+      if (ok && reset && generation === resetGeneration && wantArmed) {
+        resetPending = false;
+        countFrom = pollSeq + 1;
+      }
+    });
+  };
+
+  /** Arms on entering review (with reset) and disarms on leaving it. */
+  const syncWatch = () => {
+    if (done()) {
+      wantArmed = false;
+      return;
+    }
+    const want = serverPhase === 'review';
+    if (want === wantArmed) return;
+    wantArmed = want;
+    clearSubmission();
+    if (want) {
+      resetPending = true;
+      resetGeneration += 1;
+      countFrom = Number.POSITIVE_INFINITY;
+      enqueueArm();
+      return;
+    }
+    resetPending = false;
+    enqueueDisarm();
+  };
+
+  /** Stops the run; for a submission, records how and the number first. */
+  const beginStop = (
+    reason: 'user' | 'submitted',
+    how?: ConfirmedHow,
+    number?: Confirmation,
+  ): Promise<void> => {
+    if (stopPromise) return stopPromise;
+    if (ended) return Promise.resolve();
+    if (reason === 'submitted') {
+      confirmedHow = how ?? 'manual';
+      confirmation = number ? { ...number } : undefined;
+    }
+    stopping = true;
+    wantArmed = false;
+    clearSubmission();
+    emit();
+    stopPromise = stopNow(reason);
+    return stopPromise;
+  };
+
+  /** Follows a submission the worker reported (an accepted answer). */
+  const takeSubmission = (status: RunStatus, seq: number) => {
+    if (!wantArmed || resetPending || seq < countFrom || done()) return;
+    // Held on another origin: the Review panel is not shown.
+    if (status.pendingOrigin) return;
+    const raw = status.submitted;
+    if (!raw || typeof raw.at !== 'number' || !Number.isFinite(raw.at)) return;
+    if (dismissedAt !== undefined && raw.at <= dismissedAt) return;
+    if (!seen || seen.at !== raw.at) {
+      clearSubmission();
+      const at = raw.at;
+      seen = { at };
+      askTimer = deps.setTimeout(() => {
+        askTimer = undefined;
+        if (done() || seen?.at !== at) return;
+        asking = true;
+        emit();
+      }, CONFIRMATION_WAIT_MS);
+    }
+    // Copied, reduced to {token, kind}: nothing else the status carries.
+    const number = reduceConfirmation(raw.confirmation);
+    if (!number) return;
+    seen.confirmation = number;
+    if (number.kind === 'confirmation') {
+      // The number is held before the stop, which ends the worker's read.
+      void beginStop('submitted', 'detected', number);
+      return;
+    }
+    // Another label is the read's last word: ask now.
+    asking = true;
+  };
 
   const refresh = async () => {
     generation += 1;
@@ -375,7 +590,7 @@ export const createRunSession = (
     lastClearAt = undefined;
   };
 
-  const onWorkerStatus = (status: RunStatus) => {
+  const onWorkerStatus = (status: RunStatus, seq: number) => {
     if (status.active && status.runId === runId) trackHold(status);
     else trackHold({ ok: true, active: false });
     if (status.active && status.runId !== runId) {
@@ -423,6 +638,16 @@ export const createRunSession = (
       });
     }
     if (refreshDue()) refreshPromise = refresh();
+    if (
+      wantArmed &&
+      !armQueued &&
+      !armInFlight &&
+      seq >= rearmFrom &&
+      (status.armed !== true || resetPending)
+    ) {
+      enqueueArm();
+    }
+    takeSubmission(status, seq);
     emit();
   };
 
@@ -430,6 +655,8 @@ export const createRunSession = (
     if (workerInFlight || halted()) return;
     workerInFlight = true;
     const issuedUnder = generation;
+    pollSeq += 1;
+    const seq = pollSeq;
     let status: RunStatus | undefined;
     try {
       status = await deps.worker.getRunStatus();
@@ -443,7 +670,7 @@ export const createRunSession = (
       emit();
       return;
     }
-    onWorkerStatus(status);
+    onWorkerStatus(status, seq);
   };
 
   /** Keeps what a live server row says; a bad shape never throws. */
@@ -475,6 +702,7 @@ export const createRunSession = (
     if (done()) return;
     if (row && !rowEnded) {
       takeRow(row);
+      syncWatch();
       emit();
     }
     if (!rowEnded) return;
@@ -504,16 +732,34 @@ export const createRunSession = (
       };
     },
     stop(reason = 'user') {
-      if (stopPromise) return stopPromise;
-      if (ended) return Promise.resolve();
-      stopping = true;
+      return beginStop(reason, reason === 'submitted' ? 'manual' : undefined);
+    },
+    confirmSubmission() {
+      if (!seen) return beginStop('submitted', 'manual');
+      return beginStop('submitted', 'detected', seen.confirmation);
+    },
+    dismissSubmission() {
+      if (!seen || done()) return;
+      dismissedAt = seen.at;
+      clearSubmission();
+      // The reset makes the worker forget it; until that lands, nothing
+      // the worker reports counts.
+      resetPending = true;
+      resetGeneration += 1;
+      countFrom = Number.POSITIVE_INFINITY;
+      enqueueArm();
       emit();
-      stopPromise = stopNow(reason);
-      return stopPromise;
     },
     dispose() {
       disposed = true;
       stopTimers();
+      clearSubmission();
+      // The panel closed in review: let go of the watch's attach (best
+      // effort). A reopened panel arms it again.
+      if (wantArmed && !ended) {
+        wantArmed = false;
+        enqueueDisarm();
+      }
       listeners.clear();
     },
   };

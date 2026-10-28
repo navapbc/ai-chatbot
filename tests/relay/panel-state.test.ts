@@ -171,31 +171,92 @@ describe('panel reducer', () => {
     const s = reducer(runningState, {
       type: 'runConfirmed',
       stopFailed: false,
+      how: 'manual',
     });
     expect(s.screen).toBe('confirmed');
-    expect(s.confirmed).toEqual({ stopFailed: false });
+    expect(s.confirmed).toEqual({ stopFailed: false, how: 'manual' });
     expect(s.run).toBeUndefined();
     expect(s.target).toEqual(target);
     expect(s.participant).toEqual(runningState.participant);
   });
 
   it('runConfirmed carries stopFailed; startAnother and clearTarget drop it', () => {
-    const c = reducer(runningState, { type: 'runConfirmed', stopFailed: true });
-    expect(c.confirmed).toEqual({ stopFailed: true });
+    const c = reducer(runningState, {
+      type: 'runConfirmed',
+      stopFailed: true,
+      how: 'manual',
+    });
+    expect(c.confirmed).toEqual({ stopFailed: true, how: 'manual' });
     expect(reducer(c, { type: 'startAnother' }).confirmed).toBeUndefined();
     expect(reducer(c, { type: 'clearTarget' }).confirmed).toBeUndefined();
   });
 
+  it('a detected submission carries how and the number; startAnother and clearTarget drop the number', () => {
+    const c = reducer(runningState, {
+      type: 'runConfirmed',
+      stopFailed: false,
+      how: 'detected',
+      confirmation: { token: 'AB-1234', kind: 'confirmation' },
+    });
+    expect(c.screen).toBe('confirmed');
+    expect(c.confirmed).toEqual({
+      stopFailed: false,
+      how: 'detected',
+      confirmation: { token: 'AB-1234', kind: 'confirmation' },
+    });
+    const again = reducer(c, { type: 'startAnother' });
+    expect(again.confirmed).toBeUndefined();
+    expect(JSON.stringify(again)).not.toContain('AB-1234');
+    const home = reducer(c, { type: 'clearTarget' });
+    expect(JSON.stringify(home)).not.toContain('AB-1234');
+  });
+
+  it('runConfirmed keeps only a valid number of a known kind', () => {
+    const bad = [
+      { token: 'AB-1234', kind: 'case' },
+      { token: '<b>x</b>', kind: 'confirmation' },
+      { token: 'A'.repeat(33), kind: 'confirmation' },
+      { token: 42, kind: 'confirmation' },
+    ];
+    for (const confirmation of bad) {
+      const c = reducer(runningState, {
+        type: 'runConfirmed',
+        stopFailed: false,
+        how: 'detected',
+        confirmation: confirmation as never,
+      });
+      expect(c.confirmed).toEqual({ stopFailed: false, how: 'detected' });
+    }
+    const extra = reducer(runningState, {
+      type: 'runConfirmed',
+      stopFailed: false,
+      how: 'detected',
+      confirmation: {
+        token: 'AB-1',
+        kind: 'other',
+        label: 'Zelda',
+      } as never,
+    });
+    expect(extra.confirmed?.confirmation).toEqual({
+      token: 'AB-1',
+      kind: 'other',
+    });
+  });
+
   it('runConfirmed is ignored unless running', () => {
     const home = { screen: 'home' as const, config };
-    expect(reducer(home, { type: 'runConfirmed', stopFailed: false })).toBe(
-      home,
-    );
+    expect(
+      reducer(home, { type: 'runConfirmed', stopFailed: false, how: 'manual' }),
+    ).toBe(home);
   });
 
   it('startAnother goes to ready keeping target, participant and config, clearing error', () => {
     const confirmed = {
-      ...reducer(runningState, { type: 'runConfirmed', stopFailed: false }),
+      ...reducer(runningState, {
+        type: 'runConfirmed',
+        stopFailed: false,
+        how: 'manual',
+      }),
       error: { title: 't', detail: 'd', retryable: false },
     };
     const s = reducer(confirmed, { type: 'startAnother' });
@@ -215,6 +276,7 @@ describe('panel reducer', () => {
     const confirmed = reducer(runningState, {
       type: 'runConfirmed',
       stopFailed: false,
+      how: 'manual',
     });
     expect(reducer(confirmed, { type: 'clearTarget' })).toEqual({
       screen: 'home',

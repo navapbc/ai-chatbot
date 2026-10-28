@@ -1,7 +1,12 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { unfilledStatusText } from '../../extension/panel/lib/copy';
+import {
+  CONFIRMED_COPY,
+  SUBMIT_COPY,
+  unfilledStatusText,
+} from '../../extension/panel/lib/copy';
+import type { SubmissionView } from '../../extension/panel/lib/run-session';
 import { createUnfilledField } from '../../extension/panel/lib/unfilled-field';
 import type { UnfilledFieldResult } from '../../extension/panel/lib/worker-api';
 import {
@@ -116,15 +121,54 @@ describe('isConfirming', () => {
 });
 
 describe('ConfirmedScreen', () => {
-  const html = (stopFailed: boolean) =>
+  const html = (
+    stopFailed: boolean,
+    extra: Partial<Parameters<typeof ConfirmedScreen>[0]> = {},
+  ) =>
     renderToStaticMarkup(
       createElement(ConfirmedScreen, {
         siteName: 'example.gov',
         stopFailed,
         onStartAnother: () => {},
         onHome: () => {},
+        ...extra,
       }),
     );
+  it('detected with a confirmation number: says the form was submitted and shows the number as text', () => {
+    const out = html(false, {
+      how: 'detected',
+      confirmation: { token: 'AB-1234', kind: 'confirmation' },
+    });
+    expect(out).toContain('The form was submitted on example.gov.');
+    expect(out).toContain('The page moved on after the form was sent.');
+    expect(out).toContain('Confirmation number');
+    expect(out).toContain('>AB-1234<');
+    expect(out).not.toContain('You said');
+  });
+  it('a number after another label is not called a confirmation number', () => {
+    const out = html(false, {
+      how: 'detected',
+      confirmation: { token: '20240017', kind: 'other' },
+    });
+    expect(out).toContain('Number shown on the page');
+    expect(out).not.toContain('Confirmation number');
+    expect(out).toContain('>20240017<');
+  });
+  it('detected with no number shows no number line; manual says what the caseworker said', () => {
+    const detected = html(false, { how: 'detected' });
+    expect(detected).toContain('The form was submitted on example.gov.');
+    expect(detected).not.toMatch(/Confirmation number|Number shown/);
+    const manual = html(false, { how: 'manual' });
+    expect(manual).toContain('You said you submitted the form on example.gov.');
+    expect(manual).not.toContain('The form was submitted');
+  });
+  it('escapes a hostile token (React text only)', () => {
+    const out = html(false, {
+      how: 'detected',
+      confirmation: { token: '<img src=x>', kind: 'confirmation' },
+    });
+    expect(out).not.toContain('<img');
+  });
   it('says what the caseworker said, with no stop notice when the stop worked', () => {
     const out = html(false);
     expect(out).toContain('You said you submitted the form on example.gov.');
@@ -257,5 +301,73 @@ describe('Review: Show me the unfilled field', () => {
     c.dispose();
     await p;
     expect(seen).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Review: a detected submission', () => {
+  const render = (submission?: SubmissionView, stopping = false) =>
+    renderToStaticMarkup(
+      createElement(ReviewPanel, {
+        runId: 'run-1',
+        progress: null,
+        actions: [],
+        stopping,
+        submission,
+        onSubmitted: () => {},
+        onStop: () => {},
+        onConfirmSubmission: () => {},
+        onDismissSubmission: () => {},
+      }),
+    );
+
+  it('no longer says submitting is only by hand, and keeps I submitted it', () => {
+    const out = render();
+    expect(out).toContain(SUBMIT_COPY.reviewHint);
+    expect(out).toContain('I submitted it');
+    expect(out).not.toContain(SUBMIT_COPY.checking);
+    expect(out).not.toContain(SUBMIT_COPY.askTitle);
+    // Only the unfilled-field status line: no empty extra one.
+    expect(out.match(/role="status"/g)).toHaveLength(1);
+  });
+
+  it('checking: a status line, no prompt', () => {
+    const out = render({ stage: 'checking' });
+    expect(out).toContain(SUBMIT_COPY.checking);
+    expect(out).not.toContain(SUBMIT_COPY.askTitle);
+    expect(out.match(/role="status"/g)).toHaveLength(2);
+  });
+
+  it('ask: the question with Yes and No, I submitted it still there', () => {
+    const out = render({ stage: 'ask' });
+    expect(out).toContain(SUBMIT_COPY.askTitle);
+    expect(out).toContain(SUBMIT_COPY.askBody);
+    expect(out).toContain(SUBMIT_COPY.yes);
+    expect(out).toContain(SUBMIT_COPY.no);
+    expect(out).toContain('I submitted it');
+    expect(out).not.toContain(SUBMIT_COPY.numberOnPage);
+    expect(out).not.toContain(SUBMIT_COPY.checking);
+  });
+
+  it('ask with a number after another label shows it as text', () => {
+    const out = render({
+      stage: 'ask',
+      confirmation: { token: '20240017', kind: 'other' },
+    });
+    expect(out).toContain(SUBMIT_COPY.numberOnPage);
+    expect(out).toContain('>20240017<');
+    const hostile = render({
+      stage: 'ask',
+      confirmation: { token: '<b>x</b>', kind: 'other' },
+    });
+    expect(hostile).not.toContain('<b>x');
+  });
+
+  it('copy never claims the form is complete or accepted', () => {
+    const all = [
+      ...Object.values(SUBMIT_COPY),
+      CONFIRMED_COPY.detected('x'),
+      CONFIRMED_COPY.detectedDetail,
+    ].join(' ');
+    expect(all).not.toMatch(/complete|accepted|approved|success/i);
   });
 });

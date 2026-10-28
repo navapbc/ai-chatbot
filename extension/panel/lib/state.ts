@@ -1,7 +1,8 @@
 import type { RelayConfig } from '../../../lib/relay/config';
 import { AppApiError } from '../../src/app-api';
 import { type ErrorMessage, messageFor } from './copy';
-import type { SessionRun } from './run-session';
+import type { ConfirmedHow, SessionRun } from './run-session';
+import { type Confirmation, reduceConfirmation } from './worker-api';
 
 // The panel's screen state machine, pure so it can be tested without a DOM.
 // `loading` is the sign-in probe in flight; later start-flow tasks replace the
@@ -39,8 +40,19 @@ export type State = {
    */
   run?: SessionRun;
   error?: ErrorMessage;
-  /** Set on the Confirmed screen: whether the stop could be confirmed. */
-  confirmed?: { stopFailed: boolean };
+  /**
+   * Set on the Confirmed screen: whether the stop could be confirmed, how
+   * the submission was confirmed and, when the page showed one, its number.
+   * The number lives only here: it is dropped by startAnother and
+   * clearTarget and is never stored or sent.
+   */
+  confirmed?: Confirmed;
+};
+
+export type Confirmed = {
+  stopFailed: boolean;
+  how: ConfirmedHow;
+  confirmation?: Confirmation;
 };
 
 export type Action =
@@ -67,8 +79,8 @@ export type Action =
   | { type: 'runStarted'; runId: string; expiresAt: number; tabId: number }
   /** The run ended and the caseworker left its screen. */
   | { type: 'runEnded' }
-  /** The caseworker said they submitted; the run is over. */
-  | { type: 'runConfirmed'; stopFailed: boolean }
+  /** A submission was confirmed (detected or said); the run is over. */
+  | ({ type: 'runConfirmed' } & Confirmed)
   /** From Confirmed: the same person and site, back on Ready. */
   | { type: 'startAnother' }
   /** The panel reopened while the worker held a live run (see rebuildRun). */
@@ -161,11 +173,13 @@ export const reducer = (state: State, action: Action): State => {
   if (action.type === 'runConfirmed') {
     if (state.screen !== 'running') return state;
     const { run: _run, error: _error, ...rest } = state;
-    return {
-      ...rest,
-      screen: 'confirmed',
-      confirmed: { stopFailed: action.stopFailed },
+    const confirmed: Confirmed = {
+      stopFailed: action.stopFailed === true,
+      how: action.how === 'detected' ? 'detected' : 'manual',
     };
+    const confirmation = reduceConfirmation(action.confirmation);
+    if (confirmation) confirmed.confirmation = confirmation;
+    return { ...rest, screen: 'confirmed', confirmed };
   }
   if (action.type === 'startAnother') {
     if (state.screen !== 'confirmed') return state;

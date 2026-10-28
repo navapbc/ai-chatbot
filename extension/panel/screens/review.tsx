@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import type { RunProgress } from '../../../lib/relay/progress';
-import { UNFILLED_COPY, unfilledStatusText } from '../lib/copy';
+import { SUBMIT_COPY, UNFILLED_COPY, unfilledStatusText } from '../lib/copy';
+import type { SubmissionView } from '../lib/run-session';
 import { createUnfilledField, type UnfilledView } from '../lib/unfilled-field';
 import { createWorkerApi, type WorkerApi } from '../lib/worker-api';
 import {
@@ -19,8 +20,14 @@ type Props = {
   stopping: boolean;
   /** The panel was rebuilt mid-run: the log starts empty. */
   openedMidRun?: boolean;
+  /** A submission the worker saw: checking for a number, or asking. */
+  submission?: SubmissionView;
   onSubmitted: () => void;
   onStop: () => void;
+  /** "Yes" to "Did you submit the form?". */
+  onConfirmSubmission?: () => void;
+  /** "No": the run goes on and the watch looks for the next submission. */
+  onDismissSubmission?: () => void;
 };
 
 const defaultShowUnfilledField: WorkerApi['showUnfilledField'] = (runId) =>
@@ -38,8 +45,11 @@ export const ReviewPanel = ({
   actions,
   stopping,
   openedMidRun = false,
+  submission,
   onSubmitted,
   onStop,
+  onConfirmSubmission,
+  onDismissSubmission,
 }: Props) => {
   const headingRef = useRef<HTMLHeadingElement>(null);
   // Once, when the panel appears: not on every poll.
@@ -122,9 +132,21 @@ export const ReviewPanel = ({
           </ul>
         )}
       </details>
-      <p className="text-sm">
-        Check the form on the page, then submit it there yourself.
-      </p>
+      <p className="text-sm">{SUBMIT_COPY.reviewHint}</p>
+      {submission?.stage === 'checking' ? (
+        // Rendered only while checking, so no empty status line lingers.
+        <p role="status" aria-live="polite" className="text-sm">
+          {SUBMIT_COPY.checking}
+        </p>
+      ) : null}
+      {submission?.stage === 'ask' ? (
+        <SubmitPrompt
+          token={submission.confirmation?.token}
+          stopping={stopping}
+          onYes={onConfirmSubmission}
+          onNo={onDismissSubmission}
+        />
+      ) : null}
       <div className="flex flex-col gap-2">
         <div className="flex flex-col gap-1">
           <Button
@@ -157,6 +179,60 @@ export const ReviewPanel = ({
           aria-busy={stopping}
         >
           Stop without submitting
+        </Button>
+      </div>
+    </section>
+  );
+};
+
+type SubmitPromptProps = {
+  /** A number after a label other than "confirmation": shown, not trusted. */
+  token?: string;
+  stopping: boolean;
+  onYes?: () => void;
+  onNo?: () => void;
+};
+
+// The page moved on after a form was sent, with no confirmation number: the
+// caseworker says whether it was the submission. The token is React text.
+const SubmitPrompt = ({ token, stopping, onYes, onNo }: SubmitPromptProps) => {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
+  const handleYes = () => onYes?.();
+  const handleNo = () => onNo?.();
+  return (
+    <section
+      aria-label={SUBMIT_COPY.askTitle}
+      className="flex flex-col gap-2 rounded-lg border border-primary p-3"
+    >
+      <h4 ref={headingRef} tabIndex={-1} className="text-sm font-semibold">
+        {SUBMIT_COPY.askTitle}
+      </h4>
+      <p className="text-sm">{SUBMIT_COPY.askBody}</p>
+      {token ? (
+        <p className="text-sm">
+          {SUBMIT_COPY.numberOnPage}{' '}
+          <span className="break-all font-ibm-plex-mono">{token}</span>
+        </p>
+      ) : null}
+      <div className="flex gap-2">
+        <Button
+          type="button"
+          onClick={handleYes}
+          disabled={stopping}
+          aria-busy={stopping}
+        >
+          {SUBMIT_COPY.yes}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={handleNo}
+          disabled={stopping}
+        >
+          {SUBMIT_COPY.no}
         </Button>
       </div>
     </section>

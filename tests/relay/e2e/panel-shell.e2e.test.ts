@@ -845,6 +845,119 @@ describe('the panel shell', () => {
     }
   }, 40_000);
 
+  it('Review: a form POST showing a confirmation number confirms with it; another label asks, No keeps the run, Yes confirms', async () => {
+    /** Posts a form in the site tab to the `v` confirmation page. */
+    const submitIn = async (site: import('playwright').Page, v: string) => {
+      await site.evaluate((page) => {
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.action = `/submitted?v=${page}`;
+        document.body.append(form);
+        form.requestSubmit();
+      }, v);
+      await site.waitForURL(`${fixtures.origin}/submitted?v=${v}`);
+    };
+    const armed = (page: import('playwright').Page) =>
+      expect
+        .poll(
+          async () =>
+            ((await runStatus(page)) as Status & { armed?: boolean }).armed,
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+    const workerStops = (page: import('playwright').Page) =>
+      page.evaluate(
+        () => (window as unknown as { __workerStops: number }).__workerStops,
+      );
+
+    // A confirmation number: Confirmed at once, the number as text.
+    {
+      const { site, page, runId } = await startOnRealTab();
+      const row = runs.get(runId);
+      if (!row) throw new Error('no run row');
+      try {
+        row.phase = 'review';
+        await page
+          .getByRole('heading', { name: 'Ready for your review' })
+          .waitFor({ timeout: 8_000 });
+        await armed(page);
+        await submitIn(site, 'alnum');
+        await page
+          .getByRole('heading', { name: 'Submitted' })
+          .waitFor({ timeout: 10_000 });
+        await page.getByText('The form was submitted on localhost.').waitFor();
+        await page.getByText('Confirmation number', { exact: true }).waitFor();
+        await page.getByText('AB-1234', { exact: true }).waitFor();
+        expect(stopCalls(runId)).toBe(1);
+        expect(await workerStops(page)).toBe(1);
+        expect(row.ended).toBe(true);
+        // The number went nowhere but the screen.
+        expect(JSON.stringify(appRequests)).not.toContain('AB-1234');
+        const stored = await page.evaluate(async () =>
+          JSON.stringify([
+            await chrome.storage.local.get(null),
+            await chrome.storage.session.get(null).catch(() => ({})),
+          ]),
+        );
+        expect(stored).not.toContain('AB-1234');
+        expect(stored).toContain(runId);
+        await page
+          .getByRole('button', { name: 'Start another form for this person' })
+          .click();
+        await page.getByRole('heading', { name: 'Ready' }).waitFor();
+        expect(await page.getByText('AB-1234').count()).toBe(0);
+      } finally {
+        await stopWorkerRun(page);
+        await page.close();
+        await site.close();
+      }
+    }
+
+    // Another label: asked; No keeps the run going and the next submission
+    // is seen again; Yes confirms with the number shown on the page.
+    {
+      const { site, page, runId } = await startOnRealTab();
+      const row = runs.get(runId);
+      if (!row) throw new Error('no run row');
+      try {
+        row.phase = 'review';
+        const review = page.getByRole('region', {
+          name: 'Ready for your review',
+        });
+        await review.waitFor({ timeout: 8_000 });
+        await armed(page);
+        await submitIn(site, 'other');
+        const prompt = page.getByRole('region', {
+          name: 'Did you submit the form?',
+        });
+        await prompt.waitFor({ timeout: 10_000 });
+        await prompt.getByText('20240017').waitFor();
+        await prompt.getByRole('button', { name: 'No, not yet' }).click();
+        await expect.poll(() => prompt.count()).toBe(0);
+        // Still running, still in review.
+        await review.waitFor();
+        expect(stopCalls(runId)).toBe(0);
+        expect((await runStatus(page)).active).toBe(true);
+        await site.goto(fixtures.formUrl);
+        await submitIn(site, 'other');
+        await prompt.waitFor({ timeout: 10_000 });
+        await prompt.getByRole('button', { name: 'Yes, I did' }).click();
+        await page.getByRole('heading', { name: 'Submitted' }).waitFor();
+        await page.getByText('The form was submitted on localhost.').waitFor();
+        await page.getByText('Number shown on the page').waitFor();
+        await page.getByText('20240017', { exact: true }).waitFor();
+        expect(await page.getByText('Confirmation number').count()).toBe(0);
+        expect(stopCalls(runId)).toBe(1);
+        expect(await workerStops(page)).toBe(1);
+        expect(JSON.stringify(appRequests)).not.toContain('20240017');
+      } finally {
+        await stopWorkerRun(page);
+        await page.close();
+        await site.close();
+      }
+    }
+  }, 90_000);
+
   it('a run the worker ended by itself is stopped on the server once', async () => {
     const { site, page, runId } = await startOnRealTab();
     try {

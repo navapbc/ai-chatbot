@@ -388,3 +388,31 @@ export const ALLOW_SITE_COPY = {
   allowing: 'Allowing...',
   stop: 'Stop the run',
 } as const;
+
+/**
+ * Review's submission copy (plan 4c-4). The worker sees only that the page
+ * moved on after a form was sent, which a multi-step form's Next also does,
+ * so nothing here says the application is complete or was accepted.
+ */
+export const SUBMIT_COPY = {
+  reviewHint:
+    'Check the form on the page, then submit it there yourself. The panel watches for the page to move on after you submit.',
+  checking:
+    'The page moved on after a form was sent. Checking it for a confirmation number...',
+  askTitle: 'Did you submit the form?',
+  askBody:
+    'The page moved on after a form was sent. Going to the next step of a form looks the same.',
+  numberOnPage: 'The page shows this number:',
+  yes: 'Yes, I did',
+  no: 'No, not yet',
+} as const;
+
+/** The Confirmed screen's copy, by how the submission was confirmed. */
+export const CONFIRMED_COPY = {
+  detected: (site: string) => `The form was submitted on ${site}.`,
+  detectedDetail: 'The page moved on after the form was sent.',
+  manual: (site: string) => `You said you submitted the form on ${site}.`,
+  confirmationLabel: 'Confirmation number',
+  otherLabel: 'Number shown on the page',
+  keepIt: 'Write it down if you need it: the panel does not keep it.',
+} as const;
