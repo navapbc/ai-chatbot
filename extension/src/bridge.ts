@@ -51,11 +51,16 @@ import {
   redactEventParams,
   redactReply,
 } from './redaction';
+import { isSensitiveField } from '../../lib/relay/sensitive-fields';
 import {
   DEEP_ACTIVE,
   FIELD_KIND,
+  FOCUS_FIELD,
   FRAME_OWNER_TAGS,
+  SCAN_UNFILLED,
   TYPE_INTO,
+  UNFILLED_AT,
+  UNFILLED_SUMMARY,
 } from './typing-scripts';
 
 // Forwards CDP between the relay and chrome.debugger for exactly one tab.
@@ -90,7 +95,28 @@ export type BridgeMessage =
    * the run's tab if the redactor masks that field (see typeSensitive).
    * Answers `{ ok: true }` or a fixed refusal, never the value.
    */
-  | { type: 'typeSensitive'; runId: string; value: string };
+  | { type: 'typeSensitive'; runId: string; value: string }
+  /**
+   * Finds the required fields still empty in the run's tab and highlights
+   * the first (see showUnfilledField). Answers counts and flags only
+   * (UnfilledFieldResult) or a fixed refusal, never a value, name, label or
+   * page text.
+   */
+  | { type: 'showUnfilledField'; runId: string };
+
+/**
+ * showUnfilledField's answer: whether a field was highlighted, how many
+ * required fields are still empty (`remaining`, every one the scan found),
+ * whether the highlighted one is sensitive (any doubt counts as sensitive),
+ * and whether more than UNFILLED_CLASSIFY_CAP were found.
+ */
+export interface UnfilledFieldResult {
+  ok: true;
+  found: boolean;
+  remaining: number;
+  sensitive?: boolean;
+  capped?: boolean;
+}
 
 /**
  * The bridge's run state for the panel. Ids and counts only: never the
@@ -139,7 +165,8 @@ export interface RunStatus {
 export type BridgeResponse =
   | { ok: true }
   | { ok: false; error: string }
-  | RunStatus;
+  | RunStatus
+  | UnfilledFieldResult;
 
 interface RunConfig {
   relayUrl: string;
@@ -199,6 +226,14 @@ interface Run extends RunConfig {
   attachChain: Promise<unknown>;
   /** Set while a typeSensitive call is between its checks and its reply. */
   typingNow: boolean;
+  /** Set while a showUnfilledField call is between its checks and reply. */
+  scanNow: boolean;
+  /**
+   * Hides showUnfilledField's Overlay highlight when it runs out; cleared
+   * (and the highlight hidden or gone) on a main-frame navigation, a detach,
+   * an attach, stop and the next call.
+   */
+  highlightTimer?: ReturnType<typeof setTimeout>;
   /**
    * Set synchronously the moment the tab leaves scope, before any await, so
    * no command or event gets through while the run is held (see
@@ -758,6 +793,8 @@ async function endRun(
     clearTimeout(current.expiryTimer);
     clearTimeout(current.detachTimer);
     clearTimeout(current.holdTimer);
+    // The detach below takes the highlight with it.
+    clearHighlight(current, false);
     // Allowed origins are for this run only.
     current.extraOrigins = [];
     current.pendingOrigin = null;
@@ -941,6 +978,7 @@ function begin(
     typingAttached: false,
     attachChain: Promise.resolve(),
     typingNow: false,
+    scanNow: false,
     blocked: false,
     scopeEpoch: 0,
     extraOrigins: [],
@@ -1323,6 +1361,8 @@ async function attachTab(
   live();
   current.attached = false;
   current.typingAttached = false;
+  // The detach below takes the highlight with it.
+  clearHighlight(current, false);
   dropChildren(current);
   current.frameScope = createFrameScope();
   current.focusWorld = undefined;
@@ -2721,6 +2761,17 @@ export function onDebuggerEvent(
   // Dialogs are tracked (and an out-of-scope one answered) from raw events
   // too, attached or not, so a dialog opened during an attach is known.
   const dialogForwarded = dialogEventForwarded(current, source, method, params);
+  // A highlight is for the page it was drawn on: any main-frame navigation
+  // ends it, attached or not.
+  if (
+    current.highlightTimer !== undefined &&
+    source.sessionId === undefined &&
+    (method === 'Page.frameNavigated' ||
+      method === 'Page.navigatedWithinDocument') &&
+    mainFrameNavigationUrl(current, method, params) !== undefined
+  ) {
+    clearHighlight(current, true);
+  }
   if (!dialogForwarded) return;
   // Nothing leaves the browser unless the agent attached and the tab is in
   // scope. A typing attach (see typeSensitive) forwards nothing and tracks
@@ -2830,6 +2881,8 @@ export function onDebuggerDetach(
   // must attach within it, or the run ends).
   current.typingAttached = false;
   current.focusWorld = undefined;
+  // The highlight died with the session.
+  clearHighlight(current, false);
   dropChildren(current);
   // P4b-d: the tab must be attached again (the agent re-attaches through the
   // relay) within the grace period, or the run ends.
@@ -2944,8 +2997,9 @@ async function typeSensitive(
   if (runId !== current.runId) return refuse('wrong run');
   if (current.blocked) return refuse('run is held');
   // One at a time: a second call while one is typing is refused (nothing
-  // registered, nothing typed); the panel sends one per press.
-  if (current.typingNow) return refuse('type failed');
+  // registered, nothing typed); the panel sends one per press. Nor while a
+  // showUnfilledField scan holds the tab (it may let go of its attach).
+  if (current.typingNow || current.scanNow) return refuse('type failed');
   // Registered before any await, in the same turn as the checks above, so a
   // token refresh either carries it or refuses it (see startRunNow).
   if (
@@ -3149,6 +3203,435 @@ async function typeIntoFocused(
   }
 }
 
+// --- show the next unfilled field (plan 4c-4) -------------------------------
+
+/**
+ * showUnfilledField's refusals: fixed strings, as typeSensitive's, never a
+ * value, a field's name or label, or page text.
+ */
+type ScanRefusal =
+  | 'no active run'
+  | 'wrong run'
+  | 'not attached'
+  | 'run is held'
+  | 'field out of scope'
+  | 'registration pending'
+  | 'scan failed';
+
+/** Candidates classified; more than this sets `capped` (P4c4-a). */
+const UNFILLED_CLASSIFY_CAP = 12;
+/** One deadline for a whole call's page work after the attach. */
+const SCAN_MS = 8_000;
+/** Kept for the highlight: classification stops this long before it. */
+const CLASSIFY_RESERVE_MS = 3_000;
+/** How long the Overlay highlight stays (P4c4-c). */
+const HIGHLIGHT_MS = 6_000;
+// The highlight: a box and its padding, no info tooltip (it would paint the
+// element's tag, id and classes), no rulers.
+const HIGHLIGHT_CONFIG = {
+  showInfo: false,
+  showRulers: false,
+  showExtensionLines: false,
+  contentColor: { r: 255, g: 176, b: 0, a: 0.2 },
+  paddingColor: { r: 255, g: 176, b: 0, a: 0.2 },
+  borderColor: { r: 214, g: 92, b: 0, a: 1 },
+};
+
+/**
+ * Ends showUnfilledField's highlight: clears its timer and, with `hide`,
+ * asks the page to drop it (best effort, only on the agent's live attach:
+ * a detach takes the highlight with it). Sends nothing but Overlay calls,
+ * which carry no page content.
+ */
+function clearHighlight(current: Run, hide: boolean) {
+  if (current.highlightTimer === undefined) return;
+  clearTimeout(current.highlightTimer);
+  current.highlightTimer = undefined;
+  if (hide) void hideHighlight(current);
+}
+
+async function hideHighlight(current: Run) {
+  if (run !== current || current.stopped || !current.attached) return;
+  const debuggee = { tabId: current.tabId };
+  try {
+    await withTimeout(
+      chrome.debugger.sendCommand(debuggee, 'Overlay.hideHighlight'),
+      FRAME_STEP_MS,
+      'highlight',
+    );
+    await withTimeout(
+      chrome.debugger.sendCommand(debuggee, 'Overlay.disable'),
+      FRAME_STEP_MS,
+      'highlight',
+    );
+  } catch {
+    // Detached or gone: nothing is drawn.
+  }
+}
+
+/**
+ * Finds the required fields still empty in the run's tab and shows the
+ * caseworker the first one (plan 4c-4, P4c4-a..c). Read-only: types
+ * nothing, registers nothing, changes no attribute.
+ *
+ * Refused, with no CDP call, when there is no run, it is another run, the
+ * run needs re-registration (`registration pending`: after a worker restart
+ * the scrubbing state is incomplete), the run is held, or a scan or a
+ * typing is in flight (`scan failed`). Then, as typeSensitive: attach for
+ * itself when the agent is not attached (attachForTyping, never setting
+ * `attached`), wait out a screenshot and keep the shared tab hold for its
+ * sends, re-check the run and scope after every await (requireSameScope),
+ * one deadline (SCAN_MS).
+ *
+ * One SCAN_UNFILLED evaluation in the bridge's `relay-focus` isolated world
+ * (page script cannot change what it reads) answers only a count and kind
+ * words. The first candidate is checked to be in a frame in scope and is
+ * classified: sensitive when its attributes or accessible name are flagged
+ * by isSensitiveField or the redactor masks it once filled
+ * (masksFilledField), and on any failure or timeout. That verdict is the
+ * reply's `sensitive`; the rest of the first UNFILLED_CLASSIFY_CAP are then
+ * classified best effort (P4c4-a), never changing the reply.
+ *
+ * The highlight: on the agent's attach, DOM.scrollIntoViewIfNeeded and
+ * Overlay.highlightNode (no DOM footprint, so the agent's views and the
+ * screenshot mask are unchanged; Overlay events are never forwarded) for
+ * HIGHLIGHT_MS. On its own attach, which is let go before answering (and a
+ * detach takes an Overlay highlight with it), or when Overlay fails: the
+ * field is scrolled into view and focused instead (FOCUS_FIELD).
+ *
+ * Never throws, never logs; the reply is an UnfilledFieldResult or one
+ * fixed ScanRefusal.
+ */
+async function showUnfilledField(runId: unknown): Promise<BridgeResponse> {
+  const refuse = (error: ScanRefusal): BridgeResponse => ({ ok: false, error });
+  const current = run;
+  if (!current || current.stopped) return refuse('no active run');
+  if (runId !== current.runId) return refuse('wrong run');
+  if (current.needsRegistration) return refuse('registration pending');
+  if (current.blocked) return refuse('run is held');
+  if (current.scanNow || current.typingNow) return refuse('scan failed');
+  const epoch = current.scopeEpoch;
+  let reply: BridgeResponse;
+  let attachedHere = false;
+  current.scanNow = true;
+  try {
+    // A new call replaces the last highlight.
+    if (current.highlightTimer !== undefined) {
+      clearHighlight(current, false);
+      await hideHighlight(current);
+    }
+    if (!current.attached && !current.typingAttached) {
+      attachedHere = await attachForTyping(current, epoch);
+    }
+    reply = await scanAndShow(current, epoch, Date.now() + SCAN_MS);
+  } catch (error) {
+    // The error's own text is never passed on: it may name page state.
+    if (run !== current || current.stopped) reply = refuse('scan failed');
+    else if (current.blocked) reply = refuse('run is held');
+    else if (error instanceof Error && error.message === FRAME_OUT_OF_SCOPE) {
+      reply = refuse('field out of scope');
+    } else if (!current.attached && !current.typingAttached) {
+      reply = refuse('not attached');
+    } else reply = refuse('scan failed');
+  } finally {
+    if (attachedHere) await releaseTypingAttach(current);
+    current.scanNow = false;
+  }
+  return reply;
+}
+
+/** See showUnfilledField: the page work, under the tab lock. */
+async function scanAndShow(
+  current: Run,
+  epoch: number,
+  deadline: number,
+): Promise<UnfilledFieldResult> {
+  const lock = lockFor(current.tabId);
+  const tab: FrameSession = {
+    scope: current.frameScope,
+    debuggee: { tabId: current.tabId },
+    rootFrameId: current.mainFrameId,
+  };
+  // After every await: the same run and session, never out of scope since
+  // the call, within the deadline (throws).
+  const live = () => {
+    requireSameScope(current, epoch);
+    if (run !== current) throw new Error('run replaced');
+    if (
+      (!current.attached && !current.typingAttached) ||
+      tab.scope !== current.frameScope
+    ) {
+      throw new Error('not attached');
+    }
+    if (Date.now() > deadline) throw new Error('scan timed out');
+  };
+  const send = (method: string, params?: object) =>
+    sessionSend(tab, method, params, deadline);
+  for (;;) {
+    await untilNoScreenshot(lock);
+    await requireTabInScope(current);
+    live();
+    if (!lock.writer) break;
+  }
+  const release = holdShared(lock);
+  const objectGroup = checkGroup();
+  try {
+    const found = await scanUnfilled(current, tab, objectGroup, deadline);
+    live();
+    if (found === undefined) throw new Error('scan failed');
+    const { listId, count } = found;
+    const capped = count > UNFILLED_CLASSIFY_CAP;
+    if (count === 0) return { ok: true, found: false, remaining: 0 };
+    const objectId = objectIdOf(
+      await send('Runtime.callFunctionOn', {
+        objectId: listId,
+        functionDeclaration: UNFILLED_AT,
+        arguments: [{ value: 0 }],
+        objectGroup,
+      }),
+      'result',
+    );
+    live();
+    if (objectId === undefined) throw new Error('scan failed');
+    const node = describedNode(await send('DOM.describeNode', { objectId }));
+    live();
+    const backendNodeId = node?.backendNodeId;
+    if (typeof backendNodeId !== 'number') throw new Error('scan failed');
+    // The field's frame, judged like a command's node handle.
+    const { contextIds } = await resolveFrames(
+      current,
+      tab,
+      commandAddresses({ backendNodeId }),
+    );
+    live();
+    if (
+      contextIds.length !== 1 ||
+      !contextAllowedIn(current, tab.scope, contextIds[0])
+    ) {
+      throw new Error(FRAME_OUT_OF_SCOPE);
+    }
+    // Classification ends CLASSIFY_RESERVE_MS before the deadline, so a slow
+    // verdict degrades to sensitive and the highlight still has time.
+    const classifyBy = deadline - CLASSIFY_RESERVE_MS;
+    const sensitive = await fieldSensitive(
+      current,
+      tab,
+      backendNodeId,
+      node?.attributes,
+      classifyBy,
+    );
+    live();
+    // The rest of the first UNFILLED_CLASSIFY_CAP (P4c4-a), best effort:
+    // their verdicts are not in the reply, and no failure changes it.
+    const classifyLimit = Math.min(count, UNFILLED_CLASSIFY_CAP);
+    for (let index = 1; index < classifyLimit; index++) {
+      if (Date.now() >= classifyBy) break;
+      try {
+        const otherId = objectIdOf(
+          await sessionSend(
+            tab,
+            'Runtime.callFunctionOn',
+            {
+              objectId: listId,
+              functionDeclaration: UNFILLED_AT,
+              arguments: [{ value: index }],
+              objectGroup,
+            },
+            classifyBy,
+          ),
+          'result',
+        );
+        live();
+        if (otherId === undefined) continue;
+        const other = describedNode(
+          await sessionSend(
+            tab,
+            'DOM.describeNode',
+            { objectId: otherId },
+            classifyBy,
+          ),
+        );
+        live();
+        if (typeof other?.backendNodeId !== 'number') continue;
+        await fieldSensitive(
+          current,
+          tab,
+          other.backendNodeId,
+          other.attributes,
+          classifyBy,
+        );
+      } catch {
+        // Not in the reply; live() below answers an ended or held run.
+      }
+      live();
+    }
+    let highlighted = false;
+    if (current.attached) {
+      try {
+        // Overlay needs the DOM domain on; enabling it again is harmless.
+        // DOM is never disabled here: the agent relies on it.
+        await send('DOM.enable');
+        live();
+        await send('Overlay.enable');
+        live();
+        await send('DOM.scrollIntoViewIfNeeded', { backendNodeId });
+        live();
+        await send('Overlay.highlightNode', {
+          backendNodeId,
+          highlightConfig: HIGHLIGHT_CONFIG,
+        });
+        highlighted = true;
+        // Armed before anything else can throw, so a drawn highlight always
+        // ends.
+        clearHighlight(current, false);
+        current.highlightTimer = setTimeout(() => {
+          current.highlightTimer = undefined;
+          void hideHighlight(current);
+        }, HIGHLIGHT_MS);
+      } catch {
+        // Overlay unavailable: the fallback below. Ended, replaced or held
+        // meanwhile: live() answers that instead.
+      }
+    }
+    live();
+    if (!highlighted) {
+      await send('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: FOCUS_FIELD,
+        returnByValue: true,
+        silent: true,
+      });
+      live();
+    }
+    const result: UnfilledFieldResult = {
+      ok: true,
+      found: true,
+      remaining: count,
+      sensitive,
+    };
+    if (capped) result.capped = true;
+    return result;
+  } finally {
+    await releaseGroup(tab, objectGroup);
+    release();
+  }
+}
+
+/**
+ * Runs SCAN_UNFILLED in the bridge's `relay-focus` world of the main frame
+ * (made as focusedElement makes it) and reads back only the candidate count:
+ * the candidates stay in the page, by reference (`listId`, in
+ * `objectGroup`). Undefined when the world cannot be made or the answer is
+ * malformed. Throws when a lookup fails.
+ */
+async function scanUnfilled(
+  current: Run,
+  tab: FrameSession,
+  objectGroup: string,
+  deadline: number,
+): Promise<{ listId: string; count: number } | undefined> {
+  const send = (method: string, params?: object) =>
+    sessionSend(tab, method, params, deadline);
+  const evaluate = (contextId: number) =>
+    send('Runtime.evaluate', {
+      expression: `(${SCAN_UNFILLED})(document)`,
+      contextId,
+      objectGroup,
+      silent: true,
+    });
+  let evaluated: unknown;
+  try {
+    if (current.focusWorld === undefined) throw new Error('no world');
+    evaluated = await evaluate(current.focusWorld);
+    if (objectIdOf(evaluated, 'result') === undefined) {
+      throw new Error('no answer');
+    }
+  } catch {
+    // No world yet, or its document is gone: make one (its context events
+    // are dropped like the mask's, see isBridgeWorldCreated).
+    const world = await send('Page.createIsolatedWorld', {
+      frameId: current.mainFrameId,
+      worldName: FOCUS_WORLD,
+    });
+    const contextId = isObject(world) ? world.executionContextId : undefined;
+    if (typeof contextId !== 'number') return undefined;
+    current.focusWorld = contextId;
+    evaluated = await evaluate(contextId);
+  }
+  const listId = objectIdOf(evaluated, 'result');
+  if (listId === undefined) return undefined;
+  const summary = returnedValue(
+    await send('Runtime.callFunctionOn', {
+      objectId: listId,
+      functionDeclaration: UNFILLED_SUMMARY,
+      arguments: [{ value: UNFILLED_CLASSIFY_CAP }],
+      returnByValue: true,
+    }),
+  );
+  const count = isObject(summary) ? summary.count : undefined;
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
+    return undefined;
+  }
+  return { listId, count };
+}
+
+/**
+ * Whether a field is sensitive, for the reply's `sensitive` flag: its own
+ * attributes (isSensitiveField), its accessible name and role
+ * (isSensitiveField; masksFilledField alone answers false for a checkbox,
+ * radio or native select by role), or the redactor's verdict once filled
+ * (masksFilledField, Jev included). Unlike masksFilledField, every failure
+ * (no attributes, no accessibility node, a lookup error, the deadline)
+ * answers true. Never throws.
+ */
+async function fieldSensitive(
+  current: Run,
+  tab: FrameSession,
+  backendNodeId: number,
+  attributes: unknown,
+  deadline: number,
+): Promise<boolean> {
+  try {
+    if (!Array.isArray(attributes)) return true;
+    const fromAttributes = descriptorFromAttributes(attributes);
+    if (isSensitiveField(fromAttributes)) return true;
+    const tree = await sessionSend(
+      tab,
+      'Accessibility.getPartialAXTree',
+      { backendNodeId, fetchRelatives: false },
+      deadline,
+    );
+    const axNode = (
+      isObject(tree) && Array.isArray(tree.nodes) ? tree.nodes : []
+    ).find((n) => isObject(n) && n.backendDOMNodeId === backendNodeId);
+    if (!isObject(axNode)) return true;
+    const axText = (value: unknown) =>
+      isObject(value) && typeof value.value === 'string'
+        ? value.value
+        : undefined;
+    const label = axText(axNode.name);
+    const role = axText(axNode.role);
+    if (
+      isSensitiveField({
+        ...fromAttributes,
+        ...(label === undefined ? {} : { label }),
+        ...(role === undefined ? {} : { role }),
+      })
+    ) {
+      return true;
+    }
+    const left = deadline - Date.now();
+    if (left <= 0) return true;
+    return await withTimeout(
+      current.redactor.masksFilledField(axNode, describeVia(tab.debuggee)),
+      left,
+      'classify',
+    );
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Lets the run go on at the origin it is held on (plan 4c's panel asks the
  * caseworker). Only an exact https origin equal to `pendingOrigin`, with the
@@ -3262,6 +3745,9 @@ export async function handleMessage(message: unknown): Promise<BridgeResponse> {
   if (message.type === 'allowOrigin') return allowOrigin(message.origin);
   if (message.type === 'typeSensitive') {
     return typeSensitive(message.runId, message.value);
+  }
+  if (message.type === 'showUnfilledField') {
+    return showUnfilledField(message.runId);
   }
   return { ok: false, error: 'unknown message type' };
 }

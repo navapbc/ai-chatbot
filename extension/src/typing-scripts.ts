@@ -1,8 +1,9 @@
 // Page-side functions the bridge runs in its own isolated world (as CDP
 // `expression` or `functionDeclaration` source) to read keyboard focus and
-// to type a sensitive value for the caseworker (bridge.ts typeSensitive).
-// Pure strings, no chrome.*, so the e2e suite can run the exact source in a
-// real page. They answer fixed words or an element, never page text.
+// to type a sensitive value for the caseworker (bridge.ts typeSensitive), and
+// to find the required fields still empty (showUnfilledField). Pure strings,
+// no chrome.*, so the e2e suite can run the exact source in a real page. They
+// answer fixed words, counts or elements, never page text.
 
 /** Elements that show another document. */
 export const FRAME_OWNER_TAGS = /^(IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME)$/;
@@ -103,4 +104,154 @@ export const TYPE_INTO = `function (text) {
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
   return el.value !== before ? 'typed' : 'unchanged';
+}`;
+
+// Input types that hold no answer the caseworker gives (buttons, hidden).
+export const NOT_ANSWER_TYPES = [
+  'hidden',
+  'submit',
+  'button',
+  'image',
+  'reset',
+];
+
+/**
+ * Required fields that are still empty, as a function of a document, for
+ * showUnfilledField (bridge.ts): walked in DOM order through open shadow
+ * roots (never into frames: a cross-origin frame is not reachable, and a
+ * same-origin one is not scanned in v1). A field counts when it is visible
+ * (has a box, not visibility:hidden), enabled (not :disabled, not
+ * aria-disabled, not inert) and editable, and either fails
+ * `validity.valueMissing` or has aria-required="true" with nothing chosen
+ * (an empty text control or select, an unchecked checkbox, a radio group
+ * with none checked). A radio group counts once, as its first counted radio.
+ * ARIA widgets (role textbox, searchbox, combobox, checkbox, switch,
+ * radiogroup, listbox) with aria-required="true" count when empty.
+ *
+ * Answers `{ els, kinds }`: the candidate elements and, per candidate, one
+ * fixed kind word ('text', 'select', 'radio', 'checkbox', 'aria'). Values
+ * are read here only to decide emptiness; nothing derived from a value, a
+ * label, a name or page text is returned. The caller keeps the object by
+ * reference and projects only counts and kinds (UNFILLED_SUMMARY).
+ */
+export const SCAN_UNFILLED = `(doc) => {
+  const skip = ${JSON.stringify(NOT_ANSWER_TYPES)};
+  const maxNodes = 20000;
+  const els = [];
+  const kinds = [];
+  const radioGroups = new Set();
+  let visited = 0;
+  const ariaRequired = (el) => el.getAttribute('aria-required') === 'true';
+  const usable = (el) => {
+    if (el.matches(':disabled')) return false;
+    if (el.getAttribute('aria-disabled') === 'true') return false;
+    if (el.closest('[inert]')) return false;
+    if (el.getClientRects().length === 0) return false;
+    const view = el.ownerDocument.defaultView;
+    const style = view ? view.getComputedStyle(el) : null;
+    return !style || (style.visibility !== 'hidden' && style.visibility !== 'collapse');
+  };
+  const radiosOf = (el) => {
+    if (!el.name) return [el];
+    const root = el.getRootNode();
+    return Array.from(root.querySelectorAll('input[type="radio"]')).filter(
+      (r) => r.name === el.name && r.form === el.form,
+    );
+  };
+  const add = (el, kind) => {
+    els.push(el);
+    kinds.push(kind);
+  };
+  const consider = (el) => {
+    const tag = el.localName;
+    if (tag === 'input') {
+      const type = el.type;
+      if (skip.includes(type)) return;
+      if (type === 'radio') {
+        const group = radiosOf(el);
+        const key = group[0] || el;
+        if (radioGroups.has(key)) return;
+        const missing =
+          el.validity.valueMissing ||
+          (group.some(ariaRequired) && !group.some((r) => r.checked));
+        if (!missing || !usable(el)) return;
+        radioGroups.add(key);
+        add(el, 'radio');
+        return;
+      }
+      if (type === 'checkbox') {
+        const missing = el.validity.valueMissing || (ariaRequired(el) && !el.checked);
+        if (missing && usable(el)) add(el, 'checkbox');
+        return;
+      }
+      if (el.readOnly) return;
+      const missing = el.validity.valueMissing || (ariaRequired(el) && el.value === '');
+      if (missing && usable(el)) add(el, 'text');
+      return;
+    }
+    if (tag === 'textarea') {
+      if (el.readOnly) return;
+      const missing = el.validity.valueMissing || (ariaRequired(el) && el.value === '');
+      if (missing && usable(el)) add(el, 'text');
+      return;
+    }
+    if (tag === 'select') {
+      const missing = el.validity.valueMissing || (ariaRequired(el) && el.value === '');
+      if (missing && usable(el)) add(el, 'select');
+      return;
+    }
+    if (!ariaRequired(el)) return;
+    if (el.getAttribute('aria-readonly') === 'true') return;
+    const role = (el.getAttribute('role') || '').trim().toLowerCase();
+    let empty;
+    if (role === 'textbox' || role === 'searchbox' || role === 'combobox') {
+      if (el.querySelector('input, select, textarea')) return;
+      empty = (el.textContent || '').trim() === '';
+    } else if (role === 'checkbox' || role === 'switch') {
+      empty = el.getAttribute('aria-checked') !== 'true';
+    } else if (role === 'radiogroup') {
+      empty =
+        !el.querySelector('[role="radio"][aria-checked="true"]') &&
+        !el.querySelector('input[type="radio"]:checked');
+    } else if (role === 'listbox') {
+      empty = !el.querySelector('[aria-selected="true"]');
+    } else {
+      return;
+    }
+    if (empty && usable(el)) add(el, 'aria');
+  };
+  const walk = (root) => {
+    for (const el of root.querySelectorAll('*')) {
+      visited += 1;
+      if (visited > maxNodes) return;
+      try {
+        consider(el);
+      } catch {}
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+  };
+  walk(doc);
+  return { els, kinds };
+}`;
+
+/**
+ * Run on SCAN_UNFILLED's answer: how many candidates there are and the kind
+ * words of the first `cap`, nothing else.
+ */
+export const UNFILLED_SUMMARY = `function (cap) {
+  return { count: this.els.length, kinds: this.kinds.slice(0, cap) };
+}`;
+
+/** Run on SCAN_UNFILLED's answer: the candidate at `index`, by reference. */
+export const UNFILLED_AT = `function (index) {
+  return this.els[index];
+}`;
+
+/**
+ * The highlight's fallback, run on the field: scroll it into view and give
+ * it keyboard focus (the browser's focus ring marks it). Answers nothing.
+ */
+export const FOCUS_FIELD = `function () {
+  try { this.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch {}
+  try { this.focus({ preventScroll: true }); } catch {}
 }`;

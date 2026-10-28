@@ -2331,6 +2331,263 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     }
   });
 
+  // Required fields of every kind, below the page's tall spacer so showing
+  // one has to scroll. Not counted: a hidden one, a type=hidden one, a
+  // disabled one, a filled one, an optional blank, a readonly one.
+  const UNFILLED_HTML =
+    '<div id="unfilled">' +
+    '<input id="u-hidden" required hidden>' +
+    '<input type="hidden" name="u-h" required>' +
+    '<label for="u-dis">Disabled</label><input id="u-dis" required disabled>' +
+    '<label for="u-filled">Filled</label>' +
+    '<input id="u-filled" required value="Wren">' +
+    '<label for="u-opt">Optional</label><input id="u-opt">' +
+    '<label for="u-ro">Read only</label><input id="u-ro" required readonly>' +
+    '<label for="u-text">Nickname</label><input id="u-text" required>' +
+    '<label for="u-sel">County</label><select id="u-sel" required>' +
+    '<option value="">--</option><option>Alameda</option></select>' +
+    '<fieldset><legend>Housing</legend>' +
+    '<label><input type="radio" id="u-r1" name="u-r" required> Own</label>' +
+    '<label><input type="radio" id="u-r2" name="u-r"> Rent</label>' +
+    '</fieldset>' +
+    '<label><input type="checkbox" id="u-chk" required> I confirm</label>' +
+    '<label for="u-31">Social Security Number</label>' +
+    '<input id="u-31" name="field_31" required>' +
+    '<label for="u-aria">Phone</label><input id="u-aria" aria-required="true">' +
+    '</div>';
+
+  /**
+   * Records the worker's own Overlay and scroll calls (method, node, whether
+   * it succeeded) by wrapping chrome.debugger.sendCommand in the service
+   * worker; `stop` restores it.
+   */
+  const recordOverlay = async () => {
+    await browser.sw.evaluate(() => {
+      const g = globalThis as unknown as {
+        __overlayCalls: Array<Record<string, unknown>>;
+        __origSend?: typeof chrome.debugger.sendCommand;
+      };
+      g.__overlayCalls = [];
+      if (g.__origSend) return;
+      const orig = chrome.debugger.sendCommand.bind(chrome.debugger);
+      g.__origSend = orig;
+      (chrome.debugger as { sendCommand: unknown }).sendCommand = (
+        target: chrome.debugger.Debuggee,
+        method: string,
+        params?: Record<string, unknown>,
+      ) => {
+        const result = orig(target, method, params);
+        if (
+          method.startsWith('Overlay.') ||
+          method === 'DOM.scrollIntoViewIfNeeded'
+        ) {
+          const call: Record<string, unknown> = {
+            method,
+            backendNodeId: params?.backendNodeId,
+          };
+          g.__overlayCalls.push(call);
+          result.then(
+            () => {
+              call.ok = true;
+            },
+            (e: Error) => {
+              call.error = String(e?.message);
+            },
+          );
+        }
+        return result;
+      };
+    });
+    return {
+      calls: () =>
+        browser.sw.evaluate(
+          () =>
+            (
+              globalThis as unknown as {
+                __overlayCalls: Array<Record<string, unknown>>;
+              }
+            ).__overlayCalls,
+        ),
+      stop: () =>
+        browser.sw.evaluate(() => {
+          const g = globalThis as unknown as {
+            __origSend?: typeof chrome.debugger.sendCommand;
+          };
+          if (g.__origSend) {
+            (chrome.debugger as { sendCommand: unknown }).sendCommand =
+              g.__origSend;
+            g.__origSend = undefined;
+          }
+        }),
+    };
+  };
+
+  /** The id of the element a backend node id names, read by the worker. */
+  const idOfNode = (backendNodeId: number) =>
+    browser.sw.evaluate(
+      async ({ tab, node }) => {
+        const resolved = (await chrome.debugger.sendCommand(
+          { tabId: tab },
+          'DOM.resolveNode',
+          { backendNodeId: node },
+        )) as { object: { objectId: string } };
+        const read = (await chrome.debugger.sendCommand(
+          { tabId: tab },
+          'Runtime.callFunctionOn',
+          {
+            objectId: resolved.object.objectId,
+            functionDeclaration: 'function () { return this.id; }',
+            returnByValue: true,
+          },
+        )) as { result: { value: string } };
+        return read.result.value;
+      },
+      { tab: tabId, node: backendNodeId },
+    );
+
+  it('showUnfilledField counts the empty required fields and highlights the first', async () => {
+    const { cdp, runId } = await startRun();
+    expect(
+      (await agentBrowser(['snapshot', '-i'], cdp, 'unfilled')).success,
+    ).toBe(true);
+    await page.evaluate((html) => {
+      window.scrollTo(0, 0);
+      document.body.insertAdjacentHTML('beforeend', html);
+    }, UNFILLED_HTML);
+    // A required field in the cross-origin frame is never counted.
+    await crossFrame(page).evaluate(() => {
+      (document.querySelector('#x') as HTMLInputElement).required = true;
+    });
+    const recorder = await recordOverlay();
+    const showIt = () =>
+      bridgeMessage(browser.sw, { type: 'showUnfilledField', runId });
+    try {
+      const before = await page.evaluate(
+        () => document.getElementById('unfilled')?.outerHTML,
+      );
+      const reply = await showIt();
+      expect(reply).toEqual({
+        ok: true,
+        found: true,
+        remaining: 6,
+        sensitive: false,
+      });
+      // Counts and flags only: no label, name, value or page text.
+      for (const leak of ['Nickname', 'u-text', 'Wren', 'County', 'Social']) {
+        expect(JSON.stringify(reply)).not.toContain(leak);
+      }
+      // Highlighted with Overlay, on the first visible empty field, after
+      // scrolling to it; nothing focused, nothing in the DOM changed.
+      await until(async () =>
+        (await recorder.calls()).some(
+          (c) => c.method === 'Overlay.highlightNode' && c.ok,
+        ),
+      );
+      const calls = await recorder.calls();
+      expect(calls.filter((c) => c.error !== undefined)).toEqual([]);
+      const highlight = calls.find((c) => c.method === 'Overlay.highlightNode');
+      expect(await idOfNode(highlight?.backendNodeId as number)).toBe('u-text');
+      expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(1_000);
+      expect(await page.evaluate(() => document.activeElement?.id)).not.toBe(
+        'u-text',
+      );
+      expect(
+        await page.evaluate(
+          () => document.getElementById('unfilled')?.outerHTML,
+        ),
+      ).toBe(before);
+      // Hidden again after about 6 s.
+      await until(
+        async () =>
+          (await recorder.calls()).some(
+            (c) => c.method === 'Overlay.hideHighlight' && c.ok,
+          ),
+        9_000,
+      );
+      // Filling fields one by one moves the highlight down the form.
+      await page.fill('#u-text', 'Ash');
+      await page.selectOption('#u-sel', 'Alameda');
+      expect(await showIt()).toEqual({
+        ok: true,
+        found: true,
+        remaining: 4,
+        sensitive: false,
+      });
+      await page.check('#u-r2');
+      await page.check('#u-chk');
+      // The sensitive field is first now: highlighted, and flagged through
+      // the real accessibility path (its attributes say nothing).
+      expect(await showIt()).toEqual({
+        ok: true,
+        found: true,
+        remaining: 2,
+        sensitive: true,
+      });
+      const last = (await recorder.calls())
+        .filter((c) => c.method === 'Overlay.highlightNode')
+        .at(-1);
+      expect(await idOfNode(last?.backendNodeId as number)).toBe('u-31');
+      // A navigation ends the highlight at once.
+      const hides = (await recorder.calls()).filter(
+        (c) => c.method === 'Overlay.hideHighlight',
+      ).length;
+      await page.evaluate(() => history.pushState({}, '', '#step2'));
+      await until(
+        async () =>
+          (await recorder.calls()).filter(
+            (c) => c.method === 'Overlay.hideHighlight',
+          ).length > hides,
+        3_000,
+      );
+      await page.fill('#u-31', '123');
+      await page.fill('#u-aria', '555');
+      expect(await showIt()).toEqual({ ok: true, found: false, remaining: 0 });
+    } finally {
+      await recorder.stop();
+      await page.evaluate(() => {
+        document.getElementById('unfilled')?.remove();
+        history.replaceState({}, '', location.pathname);
+        window.scrollTo(0, 0);
+      });
+      await crossFrame(page)
+        .evaluate(() => {
+          (document.querySelector('#x') as HTMLInputElement).required = false;
+        })
+        .catch(() => {});
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await closeAgentSessions();
+    }
+  });
+
+  it('showUnfilledField without the agent attached scrolls and focuses, then lets go', async () => {
+    const { runId } = await startRun();
+    expect(await extensionAttached(tabId)).toBe(false);
+    await page.evaluate((html) => {
+      window.scrollTo(0, 0);
+      document.body.insertAdjacentHTML('beforeend', html);
+    }, UNFILLED_HTML);
+    try {
+      expect(
+        await bridgeMessage(browser.sw, { type: 'showUnfilledField', runId }),
+      ).toEqual({ ok: true, found: true, remaining: 6, sensitive: false });
+      expect(await page.evaluate(() => document.activeElement?.id)).toBe(
+        'u-text',
+      );
+      expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(1_000);
+      expect(await extensionAttached(tabId)).toBe(false);
+      expect(
+        await bridgeMessage(browser.sw, { type: 'getRunStatus' }),
+      ).toMatchObject({ active: true, runId, attached: false });
+    } finally {
+      await page.evaluate(() => {
+        document.getElementById('unfilled')?.remove();
+        window.scrollTo(0, 0);
+      });
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await closeAgentSessions();
+    }
+  });
+
   it('stopRun closes the agent at once and detaches', async () => {
     const { cdp } = await startRun();
     expect((await agentBrowser(['snapshot', '-i'], cdp, 'stop')).success).toBe(
