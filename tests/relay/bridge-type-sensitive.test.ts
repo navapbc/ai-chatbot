@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // The worker's typeSensitive message against a fake chrome.debugger and
 // relay socket: it registers the value, checks the focused field (enabled
 // text entry, in scope, masked by the redactor) and types it with exactly
-// one Input.insertText, or refuses with a fixed string and types nothing.
+// one call on the checked element (never Input.insertText, which types
+// wherever focus is), or refuses with a fixed string and types nothing.
 // Each test loads a fresh bridge module (no run, lock or world leaks).
 
 const ORIGIN = 'https://a.gov';
@@ -59,8 +60,6 @@ interface Fake {
   focused: boolean;
   /** FIELD_KIND's answer for the focused element. */
   kind: string;
-  /** STILL_FOCUSED's answer. */
-  still: boolean;
   /** The field's accessible name (its <label>). */
   label: string;
   /** The field's DOM attributes (DOM.describeNode). */
@@ -71,7 +70,11 @@ interface Fake {
   describeFails: boolean;
   /** What the agent's Runtime.evaluate gets back (a page echo). */
   pageText: string;
-  insertText: () => Promise<unknown>;
+  /**
+   * Answers the typing call on the checked element (TYPE_INTO): the page
+   * side re-checks focus and types in one task.
+   */
+  typeInto: (params: Record<string, unknown>) => Promise<unknown>;
   /** Holds the screenshot mask's world creation, when set. */
   maskGate?: Promise<unknown>;
   maskStarted?: () => void;
@@ -86,14 +89,13 @@ const freshFake = (): Fake => ({
   tabFrames: [],
   focused: true,
   kind: 'entry',
-  still: true,
   label: 'Social Security Number',
   attributes: ['id', 'f17', 'name', 'field_17'],
   fieldContext: 1,
   axMissing: false,
   describeFails: false,
   pageText: '',
-  insertText: async () => ({}),
+  typeInto: async () => ({ result: { type: 'string', value: 'typed' } }),
 });
 
 const sendCommand = vi.fn(
@@ -133,11 +135,9 @@ const sendCommand = vi.fn(
         return { result: { type: 'string', value: fake.pageText } };
       case 'Runtime.callFunctionOn': {
         const body = String(params.functionDeclaration);
+        if (body.includes('execCommand')) return fake.typeInto(params);
         if (body.includes(':enabled:read-write')) {
           return { result: { type: 'string', value: fake.kind } };
-        }
-        if (body.includes('activeElement')) {
-          return { result: { type: 'boolean', value: fake.still } };
         }
         return {};
       }
@@ -194,8 +194,6 @@ const sendCommand = vi.fn(
                 },
               ],
             };
-      case 'Input.insertText':
-        return fake.insertText();
       default:
         return {};
     }
@@ -268,7 +266,11 @@ afterEach(async () => {
 const sentTo = (method: string) =>
   sendCommand.mock.calls.filter(([, m]) => m === method);
 
-const inserts = () => sentTo('Input.insertText');
+/** The typing calls: each one types into the element it names. */
+const inserts = () =>
+  sentTo('Runtime.callFunctionOn').filter(([, , p]) =>
+    String(p?.functionDeclaration).includes('execCommand'),
+  );
 
 /** Sends a relay message and returns the bridge's reply to it. */
 const ask = async (socket: FakeSocket, message: Record<string, unknown>) => {
@@ -314,13 +316,19 @@ const tabCommand = (id: string, method: string, params: object = {}) => ({
 });
 
 describe('typeSensitive types into a masked focused field', () => {
-  it('sends exactly one Input.insertText carrying the value', async () => {
+  it('types the value once, into the element that was checked', async () => {
     await attachedRun();
     const reply = await type();
     expect(reply).toEqual({ ok: true });
     expect(inserts()).toHaveLength(1);
     expect(inserts()[0][0]).toEqual({ tabId: 1 });
-    expect(inserts()[0][2]).toEqual({ text: VALUE });
+    expect(inserts()[0][2]).toMatchObject({
+      objectId: '1.77.1',
+      arguments: [{ value: VALUE }],
+      returnByValue: true,
+    });
+    // Never through focus.
+    expect(sentTo('Input.insertText')).toHaveLength(0);
   });
 
   it('judges the field by its accessible name, not only its attributes', async () => {
@@ -479,14 +487,14 @@ describe('typeSensitive refusals type nothing', () => {
     await refused('no focused field');
   });
 
-  it.each([
-    ['not text entry, read-only or disabled', { kind: 'other' }],
-    ['focus moved before the send', { still: false }],
-  ])('no focused field: %s', async (_what, knobs) => {
-    Object.assign(fake, knobs);
-    await attachedRun();
-    await refused('no focused field');
-  });
+  it.each([['not text entry, read-only or disabled', { kind: 'other' }]])(
+    'no focused field: %s',
+    async (_what, knobs) => {
+      Object.assign(fake, knobs);
+      await attachedRun();
+      await refused('no focused field');
+    },
+  );
 
   it('field out of scope: focus stopped at a frame it cannot see into', async () => {
     fake.kind = 'frame';
@@ -542,8 +550,49 @@ describe('typeSensitive refusals type nothing', () => {
 });
 
 describe('typeSensitive timing', () => {
-  it('type failed: Input.insertText fails, and it is never sent again', async () => {
-    fake.insertText = async () => {
+  it('focus moved to an ordinary field after the check: nothing is typed there', async () => {
+    // A model of the page: the checked field (1.77.1) and an ordinary one.
+    // The page script moves focus while the field is judged; the typing call
+    // re-checks focus on the checked element and types in the same task.
+    const page = { focus: '1.77.1', values: new Map<string, string>() };
+    fake.typeInto = async (params) => {
+      const target = String(params.objectId);
+      if (page.focus !== target) {
+        return { result: { type: 'string', value: 'moved' } };
+      }
+      const [arg] = params.arguments as Array<{ value: string }>;
+      page.values.set(target, arg.value);
+      return { result: { type: 'string', value: 'typed' } };
+    };
+    await attachedRun();
+    const gate = deferred();
+    const axStarted = deferred<void>();
+    fake.axGate = gate.promise;
+    fake.axStarted = () => axStarted.resolve();
+    const typing = type();
+    await axStarted.promise;
+    page.focus = 'ordinary-field';
+    gate.resolve(undefined);
+    const reply = await typing;
+    expect(reply).toEqual({ ok: false, error: 'no focused field' });
+    expect(JSON.stringify(reply)).not.toContain(VALUE);
+    expect(page.values.size).toBe(0);
+    // The one typing call named the checked element, never the focus.
+    expect(inserts().map(([, , p]) => p?.objectId)).toEqual(['1.77.1']);
+    expect(sentTo('Input.insertText')).toHaveLength(0);
+  });
+
+  it('type failed: the page refused the input (value unchanged)', async () => {
+    fake.typeInto = async () => ({
+      result: { type: 'string', value: 'unchanged' },
+    });
+    await attachedRun();
+    expect(await type()).toEqual({ ok: false, error: 'type failed' });
+    expect(inserts()).toHaveLength(1);
+  });
+
+  it('type failed: the typing call fails, and it is never sent again', async () => {
+    fake.typeInto = async () => {
       throw new Error(`Cannot insert ${VALUE}`);
     };
     await attachedRun();
@@ -552,8 +601,8 @@ describe('typeSensitive timing', () => {
     expect(inserts()).toHaveLength(1);
   });
 
-  it('type failed: Input.insertText hangs past its timeout', async () => {
-    fake.insertText = () => new Promise(() => {});
+  it('type failed: the typing call hangs past its timeout', async () => {
+    fake.typeInto = () => new Promise(() => {});
     await attachedRun();
     const reply = await type();
     expect(reply).toEqual({ ok: false, error: 'type failed' });
@@ -600,9 +649,9 @@ describe('typeSensitive timing', () => {
     expect(inserts()).toHaveLength(0);
   });
 
-  it('Stop while Input.insertText is in flight: the reply has no value', async () => {
+  it('Stop while the typing call is in flight: the reply has no value', async () => {
     const insert = deferred();
-    fake.insertText = () => insert.promise;
+    fake.typeInto = () => insert.promise;
     await attachedRun();
     const typing = type();
     await vi.waitFor(() => expect(inserts()).toHaveLength(1));

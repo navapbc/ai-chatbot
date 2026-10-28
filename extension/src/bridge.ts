@@ -2706,8 +2706,8 @@ type TypeRefusal =
 
 /** The redactor's own limit; checked here too so the reason is fixed. */
 const MAX_TYPED_LENGTH = 512;
-// Input.insertText settles once the text is in; a page that hangs it fails
-// the typing (it is never sent again).
+// The typing call (TYPE_INTO) settles once the text is in; a page that hangs
+// it fails the typing (it is never sent again).
 const TYPE_MS = 3_000;
 // Input types whose value is the text typed into them (an input without a
 // type, or with an unknown one, reports `text`).
@@ -2744,9 +2744,40 @@ const FIELD_KIND = `function () {
   return el.matches(':enabled:read-write') ? 'entry' : 'other';
 }`;
 
-/** True while the element it runs on is still the focused one. */
-const STILL_FOCUSED = `function () {
-  return (${DEEP_ACTIVE})(document) === this;
+/**
+ * Types `text` into the element it runs on, the field that was checked, in
+ * the bridge's isolated world and in one script task, so no page script or
+ * agent command can move focus between the check and the typing:
+ * 'moved' (nothing typed) unless that element is still the focused one and
+ * still editable; else the text is inserted at its caret as typing does
+ * (execCommand insertText: beforeinput and input events, undo), or, where
+ * the browser will not do that, its value is set with the element's own
+ * setter (bypassing page overrides, as frameworks expect) followed by input
+ * and change events. 'typed' when the value changed, 'unchanged' when not
+ * (a page that refused the input). Only these words come back.
+ */
+const TYPE_INTO = `function (text) {
+  const el = this;
+  if ((${DEEP_ACTIVE})(document) !== el) return 'moved';
+  if (!el.isConnected || !el.matches(':enabled:read-write')) return 'moved';
+  const before = el.value;
+  let inserted = false;
+  try {
+    inserted = el.ownerDocument.execCommand('insertText', false, text);
+  } catch {}
+  if (!inserted) {
+    let proto = Object.getPrototypeOf(el);
+    let setter;
+    while (proto && !setter) {
+      setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      proto = Object.getPrototypeOf(proto);
+    }
+    if (!setter) return 'unchanged';
+    setter.call(el, text);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  return el.value !== before ? 'typed' : 'unchanged';
 }`;
 
 const returnedValue = (reply: unknown) =>
@@ -2757,8 +2788,8 @@ const returnedValue = (reply: unknown) =>
  * focused in the tab, for them: plan 4c-3. The value is registered for
  * scrubbing first (refused: nothing is typed), then the focused element is
  * checked (an enabled, editable text field, in a frame in scope, that the
- * redactor masks once filled), then it is typed with one Input.insertText,
- * never retried. A refusal after registering leaves the value registered.
+ * redactor masks once filled), then it is typed into that same element
+ * (TYPE_INTO, one call, never retried), not into whatever has focus. A refusal after registering leaves the value registered.
  *
  * This is worker-initiated CDP outside the agent's command policy, so it
  * re-applies what forwardCdp applies to agent input: run live and attached,
@@ -2887,32 +2918,33 @@ async function typeIntoFocused(
     );
     live();
     if (!masked) return 'field not sensitive';
-    // Focus may have moved while the field was judged.
-    const still = returnedValue(
-      await sessionSend(tab, 'Runtime.callFunctionOn', {
-        objectId,
-        functionDeclaration: STILL_FOCUSED,
-        returnByValue: true,
-      }),
-    );
-    // No await from here to the send.
-    live();
-    if (still !== true) return 'no focused field';
+    // No await from here to the send. The value goes to the element that
+    // was checked, never to whatever has focus: TYPE_INTO re-checks focus
+    // and types in the same script task (Input.insertText would type
+    // wherever focus is by the time the renderer gets it).
     if (inputGuardSignature(current) !== signature || !inScope()) {
       return 'field out of scope';
     }
+    let typed: unknown;
     try {
-      await withTimeout(
-        chrome.debugger.sendCommand(tab.debuggee, 'Input.insertText', {
-          text: value,
-        }),
-        TYPE_MS,
-        'typing',
+      typed = returnedValue(
+        await withTimeout(
+          chrome.debugger.sendCommand(tab.debuggee, 'Runtime.callFunctionOn', {
+            objectId,
+            functionDeclaration: TYPE_INTO,
+            arguments: [{ value }],
+            returnByValue: true,
+            silent: true,
+          }),
+          TYPE_MS,
+          'typing',
+        ),
       );
     } catch {
       return 'type failed';
     }
-    return null;
+    if (typed === 'moved') return 'no focused field';
+    return typed === 'typed' ? null : 'type failed';
   } finally {
     await releaseGroup(tab, objectGroup);
     release();

@@ -2076,6 +2076,24 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       await inner.focus('#cs');
       expect(await typeIt()).toEqual({ ok: true });
       expect(await inner.inputValue('#cs')).toBe(value);
+      // Through the service worker's message path, as the panel sends it,
+      // with keyboard focus taken by another tab: still typed.
+      await page.fill('#t17', '');
+      await page.focus('#t17');
+      expect(
+        await bridgeMessageFromPage(browser.context, {
+          type: 'typeSensitive',
+          runId,
+          value,
+        }),
+      ).toEqual({ ok: true });
+      expect(await page.inputValue('#t17')).toBe(value);
+      // The page echoes it in ordinary text: scrubbed as a known value.
+      await page.evaluate((v) => {
+        const echo = document.createElement('p');
+        echo.textContent = `You entered ${v}`;
+        document.getElementById('typing')?.append(echo);
+      }, value);
       // The agent's view of the page never shows it.
       const snap = await agentBrowser(['snapshot'], cdp, 'typing');
       expect(snap.success).toBe(true);
