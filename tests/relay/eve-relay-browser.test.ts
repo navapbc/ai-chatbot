@@ -11,7 +11,12 @@ import {
   vi,
 } from 'vitest';
 import { _resetAgentTokenCache } from '@/lib/relay/agent-token';
+import { relayCommandRefusal } from '@/lib/relay/command-policy';
 import {
+  HOLD_MAX_POLLS,
+  HOLD_POLL_COMMAND,
+  HOLD_POLL_INTERVAL_MS,
+  HOLD_WAIT_MS,
   relayCredentialState,
   relayRunRefFrom,
   runRelayCommand,
@@ -713,6 +718,156 @@ describe('recovery after an extension restart', () => {
       const result = await run(ctx, command);
       expect(JSON.stringify(result)).not.toContain(FAKE_TOKEN);
     }
+  });
+
+  describe('origin hold', () => {
+    const HELD =
+      'CDP error (Runtime.evaluate): tab is outside the allowed origin';
+    const ENDED = 'CDP error (Runtime.evaluate): tab or extension disconnected';
+    const isPoll = (c: { command: string[] }) =>
+      JSON.stringify(c.command) === JSON.stringify(HOLD_POLL_COMMAND);
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Runs `command`, letting the whole wait elapse on fake time. */
+    const settleRun = async (
+      run: typeof runRelayCommand,
+      ctx: ToolContext,
+      command: string[],
+    ) => {
+      const pending = run(ctx, command);
+      await vi.advanceTimersByTimeAsync(HOLD_WAIT_MS + 10_000);
+      return pending;
+    };
+
+    it('polls with an allowed command that carries no selector or text', () => {
+      expect(HOLD_POLL_COMMAND).toEqual(['get', 'url']);
+      expect(relayCommandRefusal(HOLD_POLL_COMMAND)).toBeNull();
+    });
+
+    it('re-runs a snapshot once when the hold clears after two polls', async () => {
+      let polls = 0;
+      let snapshots = 0;
+      const { run, ctx, base, calls } = await load((command) => {
+        if (command[0] === 'get') {
+          polls += 1;
+          return polls <= 2 ? fail(HELD) : ok('https://site.example/');
+        }
+        snapshots += 1;
+        return snapshots === 1 ? fail(HELD) : ok('fresh snapshot');
+      });
+      const result = await settleRun(run, ctx, ['snapshot', '-i']);
+      expect(result).toEqual({
+        success: true,
+        data: 'fresh snapshot',
+        error: null,
+        liveViewUrl: null,
+      });
+      expect(calls.map((c) => c.command)).toEqual([
+        ['snapshot', '-i'],
+        ['get', 'url'],
+        ['get', 'url'],
+        ['get', 'url'],
+        ['snapshot', '-i'],
+      ]);
+      // No rotation: the same daemon session throughout.
+      expect(new Set(calls.map((c) => c.session))).toEqual(new Set([base]));
+    });
+
+    it('does not replay a click when the hold clears', async () => {
+      let polls = 0;
+      const { run, ctx, calls } = await load((command) => {
+        if (command[0] === 'get') {
+          polls += 1;
+          return polls === 1 ? fail(HELD) : ok('https://site.example/');
+        }
+        return fail(HELD);
+      });
+      const result = await settleRun(run, ctx, ['click', '@e3']);
+      expect(result).toEqual({
+        success: false,
+        error: RESTORED,
+        liveViewUrl: null,
+      });
+      expect(calls.filter((c) => c.command[0] === 'click')).toHaveLength(1);
+      expect(calls.filter((c) => c.command[0] === 'close')).toHaveLength(0);
+      // Refs are void until a new snapshot: the next ref command never runs.
+      expect((await run(ctx, ['click', '@e4'])).error).toBe(RESTORED);
+      expect(calls.filter((c) => c.command[0] === 'click')).toHaveLength(1);
+    });
+
+    it('returns the original refusal when the hold never clears', async () => {
+      const { run, ctx, calls } = await load(() => fail(HELD));
+      const result = await settleRun(run, ctx, ['snapshot', '-i']);
+      expect(result).toEqual({
+        success: false,
+        data: null,
+        error: HELD,
+        liveViewUrl: null,
+      });
+      expect(HOLD_MAX_POLLS).toBe(41);
+      expect(calls).toHaveLength(1 + HOLD_MAX_POLLS);
+      expect(calls.slice(1).every(isPoll)).toBe(true);
+      expect(calls[0].command).toEqual(['snapshot', '-i']);
+    });
+
+    it('polls at a fixed interval, not faster', async () => {
+      const { run, ctx, calls } = await load(() => fail(HELD));
+      const pending = run(ctx, ['snapshot', '-i']);
+      await vi.advanceTimersByTimeAsync(HOLD_POLL_INTERVAL_MS * 3 + 1);
+      expect(calls.filter(isPoll)).toHaveLength(3);
+      await vi.advanceTimersByTimeAsync(HOLD_WAIT_MS);
+      await pending;
+    });
+
+    it('stops waiting with the end error when the run ends during the wait', async () => {
+      let polls = 0;
+      const { run, ctx, calls } = await load((command) => {
+        if (command[0] === 'get') {
+          polls += 1;
+          return polls === 1 ? fail(HELD) : fail(ENDED);
+        }
+        return fail(HELD);
+      });
+      const result = await settleRun(run, ctx, ['click', '@e3']);
+      expect(result).toMatchObject({ success: false, error: ENDED });
+      expect(calls.filter(isPoll)).toHaveLength(2);
+      expect(calls.filter((c) => c.command[0] === 'click')).toHaveLength(1);
+    });
+
+    it.each([
+      'CDP error (DOM.resolveNode): frame is outside the allowed origins',
+      'page said: tab is outside the allowed origin',
+      'CDP error (Runtime.evaluate): tab is outside the allowed origin.',
+    ])('starts no wait for the unrelated refusal %j', async (error) => {
+      const { run, ctx, calls } = await load(() => fail(error));
+      const pending = run(ctx, ['snapshot', '-i']);
+      await vi.advanceTimersByTimeAsync(HOLD_WAIT_MS + 10_000);
+      expect(await pending).toMatchObject({ success: false, error });
+      expect(calls).toHaveLength(1);
+    });
+
+    it('stops waiting when the turn is aborted', async () => {
+      const { run, ctx, calls } = await load(() => fail(HELD));
+      const controller = new AbortController();
+      const aborting = {
+        ...ctx,
+        abortSignal: controller.signal,
+      } as unknown as ToolContext;
+      const pending = run(aborting, ['snapshot', '-i']);
+      await vi.advanceTimersByTimeAsync(HOLD_POLL_INTERVAL_MS * 2 + 1);
+      controller.abort();
+      const result = await pending;
+      expect(result).toMatchObject({ success: false, error: HELD });
+      expect(calls.filter(isPoll)).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(HOLD_WAIT_MS);
+      expect(calls.filter(isPoll)).toHaveLength(2);
+    });
   });
 });
 

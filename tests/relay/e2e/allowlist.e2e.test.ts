@@ -465,6 +465,14 @@ describe('origin hold on a cross-origin redirect', { timeout: 90_000 }, () => {
     const refused = await agentBrowser(['get', 'title'], cdp);
     expect(refused.success).toBe(false);
     expect(String(refused.error)).toContain('outside the allowed origin');
+    // The Eve tool's hold poll (HOLD_POLL_COMMAND) reaches the bridge and is
+    // refused in exactly the shape HOLD_REFUSED matches, not answered from a
+    // cache in the agent-browser daemon.
+    const polled = await agentBrowser(['get', 'url'], cdp);
+    expect(polled.success).toBe(false);
+    expect(String(polled.error)).toMatch(
+      /^CDP error \([\w.]+\): tab is outside the allowed origin$/,
+    );
     const held = await runStatus();
     expect(
       Date.now() - heldAt,

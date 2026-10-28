@@ -47,6 +47,7 @@ describe('extension-run skill', () => {
     'never type `skip`',
     'never a free-text question',
     'A text answer of exactly `provided` means the caseworker entered the value in the page themselves: do not ask again and do not try to read it.',
+    'During that origin hold the `browser` tool waits and then tells you what to do: do not end your turn on the refusal. If the hold ends the run, you will be told.',
   ])('contains %s', (needle) => {
     expect(skill).toContain(needle);
   });
