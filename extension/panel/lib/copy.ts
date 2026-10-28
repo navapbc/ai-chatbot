@@ -273,11 +273,8 @@ export const NEEDS_YOU_COPY = {
     'This one is sensitive. Type it here and the extension fills it in, or type it in the page yourself.',
   cannotAnswer:
     'This question cannot be answered here. The agent is waiting; you can Stop the run.',
-  shouldHaveOffered:
-    'The agent should have offered "I entered it myself" and "Skip" for it.',
   noNumbers:
     'Do not type Social Security, bank, card or ID numbers here. Type those in the page.',
-  provided: 'I entered it myself',
   typeMyself: "I'll type it myself",
   fillIt: 'Fill it in',
   fillInstruction: 'Click the field in the page, then press Fill it in.',

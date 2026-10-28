@@ -11,8 +11,8 @@ import { isSensitiveField } from '../../../lib/relay/sensitive-fields';
 // - sensitive: the skill's convention (options exactly `provided` and `skip`,
 //   no free text), whatever the prompt; or a free-text question (no options)
 //   whose prompt the field classifier flags. The card never offers a text
-//   input for it: the convention gets "I entered it myself" and "Skip", a
-//   flagged free-text question gets a fixed notice and no answer.
+//   input for it: both get the masked typing card and "Skip". The first is
+//   answered by option id, the second by the text `provided` or `skip`.
 // - choice: any other question with options (a prompt that merely mentions a
 //   sensitive topic stays answerable: an option id carries no value), or one
 //   that does not allow free text. With no options it cannot be answered here.
@@ -60,12 +60,11 @@ export const classifyQuestion = (req: PendingInputRequest): QuestionKind => {
 };
 
 /**
- * The answer for a sensitive question's button: by option id, and only when
- * the request carries that option. A free-text question flagged by its prompt
- * has no such option and gets null (no answer from the panel): sending the word as
- * free text is not done, because the skill tells the agent that free text is
- * the field's value, so it could type "provided" over what the caseworker
- * entered.
+ * The answer for a sensitive question's button: by option id when the request
+ * carries that option; for a free-text question flagged by its prompt (no
+ * options, free text allowed) the text `provided` or `skip`, which the skill
+ * tells the agent to read as "the caseworker entered it" and "leave it".
+ * Anything else has no answer.
  */
 export const sensitiveAnswer = (
   req: PendingInputRequest,
@@ -74,7 +73,11 @@ export const sensitiveAnswer = (
   if (!isRecord(req)) return null;
   const r: Record<string, unknown> = req;
   if (typeof r.requestId !== 'string' || r.requestId === '') return null;
-  return optionIds(r).includes(choice)
-    ? { requestId: r.requestId, optionId: choice }
+  if (optionIds(r).includes(choice)) {
+    return { requestId: r.requestId, optionId: choice };
+  }
+  // 'sensitive' without the option shape is a flagged free-text question.
+  return classifyQuestion(req) === 'sensitive'
+    ? { requestId: r.requestId, text: choice }
     : null;
 };

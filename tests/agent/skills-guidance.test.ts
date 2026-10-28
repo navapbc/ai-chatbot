@@ -46,6 +46,7 @@ describe('extension-run skill', () => {
     'leave whatever is already in it and move on',
     'never type `skip`',
     'never a free-text question',
+    'A text answer of exactly `provided` means the caseworker entered the value in the page themselves: do not ask again and do not try to read it.',
   ])('contains %s', (needle) => {
     expect(skill).toContain(needle);
   });

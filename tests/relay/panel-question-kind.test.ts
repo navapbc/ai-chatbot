@@ -176,11 +176,21 @@ describe('sensitiveAnswer', () => {
     });
   });
 
-  it('never sends the word as free text for a prompt-flagged text question', () => {
+  it('answers a prompt-flagged free-text question with the exact text', () => {
     const r = req({ prompt: 'Social Security number' });
     expect(classifyQuestion(r)).toBe('sensitive');
-    expect(sensitiveAnswer(r, 'provided')).toBeNull();
-    expect(sensitiveAnswer(r, 'skip')).toBeNull();
+    expect(sensitiveAnswer(r, 'provided')).toEqual({
+      requestId: 'r1',
+      text: 'provided',
+    });
+    expect(sensitiveAnswer(r, 'skip')).toEqual({
+      requestId: 'r1',
+      text: 'skip',
+    });
+  });
+
+  it('gives an ordinary free-text question no sensitive answer', () => {
+    expect(sensitiveAnswer(req(), 'provided')).toBeNull();
   });
 
   it('has no answer for a request without provided/skip options', () => {
