@@ -96,10 +96,33 @@ export const loadRecents = async (
 // addRecent and markRecentEnded read the list, change it and write it back.
 // They run one at a time, in call order, so two near-simultaneous calls cannot
 // both read the old list and drop each other's change.
+// Across windows too: each panel window has its own module (and chain), so
+// the read-modify-write also takes the Web Lock `recentRuns`, shared by every
+// extension page of this origin. Otherwise one window's sweep could read the
+// list before another's addRecent and write it back after, dropping the run
+// the sweep exists to track. Without navigator.locks the chain alone applies.
 let chain: Promise<unknown> = Promise.resolve();
 
+type Locks = {
+  request<T>(name: string, callback: () => Promise<T>): Promise<T>;
+};
+
+const webLocks = (): Locks | undefined => {
+  try {
+    const locks = (globalThis as { navigator?: { locks?: Locks } }).navigator
+      ?.locks;
+    return typeof locks?.request === 'function' ? locks : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const serialized = <T>(task: () => Promise<T>): Promise<T> => {
-  const result = chain.then(task);
+  const locked = () => {
+    const locks = webLocks();
+    return locks ? locks.request(KEY, task) : task();
+  };
+  const result = chain.then(locked);
   // A failed call must not block the calls queued behind it.
   chain = result.catch(() => {});
   return result;
@@ -123,7 +146,7 @@ export const addRecent = async (
 
 export const markRecentEnded = async (
   runId: string,
-  reason: string,
+  reason: RecentEndedReason,
 ): Promise<void> => {
   if (!isValidReason(reason)) return;
   try {

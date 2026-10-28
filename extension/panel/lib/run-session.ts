@@ -144,7 +144,7 @@ export type RunSessionDeps = {
   clearInterval: (id: Timer) => void;
   setTimeout: (fn: () => void, ms: number) => Timer;
   clearTimeout: (id: Timer) => void;
-  markRecentEnded: (runId: string, reason: string) => Promise<void>;
+  markRecentEnded: (runId: string, reason: EndedReason) => Promise<void>;
 };
 
 export type RunSession = {

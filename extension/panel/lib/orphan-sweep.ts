@@ -1,6 +1,6 @@
 import { AppApiError } from '../../src/app-api';
 import type { RunStatus } from '../../src/bridge';
-import { type Recent, SWEPT } from './recents';
+import { type Recent, type RecentEndedReason, SWEPT } from './recents';
 
 // Stops server runs that nothing holds, once per panel open (plan 4d, I1/I2).
 //
@@ -34,7 +34,7 @@ export type SweepDeps = {
   api: { stopRun(runId: string): Promise<unknown> };
   worker: { getRunStatus(): Promise<RunStatus> };
   loadRecents: (now: number) => Promise<Recent[]>;
-  markRecentEnded: (runId: string, reason: string) => Promise<void>;
+  markRecentEnded: (runId: string, reason: RecentEndedReason) => Promise<void>;
   now: () => number;
   /** This panel's start in progress (see run-starter), never stopped. */
   startingRunId?: () => string | undefined;

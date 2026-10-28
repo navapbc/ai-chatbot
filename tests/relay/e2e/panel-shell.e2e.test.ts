@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mintRelayToken } from '../../../lib/relay/token';
 import { extractTokens } from '../../../scripts/extension-build-config';
 import {
@@ -281,6 +281,15 @@ afterAll(async () => {
   await relay?.stop();
   await fixtures?.stop();
   if (out) rmSync(out, { recursive: true, force: true });
+});
+
+// Every panel open sweeps unended recents older than 90 s (orphan-sweep.ts).
+// Runs earlier tests left unended would be stopped by a later test's panel,
+// adding stop calls to its exact `appCalls` and, for a run the fake app has
+// no row for, a 404 console error. Each test starts with no recents.
+beforeEach(async () => {
+  const sw = browser.context.serviceWorkers()[0] ?? browser.sw;
+  await sw.evaluate(() => chrome.storage.local.remove('recentRuns'));
 });
 
 describe('the panel shell', () => {

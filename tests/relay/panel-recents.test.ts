@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addRecent,
   formatAgo,
   loadRecents,
   markRecentEnded,
   type Recent,
+  type RecentEndedReason,
   START_FAILED,
   SWEPT,
   visibleRecents,
@@ -150,7 +151,7 @@ describe('recents', () => {
 
   it('markRecentEnded ignores an invalid reason', async () => {
     await addRecent(rec(1), NOW);
-    await markRecentEnded(id(1), 'Not Valid!');
+    await markRecentEnded(id(1), 'Not Valid!' as RecentEndedReason);
     expect((await loadRecents(NOW))[0].endedReason).toBeUndefined();
   });
 });
@@ -230,6 +231,51 @@ describe('recents: read-modify-write is serialized', () => {
     const list = await loadRecents(NOW);
     expect(list.map((r) => r.runId).sort()).toEqual([id(1), id(2)]);
     expect(list.find((r) => r.runId === id(1))?.endedReason).toBe('stopped');
+  });
+
+  // Two panel windows: two module instances, so two separate chains. Only
+  // the Web Lock shared by every extension page keeps them from interleaving.
+  const twoWindows = async () => {
+    const path = '../../extension/panel/lib/recents';
+    vi.resetModules();
+    const a: typeof import('../../extension/panel/lib/recents') = await import(
+      path
+    );
+    vi.resetModules();
+    const b: typeof import('../../extension/panel/lib/recents') = await import(
+      path
+    );
+    return { a, b };
+  };
+  const interleave = async () => {
+    const { a, b } = await twoWindows();
+    await a.addRecent(rec(1), NOW);
+    slow();
+    // Window A's sweep marks run 1 while window B records a new start.
+    await Promise.all([
+      a.markRecentEnded(id(1), 'swept'),
+      b.addRecent(rec(2), NOW),
+    ]);
+    return loadRecents(NOW);
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('without a shared lock, two windows lose an update (the test can fail)', async () => {
+    vi.stubGlobal('navigator', {});
+    const list = await interleave();
+    const ids = list.map((r) => r.runId).sort();
+    const swept = list.find((r) => r.runId === id(1))?.endedReason === 'swept';
+    expect(ids.length === 2 && swept).toBe(false);
+  });
+
+  it('with the shared Web Lock, two windows both land', async () => {
+    expect(typeof navigator.locks?.request).toBe('function');
+    const list = await interleave();
+    expect(list.map((r) => r.runId).sort()).toEqual([id(1), id(2)]);
+    expect(list.find((r) => r.runId === id(1))?.endedReason).toBe('swept');
   });
 
   it('a failed call does not block the next one', async () => {
