@@ -5,9 +5,7 @@ import {
   ALLOW_TAB_POLL_MS,
   type AllowSiteDeps,
   type AllowSiteView,
-  allowedNote,
   createAllowSiteController,
-  formatClock,
   showAllowSite,
 } from '../../extension/panel/lib/allow-site';
 import { ALLOW_SITE_COPY } from '../../extension/panel/lib/copy';
@@ -452,39 +450,11 @@ describe('allow-site controller: never auto-approved', () => {
 });
 
 describe('the allowed note', () => {
-  const utc = new Intl.DateTimeFormat('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-    timeZone: 'UTC',
-  });
-
-  it('formats the expiry (seconds) as hour:minute with the given formatter', () => {
-    // 1_800_000_000 s = 2027-01-15T08:00:00Z
-    expect(formatClock(1_800_000_000 + 25 * 60, utc)).toBe('08:25');
-  });
-
-  it('says the run cannot be extended on that site and when it ends', () => {
-    expect(allowedNote(1_800_000_000 + 25 * 60, false, utc)).toBe(
-      'Allowed. While the tab stays on that site this run cannot be extended and ends at 08:25.',
-    );
-  });
-
-  it('an estimated or unusable expiry gives no invented time', () => {
-    const text = ALLOW_SITE_COPY.allowedEstimated;
-    expect(allowedNote(1_800_000_000, true, utc)).toBe(text);
-    expect(allowedNote(Number.NaN, false, utc)).toBe(text);
-    expect(text).toBe(
-      'Allowed. While the tab stays on that site this run cannot be extended and may end soon.',
-    );
-  });
-
   it('never claims the site is safe', () => {
     const all = [
       ...(Object.values(ALLOW_SITE_COPY) as unknown[]).filter(
         (v): v is string => typeof v === 'string',
       ),
-      allowedNote(1_800_000_000, false, utc),
       ALLOW_SITE_COPY.moved(A),
     ].join('\n');
     expect(all).not.toMatch(/\b(safe|secure|trusted|verified)\b/i);

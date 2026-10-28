@@ -1500,12 +1500,6 @@ describe('the panel shell', () => {
           { timeout: 5_000 },
         )
         .toEqual({ active: true, runId, held: null });
-      // The P4c2-e note, which outlives the card.
-      await page
-        .getByText(
-          /^Allowed\. While the tab stays on that site this run cannot be extended and ends at .+\.$/,
-        )
-        .waitFor();
       await expect.poll(() => heading.count(), { timeout: 5_000 }).toBe(0);
 
       // Past the hold: the run goes on at the new origin.
@@ -1518,7 +1512,6 @@ describe('the panel shell', () => {
       expect(after.pendingOrigin).toBeUndefined();
       expect(stoppedFor(runId, 'left-origin')).toBe(false);
       await page.getByRole('heading', { name: 'Running' }).waitFor();
-      await page.getByText(/^Allowed\. While the tab stays/).waitFor();
       for (const line of seen) expect(line).not.toMatch(/Zelda|frag-77|oopif/);
     } finally {
       await stopWorkerRun(page);

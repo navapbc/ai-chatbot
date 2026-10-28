@@ -339,8 +339,4 @@ export const ALLOW_SITE_COPY = {
   allow: 'Allow this site for this run',
   allowing: 'Allowing...',
   stop: 'Stop the run',
-  allowed: (time: string) =>
-    `Allowed. While the tab stays on that site this run cannot be extended and ends at ${time}.`,
-  allowedEstimated:
-    'Allowed. While the tab stays on that site this run cannot be extended and may end soon.',
 } as const;

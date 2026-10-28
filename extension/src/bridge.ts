@@ -616,7 +616,10 @@ async function startRunNow(
 const restartingRunIds: string[] = [];
 let resumesInFlight = 0;
 
-/** True when the live run has this id and token origin and allowed an origin `url` is in. */
+/**
+ * True when `url` is on an origin the live run was allowed, and that run has
+ * the incoming token's run id and origin.
+ */
 function onCarriedOrigin(
   url: string,
   claims: { runId: string; origin: string },

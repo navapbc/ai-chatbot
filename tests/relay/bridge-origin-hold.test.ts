@@ -876,6 +876,42 @@ describe('a token refresh and the allowed origins', () => {
     await allowed(socket, B);
     fake.tabUrl = `${C}/x`;
     expect(await refresh()).toEqual({ ok: false, error: OUT_OF_SCOPE });
+    // The old run is untouched and B is still allowed.
+    expect((await status()).active).toBe(true);
+    expect(stops(socket)).toEqual([]);
+    fake.tabUrl = `${B}/x`;
+    expect((await evaluate(socket)).error).toBeUndefined();
+  });
+
+  it('a same-run token for a different origin carries nothing', async () => {
+    const socket = await attachedRun();
+    await allowed(socket, B);
+    // Same run id, token bound to C: B (allowed on the old run) is not C.
+    const other = `${b64url({
+      runId: 'run-1',
+      role: 'extension',
+      origin: C,
+      exp: Math.floor(Date.now() / 1000) + 3 * 3600,
+    })}.sig`;
+    expect(await refresh('run-1', other)).toEqual({
+      ok: false,
+      error: OUT_OF_SCOPE,
+    });
+    expect((await status()).active).toBe(true);
+  });
+
+  it('a restart through resumeRun begins with no extra origins', async () => {
+    const socket = await attachedRun();
+    await allowed(socket, B);
+    fake.tabUrl = `${ORIGIN}/form`;
+    vi.resetModules();
+    bridge = await import('@/extension/src/bridge');
+    await bridge.resumeRun();
+    const next = await reopened();
+    commit(`${B}/x`);
+    expect((await status()).pendingOrigin).toBe(B);
+    expect((await evaluate(next)).error).toBeDefined();
+    expect(await refresh()).toEqual({ ok: false, error: OUT_OF_SCOPE });
   });
 
   it('a refresh during a hold on a not-yet-allowed origin is refused', async () => {
