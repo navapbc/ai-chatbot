@@ -1829,18 +1829,17 @@ describe('the panel shell', () => {
       await first.page.close();
       await first.site.close();
     }
-    // Past the 90 s age gate (seeded, not waited out). A second recent, older
-    // still, whose row exists: a sweep that reaches it has decided every
-    // newer recent before it (recents are newest first).
+    // Past the 90 s age gate (seeded, not waited out), with no stop yet.
     await ageRecents(5 * 60_000);
     expect(stopsSeen(orphanId)).toBe(0);
 
     // The next open sweeps it: one stop, marked swept. Then a real run starts.
     const { site, page, runId } = await startOnRealTab();
     try {
-      expect(stopsSeen(orphanId)).toBe(1);
+      // The sweep is fire and forget: wait for it rather than assume it ran.
+      await expect.poll(() => stopsSeen(orphanId)).toBe(1);
       expect(runs.get(orphanId)?.ended).toBe(true);
-      expect(await recentOf(orphanId)).toBe('swept');
+      await expect.poll(() => recentOf(orphanId)).toBe('swept');
       expect(stopsSeen(runId)).toBe(0);
 
       const row = runs.get(runId);

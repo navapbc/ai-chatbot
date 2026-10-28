@@ -86,14 +86,22 @@ export const loadRecents = async (
 ): Promise<Recent[]> => {
   try {
     const { list, dirty } = await read(now);
-    if (dirty) await chrome.storage.local.set({ [KEY]: list });
-    return list;
+    if (!dirty) return list;
+    // The cleaned list is written back under the same lock and chain as the
+    // mutators, from a fresh read: writing back the list read above could
+    // drop a recent another window added in between (a start's only record).
+    return await serialized(async () => {
+      const fresh = await read(now);
+      if (fresh.dirty) await chrome.storage.local.set({ [KEY]: fresh.list });
+      return fresh.list;
+    });
   } catch {
     return [];
   }
 };
 
-// addRecent and markRecentEnded read the list, change it and write it back.
+// addRecent, markRecentEnded and loadRecents' write-back of a cleaned list
+// read the list, change it and write it back.
 // They run one at a time, in call order, so two near-simultaneous calls cannot
 // both read the old list and drop each other's change.
 // Across windows too: each panel window has its own module (and chain), so

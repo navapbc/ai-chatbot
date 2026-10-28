@@ -213,7 +213,7 @@ Other follow-ups:
 - [x] Known values across a same-run refresh: solved in plan 4c-3, the worker carries them.
 - [x] Every panel open mid-run refreshes the token at once, which detaches the debugger and drops allowed origins: re-allow or re-prompt origins after a refresh. Closed in plan 4d: a rebuild uses the real `exp`, and a refresh carries allowed origins.
 - [ ] `siteName` is the hostname for "Use this tab" and is cut to 100 UTF-16 units, which can split a surrogate pair.
-- [ ] The recents read-modify-write is serialized by a mutex within one window, not across windows.
+- [x] The recents read-modify-write (`addRecent`, `markRecentEnded`, and `loadRecents`' write-back of a cleaned list, which re-reads first) is serialized across windows by the `recentRuns` Web Lock plus an in-window chain (plan 4d). Without `navigator.locks` only the in-window chain applies. The sweep loop itself is not locked.
 - [x] `ensureSweepAlarm` now checks `alarms.get` first and creates the alarm only when none exists, and the worker also sweeps once at every start. Still open: it uses the global `chrome`.
 - [ ] Cross-window start: after a successful worker start, `worker_unreachable` can leave a worker run against a stopped server run.
 - [ ] If the server stop fails after a worker-initiated end it is not retried; Stop can take 10 s or more plus the refresh before the worker stop; the elapsed timer restarts on a rebuilt run; focus drops when Stop is disabled.
@@ -284,7 +284,7 @@ Minors by area:
 - [ ] An old run's attach step can fail after the run was replaced. It then skips its detach, so as not to cut the new run's attach, and an attach that lands late can leave the tab attached, with the banner up, until the next attach.
 - [ ] `typeSensitive`'s `finally` awaits `releaseTypingAttach`, so its reply can be delayed by up to about 15 s when the queue is stuck behind slow steps.
 - [ ] There is no test for an attach that lands after its timeout.
-- [ ] The agent's attach steps are bounded at 10 s each, so about 50 s for a whole attach. Its worst case behind one typing step stays under the agent's 120 s command timeout.
+- [ ] The agent's attach steps are bounded at 10 s each, so about 50 s for a whole attach (about 65 s behind one typing step). An agent `attach` goes through the hub, whose command timeout is 30 s (`relay/hub.ts` default; `relay/server.ts` sets no override), so a slow attach is answered `extension did not answer` before that bound. Task 6 treats this as a lost connection, so the tool rotates and retries. The stale queued step can still finish. That is harmless, because the next attach detaches first.
 - [ ] Each typing step of the per-run attach queue is bounded at 3 s. A `chrome.debugger.attach` that lands after its timeout leaves the tab attached with no flag set until the next attach (which detaches first) or the end of the run. The debugger banner can stay up during that time.
 - [ ] Task 1: no bridge-level `resumeRun` test for `restarting`; `rebuildRun` returns null while a refresh is in progress, so a panel opened at that moment shows Home.
 - [ ] Task 2: the hold timer resets across a refresh race (pre-existing for the token origin); the tab URL is read once, before the awaits.
@@ -293,8 +293,11 @@ Minors by area:
 - [ ] Task 4: a laptop-sleep race can let a second window stop a run that was just started.
 - [ ] Task 4: `MAX_SWEEP_STOPS` cannot bind in production (Recents are capped at 10); `start-failed` recents hidden on Home still take slots.
 - [ ] Task 4: Home shows a stale label on the sweeping open; the panel's `worker.startRun` has no timeout.
+- [ ] Task 4: the sweep calls only the server stop, not the scoped worker `stopRun(runId)`. This deliberately deviates from the Stop path: the sweep stops only runs the worker does not hold, and it re-reads the worker before each stop. The laptop-sleep race is parked above.
+- [ ] Task 4: on a failed start where the server stop succeeded but the worker stop failed, the recent is still marked `start-failed`. A worker run can then linger, hidden, with an ended server row until its token expires. It cannot mint agent tokens.
 - [ ] Task 5: an abort after the check is caught only by the sweep; the log prefixes in the abort branch are inconsistent (`[eve-chat]`, `[relay-stop]`).
 - [ ] Task 6: the first command can still stall up to 30 s before the retry; there is no hub queue (decision P4d-g).
+- [ ] Task 7: the hold wait returns raw transport errors from a failing probe (`not attached`, `extension restarted`), and a lost connection on the re-run is not rotated. The agent's next command recovers.
 - [ ] Task 7: the SKILL wording overstates (a bare refusal after 125 s; a raw disconnect error when the hold ends the run); a single poll timeout ends the wait early; a re-run `get url` leaves `needsSnapshot` set, untested.
 - [ ] Task 8: unused `body` variable and a redundant regex in the panel-shell e2e (about lines 417 to 420); `searchParticipants` has no `limit` parameter although the plan said `(q, limit)`; historical plan docs still mention the participants GET.
 

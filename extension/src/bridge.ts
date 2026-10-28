@@ -1287,8 +1287,11 @@ const ATTACH_STEP_MS = 3_000;
 // Page.getFrameTree. An attach step has at most 5 bounded awaits (tab,
 // detach, attach, Page.enable, frame tree, plus a detach on failure that
 // replaces the rest), so about 50 s, plus at most one typing step (about
-// 15 s) ahead in the queue, stays under the agent's 120 s command timeout
-// (lib/relay/eve-relay-browser.ts).
+// 15 s) ahead in the queue. That exceeds the hub's 30 s command timeout
+// (relay/hub.ts; relay/server.ts sets no override): the hub answers
+// `extension did not answer`, the Eve tool treats it as a lost connection
+// and rotates, and the stale queued step may still finish, which is
+// harmless because the next attach detaches first.
 const AGENT_ATTACH_STEP_MS = 10_000;
 const bounded = <T>(promise: Promise<T>, what: string, ms = ATTACH_STEP_MS) =>
   withTimeout(promise, ms, what);

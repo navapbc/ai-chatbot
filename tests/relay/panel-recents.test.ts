@@ -278,6 +278,39 @@ describe('recents: read-modify-write is serialized', () => {
     expect(list.find((r) => r.runId === id(1))?.endedReason).toBe('swept');
   });
 
+  it("a window's cleaning write-back never drops another window's new recent", async () => {
+    const { a, b } = await twoWindows();
+    // A dirty list: one entry past 24 hours, so loadRecents writes back.
+    store[KEY] = [rec(1), rec(3, { startedAt: NOW - 25 * HOUR })];
+    const local = (
+      globalThis as unknown as {
+        chrome: { storage: { local: Record<string, unknown> } };
+      }
+    ).chrome.storage.local;
+    const get = local.get as (key: string) => Promise<unknown>;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let first = true;
+    local.get = async (key: string) => {
+      const value = await get(key);
+      if (first) {
+        // Window B's read: it sees the old list, then waits.
+        first = false;
+        await gate;
+      }
+      return value;
+    };
+    const loading = b.loadRecents(NOW);
+    // Window A records a start between B's read and B's write-back.
+    await a.addRecent(rec(2), NOW);
+    release();
+    await loading;
+    const ids = (await loadRecents(NOW)).map((r) => r.runId).sort();
+    expect(ids).toEqual([id(1), id(2)]);
+  });
+
   it('a failed call does not block the next one', async () => {
     slow();
     const settled = await Promise.allSettled([
