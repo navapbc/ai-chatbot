@@ -275,6 +275,14 @@ Minors by area:
 - [ ] The carry-failure `needsRegistration` flag is cleared by the panel's `registrationComplete(runId, 0)`, so it is unreachable as a gate today.
 - [ ] Copy: `value_not_accepted` could say the value was empty or too long; the copy test checks only length.
 
+## Plan 4d Follow-ups
+
+- [ ] When the agent is not attached, `typeSensitive` attaches the debugger for that one typing call. If the debugger is detached during that call, or the caseworker dismisses the infobar, the run ends: `debugger-detached` after the 5 s grace if the agent does not attach in time, or `debugger-canceled` at once.
+- [ ] An agent `attach` can cut off a typing call that is still in flight. The reply then says the typing failed (`type failed` or `not attached`) even though the value may have landed. This is benign: the value stays registered and a retry is safe.
+- [ ] A typing attach refused because another debugger client holds the tab is covered only by the unit fake. Playwright's CDP session in the e2e does not block the attach.
+- [ ] Typing into a field in a same-origin (srcdoc) frame while the agent is not attached is not tested in real Chromium. If the bridge cannot find the frame's context, the answer is `field out of scope` (fails closed).
+- [ ] Each step of the per-run attach queue is bounded at 3 s. A `chrome.debugger.attach` that lands after its timeout leaves the tab attached with no flag set until the next attach (which detaches first) or the end of the run. The debugger banner can stay up during that time.
+
 ## Plan 5: Rollout
 
 - [ ] Test banner suppression (force-install, `--silent-debugger-extension-api`) on a managed Chrome; add `minimum_chrome_version` to the manifest.

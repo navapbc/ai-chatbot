@@ -193,6 +193,13 @@ interface Run extends RunConfig {
    */
   typingAttached: boolean;
   /**
+   * This run's attach chain (see queuedAttach): created in begin, so a run
+   * never inherits a stuck chain from an earlier one.
+   */
+  attachChain: Promise<unknown>;
+  /** Set while a typeSensitive call is between its checks and its reply. */
+  typingNow: boolean;
+  /**
    * Set synchronously the moment the tab leaves scope, before any await, so
    * no command or event gets through while the run is held (see
    * holdOrigin) or being torn down. Not terminal: a hold that ends with the
@@ -932,6 +939,8 @@ function begin(
     stopped: false,
     attached: false,
     typingAttached: false,
+    attachChain: Promise.resolve(),
+    typingNow: false,
     blocked: false,
     scopeEpoch: 0,
     extraOrigins: [],
@@ -1251,19 +1260,33 @@ const contextAllowedIn = (current: Run, scope: FrameScope, contextId: number) =>
   );
 
 /**
- * Every attach (the agent's relay `attach` and typeSensitive's) runs one at
- * a time behind this chain, so two of them never interleave their detach,
- * attach and frame-tree awaits on the tab. Module-wide: a replaced run's
- * late attach is ordered with the new run's too. Each step settles on its
- * own; a failed one does not stop the chain.
+ * Every attach of a run (the agent's relay `attach` and typeSensitive's)
+ * and the typing let-go run one at a time behind the run's chain, so two of
+ * them never interleave their detach, attach and frame-tree awaits on the
+ * tab. Every await inside a step is bounded (ATTACH_STEP_MS), so a step
+ * always settles and a failed one does not stop the chain. Per run: a new
+ * run starts with a fresh chain (its first attach detaches first, so a
+ * replaced run's late attach is harmless).
  */
-let attachChain: Promise<unknown> = Promise.resolve();
-
-function queuedAttach<T>(step: () => Promise<T>): Promise<T> {
-  const result = attachChain.then(step);
-  attachChain = result.catch(() => {});
+function queuedAttach<T>(current: Run, step: () => Promise<T>): Promise<T> {
+  const result = current.attachChain.then(step);
+  current.attachChain = result.catch(() => {});
   return result;
 }
+
+/**
+ * Bounds each chrome.debugger (and tab lookup) call of an attach step. A
+ * call that settles after its timeout changes no flag: an attach that lands
+ * late leaves the tab held by nobody (no event is forwarded, no command
+ * passes), and the next attach detaches first.
+ */
+const ATTACH_STEP_MS = 3_000;
+const bounded = <T>(promise: Promise<T>, what: string) =>
+  withTimeout(promise, ATTACH_STEP_MS, what);
+
+/** Best-effort, bounded: let go of the tab. */
+const detachTab = (tabId: number) =>
+  bounded(chrome.debugger.detach({ tabId }), 'detach').catch(() => {});
 
 /**
  * The attach core (run only through queuedAttach): checks the tab is in
@@ -1274,59 +1297,74 @@ function queuedAttach<T>(step: () => Promise<T>): Promise<T> {
  * attach. Sets neither `attached` nor `typingAttached`: the caller does.
  */
 async function attachTab(current: Run, epoch: number, targetId: string) {
-  await requireTabInScope(current);
-  requireSameScope(current, epoch);
+  // Stopped, replaced or moved out of scope since the call (throws).
+  const live = () => {
+    if (run !== current) throw new Error('run replaced');
+    requireSameScope(current, epoch);
+  };
+  await bounded(requireTabInScope(current), 'tab');
+  live();
   current.attached = false;
   current.typingAttached = false;
   dropChildren(current);
   current.frameScope = createFrameScope();
   current.focusWorld = undefined;
   current.dialog = undefined;
+  await detachTab(current.tabId);
+  live();
   try {
-    await chrome.debugger.detach({ tabId: current.tabId });
-  } catch {
-    // Not attached.
-  }
-  if (current.blocked || current.stopped) throw new Error(OUT_OF_SCOPE);
-  await chrome.debugger.attach({ tabId: current.tabId }, '1.3');
-  if (current.blocked || current.stopped) {
-    // The run ended while attaching; let go again.
-    await chrome.debugger.detach({ tabId: current.tabId }).catch(() => {});
-    throw new Error(OUT_OF_SCOPE);
-  }
-  // The bridge owns the Page domain: leave-origin detection reads Page
-  // navigation events, so it never depends on the agent enabling Page
-  // (and the agent cannot disable it: Page.disable is not allowed). This
-  // does not go through the agent allowlist and the agent gets no reply.
-  // Fail closed: without it the run is not attached.
-  try {
-    await chrome.debugger.sendCommand({ tabId: current.tabId }, 'Page.enable');
-  } catch {
-    console.warn('relay: Page.enable failed; refusing attach');
-    await chrome.debugger.detach({ tabId: current.tabId }).catch(() => {});
-    throw new Error('could not enable page events');
-  }
-  // Frame scope starts from the current tree; Page events keep it
-  // current from here (events that raced the reply were applied first,
-  // and the tree supersedes them). Fail closed like Page.enable.
-  try {
-    const tree = await chrome.debugger.sendCommand(
-      { tabId: current.tabId },
-      'Page.getFrameTree',
+    await bounded(
+      chrome.debugger.attach({ tabId: current.tabId }, '1.3'),
+      'attach',
     );
-    const seeded = framesOfTree(tree);
-    if (seeded.length === 0) throw new Error('empty frame tree');
-    current.frameScope.frames = new Map(seeded);
-  } catch {
-    console.warn('relay: Page.getFrameTree failed; refusing attach');
-    await chrome.debugger.detach({ tabId: current.tabId }).catch(() => {});
-    throw new Error('could not read the frame tree');
+  } catch (error) {
+    // A timed-out attach may still land: let go (best effort).
+    await detachTab(current.tabId);
+    throw error;
   }
-  // A hold that came and went meanwhile may have seeded the other
-  // origin's frame tree: refuse, the caller attaches again.
-  if (current.blocked || current.stopped || current.scopeEpoch !== epoch) {
-    await chrome.debugger.detach({ tabId: current.tabId }).catch(() => {});
-    throw new Error(OUT_OF_SCOPE);
+  try {
+    live();
+    // The bridge owns the Page domain: leave-origin detection reads Page
+    // navigation events, so it never depends on the agent enabling Page
+    // (and the agent cannot disable it: Page.disable is not allowed). This
+    // does not go through the agent allowlist and the agent gets no reply.
+    // Fail closed: without it the run is not attached.
+    try {
+      await bounded(
+        chrome.debugger.sendCommand({ tabId: current.tabId }, 'Page.enable'),
+        'page events',
+      );
+    } catch {
+      console.warn('relay: Page.enable failed; refusing attach');
+      throw new Error('could not enable page events');
+    }
+    // Frame scope starts from the current tree; Page events keep it
+    // current from here (events that raced the reply were applied first,
+    // and the tree supersedes them). Fail closed like Page.enable.
+    try {
+      const tree = await bounded(
+        chrome.debugger.sendCommand(
+          { tabId: current.tabId },
+          'Page.getFrameTree',
+        ),
+        'frame tree',
+      );
+      const seeded = framesOfTree(tree);
+      if (seeded.length === 0) throw new Error('empty frame tree');
+      current.frameScope.frames = new Map(seeded);
+    } catch {
+      console.warn('relay: Page.getFrameTree failed; refusing attach');
+      throw new Error('could not read the frame tree');
+    }
+    // A hold that came and went meanwhile may have seeded the other
+    // origin's frame tree: refuse, the caller attaches again.
+    live();
+  } catch (error) {
+    // Ended, replaced or out of scope while attaching, or a step failed:
+    // let go again. (A replaced run's tab is detached first by the new
+    // run's own attach anyway.)
+    if (run === current || run === undefined) await detachTab(current.tabId);
+    throw error;
   }
   current.mainFrameId = targetId;
 }
@@ -1357,7 +1395,7 @@ async function handleCommand(
       // afresh (the spike's re-attach fix); a typing attach is taken over.
       // The flag is set inside the queued step, so no queued typing attach
       // can run between the attach and the flag.
-      await queuedAttach(async () => {
+      await queuedAttach(current, async () => {
         await attachTab(current, epoch, target.id);
         current.attached = true;
         // Re-attached in time: the detach no longer ends the run (P4b-d).
@@ -2848,8 +2886,6 @@ const MAX_TYPED_LENGTH = 512;
 // The typing call (TYPE_INTO) settles once the text is in; a page that hangs
 // it fails the typing (it is never sent again).
 const TYPE_MS = 3_000;
-/** Set while a typeSensitive call is between its checks and its reply. */
-let typingNow = false;
 
 const returnedValue = (reply: unknown) =>
   isObject(reply) && isObject(reply.result) ? reply.result.value : undefined;
@@ -2887,7 +2923,7 @@ async function typeSensitive(
   if (current.blocked) return refuse('run is held');
   // One at a time: a second call while one is typing is refused (nothing
   // registered, nothing typed); the panel sends one per press.
-  if (typingNow) return refuse('type failed');
+  if (current.typingNow) return refuse('type failed');
   // Registered before any await, in the same turn as the checks above, so a
   // token refresh either carries it or refuses it (see startRunNow).
   if (
@@ -2901,7 +2937,7 @@ async function typeSensitive(
   const epoch = current.scopeEpoch;
   let refusal: TypeRefusal | null;
   let attachedHere = false;
-  typingNow = true;
+  current.typingNow = true;
   try {
     // Not attached (a fresh run, or a refresh): attach for this typing only.
     if (!current.attached && !current.typingAttached) {
@@ -2922,7 +2958,7 @@ async function typeSensitive(
     // only while typing (unless the agent attached meanwhile: then it is
     // the agent's, and this changes nothing).
     if (attachedHere) await releaseTypingAttach(current);
-    typingNow = false;
+    current.typingNow = false;
   }
   return refusal === null ? { ok: true } : refuse(refusal);
 }
@@ -2938,9 +2974,9 @@ async function typeSensitive(
  */
 async function attachForTyping(current: Run, epoch: number): Promise<boolean> {
   if (current.detachTimer !== undefined) throw new Error('not attached');
-  const target = await tabTarget(current.tabId);
+  const target = await bounded(tabTarget(current.tabId), 'targets');
   if (!target) throw new Error('not attached');
-  return queuedAttach(async () => {
+  return queuedAttach(current, async () => {
     if (run !== current || current.stopped) throw new Error('run replaced');
     if (current.attached) return false;
     await attachTab(current, epoch, target.id);
@@ -2956,18 +2992,14 @@ async function attachForTyping(current: Run, epoch: number): Promise<boolean> {
  * onDetach for the extension's own detach, so no detach grace starts.
  */
 function releaseTypingAttach(current: Run): Promise<void> {
-  return queuedAttach(async () => {
+  return queuedAttach(current, async () => {
     if (run !== current || current.stopped) return;
     if (current.attached || !current.typingAttached) return;
     current.typingAttached = false;
     current.focusWorld = undefined;
     current.dialog = undefined;
     current.frameScope = createFrameScope();
-    try {
-      await chrome.debugger.detach({ tabId: current.tabId });
-    } catch {
-      // Already gone.
-    }
+    await detachTab(current.tabId);
   });
 }
 
