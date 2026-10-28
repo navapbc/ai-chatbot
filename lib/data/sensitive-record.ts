@@ -185,6 +185,9 @@ const EMPTY_VALUE = new RegExp(
   `^(?:"?${EMPTY_MARK}"?|"?${WITHHELD.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}"?|null|true|false|""|'')(?=$|[\\s,}\\]])`,
 );
 
+// `, "key":` right after a value: the next member of a JSON object.
+const NEXT_JSON_MEMBER = /^\s*,\s*"[^"]*"\s*:/;
+
 /** Length of an empty/withheld value token at the start of `rest`, else 0. */
 const emptyLength = (rest: string): number =>
   EMPTY_VALUE.exec(rest)?.[0].length ?? 0;
@@ -218,8 +221,13 @@ export function hasSensitiveValueInProse(raw: string): boolean {
       // still scanned ('ssn: null 123-45-6789' must not pass).
       const afterLabel = rest.replace(/^[\s"':=]+/, '');
       const skip = emptyLength(afterLabel);
-      const next = afterLabel
-        .slice(skip)
+      const after = afterLabel.slice(skip);
+      // A withheld value that is followed by the next JSON member (`, "key":`)
+      // has ended: that member's value is its own, not a leak of this one.
+      // Postgres jsonb reorders keys, so a date or id can follow a withheld
+      // key. Prose such as 'ssn: null 123-45-6789' has no quoted key and is
+      // still scanned.
+      const next = (skip > 0 && NEXT_JSON_MEMBER.test(after) ? '' : after)
         .split(' ')
         .filter(Boolean)
         .slice(0, TOKEN_WINDOW);
