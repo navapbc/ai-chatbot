@@ -215,6 +215,13 @@ interface Run extends RunConfig {
   /** True once a known value was registered; see addKnownValue. */
   hasKnownValues: boolean;
   /**
+   * The values addKnownValue accepted, in worker memory only, because the
+   * redactor has no getter: a same-run startRun (token refresh) registers
+   * them on the new redactor. Cleared by every other end; never logged,
+   * stored or sent.
+   */
+  knownValues: string[];
+  /**
    * Set on a run rebuilt after a worker restart (its known values were lost
    * with the old worker) until the panel sends `registrationComplete`.
    * Screenshots are refused while it is set.
@@ -483,6 +490,9 @@ export function startRun(
   return serialized(() => startRunNow(msg));
 }
 
+/** Bounds the carried list; the redactor's own cap is far lower. */
+const MAX_CARRIED_VALUES = 256;
+
 async function startRunNow(
   msg: Extract<BridgeMessage, { type: 'startRun' }>,
 ): Promise<BridgeResponse> {
@@ -510,16 +520,18 @@ async function startRunNow(
   // A run restarted under the same run id (e.g. a refreshed token) is not
   // ended on the relay: its new socket's `register` replaces the old one
   // there, while a `stop` would close the run for good (and refuse the new
-  // socket). Its known values are cleared with the old run, so the panel
-  // must register them again before screenshots are allowed.
+  // socket). Its known values are carried to the new run (see below); only
+  // a restart, which loses them, makes the panel register them again before
+  // screenshots are allowed.
   // A live run of the same id says exactly whether values were lost; with
   // none (it ended on its own, or the worker restarted) the record of begun
   // run ids decides, failing closed.
   const previous = run;
   const sameRun = previous !== undefined && previous.runId === claims.runId;
   const begun = await readBegunRuns();
+  const carried = sameRun ? previous.knownValues.slice() : [];
   const valuesLost = sameRun
-    ? previous.hasKnownValues || previous.needsRegistration
+    ? previous.needsRegistration
     : begun.includes(claims.runId);
   await chrome.storage.session.set({
     [BEGUN_KEY]: [
@@ -536,7 +548,34 @@ async function startRunNow(
   };
   await chrome.storage.session.set({ [STORAGE_KEY]: config });
   begin(config, socket.url, claims, false, valuesLost);
+  carryKnownValues(carried);
   return { ok: true };
+}
+
+/**
+ * Registers the values a same-run refresh carried on the run just begun.
+ * Synchronous with begin, so no event or reply is redacted without them. A
+ * value the new redactor refuses (it accepted it before) counts as lost.
+ */
+function carryKnownValues(values: string[]) {
+  const current = run;
+  if (!current || values.length === 0) return;
+  for (const value of values) {
+    if (!addAccepted(current, value)) current.needsRegistration = true;
+  }
+}
+
+/** Registers a value on the redactor and remembers it if it was accepted. */
+function addAccepted(current: Run, value: string): boolean {
+  if (!current.redactor.addKnownValue(value)) return false;
+  if (
+    !current.knownValues.includes(value) &&
+    current.knownValues.length < MAX_CARRIED_VALUES
+  ) {
+    current.knownValues.push(value);
+  }
+  current.hasKnownValues = true;
+  return true;
 }
 
 /** The begun run ids; empty when unreadable or malformed. */
@@ -599,6 +638,7 @@ async function endRun(
     current.blocked = true;
     current.redactor.clear();
     current.hasKnownValues = false;
+    current.knownValues = [];
     current.jev?.stop();
     clearTimeout(current.reconnectTimer);
     clearTimeout(current.expiryTimer);
@@ -793,6 +833,7 @@ function begin(
       : createRedactor(),
     jev,
     hasKnownValues: false,
+    knownValues: [],
     needsRegistration,
     relayClosed: false,
   };
@@ -2613,10 +2654,9 @@ function addKnownValue(runId: unknown, value: unknown): BridgeResponse {
   const current = run;
   if (!current || current.stopped) return { ok: false, error: 'no active run' };
   if (runId !== current.runId) return { ok: false, error: 'wrong run' };
-  if (typeof value !== 'string' || !current.redactor.addKnownValue(value)) {
+  if (typeof value !== 'string' || !addAccepted(current, value)) {
     return { ok: false, error: 'known value not registered' };
   }
-  current.hasKnownValues = true;
   return { ok: true };
 }
 
