@@ -1,6 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import type { RunProgress } from '../../../lib/relay/progress';
+import { UNFILLED_COPY, unfilledStatusText } from '../lib/copy';
+import { createUnfilledField, type UnfilledView } from '../lib/unfilled-field';
+import { createWorkerApi, type WorkerApi } from '../lib/worker-api';
 import {
   buildReviewModel,
   reviewActions,
@@ -8,6 +11,9 @@ import {
 } from '../lib/review-model';
 
 type Props = {
+  runId: string;
+  /** The worker call; defaults to the real worker client. */
+  showUnfilledField?: WorkerApi['showUnfilledField'];
   progress: RunProgress | null;
   actions: string[];
   stopping: boolean;
@@ -17,10 +23,17 @@ type Props = {
   onStop: () => void;
 };
 
+const defaultShowUnfilledField: WorkerApi['showUnfilledField'] = (runId) =>
+  createWorkerApi().showUnfilledField(runId);
+
+const IDLE: UnfilledView = { busy: false, result: null };
+
 // The agent's turn ended with nothing pending. The panel says only that the
 // agent stopped, never that the form is complete or correct. Names and the
 // action log are untrusted agent text, rendered as React text only.
 export const ReviewPanel = ({
+  runId,
+  showUnfilledField = defaultShowUnfilledField,
   progress,
   actions,
   stopping,
@@ -33,6 +46,25 @@ export const ReviewPanel = ({
   useEffect(() => {
     headingRef.current?.focus();
   }, []);
+  const [unfilled, setUnfilled] = useState<UnfilledView>(IDLE);
+  const unfilledRef = useRef<ReturnType<typeof createUnfilledField> | null>(
+    null,
+  );
+  // One controller per mounted panel: it goes with the review phase, so the
+  // status line clears when the phase leaves review.
+  useEffect(() => {
+    const controller = createUnfilledField({ runId, showUnfilledField });
+    unfilledRef.current = controller;
+    const unsubscribe = controller.subscribe(setUnfilled);
+    return () => {
+      unsubscribe();
+      controller.dispose();
+      unfilledRef.current = null;
+    };
+  }, [runId, showUnfilledField]);
+  const handleShowUnfilled = () => {
+    void unfilledRef.current?.press();
+  };
   const model = buildReviewModel(progress);
   const log = reviewActions(actions);
   const note = reviewLogNote(openedMidRun);
@@ -92,6 +124,20 @@ export const ReviewPanel = ({
         Check the form on the page, then submit it there yourself.
       </p>
       <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-1">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleShowUnfilled}
+            disabled={unfilled.busy}
+            aria-busy={unfilled.busy}
+          >
+            {UNFILLED_COPY.button}
+          </Button>
+          <p role="status" aria-live="polite" className="text-sm">
+            {unfilled.result ? unfilledStatusText(unfilled.result) : null}
+          </p>
+        </div>
         <Button
           type="button"
           onClick={onSubmitted}

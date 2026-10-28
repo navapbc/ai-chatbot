@@ -1,10 +1,14 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ConfirmedScreen,
   STOP_FAILED_TEXT,
 } from '../../extension/panel/screens/confirmed';
+import { unfilledStatusText } from '../../extension/panel/lib/copy';
+import { createUnfilledField } from '../../extension/panel/lib/unfilled-field';
+import type { UnfilledFieldResult } from '../../extension/panel/lib/worker-api';
+import { ReviewPanel } from '../../extension/panel/screens/review';
 import {
   buildReviewModel,
   isConfirming,
@@ -140,5 +144,117 @@ describe('reviewLogNote', () => {
     expect(reviewLogNote(true)).toBe(
       'The panel was opened while the run was under way, so steps before then are not shown.',
     );
+  });
+});
+
+describe('Review: Show me the unfilled field', () => {
+  const html = renderToStaticMarkup(
+    createElement(ReviewPanel, {
+      runId: 'run-1',
+      progress: null,
+      actions: [],
+      stopping: false,
+      onSubmitted: () => {},
+      onStop: () => {},
+    }),
+  );
+
+  it('renders the button above I submitted it, enabled, with an empty status line', () => {
+    const show = html.indexOf('Show me the unfilled field');
+    const submitted = html.indexOf('I submitted it');
+    expect(show).toBeGreaterThan(-1);
+    expect(show).toBeLessThan(submitted);
+    expect(html).toMatch(/role="status"[^>]*aria-live="polite"[^>]*><\/p>/);
+    expect(html).not.toMatch(/disabled=""[^>]*>Show me/);
+  });
+
+  const text = (r: UnfilledFieldResult) => unfilledStatusText(r);
+
+  it('found: count and the look-for sentence, no promise of a box', () => {
+    const t = text({ ok: true, found: true, remaining: 3 });
+    expect(t).toContain('Showing the next field that is still empty. 3 left.');
+    expect(t).toContain('highlighted or focused');
+    expect(t).not.toMatch(/sensitive|many/);
+    expect(text({ ok: true, found: true, remaining: 1 })).toContain('1 left.');
+  });
+
+  it('found and sensitive, and capped, add their sentences', () => {
+    const t = text({
+      ok: true,
+      found: true,
+      remaining: 12,
+      sensitive: true,
+      capped: true,
+    });
+    expect(t).toContain('sensitive field');
+    expect(t).toContain('Fill it in');
+    expect(t).toContain('There are many; showing the first.');
+  });
+
+  it('not found', () => {
+    expect(text({ ok: true, found: false, remaining: 0 })).toBe(
+      'No empty required fields found. Check the page before you submit.',
+    );
+  });
+
+  it.each([
+    ['run_held', /paused while the tab is on another site/],
+    ['not_attached', /not connected to this tab/],
+    ['registration_pending', /Wait a moment and try again/],
+    ['scan_failed', /Could not check the page/],
+    ['worker_error', /Could not check the page/],
+    ['field_out_of_scope', /outside the page/],
+  ] as const)('refusal %s has its own sentence', (code, re) => {
+    expect(text({ ok: false, code })).toMatch(re);
+  });
+
+  it('a double press makes one call with the run id', async () => {
+    let release!: (r: UnfilledFieldResult) => void;
+    const show = vi
+      .fn(async (runId: string): Promise<UnfilledFieldResult> => {
+        void runId;
+        return { ok: true, found: false, remaining: 0 };
+      })
+      .mockImplementationOnce(
+        (runId: string) =>
+          new Promise<UnfilledFieldResult>((resolve) => {
+            void runId;
+            release = resolve;
+          }),
+      );
+    const c = createUnfilledField({ runId: 'run-7', showUnfilledField: show });
+    const first = c.press();
+    const second = c.press();
+    expect(c.view().busy).toBe(true);
+    release({ ok: true, found: false, remaining: 0 });
+    await Promise.all([first, second]);
+    expect(show).toHaveBeenCalledTimes(1);
+    expect(show).toHaveBeenCalledWith('run-7');
+    expect(c.view()).toEqual({
+      busy: false,
+      result: { ok: true, found: false, remaining: 0 },
+    });
+    await c.press();
+    expect(show).toHaveBeenCalledTimes(2);
+  });
+
+  it('a throwing call ends as worker_error and is not busy; dispose silences', async () => {
+    const c = createUnfilledField({
+      runId: 'r',
+      showUnfilledField: async () => {
+        throw new Error('x');
+      },
+    });
+    await c.press();
+    expect(c.view()).toEqual({
+      busy: false,
+      result: { ok: false, code: 'worker_error' },
+    });
+    const seen = vi.fn();
+    c.subscribe(seen);
+    const p = c.press();
+    c.dispose();
+    await p;
+    expect(seen).toHaveBeenCalledTimes(1);
   });
 });

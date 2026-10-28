@@ -80,6 +80,37 @@ const TYPE_CODE_FOR_TEXT: Record<string, TypeSensitiveCode> = {
   'type failed': 'type_failed',
 };
 
+export type UnfilledFieldCode =
+  | 'not_attached'
+  | 'run_held'
+  | 'field_out_of_scope'
+  | 'registration_pending'
+  | 'scan_failed'
+  | 'worker_error';
+
+export type UnfilledFieldResult =
+  | {
+      ok: true;
+      found: boolean;
+      remaining: number;
+      sensitive?: boolean;
+      capped?: boolean;
+    }
+  | { ok: false; code: UnfilledFieldCode };
+
+// showUnfilledField's refusals (extension/src/bridge.ts) by exact text. 'no
+// active run' and 'wrong run' are absent on purpose: they fall to worker_error.
+const UNFILLED_CODE_FOR_TEXT: Record<string, UnfilledFieldCode> = {
+  'not attached': 'not_attached',
+  'run is held': 'run_held',
+  'field out of scope': 'field_out_of_scope',
+  'registration pending': 'registration_pending',
+  'scan failed': 'scan_failed',
+};
+
+/** The most `remaining` the panel will carry. */
+export const MAX_REMAINING = 9999;
+
 type Send = (message: unknown) => Promise<unknown>;
 
 const chromeSend: Send = (message) =>
@@ -118,6 +149,12 @@ export interface WorkerApi {
    * carries a code only: never the value and never the worker's text.
    */
   typeSensitive(runId: string, value: string): Promise<TypeSensitiveResult>;
+  /**
+   * Highlights the next required field still empty in the page. The result
+   * is booleans and a count, or a code: never a label, a value or the
+   * worker's text.
+   */
+  showUnfilledField(runId: string): Promise<UnfilledFieldResult>;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -169,8 +206,41 @@ export const createWorkerApi = (sendMessage: Send = chromeSend): WorkerApi => {
     return { ok: false, code };
   };
 
+  const showUnfilledField = async (
+    runId: string,
+  ): Promise<UnfilledFieldResult> => {
+    let reply: unknown;
+    try {
+      reply = await sendMessage({ type: 'showUnfilledField', runId });
+    } catch {
+      return { ok: false, code: 'worker_error' };
+    }
+    if (!isRecord(reply)) return { ok: false, code: 'worker_error' };
+    if (reply.ok === true) {
+      const remaining =
+        typeof reply.remaining === 'number' && Number.isFinite(reply.remaining)
+          ? Math.min(MAX_REMAINING, Math.max(0, Math.floor(reply.remaining)))
+          : 0;
+      const result: UnfilledFieldResult = {
+        ok: true,
+        found: reply.found === true,
+        remaining,
+      };
+      if (reply.sensitive === true) result.sensitive = true;
+      if (reply.capped === true) result.capped = true;
+      return result;
+    }
+    const code =
+      typeof reply.error === 'string' &&
+      Object.hasOwn(UNFILLED_CODE_FOR_TEXT, reply.error)
+        ? UNFILLED_CODE_FOR_TEXT[reply.error]
+        : 'worker_error';
+    return { ok: false, code };
+  };
+
   return {
     typeSensitive,
+    showUnfilledField,
     startRun: (args) => send({ type: 'startRun', ...args }),
     stopRun: (runId) =>
       send(

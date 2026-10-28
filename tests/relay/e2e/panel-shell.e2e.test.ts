@@ -729,16 +729,48 @@ describe('the panel shell', () => {
       await page
         .getByText('Check the form on the page, then submit it there yourself.')
         .waitFor();
-      expect(await page.getByText(/unfilled field/i).count()).toBe(0);
-      expect(await page.getByRole('button', { name: 'Show me' }).count()).toBe(
-        0,
-      );
+      // Show me the unfilled field: one worker call per press, the answer is
+      // fixed copy in a status line. The test page has no required field.
+      await page.evaluate(() => {
+        const w = window as unknown as { __showCalls: number };
+        w.__showCalls = 0;
+        const original = chrome.runtime.sendMessage.bind(chrome.runtime);
+        // biome-ignore lint/suspicious/noExplicitAny: test spy
+        (chrome.runtime as any).sendMessage = (m: any, ...rest: any[]) => {
+          if (m?.type === 'showUnfilledField') w.__showCalls += 1;
+          // biome-ignore lint/suspicious/noExplicitAny: test spy
+          return (original as any)(m, ...rest);
+        };
+      });
+      const show = left.getByRole('button', {
+        name: 'Show me the unfilled field',
+      });
+      const status = left.getByRole('status');
+      expect(await status.textContent()).toBe('');
+      await show.dblclick();
+      await expect
+        .poll(async () => (await status.textContent()) ?? '', {
+          timeout: 10_000,
+        })
+        .toMatch(
+          /^(No empty required fields found\. Check the page before you submit\.|Showing the next field|The extension|The run is paused|Could not check)/,
+        );
+      expect(
+        await page.evaluate(
+          () => (window as unknown as { __showCalls: number }).__showCalls,
+        ),
+      ).toBe(1);
+      expect(await show.isDisabled()).toBe(false);
 
       // Back to working: the panel goes away.
       row.phase = 'working';
       await expect.poll(() => heading.count(), { timeout: 8_000 }).toBe(0);
       row.phase = 'review';
       await heading.waitFor({ timeout: 8_000 });
+      // The status line did not survive leaving review.
+      expect(
+        await page.getByRole('status').filter({ hasText: /\S/ }).count(),
+      ).toBe(0);
 
       await page.getByRole('button', { name: 'I submitted it' }).click();
       await page.getByRole('heading', { name: 'Submitted' }).waitFor();

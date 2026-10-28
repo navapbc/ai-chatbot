@@ -3,7 +3,10 @@ import {
   createWorkerApi,
   WorkerError,
 } from '../../extension/panel/lib/worker-api';
-import { TYPE_SENSITIVE_COPY } from '../../extension/panel/lib/copy';
+import {
+  TYPE_SENSITIVE_COPY,
+  UNFILLED_REFUSAL_COPY,
+} from '../../extension/panel/lib/copy';
 
 const fake = (reply: unknown) => vi.fn(async (_m: unknown) => reply);
 
@@ -173,5 +176,121 @@ describe('typeSensitive', () => {
       expect(TYPE_SENSITIVE_COPY[code].length).toBeGreaterThan(10);
     }
     expect(Object.keys(TYPE_SENSITIVE_COPY).sort()).toEqual([...codes].sort());
+  });
+});
+
+describe('showUnfilledField', () => {
+  const MARK = 'Marker-Label-Value-42';
+  const fake = (reply: unknown) =>
+    vi.fn(async (message: unknown) => {
+      void message;
+      return reply;
+    });
+
+  it('sends the message with the run id', async () => {
+    const send = fake({ ok: true, found: false, remaining: 0 });
+    await createWorkerApi(send).showUnfilledField('run-9');
+    expect(send).toHaveBeenCalledWith({
+      type: 'showUnfilledField',
+      runId: 'run-9',
+    });
+  });
+
+  it.each([
+    ['not attached', 'not_attached'],
+    ['run is held', 'run_held'],
+    ['field out of scope', 'field_out_of_scope'],
+    ['registration pending', 'registration_pending'],
+    ['scan failed', 'scan_failed'],
+    ['no active run', 'worker_error'],
+    ['wrong run', 'worker_error'],
+    ['something else', 'worker_error'],
+    ['constructor', 'worker_error'],
+  ])('maps %s to %s', async (error, code) => {
+    const r = await createWorkerApi(
+      fake({ ok: false, error }),
+    ).showUnfilledField('r');
+    expect(r).toEqual({ ok: false, code });
+  });
+
+  it('maps unreachable, thrown and malformed replies to worker_error without the text', async () => {
+    const thrown = await createWorkerApi(async () => {
+      throw new Error(MARK);
+    }).showUnfilledField('r');
+    expect(thrown).toEqual({ ok: false, code: 'worker_error' });
+    expect(JSON.stringify(thrown)).not.toContain(MARK);
+    for (const reply of [undefined, null, 'x', [1]]) {
+      expect(await createWorkerApi(fake(reply)).showUnfilledField('r')).toEqual(
+        {
+          ok: false,
+          code: 'worker_error',
+        },
+      );
+    }
+    const unknown = await createWorkerApi(
+      fake({ ok: false, error: MARK }),
+    ).showUnfilledField('r');
+    expect(JSON.stringify(unknown)).not.toContain(MARK);
+  });
+
+  it('reduces a success to the fixed fields', async () => {
+    const r = await createWorkerApi(
+      fake({
+        ok: true,
+        found: true,
+        remaining: 3,
+        sensitive: true,
+        capped: true,
+        label: MARK,
+        value: MARK,
+        extra: { a: MARK },
+      }),
+    ).showUnfilledField('r');
+    expect(r).toEqual({
+      ok: true,
+      found: true,
+      remaining: 3,
+      sensitive: true,
+      capped: true,
+    });
+    expect(JSON.stringify(r)).not.toContain(MARK);
+  });
+
+  it('omits false flags and treats a non-true found as not found', async () => {
+    const r = await createWorkerApi(
+      fake({ ok: true, found: 'yes', remaining: 0, sensitive: 'x', capped: 1 }),
+    ).showUnfilledField('r');
+    expect(r).toEqual({ ok: true, found: false, remaining: 0 });
+  });
+
+  it.each([
+    [-5, 0],
+    [2.9, 2],
+    [123456, 9999],
+    [Number.NaN, 0],
+    [Number.POSITIVE_INFINITY, 0],
+    ['7', 0],
+    [undefined, 0],
+  ])('clamps remaining %s to %s', async (input, expected) => {
+    const r = await createWorkerApi(
+      fake({ ok: true, found: true, remaining: input }),
+    ).showUnfilledField('r');
+    expect(r).toMatchObject({ ok: true, remaining: expected });
+  });
+
+  it('has fixed copy for every code', () => {
+    expect(Object.keys(UNFILLED_REFUSAL_COPY).sort()).toEqual(
+      [
+        'field_out_of_scope',
+        'not_attached',
+        'registration_pending',
+        'run_held',
+        'scan_failed',
+        'worker_error',
+      ].sort(),
+    );
+    for (const text of Object.values(UNFILLED_REFUSAL_COPY)) {
+      expect(text.length).toBeGreaterThan(10);
+    }
   });
 });

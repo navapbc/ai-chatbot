@@ -224,6 +224,7 @@ export const RunningScreen = ({
       ) : null}
       {showReview ? (
         <ReviewPanel
+          runId={run.runId}
           progress={state?.progress ?? null}
           actions={state?.actions ?? []}
           stopping={stopping}
