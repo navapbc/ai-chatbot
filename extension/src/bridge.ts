@@ -526,19 +526,22 @@ async function startRunNow(
   // A live run of the same id says exactly whether values were lost; with
   // none (it ended on its own, or the worker restarted) the record of begun
   // run ids decides, failing closed.
-  const previous = run;
-  const sameRun = previous !== undefined && previous.runId === claims.runId;
   const begun = await readBegunRuns();
-  const carried = sameRun ? previous.knownValues.slice() : [];
-  const valuesLost = sameRun
-    ? previous.needsRegistration
-    : begun.includes(claims.runId);
   await chrome.storage.session.set({
     [BEGUN_KEY]: [
       ...begun.filter((id) => id !== claims.runId),
       claims.runId,
     ].slice(-BEGUN_CAP),
   });
+  // Snapshot after the last await, with endRun called in the same tick: its
+  // synchronous start clears `run`, so no value can register on the old run
+  // (addKnownValue is not serialized) after the list is copied.
+  const previous = run;
+  const sameRun = previous !== undefined && previous.runId === claims.runId;
+  const carried = sameRun ? previous.knownValues.slice() : [];
+  const valuesLost = sameRun
+    ? previous.needsRegistration
+    : begun.includes(claims.runId);
   await endRun('replaced', { notifyRelay: !sameRun });
   const config: RunConfig = {
     relayUrl: msg.relayUrl,
@@ -567,13 +570,11 @@ function carryKnownValues(values: string[]) {
 
 /** Registers a value on the redactor and remembers it if it was accepted. */
 function addAccepted(current: Run, value: string): boolean {
+  const known = current.knownValues.includes(value);
+  // A full list would drop a value at the next refresh unflagged: refuse.
+  if (!known && current.knownValues.length >= MAX_CARRIED_VALUES) return false;
   if (!current.redactor.addKnownValue(value)) return false;
-  if (
-    !current.knownValues.includes(value) &&
-    current.knownValues.length < MAX_CARRIED_VALUES
-  ) {
-    current.knownValues.push(value);
-  }
+  if (!known) current.knownValues.push(value);
   current.hasKnownValues = true;
   return true;
 }

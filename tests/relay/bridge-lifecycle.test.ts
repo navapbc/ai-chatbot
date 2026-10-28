@@ -587,6 +587,56 @@ describe('run status after a worker restart', () => {
     expect(await addValue('ab')).toEqual({ ok: true });
   });
 
+  it('a value registered while startRun awaits is still scrubbed on the new run', async () => {
+    await attachedRun('run-1');
+    expect(await addValue('Rosalind')).toEqual({ ok: true });
+    const store = (
+      globalThis as unknown as {
+        chrome: { storage: { session: { set: (i: object) => Promise<void> } } };
+      }
+    ).chrome.storage.session;
+    const realSet = store.set;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    store.set = async (items) => {
+      await gate;
+      return realSet(items);
+    };
+    const started = start(tokenFor('run-1', 7200));
+    await Promise.resolve();
+    expect(await addValue('Hypatia')).toEqual({ ok: true });
+    release();
+    expect(await started).toEqual({ ok: true });
+    store.set = realSet;
+    const next = FakeSocket.all.at(-1) as FakeSocket;
+    await next.open();
+    await ask(next, { id: 'a', type: 'attach', targetId: 'T' });
+    expect((await status()).needsRegistration).toBe(false);
+    // Both values, including the one added mid-refresh, are known again.
+    expect(await titleOf(next, 't1')).toBe('Form for [masked]');
+    await addValue('Hypatia');
+    for (let i = 0; i < 30; i++) await addValue(`filler-${i}`);
+    expect((await addValue('overflow')).ok).toBe(false);
+  });
+
+  it('needsRegistration stays set across a refresh that carries values', async () => {
+    await resumed();
+    expect(await addValue('Rosalind')).toEqual({ ok: true });
+    await refreshed();
+    expect((await status()).needsRegistration).toBe(true);
+  });
+
+  it('refuses a value once the carried list is full', async () => {
+    await attachedRun('run-1');
+    for (let i = 0; i < 256; i++) {
+      expect((await addValue(' '.repeat(i + 1))).ok).toBe(true);
+    }
+    expect((await addValue('Rosalind')).ok).toBe(false);
+    expect(await addValue(' ')).toEqual({ ok: true });
+  });
+
   it('a same-run-id restart with no registered values does not', async () => {
     await attachedRun('run-1');
     expect(await start(tokenFor('run-1', 7200))).toEqual({ ok: true });
