@@ -106,6 +106,27 @@ export function makeLocalhostCert(): { key: Buffer; cert: Buffer } {
   }
 }
 
+/**
+ * Confirmation pages the `/submitted` POST answers with, by `?v=`, for the
+ * worker's confirmation read (bridge readConfirmation).
+ */
+export const CONFIRMATION_PAGES: Record<string, string> = {
+  // A hidden number first: innerText leaves it out.
+  alnum:
+    '<p style="display:none">Confirmation code: HID-999</p>' +
+    '<p>Thank you, Jane Doe.</p><p>Confirmation number: AB-1234</p>',
+  other: '<p>Application number: 20240017</p>',
+  nine: '<p>Confirmation number: 123456789</p>',
+  ten: '<p>Confirmation number: 1234567890</p>',
+  ssn: '<p>Applicant SSN: 123-45-6789</p><p>Confirmation number: AB-1234</p>',
+  sentence:
+    '<p>Confirmation numbers are emailed within 2 days (ref 12345).</p>',
+  late:
+    '<p id="late">Loading...</p><script>setTimeout(() => {' +
+    "document.getElementById('late').textContent = " +
+    "'Confirmation number: LATE-77'; }, 1500);</script>",
+};
+
 /** Serves the fixtures over HTTPS from a certificate generated for this run. */
 export async function serveFixtures(): Promise<Fixtures> {
   const tls = makeLocalhostCert();
@@ -158,11 +179,13 @@ export async function serveFixtures(): Promise<Fixtures> {
         '<!doctype html><html lang="en"><title>Second Page</title><p>Second</p></html>',
       );
     } else if (url.pathname === '/submitted' && req.method === 'POST') {
+      // `?v=` picks a confirmation page (readConfirmation); none: "Done".
+      const body = CONFIRMATION_PAGES[url.searchParams.get('v') ?? ''];
       req.resume();
       req.on('end', () =>
         sendHtml(
           res,
-          '<!doctype html><html lang="en"><title>Submitted</title><p>Done</p></html>',
+          `<!doctype html><html lang="en"><title>Submitted</title>${body ?? '<p>Done</p>'}</html>`,
         ),
       );
     } else if (url.pathname === '/submit-redirect' && req.method === 'POST') {

@@ -53,6 +53,11 @@ import {
 } from './redaction';
 import { isSensitiveField } from '../../lib/relay/sensitive-fields';
 import {
+  CONFIRMATION_LABEL_KINDS,
+  CONFIRMATION_READ,
+  CONFIRMATION_TOKEN,
+  CONFIRMATION_TOKEN_MAX,
+  CONFIRMATION_TOKEN_MIN,
   DEEP_ACTIVE,
   FIELD_KIND,
   FOCUS_FIELD,
@@ -174,14 +179,32 @@ export interface RunStatus {
    * request followed by a main-frame navigation in scope (see
    * watchForSubmission): when, in epoch ms. Never a URL, a query or page
    * text. A "Next" in a multi-step form looks the same.
+   *
+   * `confirmation` is the one piece of page text the worker ever reports:
+   * the token after a fixed label on the page the submission landed on, and
+   * the kind of that label (see readConfirmation), once it passed every
+   * check. It arrives up to CONFIRMATION_READ_MS after `at`; absent means
+   * none was found or it was dropped. For the panel only: never logged,
+   * stored, or sent to the relay, the agent or the server.
    */
-  submitted?: { at: number };
+  submitted?: { at: number; confirmation?: Confirmation };
   /**
    * True while the submit watch is armed and the tab is held for it (the
    * agent's attach or the watch's own). False once a detach, a failed agent
    * attach or a token refresh lost it, so the panel knows to arm again.
    */
   armed?: boolean;
+}
+
+/** A vetted confirmation number and the kind of label it followed. */
+export interface Confirmation {
+  token: string;
+  /**
+   * `confirmation` for a confirmation number, # or code; `other` for a
+   * reference, application or tracking number (benefit portals show an
+   * application number on every step, so it does not prove a submission).
+   */
+  kind: 'confirmation' | 'other';
 }
 
 export type BridgeResponse =
@@ -228,7 +251,23 @@ interface SubmitWatch {
    */
   pending?: { at: number; post: boolean; fromUrl?: string; epoch: number };
   /** The first submission seen while armed. */
-  submitted?: { at: number };
+  submitted?: Submission;
+}
+
+/**
+ * A submission the watch saw, and its confirmation read (readConfirmation):
+ * a reset, a disarm, a detach or the end of the run replaces or drops this
+ * object, which ends the read (it checks identity).
+ */
+interface Submission {
+  at: number;
+  confirmation?: Confirmation;
+  /** The main frame finished loading the page the submission landed on. */
+  loaded: boolean;
+  /** Another main-frame document committed since: the read stops. */
+  moved: boolean;
+  /** Wakes the read waiting for the load. */
+  wake?: () => void;
 }
 
 interface Run extends RunConfig {
@@ -2828,7 +2867,14 @@ function watchForSubmission(
     return;
   }
   if (method === 'Page.frameStoppedLoading') {
-    if (params.frameId === mainFrameId) watch.pending = undefined;
+    if (params.frameId !== mainFrameId) return;
+    watch.pending = undefined;
+    submissionLoaded(watch.submitted);
+    return;
+  }
+  // The tab session's load event is the main frame's.
+  if (method === 'Page.loadEventFired') {
+    submissionLoaded(watch.submitted);
     return;
   }
   if (method !== 'Page.frameNavigated') return;
@@ -2836,6 +2882,8 @@ function watchForSubmission(
   if (!frame || frame.parentId !== undefined || frame.id !== mainFrameId) {
     return;
   }
+  // Any later main-frame document ends a confirmation read in flight.
+  if (watch.submitted) watch.submitted.moved = true;
   const pending = watch.pending;
   watch.pending = undefined;
   if (!pending || watch.submitted) return;
@@ -2853,7 +2901,20 @@ function watchForSubmission(
   ) {
     return;
   }
-  watch.submitted = { at: Date.now() };
+  const submission: Submission = {
+    at: Date.now(),
+    loaded: false,
+    moved: false,
+  };
+  watch.submitted = submission;
+  void readConfirmation(current, watch, submission, current.scopeEpoch);
+}
+
+/** The submission's page finished loading: wake its confirmation read. */
+function submissionLoaded(submission: Submission | undefined) {
+  if (!submission || submission.moved) return;
+  submission.loaded = true;
+  submission.wake?.();
 }
 
 /** The child session a lifecycle event is about, if any. */
@@ -2922,7 +2983,8 @@ export function onDebuggerEvent(
     clearHighlight(current, true);
   }
   // The submit watch reads raw tab events, attached or not (it reads only
-  // event params, never the page, and sends nothing on).
+  // event params and sends nothing on). A submission it sees starts the
+  // confirmation read (readConfirmation), the worker's own page read.
   watchForSubmission(current, source, method, params);
   if (!dialogForwarded) return;
   // Nothing leaves the browser unless the agent attached and the tab is in
@@ -3922,6 +3984,230 @@ function releaseReviewAttach(current: Run): Promise<void> {
   });
 }
 
+// --- the confirmation number (plan 4c-4) --------------------------------------
+
+/** How long the read waits for the submission's page to load. */
+const CONFIRMATION_LOAD_MS = 5_000;
+/** Reads of the page, CONFIRMATION_GAP_MS apart (client-rendered numbers). */
+const CONFIRMATION_TRIES = 3;
+const CONFIRMATION_GAP_MS = 1_000;
+/**
+ * The whole read, from the commit: `submitted.confirmation` is set within
+ * this of `submitted.at`, or not at all.
+ */
+export const CONFIRMATION_READ_MS = 12_000;
+
+/**
+ * Reads the confirmation number off the page a submission landed on (P4c4-f)
+ * so the panel can show it: the first time the worker reads page text and
+ * returns a piece of it. Started by watchForSubmission on the commit; waits
+ * for the page to load (CONFIRMATION_LOAD_MS at most), then reads up to
+ * CONFIRMATION_TRIES times, CONFIRMATION_GAP_MS apart, until the page shows
+ * a token after a `confirmation` label (confirmationAttempt), which ends
+ * the read whether or not it passes vetConfirmation. A token after another
+ * label (application, reference, tracking number) does not: the first one
+ * is kept until the tries run out and is vetted then. Only a vetted token
+ * is kept, as `submission.confirmation` (set once), which getRunStatus
+ * copies for the panel.
+ *
+ * Worker-initiated page reading outside the agent's command policy, so
+ * before every step and after every await: the same run, not stopped, never
+ * held or out of scope since the commit (requireSameScope), no
+ * re-registration pending (the known values are incomplete, so a typed SSN
+ * echoed as the token could not be recognized), the tab held (the agent's,
+ * the watch's or a typing attach), this submission still the watch's (a
+ * reset, disarm, detach or stop ends the read), no other main-frame document
+ * since, within CONFIRMATION_READ_MS. Any failure ends the read with nothing
+ * set. The token is never registered as a known value, logged, stored, or
+ * sent to the relay, the agent or the server. Never throws.
+ */
+async function readConfirmation(
+  current: Run,
+  watch: SubmitWatch,
+  submission: Submission,
+  epoch: number,
+): Promise<void> {
+  const deadline = Date.now() + CONFIRMATION_READ_MS;
+  const live = () => {
+    requireSameScope(current, epoch);
+    if (run !== current) throw new Error('run replaced');
+    if (current.submitWatch !== watch || watch.submitted !== submission) {
+      throw new Error('read ended');
+    }
+    if (submission.moved) throw new Error('read ended');
+    if (current.needsRegistration) throw new Error('registration pending');
+    if (!holdsTab(current)) throw new Error('not attached');
+    if (Date.now() > deadline) throw new Error('read timed out');
+  };
+  try {
+    live();
+    if (!submission.loaded) {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          clearTimeout(timer);
+          submission.wake = undefined;
+          resolve();
+        };
+        const timer = setTimeout(done, CONFIRMATION_LOAD_MS);
+        submission.wake = done;
+      });
+    }
+    // The first `other` answer, kept while later tries look for a
+    // confirmation label (a portal's application number shows on every
+    // page, the confirmation number may be rendered after it).
+    let other: Record<string, unknown> | undefined;
+    for (let attempt = 0; attempt < CONFIRMATION_TRIES; attempt += 1) {
+      if (attempt > 0) await sleep(CONFIRMATION_GAP_MS);
+      live();
+      const found = await confirmationAttempt(current, live, deadline);
+      live();
+      if (found === undefined) continue;
+      const label = found.label;
+      if (
+        typeof label !== 'string' ||
+        !Object.hasOwn(CONFIRMATION_LABEL_KINDS, label) ||
+        CONFIRMATION_LABEL_KINDS[label] !== 'confirmation'
+      ) {
+        other ??= found;
+        continue;
+      }
+      // No await from the last check to the store.
+      const vetted = vetConfirmation(current, found);
+      if (vetted) submission.confirmation = vetted;
+      return;
+    }
+    if (other === undefined) return;
+    // Vetted now (registered values, hold and registration as they are
+    // now), with no await from the check to the store.
+    live();
+    const vetted = vetConfirmation(current, other);
+    if (vetted) submission.confirmation = vetted;
+  } catch {
+    // Ended, replaced, held, refused or failed: nothing is set.
+  } finally {
+    submission.wake = undefined;
+  }
+}
+
+/**
+ * One read of the page for readConfirmation: CONFIRMATION_READ in the
+ * bridge's `relay-focus` isolated world of the main frame (page script
+ * cannot change what it reads there), made again when the last one died
+ * with its document, under the tab lock as typeIntoFocused (screenshots
+ * waited out, tab in scope, shared hold kept to the end), each step bounded.
+ * The script's answer object (token, canonical label, nearSensitive), or
+ * undefined when it found nothing or the read failed. Throws when `live`
+ * does.
+ */
+async function confirmationAttempt(
+  current: Run,
+  live: () => void,
+  deadline: number,
+): Promise<Record<string, unknown> | undefined> {
+  const lock = lockFor(current.tabId);
+  const tab: FrameSession = {
+    scope: current.frameScope,
+    debuggee: { tabId: current.tabId },
+    rootFrameId: current.mainFrameId,
+  };
+  const liveHere = () => {
+    live();
+    if (tab.scope !== current.frameScope) throw new Error('not attached');
+  };
+  const send = (method: string, params?: object) =>
+    sessionSend(tab, method, params, deadline);
+  for (;;) {
+    await untilNoScreenshot(lock);
+    await requireTabInScope(current);
+    liveHere();
+    if (!lock.writer) break;
+  }
+  const release = holdShared(lock);
+  try {
+    const evaluate = async (contextId: number) => {
+      const reply = await send('Runtime.evaluate', {
+        expression: `(${CONFIRMATION_READ})(document)`,
+        contextId,
+        returnByValue: true,
+        silent: true,
+      });
+      // null: the script ran and found nothing. undefined: no answer.
+      if (!isObject(reply) || reply.exceptionDetails !== undefined) {
+        return undefined;
+      }
+      const result = isObject(reply.result) ? reply.result : undefined;
+      if (result?.subtype === 'null') return null;
+      return isObject(result?.value) ? result.value : undefined;
+    };
+    let answer: Record<string, unknown> | null | undefined;
+    try {
+      if (current.focusWorld === undefined) throw new Error('no world');
+      answer = await evaluate(current.focusWorld);
+      if (answer === undefined) throw new Error('no answer');
+    } catch {
+      // No world yet, or its document is gone: make one in the main frame's
+      // current document (its context events are dropped like the mask's).
+      liveHere();
+      const world = await send('Page.createIsolatedWorld', {
+        frameId: current.mainFrameId,
+        worldName: FOCUS_WORLD,
+      });
+      liveHere();
+      const contextId = isObject(world) ? world.executionContextId : undefined;
+      if (typeof contextId !== 'number') return undefined;
+      current.focusWorld = contextId;
+      answer = await evaluate(contextId);
+    }
+    liveHere();
+    return answer ?? undefined;
+  } finally {
+    release();
+  }
+}
+
+/**
+ * The confirmation readConfirmation may keep, built fresh from the script's
+ * answer, or undefined. Dropped (never trimmed or partly kept) unless: the
+ * label is one of CONFIRMATION_LABEL_KINDS and not a sensitive label
+ * (isSensitiveField: belt and braces); the token is a string of
+ * CONFIRMATION_TOKEN_MIN..MAX token characters with a digit; it has no
+ * sensitive shape (hasSensitiveShape: an SSN, or 9 or more digits, so a
+ * long numeric confirmation number is dropped too); it holds no registered
+ * value (hasKnownValue); the page showed no SSN-shaped value near it
+ * (`nearSensitive` exactly false); and the run is still live, unheld and
+ * registered. Any doubt, or a throw, drops it.
+ */
+function vetConfirmation(
+  current: Run,
+  found: Record<string, unknown>,
+): Confirmation | undefined {
+  try {
+    const { token, label, nearSensitive } = found;
+    if (typeof token !== 'string' || typeof label !== 'string') return;
+    if (nearSensitive !== false) return;
+    if (!Object.hasOwn(CONFIRMATION_LABEL_KINDS, label)) return;
+    const kind = CONFIRMATION_LABEL_KINDS[label];
+    if (kind !== 'confirmation' && kind !== 'other') return;
+    if (isSensitiveField({ label })) return;
+    if (
+      token.length < CONFIRMATION_TOKEN_MIN ||
+      token.length > CONFIRMATION_TOKEN_MAX ||
+      !CONFIRMATION_TOKEN.test(token) ||
+      !/\d/.test(token)
+    ) {
+      return;
+    }
+    if (hasSensitiveShape(token)) return;
+    if (current.redactor.hasKnownValue(token)) return;
+    if (current.stopped || current.blocked || current.needsRegistration) {
+      return;
+    }
+    return { token, kind };
+  } catch {
+    return;
+  }
+}
+
 /**
  * Lets the run go on at the origin it is held on (plan 4c's panel asks the
  * caseworker). Only an exact https origin equal to `pendingOrigin`, with the
@@ -3998,9 +4284,19 @@ function getRunStatus(): RunStatus {
   if (current.pendingOrigin !== null) {
     status.pendingOrigin = current.pendingOrigin;
   }
-  // Only while armed (the watch is undefined otherwise): a time, nothing else.
+  // Only while armed (the watch is undefined otherwise): a time and, once
+  // vetted, the confirmation token and its kind (copied, nothing else).
   const submitted = current.submitWatch?.submitted;
-  if (submitted) status.submitted = { at: submitted.at };
+  if (submitted) {
+    status.submitted = { at: submitted.at };
+    const confirmation = submitted.confirmation;
+    if (confirmation) {
+      status.submitted.confirmation = {
+        token: confirmation.token,
+        kind: confirmation.kind,
+      };
+    }
+  }
   return status;
 }
 

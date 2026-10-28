@@ -2830,6 +2830,120 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
         await page.goto(fixtures.formUrl);
       }
     });
+
+    describe('the confirmation number', () => {
+      type Confirmed = WatchStatus & {
+        submitted?: {
+          at: number;
+          confirmation?: { token: string; kind: string };
+        };
+      };
+      const confirmedStatus = () => watchStatus() as Promise<Confirmed>;
+      /** Arms afresh, submits a POST answered by the `v` page, waits. */
+      const submitTo = async (runId: string, v: string) => {
+        await page.goto(fixtures.formUrl);
+        expect(
+          await bridgeMessage(browser.sw, {
+            type: 'armSubmitWatch',
+            runId,
+            reset: true,
+          }),
+        ).toEqual({ ok: true });
+        await addForm(
+          `<form id="wc" method="post" action="/submitted?v=${v}"></form>`,
+        );
+        await page.evaluate(() =>
+          (document.getElementById('wc') as HTMLFormElement).requestSubmit(),
+        );
+        await page.waitForURL(`${fixtures.origin}/submitted?v=${v}`);
+        await becomesSubmitted();
+      };
+      const confirmationOf = async (
+        runId: string,
+        v: string,
+      ): Promise<Confirmed> => {
+        await submitTo(runId, v);
+        try {
+          await until(
+            async () =>
+              (await confirmedStatus()).submitted?.confirmation !== undefined,
+            4_500,
+          );
+        } catch {
+          // None within the read's tries: the status says so below.
+        }
+        return confirmedStatus();
+      };
+
+      it('read from the real page: kept when labelled and clean, dropped otherwise; no other page text', async () => {
+        const { runId } = await startRun();
+        try {
+          const alnum = await confirmationOf(runId, 'alnum');
+          // The hidden "HID-999" before it is not visible text.
+          expect(alnum.submitted?.confirmation).toEqual({
+            token: 'AB-1234',
+            kind: 'confirmation',
+          });
+          const json = JSON.stringify(alnum);
+          expect(json).not.toContain('Jane');
+          expect(json).not.toContain('HID-999');
+          expect(json).not.toContain('Confirmation number');
+
+          expect(
+            (await confirmationOf(runId, 'other')).submitted?.confirmation,
+          ).toEqual({ token: '20240017', kind: 'other' });
+          // Rendered by page script 1.5 s after load: a later try finds it.
+          expect(
+            (await confirmationOf(runId, 'late')).submitted?.confirmation,
+          ).toEqual({ token: 'LATE-77', kind: 'confirmation' });
+
+          for (const v of ['nine', 'ten', 'ssn', 'sentence']) {
+            const seen = await confirmationOf(runId, v);
+            expect(seen.submitted, v).toEqual({ at: expect.any(Number) });
+            expect(JSON.stringify(seen)).not.toContain('123-45-6789');
+          }
+        } finally {
+          await bridgeMessage(browser.sw, { type: 'stopRun' });
+          await closeAgentSessions();
+          await page.goto(fixtures.formUrl);
+        }
+      }, 60_000);
+
+      it('under the agent attach: the read sends the agent nothing, and the token is not masked for it', async () => {
+        const { cdp, runId } = await startRun();
+        const agent = await rawAgent(cdp);
+        try {
+          const session = await agent.attach();
+          await agent.call('Runtime.enable', {}, session);
+          await agent.call('Page.enable', {}, session);
+          const confirmed = await confirmationOf(runId, 'alnum');
+          expect(confirmed.submitted?.confirmation?.token).toBe('AB-1234');
+          const echoed = await confirmationOf(runId, 'ssn');
+          expect(echoed.submitted).toEqual({ at: expect.any(Number) });
+          // Nothing the read saw reached the agent's socket.
+          const frames = agent.frames.join('\n');
+          expect(frames).not.toContain('AB-1234');
+          expect(frames).not.toContain('123-45-6789');
+          // The token is not a registered value: on a page with no other
+          // sensitive text the agent reads it as before.
+          await confirmationOf(runId, 'other');
+          await page.evaluate(() => {
+            document.body.textContent = 'Confirmation number: AB-1234';
+          });
+          const read = await agent.call(
+            'Runtime.evaluate',
+            { expression: 'document.body.innerText', returnByValue: true },
+            session,
+          );
+          expect(JSON.stringify(read.result)).toContain('AB-1234');
+        } finally {
+          await agent.close();
+          await bridgeMessage(browser.sw, { type: 'stopRun' });
+          await closeAgentSessions();
+          await page.goto(fixtures.formUrl);
+        }
+      }, 60_000);
+    });
   });
 
   it('stopRun closes the agent at once and detaches', async () => {
