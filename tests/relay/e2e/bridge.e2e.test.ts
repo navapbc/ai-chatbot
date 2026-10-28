@@ -2283,6 +2283,7 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     const status = await bridgeMessage(browser.sw, { type: 'getRunStatus' });
     // Exactly these keys: no token, no relay URL (this build has no Jev).
     // The tab id lets a reopened panel refresh the run's token.
+    // `exp` is the token's own expiry in Unix seconds, for the same reason.
     expect(status).toEqual({
       ok: true,
       active: true,
@@ -2291,6 +2292,7 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       tabId: expect.any(Number),
       attached: true,
       needsRegistration: false,
+      exp: expect.any(Number),
     });
     expect(JSON.stringify(status)).not.toContain(relay.url);
     expect(

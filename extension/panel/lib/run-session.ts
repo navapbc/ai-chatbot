@@ -47,6 +47,8 @@ export const GRACE_MS = 5000;
  * reads the bridge constant.
  */
 export const WORKER_GONE_AFTER_MS = 7_000;
+/** Longest continuous `restarting` that still holds off the 7 s rule. */
+export const RESTARTING_MAX_MS = 30_000;
 export const REFRESH_BEFORE_MS = 5 * 60_000;
 export const REFRESH_RETRY_MS = 60_000;
 /** A rebuilt run's expiry is unknown: assume this little is left. */
@@ -182,6 +184,7 @@ export const createRunSession = (
   // When the worker first answered "no run" since it last showed this run.
   // Failed and discarded polls neither start nor reset it.
   let inactiveSince: number | undefined;
+  let restartingSince: number | undefined;
   // Reading the server once more before ending the run as worker-ended.
   let confirming = false;
   let lastWorker: RunStatus | undefined;
@@ -383,6 +386,22 @@ export const createRunSession = (
     if (!status.active) {
       lastWorker = status;
       const now = deps.now();
+      // A restart in progress (same-run startRun or worker resume) is not a
+      // gone run: it holds the 7 s clock, up to RESTARTING_MAX_MS in total so
+      // a hung restart cannot hide a dead run.
+      if (status.restarting) {
+        if (restartingSince === undefined) restartingSince = now;
+        if (
+          now - restartingSince < RESTARTING_MAX_MS &&
+          (status.runId === undefined || status.runId === runId)
+        ) {
+          inactiveSince = undefined;
+          emit();
+          return;
+        }
+      } else {
+        restartingSince = undefined;
+      }
       if (inactiveSince === undefined) inactiveSince = now;
       if (now - inactiveSince >= WORKER_GONE_AFTER_MS) {
         void workerGone();
@@ -392,6 +411,7 @@ export const createRunSession = (
       return;
     }
     inactiveSince = undefined;
+    restartingSince = undefined;
     lastWorker = status;
     if (status.needsRegistration && !registering) {
       // Count 0: the panel holds no values (the worker registers them in
@@ -504,8 +524,9 @@ const MAX_SITE_NAME = 100;
 /**
  * The panel reopened while the worker holds a run: rebuild the Running screen
  * when the worker's run is live on the server, on the same origin. The expiry
- * is unknown, so a conservative 5 minutes is assumed and marked estimated
- * (the session then refreshes the token at its first poll). Any failure or
+ * is the worker's reported `exp` (Unix seconds); only a worker that reports none
+ * gets a conservative 5 minutes, marked estimated (the session then refreshes
+ * the token at its first poll). Any failure or
  * mismatch rebuilds nothing. A worker run whose server row already ended is
  * stopped (by its run id): nothing else would end it before its token expires.
  */
@@ -536,8 +557,12 @@ export const rebuildRun = async (deps: {
       run: {
         runId: status.runId,
         tabId,
-        expiresAt: Math.floor(deps.now() / 1000) + ESTIMATED_LEFT_S,
-        expiresAtEstimated: true,
+        ...(typeof status.exp === 'number' && Number.isFinite(status.exp)
+          ? { expiresAt: status.exp }
+          : {
+              expiresAt: Math.floor(deps.now() / 1000) + ESTIMATED_LEFT_S,
+              expiresAtEstimated: true,
+            }),
       },
       target: {
         tabId,

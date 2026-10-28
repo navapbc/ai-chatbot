@@ -783,7 +783,7 @@ describe('the panel shell', () => {
     }
   }, 40_000);
 
-  it('rebuilds Running when the panel reopens mid-run, without a second eve-chat', async () => {
+  it('rebuilds Running when the panel reopens mid-run, without a second eve-chat or a token refresh', async () => {
     const { site, page, runId } = await startOnRealTab();
     await page.close();
     const again = await browser.context.newPage();
@@ -794,19 +794,13 @@ describe('the panel shell', () => {
       expect(appCalls.filter((c) => c === 'POST /api/eve-chat')).toHaveLength(
         1,
       );
-      // The expiry is unknown after reopening, so the token is refreshed at
-      // once (a same-run-id startRun) and the notice goes away.
-      await expect
-        .poll(
-          () => appCalls.filter((c) => c === 'POST /api/relay/token').length,
-          { timeout: 10_000 },
-        )
-        .toBe(2);
-      await expect
-        .poll(() => again.getByText('This run may end soon.').count(), {
-          timeout: 10_000,
-        })
-        .toBe(0);
+      // The worker reports the token's real expiry, so reopening mid-run does
+      // not refresh the token (a same-run-id startRun) and shows no notice.
+      await again.waitForTimeout(5_000);
+      expect(appCalls.filter((c) => c === 'POST /api/relay/token').length).toBe(
+        1,
+      );
+      expect(await again.getByText('This run may end soon.').count()).toBe(0);
       const status = await runStatus(again);
       expect({ active: status.active, runId: status.runId }).toEqual({
         active: true,

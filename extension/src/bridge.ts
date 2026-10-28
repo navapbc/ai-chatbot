@@ -123,6 +123,17 @@ export interface RunStatus {
    * `allowOrigin`; absent when not held.
    */
   pendingOrigin?: string;
+  /**
+   * The token's own expiry (Unix seconds, from its claims; never the token),
+   * so a reopened panel schedules its refresh from the real value.
+   */
+  exp?: number;
+  /**
+   * True with `active: false` while a same-run startRun is replacing the run
+   * or a service-worker resume is in flight: the run is not gone, the answer
+   * is just momentarily empty. `runId` is set for a same-run startRun.
+   */
+  restarting?: boolean;
 }
 
 export type BridgeResponse =
@@ -554,18 +565,36 @@ async function startRunNow(
   const valuesLost = sameRun
     ? previous.needsRegistration
     : begun.includes(claims.runId);
-  await endRun('replaced', { notifyRelay: !sameRun });
-  const config: RunConfig = {
-    relayUrl: msg.relayUrl,
-    token: msg.token,
-    tabId: msg.tabId,
-    allowedFrameOrigins,
-  };
-  await chrome.storage.session.set({ [STORAGE_KEY]: config });
-  begin(config, socket.url, claims, false, valuesLost);
-  carryKnownValues(carried);
-  return { ok: true };
+  // From here until begin finishes `run` is briefly undefined; a same-run
+  // refresh is not a gone run, so getRunStatus says `restarting` (cleared in
+  // finally, so a throw cannot leave it set).
+  if (sameRun) restartingRunIds.push(claims.runId);
+  try {
+    await endRun('replaced', { notifyRelay: !sameRun });
+    const config: RunConfig = {
+      relayUrl: msg.relayUrl,
+      token: msg.token,
+      tabId: msg.tabId,
+      allowedFrameOrigins,
+    };
+    await chrome.storage.session.set({ [STORAGE_KEY]: config });
+    begin(config, socket.url, claims, false, valuesLost);
+    carryKnownValues(carried);
+    return { ok: true };
+  } finally {
+    if (sameRun) {
+      restartingRunIds.splice(restartingRunIds.indexOf(claims.runId), 1);
+    }
+  }
 }
+
+/**
+ * Run ids of same-run startRuns between their snapshot and `begin`, and the
+ * count of resumeRun calls queued or in flight. Module state, not on `Run`,
+ * because `run` is undefined in exactly the window they describe.
+ */
+const restartingRunIds: string[] = [];
+let resumesInFlight = 0;
 
 /**
  * Registers the values a same-run refresh carried on the run just begun.
@@ -781,7 +810,10 @@ function requireSameScope(current: Run, epoch: number) {
 
 /** Picks up a run persisted before a service worker restart. */
 export function resumeRun(): Promise<void> {
-  return serialized(resumeRunNow);
+  resumesInFlight += 1;
+  return serialized(resumeRunNow).finally(() => {
+    resumesInFlight -= 1;
+  });
 }
 
 async function resumeRunNow(): Promise<void> {
@@ -2921,7 +2953,20 @@ async function allowOrigin(origin: unknown): Promise<BridgeResponse> {
  */
 function getRunStatus(): RunStatus {
   const current = run;
-  if (!current || current.stopped) return { ok: true, active: false };
+  if (!current || current.stopped) {
+    const restartingRunId = restartingRunIds[0];
+    if (restartingRunId !== undefined) {
+      return {
+        ok: true,
+        active: false,
+        restarting: true,
+        runId: restartingRunId,
+      };
+    }
+    if (resumesInFlight > 0)
+      return { ok: true, active: false, restarting: true };
+    return { ok: true, active: false };
+  }
   const status: RunStatus = {
     ok: true,
     active: true,
@@ -2930,6 +2975,7 @@ function getRunStatus(): RunStatus {
     tabId: current.tabId,
     attached: current.attached,
     needsRegistration: current.needsRegistration,
+    exp: current.exp,
   };
   if (current.jev) {
     status.jevFailures = current.jev.failures();
