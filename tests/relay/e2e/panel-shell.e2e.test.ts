@@ -8,8 +8,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mintRelayToken } from '../../../lib/relay/token';
 import { extractTokens } from '../../../scripts/extension-build-config';
 import {
+  cdpUrl,
+  closeAgentSessions,
   EXTENSION_ID,
   type ExtensionBrowser,
+  agentBrowser,
   type Fixtures,
   launchExtensionBrowser,
   type Relay,
@@ -28,6 +31,12 @@ import {
 // keeps the stream open; POST /api/relay/token mints a real extension token
 // for a real relay (ws://127.0.0.1) and the fixture origin, so the worker's
 // startRun succeeds against a real tab and the panel reaches Running.
+//
+// Typing a sensitive value (plan 4c-3): the panel is driven as a tab, as
+// above, but the worker, relay and page are real and the agent is
+// agent-browser through the relay. Fill it in goes to the real worker; the
+// secret must appear nowhere the fake app, the console, storage, the panel or
+// any relay frame can show it, including after a same-run token refresh.
 
 const ROOT = path.resolve(__dirname, '../../..');
 const HEADED = process.env.RELAY_E2E_HEADED === '1';
@@ -58,6 +67,8 @@ const runs = new Map<
 >();
 /** Answer turns (`inputResponses` bodies) POSTed to /api/eve-chat. */
 const answerBodies: unknown[] = [];
+/** Every request the fake app saw: method, URL, headers and body text. */
+const appRequests: string[] = [];
 const answerOrigins: (string | undefined)[] = [];
 /** When set, the fake app answers POST /stop with a 500 (row still ends). */
 let stopFails = false;
@@ -90,9 +101,10 @@ beforeAll(async () => {
   relay = await startRelay();
   fixtures = await serveFixtures();
   app = createServer(async (req, res) => {
+    const raw = await readBody(req);
+    appRequests.push(JSON.stringify([req.method, req.url, req.headers, raw]));
     if (req.method === 'POST' && req.url === '/api/eve-chat') {
-      const text = await readBody(req);
-      const parsed = JSON.parse(text) as { inputResponses?: unknown };
+      const parsed = JSON.parse(raw) as { inputResponses?: unknown };
       if (parsed.inputResponses !== undefined) {
         // An answer turn: the run row is left as it is.
         answerBodies.push(parsed);
@@ -128,7 +140,7 @@ beforeAll(async () => {
     }
     if (req.method === 'POST' && req.url === '/api/relay/token') {
       appCalls.push('POST /api/relay/token');
-      const { runId } = JSON.parse(await readBody(req)) as { runId: string };
+      const { runId } = JSON.parse(raw) as { runId: string };
       const now = Math.floor(Date.now() / 1000);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
@@ -1153,19 +1165,235 @@ describe('the panel shell', () => {
       row.pending = [];
       await card.waitFor({ state: 'detached', timeout: 10_000 });
 
-      // The typed answer reached no console line, the title or storage.
-      expect(await page.title()).not.toContain(ANSWER);
-      expect(page.url()).not.toContain(ANSWER);
+      // The typed answer and the filled-in value reached no console line,
+      // the title or storage.
+      for (const secret of [ANSWER, SECRET]) {
+        expect(await page.title()).not.toContain(secret);
+        expect(page.url()).not.toContain(secret);
+        const stored = await page.evaluate(async () =>
+          JSON.stringify([
+            await chrome.storage.local.get(null),
+            await chrome.storage.session.get(null),
+          ]),
+        );
+        expect(stored).not.toContain(secret);
+        for (const line of seen) expect(line).not.toContain(secret);
+      }
+    } finally {
+      answerRefusal = null;
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 90_000);
+
+  it('types a sensitive value end to end with the real worker, through a token refresh', async () => {
+    // Driven as the rest of this file is: the panel is a tab, the worker, the
+    // relay and the page are real, and the agent is agent-browser through the
+    // relay. Only the fake app's answers are canned.
+    const SECRET = 'Qx4-Mango-Value-905';
+    const PENDING = [
+      {
+        requestId: 'q-ssn',
+        prompt: 'Social Security number',
+        display: 'select',
+        options: [
+          { id: 'provided', label: 'I entered it myself' },
+          { id: 'skip', label: 'Skip' },
+        ],
+        allowFreeform: false,
+      },
+    ];
+    const { site, page, runId } = await startOnRealTab();
+    const seen: string[] = [];
+    // The panel's, the page's and (where Playwright reports them) the
+    // worker's console lines.
+    const onConsole = (msg: import('playwright').ConsoleMessage) =>
+      seen.push(msg.text());
+    browser.context.on('console', onConsole);
+    answerBodies.length = 0;
+    answerOrigins.length = 0;
+    answerRefusal = null;
+    appCalls.length = 0;
+    const appSeen = appRequests.length;
+    const row = runs.get(runId);
+    if (!row) throw new Error('no run row');
+    const now = Math.floor(Date.now() / 1000);
+    const agentToken = mintRelayToken(
+      { runId, role: 'agent', origin: fixtures.origin, sub: 'e2e-user' },
+      relay.secret,
+      { now },
+    );
+    const cdp = cdpUrl(relay, agentToken);
+    const frameStart = relay.frames.length;
+    try {
+      await site.evaluate(() => {
+        document.body.insertAdjacentHTML(
+          'beforeend',
+          '<div id="typing">' +
+            '<label for="e2e-ssn">Social Security Number</label>' +
+            '<input id="e2e-ssn" name="field_17">' +
+            '<label for="e2e-mid">Middle name</label>' +
+            '<input id="e2e-mid" name="field_18"></div>',
+        );
+      });
+      // The agent reads the page: this attaches the debugger to the tab.
+      expect(
+        (await agentBrowser(['snapshot', '-i'], cdp, 'typing')).success,
+      ).toBe(true);
+
+      row.pending = PENDING;
+      row.phase = 'needs_you';
+      const card = page.getByRole('region', { name: 'The agent needs you' });
+      await card.waitFor({ timeout: 10_000 });
+      const fillIt = card.getByRole('button', { name: 'Fill it in' });
+      const send = card.getByRole('button', { name: 'Send' });
+      await card.getByLabel('Value to fill in').fill(SECRET);
+
+      // An ordinary field is focused: refused with the fixed copy, nothing
+      // typed, and the value is kept for a retry.
+      await site.focus('#e2e-mid');
+      await fillIt.click();
+      await card
+        .getByRole('alert')
+        .getByText(
+          'The extension does not treat that field as sensitive, so it will not type there. Type it in the page yourself.',
+        )
+        .waitFor();
+      expect(await site.inputValue('#e2e-mid')).toBe('');
+      expect(await site.inputValue('#e2e-ssn')).toBe('');
+      expect(await card.getByLabel('Value to fill in').inputValue()).toBe(
+        SECRET,
+      );
+
+      // The caseworker clicks the masked field, then Fill it in.
+      await site.focus('#e2e-ssn');
+      await fillIt.click();
+      await card.getByText('Filled in.').waitFor();
+      expect(await site.inputValue('#e2e-ssn')).toBe(SECRET);
+      expect(await site.inputValue('#e2e-mid')).toBe('');
+      expect(await page.evaluate(() => document.body.innerHTML)).not.toContain(
+        SECRET,
+      );
+      await send.click();
+      await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(answerBodies).toEqual([
+        {
+          id: runId,
+          inputResponses: [{ requestId: 'q-ssn', optionId: 'provided' }],
+        },
+      ]);
+      row.phase = 'working';
+      row.pending = [];
+      await card.waitFor({ state: 'detached', timeout: 10_000 });
+
+      // A token refresh in the middle: a same-run startRun on the run's tab,
+      // then the panel's registrationComplete, as the run session sends them.
+      const tabId = ((await runStatus(page)) as Status & { tabId: number })
+        .tabId;
+      const refreshed = mintRelayToken(
+        {
+          runId,
+          role: 'extension',
+          origin: fixtures.origin,
+          sub: 'e2e-user',
+        },
+        relay.secret,
+        { now: Math.floor(Date.now() / 1000) },
+      );
+      const registrations = relay.logs.filter(
+        (l) => l.event === 'registered' && l.runId === runId,
+      ).length;
+      expect(
+        await page.evaluate(
+          ([relayUrl, token, tab, id]) =>
+            chrome.runtime
+              .sendMessage({ type: 'startRun', relayUrl, token, tabId: tab })
+              .then(() =>
+                chrome.runtime.sendMessage({
+                  type: 'registrationComplete',
+                  runId: id,
+                  count: 0,
+                }),
+              ),
+          [relay.url, refreshed, tabId, runId] as const,
+        ),
+      ).toEqual({ ok: true });
+      await expect
+        .poll(
+          () =>
+            relay.logs.filter(
+              (l) => l.event === 'registered' && l.runId === runId,
+            ).length,
+          { timeout: 10_000 },
+        )
+        .toBeGreaterThan(registrations);
+      expect((await runStatus(page)).runId).toBe(runId);
+
+      // The page now echoes the value in ordinary text. The agent, on a
+      // fresh connection after the refresh (the old one closed with the
+      // restarted run), still never sees it.
+      await site.evaluate((v) => {
+        const echo = document.createElement('p');
+        echo.textContent = `You entered ${v}`;
+        document.getElementById('typing')?.append(echo);
+        document.title = `Review ${v}`;
+      }, SECRET);
+      await closeAgentSessions();
+      const agentSaw: unknown[] = [];
+      for (const args of [
+        ['snapshot'],
+        ['snapshot', '-i'],
+        ['get', 'title'],
+        ['get', 'url'],
+        ['screenshot'],
+      ]) {
+        agentSaw.push(await agentBrowser(args, cdp, 'after-refresh'));
+      }
+      // The reads work; the screenshot is refused while the registered
+      // value is in the page text, and says nothing of it.
+      expect(
+        (agentSaw as { success: boolean }[]).map((r) => r.success),
+      ).toEqual([true, true, true, true, false]);
+      expect(JSON.stringify(agentSaw.at(-1))).toContain(
+        'sensitive fields could not be masked',
+      );
+      expect(JSON.stringify(agentSaw)).not.toContain(SECRET);
+      expect(JSON.stringify(agentSaw)).not.toContain('Mango');
+      // The value is still in the page field (the caseworker's own view).
+      expect(await site.inputValue('#e2e-ssn')).toBe(SECRET);
+
+      // Nothing the agent's relay carried held the value.
+      expect(relay.frames.length).toBeGreaterThan(frameStart);
+      for (const frame of relay.frames.slice(frameStart)) {
+        expect(frame).not.toContain(SECRET);
+      }
+      // The fake app saw no value in any request body, URL or header.
+      const toApp = JSON.stringify([
+        appRequests.slice(appSeen),
+        answerBodies,
+        answerOrigins,
+      ]);
+      expect(toApp).not.toContain(SECRET);
+      expect(toApp).not.toContain('Mango');
+      // Nor did a console line, the panel's title or URL, the panel's DOM,
+      // or storage.
+      expect(await page.title()).not.toContain(SECRET);
+      expect(page.url()).not.toContain(SECRET);
+      expect(await page.evaluate(() => document.body.innerHTML)).not.toContain(
+        SECRET,
+      );
       const stored = await page.evaluate(async () =>
         JSON.stringify([
           await chrome.storage.local.get(null),
           await chrome.storage.session.get(null),
         ]),
       );
-      expect(stored).not.toContain(ANSWER);
-      for (const line of seen) expect(line).not.toContain(ANSWER);
+      expect(stored).not.toContain(SECRET);
+      for (const line of seen) expect(line).not.toContain(SECRET);
     } finally {
-      answerRefusal = null;
+      browser.context.off('console', onConsole);
+      await closeAgentSessions();
       await stopWorkerRun(page);
       await page.close();
       await site.close();
