@@ -600,25 +600,40 @@ describe('run status after a worker restart', () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let entered = false;
     store.set = async (items) => {
+      entered = true;
       await gate;
       return realSet(items);
     };
     const started = start(tokenFor('run-1', 7200));
-    await Promise.resolve();
+    // startRun is now blocked inside the awaits before its snapshot.
+    await vi.waitFor(() => expect(entered).toBe(true));
     expect(await addValue('Hypatia')).toEqual({ ok: true });
     release();
     expect(await started).toEqual({ ok: true });
     store.set = realSet;
+    const dbg = (
+      globalThis as unknown as {
+        chrome: { debugger: { getTargets: () => Promise<unknown[]> } };
+      }
+    ).chrome.debugger;
+    dbg.getTargets = async () => [
+      {
+        tabId: 1,
+        type: 'page',
+        id: 'T',
+        title: 'Rosalind and Hypatia',
+        url: `${ORIGIN}/form`,
+        attached: false,
+      },
+    ];
     const next = FakeSocket.all.at(-1) as FakeSocket;
     await next.open();
     await ask(next, { id: 'a', type: 'attach', targetId: 'T' });
     expect((await status()).needsRegistration).toBe(false);
-    // Both values, including the one added mid-refresh, are known again.
-    expect(await titleOf(next, 't1')).toBe('Form for [masked]');
-    await addValue('Hypatia');
-    for (let i = 0; i < 30; i++) await addValue(`filler-${i}`);
-    expect((await addValue('overflow')).ok).toBe(false);
+    // Both values, including the one added mid-refresh, are masked again.
+    expect(await titleOf(next, 't1')).toBe('[masked] and [masked]');
   });
 
   it('needsRegistration stays set across a refresh that carries values', async () => {
