@@ -78,7 +78,13 @@ export type BridgeMessage =
    * The caseworker allowed the origin the run is held on (see holdOrigin)
    * for the rest of this run: exactly `pendingOrigin`, an https origin.
    */
-  | { type: 'allowOrigin'; origin: string };
+  | { type: 'allowOrigin'; origin: string }
+  /**
+   * Registers `value` for scrubbing, then types it into the field focused in
+   * the run's tab if the redactor masks that field (see typeSensitive).
+   * Answers `{ ok: true }` or a fixed refusal, never the value.
+   */
+  | { type: 'typeSensitive'; runId: string; value: string };
 
 /**
  * The bridge's run state for the panel. Ids and counts only: never the
@@ -1765,50 +1771,72 @@ function inputTargetFrame(node: Record<string, unknown> | undefined) {
  * document; undefined when it cannot be classified (a frame owner without a
  * frame, a closed shadow root).
  */
-async function focusedFrameId(
-  current: Run,
-  tab: FrameSession,
-): Promise<string | null | undefined> {
-  const expression = `(() => {
-    let el = document.activeElement;
+/**
+ * The element keyboard focus is on, as a function of a document: followed
+ * through open shadow roots and into reachable same-origin frames, stopping
+ * at a frame whose document is not reachable (its owner is returned).
+ */
+const DEEP_ACTIVE = `(doc) => {
+    let el = doc.activeElement;
     for (let i = 0; i < 64 && el; i++) {
       while (el.shadowRoot && el.shadowRoot.activeElement) {
         el = el.shadowRoot.activeElement;
       }
       if (!${FRAME_OWNER_TAGS}.test(el.tagName)) return el;
-      let doc = null;
-      try { doc = el.contentDocument; } catch {}
-      if (!doc || !doc.activeElement) return el;
-      el = doc.activeElement;
+      let inner = null;
+      try { inner = el.contentDocument; } catch {}
+      if (!inner || !inner.activeElement) return el;
+      el = inner.activeElement;
     }
     return el;
-  })()`;
-  const objectGroup = checkGroup();
+  }`;
+
+/**
+ * The focused element (see DEEP_ACTIVE) as a remote object of the bridge's
+ * own isolated world of the main frame, in `objectGroup` (the caller
+ * releases it). Null when nothing is focused; undefined when the world
+ * cannot be made. Throws when a lookup fails.
+ */
+async function focusedElement(
+  current: Run,
+  tab: FrameSession,
+  objectGroup: string,
+): Promise<string | null | undefined> {
+  const expression = `(${DEEP_ACTIVE})(document)`;
   const evaluate = async (contextId: number) =>
     sessionSend(tab, 'Runtime.evaluate', {
       expression,
       contextId,
       objectGroup,
     });
+  let evaluated: unknown;
   try {
-    let evaluated: unknown;
-    try {
-      if (current.focusWorld === undefined) throw new Error('no world');
-      evaluated = await evaluate(current.focusWorld);
-    } catch {
-      // No world yet, or its document is gone: make one (its context
-      // events are dropped like the mask's, see isBridgeWorldCreated).
-      const world = await sessionSend(tab, 'Page.createIsolatedWorld', {
-        frameId: current.mainFrameId,
-        worldName: FOCUS_WORLD,
-      });
-      const contextId = isObject(world) ? world.executionContextId : undefined;
-      if (typeof contextId !== 'number') return undefined;
-      current.focusWorld = contextId;
-      evaluated = await evaluate(contextId);
-    }
-    const objectId = objectIdOf(evaluated, 'result');
-    if (!objectId) return null;
+    if (current.focusWorld === undefined) throw new Error('no world');
+    evaluated = await evaluate(current.focusWorld);
+  } catch {
+    // No world yet, or its document is gone: make one (its context
+    // events are dropped like the mask's, see isBridgeWorldCreated).
+    const world = await sessionSend(tab, 'Page.createIsolatedWorld', {
+      frameId: current.mainFrameId,
+      worldName: FOCUS_WORLD,
+    });
+    const contextId = isObject(world) ? world.executionContextId : undefined;
+    if (typeof contextId !== 'number') return undefined;
+    current.focusWorld = contextId;
+    evaluated = await evaluate(contextId);
+  }
+  return objectIdOf(evaluated, 'result') ?? null;
+}
+
+async function focusedFrameId(
+  current: Run,
+  tab: FrameSession,
+): Promise<string | null | undefined> {
+  const objectGroup = checkGroup();
+  try {
+    const objectId = await focusedElement(current, tab, objectGroup);
+    if (objectId === undefined) return undefined;
+    if (objectId === null) return null;
     // Pierced one level: a closed shadow root shows up here.
     return inputTargetFrame(
       describedNode(
@@ -2662,6 +2690,236 @@ function addKnownValue(runId: unknown, value: unknown): BridgeResponse {
 }
 
 /**
+ * typeSensitive's refusals, exactly as the panel maps them: fixed strings,
+ * never the value, a field's name or label, or page text.
+ */
+type TypeRefusal =
+  | 'no active run'
+  | 'wrong run'
+  | 'not attached'
+  | 'run is held'
+  | 'value not accepted'
+  | 'no focused field'
+  | 'field not sensitive'
+  | 'field out of scope'
+  | 'type failed';
+
+/** The redactor's own limit; checked here too so the reason is fixed. */
+const MAX_TYPED_LENGTH = 512;
+// Input.insertText settles once the text is in; a page that hangs it fails
+// the typing (it is never sent again).
+const TYPE_MS = 3_000;
+// Input types whose value is the text typed into them (an input without a
+// type, or with an unknown one, reports `text`).
+const TEXT_ENTRY_TYPES = [
+  'text',
+  'password',
+  'tel',
+  'email',
+  'number',
+  'search',
+  'url',
+];
+
+/**
+ * Run on the focused element in the bridge's isolated world (page script
+ * cannot change what these getters answer): 'entry' for an enabled, editable
+ * text input or textarea, 'frame' for a frame owner focus stopped at (a
+ * frame the world cannot see into), 'other' for anything else. Never page
+ * text. Not by `instanceof`: an element of a same-origin frame has that
+ * frame's prototypes.
+ */
+const FIELD_KIND = `function () {
+  const el = this;
+  if (!el || el.nodeType !== 1 || !el.isConnected) return 'other';
+  if (${FRAME_OWNER_TAGS}.test(el.tagName)) return 'frame';
+  const tag = el.localName;
+  if (tag === 'input') {
+    if (!${JSON.stringify(TEXT_ENTRY_TYPES)}.includes(el.type)) return 'other';
+  } else if (tag !== 'textarea') {
+    return 'other';
+  }
+  if (el.getAttribute('aria-disabled') === 'true') return 'other';
+  if (el.getAttribute('aria-readonly') === 'true') return 'other';
+  return el.matches(':enabled:read-write') ? 'entry' : 'other';
+}`;
+
+/** True while the element it runs on is still the focused one. */
+const STILL_FOCUSED = `function () {
+  return (${DEEP_ACTIVE})(document) === this;
+}`;
+
+const returnedValue = (reply: unknown) =>
+  isObject(reply) && isObject(reply.result) ? reply.result.value : undefined;
+
+/**
+ * Types a sensitive value the caseworker gave the panel into the field they
+ * focused in the tab, for them: plan 4c-3. The value is registered for
+ * scrubbing first (refused: nothing is typed), then the focused element is
+ * checked (an enabled, editable text field, in a frame in scope, that the
+ * redactor masks once filled), then it is typed with one Input.insertText,
+ * never retried. A refusal after registering leaves the value registered.
+ *
+ * This is worker-initiated CDP outside the agent's command policy, so it
+ * re-applies what forwardCdp applies to agent input: run live and attached,
+ * not held, tab in scope and unchanged since the call (requireSameScope),
+ * screenshots waited out and the shared tab hold kept to the send, the
+ * focused frame judged like a command's handle, a timeout. Never throws,
+ * never logs; the reply is `{ ok: true }` or one fixed TypeRefusal.
+ */
+async function typeSensitive(
+  runId: unknown,
+  value: unknown,
+): Promise<BridgeResponse> {
+  const refuse = (error: TypeRefusal): BridgeResponse => ({ ok: false, error });
+  const current = run;
+  if (!current || current.stopped) return refuse('no active run');
+  if (runId !== current.runId) return refuse('wrong run');
+  if (!current.attached) return refuse('not attached');
+  if (current.blocked) return refuse('run is held');
+  // Registered before any await, in the same turn as the checks above, so a
+  // token refresh either carries it or refuses it (see startRunNow).
+  if (
+    typeof value !== 'string' ||
+    value.trim() === '' ||
+    value.length > MAX_TYPED_LENGTH ||
+    !addAccepted(current, value)
+  ) {
+    return refuse('value not accepted');
+  }
+  const epoch = current.scopeEpoch;
+  let refusal: TypeRefusal | null;
+  try {
+    refusal = await typeIntoFocused(current, value, epoch);
+  } catch (error) {
+    // The error's own text is never passed on: it may name page state.
+    if (run !== current || current.stopped) refusal = 'type failed';
+    else if (current.blocked) refusal = 'run is held';
+    else if (error instanceof Error && error.message === FRAME_OUT_OF_SCOPE) {
+      refusal = 'field out of scope';
+    } else if (!current.attached) refusal = 'not attached';
+    else refusal = 'type failed';
+  }
+  return refusal === null ? { ok: true } : refuse(refusal);
+}
+
+/** See typeSensitive: null once the value was typed, else why not. */
+async function typeIntoFocused(
+  current: Run,
+  value: string,
+  epoch: number,
+): Promise<TypeRefusal | null> {
+  const lock = lockFor(current.tabId);
+  // The tab session as it is now; a re-attach replaces its frame scope.
+  const tab: FrameSession = {
+    scope: current.frameScope,
+    debuggee: { tabId: current.tabId },
+    rootFrameId: current.mainFrameId,
+  };
+  // After every await: the same run, attached to the same session, its tab
+  // never out of scope since the call (throws).
+  const live = () => {
+    requireSameScope(current, epoch);
+    if (run !== current) throw new Error('run replaced');
+    if (!current.attached || tab.scope !== current.frameScope) {
+      throw new Error('not attached');
+    }
+  };
+  // As forwardCdp: wait out a screenshot's mask window, check the tab, and
+  // take the shared hold with no await after the last check.
+  for (;;) {
+    await untilNoScreenshot(lock);
+    await requireTabInScope(current);
+    live();
+    if (!lock.writer) break;
+  }
+  const release = holdShared(lock);
+  const objectGroup = checkGroup();
+  try {
+    const signature = inputGuardSignature(current);
+    const objectId = await focusedElement(current, tab, objectGroup);
+    live();
+    if (objectId === null) return 'no focused field';
+    if (objectId === undefined) return 'type failed';
+    const kind = returnedValue(
+      await sessionSend(tab, 'Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: FIELD_KIND,
+        returnByValue: true,
+      }),
+    );
+    live();
+    if (kind === 'frame') return 'field out of scope';
+    if (kind !== 'entry') return 'no focused field';
+    const node = describedNode(
+      await sessionSend(tab, 'DOM.describeNode', { objectId }),
+    );
+    live();
+    const backendNodeId = node?.backendNodeId;
+    if (typeof backendNodeId !== 'number') return 'type failed';
+    // The field's frame: the context of its own main world, judged like a
+    // command's node handle (unknown or out of scope refuses).
+    const { contextIds } = await resolveFrames(
+      current,
+      tab,
+      commandAddresses({ backendNodeId }),
+    );
+    live();
+    const inScope = () =>
+      contextIds.length === 1 &&
+      contextAllowedIn(current, tab.scope, contextIds[0]);
+    if (!inScope()) return 'field out of scope';
+    // The verdict the redactor gives this field once it holds a value: the
+    // accessibility node (its accessible name included) and describe(),
+    // classifyExtra (Jev) included. Unknown is not masked.
+    const tree = await sessionSend(tab, 'Accessibility.getPartialAXTree', {
+      backendNodeId,
+      fetchRelatives: false,
+    });
+    live();
+    const axNode = (
+      isObject(tree) && Array.isArray(tree.nodes) ? tree.nodes : []
+    ).find((n) => isObject(n) && n.backendDOMNodeId === backendNodeId);
+    if (axNode === undefined) return 'type failed';
+    const masked = await current.redactor.masksFilledField(
+      axNode,
+      describeVia(tab.debuggee),
+    );
+    live();
+    if (!masked) return 'field not sensitive';
+    // Focus may have moved while the field was judged.
+    const still = returnedValue(
+      await sessionSend(tab, 'Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: STILL_FOCUSED,
+        returnByValue: true,
+      }),
+    );
+    // No await from here to the send.
+    live();
+    if (still !== true) return 'no focused field';
+    if (inputGuardSignature(current) !== signature || !inScope()) {
+      return 'field out of scope';
+    }
+    try {
+      await withTimeout(
+        chrome.debugger.sendCommand(tab.debuggee, 'Input.insertText', {
+          text: value,
+        }),
+        TYPE_MS,
+        'typing',
+      );
+    } catch {
+      return 'type failed';
+    }
+    return null;
+  } finally {
+    await releaseGroup(tab, objectGroup);
+    release();
+  }
+}
+
+/**
  * Lets the run go on at the origin it is held on (plan 4c's panel asks the
  * caseworker). Only an exact https origin equal to `pendingOrigin`, with the
  * tab still on it (or back in scope), at most MAX_EXTRA_ORIGINS per run; it
@@ -2758,5 +3016,8 @@ export async function handleMessage(message: unknown): Promise<BridgeResponse> {
     return registrationComplete(message.runId, message.count);
   }
   if (message.type === 'allowOrigin') return allowOrigin(message.origin);
+  if (message.type === 'typeSensitive') {
+    return typeSensitive(message.runId, message.value);
+  }
   return { ok: false, error: 'unknown message type' };
 }

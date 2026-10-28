@@ -47,6 +47,17 @@ export interface Redactor {
    * itself cannot be rewritten.
    */
   hasKnownValue(text: string): boolean;
+  /**
+   * True when redactResult would mask this field's value once it holds one:
+   * the filled-field verdict of an accessibility tree (the AX node's own
+   * descriptor, then describe()'s, alone and merged with it, then
+   * classifyExtra on the merged one), each step bounded as there. Unlike
+   * redactResult, every failure (a node that is not a form field by role,
+   * no backend node id, a describe() that fails or times out, no verdict)
+   * answers `false`: the caller types a secret only into a field this
+   * answers `true` for, so not knowing means not typing.
+   */
+  masksFilledField(axNode: unknown, describe: Describe): Promise<boolean>;
   clear(): void;
   redactResult(
     method: string,
@@ -1583,6 +1594,33 @@ export function createRedactor(opts?: RedactorOptions): Redactor {
 
     hasKnownValue(text) {
       return typeof text === 'string' && scrubKnown(text) !== text;
+    },
+
+    // Mirrors classify()'s path for a filled field (classifyAXNode, then the
+    // 'ask' branch), with every failure turned into `false`.
+    async masksFilledField(axNode, describe) {
+      try {
+        if (!isObj(axNode)) return false;
+        const role = axString(axNode.role);
+        if (role === undefined || !INPUT_ROLES.has(role)) return false;
+        const fromAx = axDescriptor(axNode);
+        if (isSensitiveField(fromAx)) return true;
+        const id = axNode.backendDOMNodeId;
+        if (typeof id !== 'number') return false;
+        const fromDom = await describeSafely(describe, id, describeTimeoutMs);
+        if (!fromDom) return false;
+        const merged = { ...fromAx, ...fromDom };
+        if (isSensitiveField(fromDom) || isSensitiveField(merged)) return true;
+        if (!classifyExtra) return false;
+        const verdict = await askExtra(
+          classifyExtra,
+          merged,
+          Date.now() + classifyTimeoutMs,
+        );
+        return verdict === true;
+      } catch {
+        return false;
+      }
     },
 
     clear() {

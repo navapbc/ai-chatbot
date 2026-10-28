@@ -2020,6 +2020,80 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     });
   });
 
+  it('typeSensitive types only into a focused field the redactor masks', async () => {
+    const { cdp, runId } = await startRun();
+    expect(
+      (await agentBrowser(['snapshot', '-i'], cdp, 'typing')).success,
+    ).toBe(true);
+    // Labels only: the inputs' attributes say nothing sensitive.
+    await page.evaluate(() => {
+      document.body.insertAdjacentHTML(
+        'beforeend',
+        '<div id="typing">' +
+          '<label for="t17">Social Security Number</label>' +
+          '<input id="t17" name="field_17">' +
+          '<label for="t18">Middle name</label>' +
+          '<input id="t18" name="field_18">' +
+          '<label for="t19">Social Security Number</label>' +
+          '<input id="t19" name="field_19" readonly>' +
+          '</div>',
+      );
+    });
+    const inner = await (await page.$('#child'))?.contentFrame();
+    if (!inner) throw new Error('srcdoc frame not found');
+    await inner.evaluate(() => {
+      document.body.insertAdjacentHTML(
+        'beforeend',
+        '<label for="cs">Social Security Number</label><input id="cs">',
+      );
+    });
+    const value = 'Quill-7731-Zebra';
+    const typeIt = () =>
+      bridgeMessage(browser.sw, { type: 'typeSensitive', runId, value });
+    try {
+      await page.focus('#t18');
+      expect(await typeIt()).toEqual({
+        ok: false,
+        error: 'field not sensitive',
+      });
+      await page.focus('#t19');
+      expect(await typeIt()).toEqual({
+        ok: false,
+        error: 'no focused field',
+      });
+      await crossFrame(page).focus('#x');
+      expect(await typeIt()).toEqual({
+        ok: false,
+        error: 'field out of scope',
+      });
+      expect(await crossValue(page)).toBe('');
+      await page.focus('#t17');
+      expect(await typeIt()).toEqual({ ok: true });
+      expect(await page.inputValue('#t17')).toBe(value);
+      expect(await page.inputValue('#t18')).toBe('');
+      expect(await page.inputValue('#t19')).toBe('');
+      // Into a sensitive field of the same-origin (srcdoc) frame.
+      await inner.focus('#cs');
+      expect(await typeIt()).toEqual({ ok: true });
+      expect(await inner.inputValue('#cs')).toBe(value);
+      // The agent's view of the page never shows it.
+      const snap = await agentBrowser(['snapshot'], cdp, 'typing');
+      expect(snap.success).toBe(true);
+      expect(JSON.stringify(snap)).not.toContain(value);
+      expect(JSON.stringify(snap)).not.toContain('7731');
+    } finally {
+      await page.evaluate(() => document.getElementById('typing')?.remove());
+      await inner
+        .evaluate(() => {
+          document.getElementById('cs')?.remove();
+          document.querySelector('label[for="cs"]')?.remove();
+        })
+        .catch(() => {});
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await closeAgentSessions();
+    }
+  });
+
   it('stopRun closes the agent at once and detaches', async () => {
     const { cdp } = await startRun();
     expect((await agentBrowser(['snapshot', '-i'], cdp, 'stop')).success).toBe(
