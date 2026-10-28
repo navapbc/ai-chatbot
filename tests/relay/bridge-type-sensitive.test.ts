@@ -445,6 +445,14 @@ describe('typeSensitive refusals type nothing', () => {
     await refused('not attached');
   });
 
+  it('not attached after a same-run refresh (documented gap)', async () => {
+    // A token refresh restarts the run detached; only the agent's next
+    // command attaches it again, so Fill it in is refused until then.
+    await attachedRun();
+    await startedRun();
+    await refused('not attached');
+  });
+
   it('run is held', async () => {
     await attachedRun();
     bridge.onDebuggerEvent({ tabId: 1 }, 'Page.frameNavigated', {

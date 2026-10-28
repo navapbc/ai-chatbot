@@ -876,7 +876,7 @@ describe('the panel shell', () => {
       await card.getByText('Social Security number').waitFor();
       await card
         .getByText(
-          'This one is sensitive. Type it here and the extension fills it in, or type it in the page yourself.',
+          'This one is sensitive. Type it in the page yourself first, then choose "I typed it in the page" and press Send. Or type it here and press Fill it in.',
         )
         .waitFor();
       // The sensitive question gets a masked input, not a textarea: one only.
@@ -913,7 +913,9 @@ describe('the panel shell', () => {
         .toBeGreaterThan(mark + 1);
       await box.fill(ANSWER);
       expect(await send.isDisabled()).toBe(true);
-      await card.getByRole('button', { name: "I'll type it myself" }).click();
+      await card
+        .getByRole('button', { name: 'I typed it in the page' })
+        .click();
       expect(await send.isDisabled()).toBe(false);
 
       // The server refuses the text: fixed copy, the text is cleared.
@@ -1109,7 +1111,9 @@ describe('the panel shell', () => {
       expect(await card.locator('textarea').count()).toBe(0);
       expect(await card.getByText('cannot be answered here').count()).toBe(0);
       expect(await send.isDisabled()).toBe(true);
-      await card.getByRole('button', { name: "I'll type it myself" }).click();
+      await card
+        .getByRole('button', { name: 'I typed it in the page' })
+        .click();
       await send.click();
       await card.getByText('Sent. Waiting for the agent...').waitFor();
       expect(answerBodies).toHaveLength(5);
@@ -1609,7 +1613,7 @@ describe('the panel shell', () => {
       await none(allow, review);
       await needsYou.getByLabel('County of residence').fill(ANSWER);
       await needsYou
-        .getByRole('button', { name: "I'll type it myself" })
+        .getByRole('button', { name: 'I typed it in the page' })
         .click();
       await needsYou.getByRole('button', { name: 'Send' }).click();
       await needsYou.getByText('Sent. Waiting for the agent...').waitFor();

@@ -270,12 +270,12 @@ export const answerMessageFor = (error: unknown): ErrorMessage =>
 export const NEEDS_YOU_COPY = {
   title: 'The agent needs you',
   sensitive:
-    'This one is sensitive. Type it here and the extension fills it in, or type it in the page yourself.',
+    'This one is sensitive. Type it in the page yourself first, then choose "I typed it in the page" and press Send. Or type it here and press Fill it in.',
   cannotAnswer:
     'This question cannot be answered here. The agent is waiting; you can Stop the run.',
   noNumbers:
     'Do not type Social Security, bank, card or ID numbers here. Type those in the page.',
-  typeMyself: "I'll type it myself",
+  typeMyself: 'I typed it in the page',
   fillIt: 'Fill it in',
   fillInstruction: 'Click the field in the page, then press Fill it in.',
   fillInputLabel: 'Value to fill in',
@@ -294,7 +294,7 @@ export const NEEDS_YOU_COPY = {
  */
 export const TYPE_SENSITIVE_COPY: Record<TypeSensitiveCode, string> = {
   not_attached:
-    'The extension is not connected to this tab right now. Type it in the page yourself.',
+    'The extension is not connected to this tab right now. Type it in the page yourself, then choose "I typed it in the page".',
   run_held:
     'The run is paused while the tab is on another site. Go back to the form page, or type it in the page yourself.',
   value_not_accepted:

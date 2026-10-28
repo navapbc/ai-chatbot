@@ -353,6 +353,7 @@ export const NeedsYouCard = ({
                   runId={runId}
                   disabled={locked}
                   typedMyself={chosen === 'provided'}
+                  skipped={chosen === 'skip'}
                   typeSensitive={typeSensitive}
                   onFilled={handleFilled(requestId)}
                   onTypeMyself={handleSensitive(

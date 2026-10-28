@@ -26,6 +26,8 @@ export type SensitiveFill = {
   subscribe: (listener: (view: FillView) => void) => () => void;
   setValue: (value: string) => void;
   fill: () => Promise<void>;
+  /** Drops the typed value (the caseworker chose another answer). */
+  clear: () => void;
   /** Clears the value and ignores any call still in flight. */
   dispose: () => void;
 };
@@ -78,6 +80,12 @@ export const createSensitiveFill = (deps: FillDeps): SensitiveFill => {
     deps.onFilled();
   };
 
+  const clear = () => {
+    if (disposed || value === '') return;
+    value = '';
+    emit();
+  };
+
   const dispose = () => {
     disposed = true;
     value = '';
@@ -94,6 +102,7 @@ export const createSensitiveFill = (deps: FillDeps): SensitiveFill => {
     },
     setValue,
     fill,
+    clear,
     dispose,
   };
 };

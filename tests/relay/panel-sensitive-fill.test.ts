@@ -163,6 +163,14 @@ describe('createSensitiveFill', () => {
     expect(fill.view().value).toBe('');
   });
 
+  it('clear drops a typed value and emits it gone', () => {
+    const { fill, views } = setup();
+    fill.setValue(SECRET);
+    fill.clear();
+    expect(fill.view().value).toBe('');
+    expect(JSON.stringify(views.at(-1))).not.toContain(SECRET);
+  });
+
   it('never puts the value in an emitted view after success', async () => {
     const { fill, views } = setup();
     fill.setValue(SECRET);
@@ -203,7 +211,7 @@ describe('SensitiveFill markup', () => {
     expect(out).toContain('aria-label="Show what I typed"');
     expect(out).toContain('aria-pressed="false"');
     expect(out).toContain('Fill it in');
-    expect(out).toContain('I&#x27;ll type it myself');
+    expect(out).toContain('I typed it in the page');
   });
 
   it('disables Fill it in while empty', () => {
@@ -217,7 +225,7 @@ describe('SensitiveFill markup', () => {
     const buttons = out.match(/<button[^>]*>/g) ?? [];
     expect(buttons).toHaveLength(3);
     for (const b of buttons) expect(b).toContain('disabled');
-    expect(out).toMatch(/aria-pressed="true"[^>]*>(?:<[^>]*>)*I&#x27;ll/);
+    expect(out).toMatch(/aria-pressed="true"[^>]*>(?:<[^>]*>)*I typed/);
   });
 });
 

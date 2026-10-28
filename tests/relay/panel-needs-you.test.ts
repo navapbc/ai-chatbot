@@ -48,7 +48,7 @@ describe('a flagged free-text question', () => {
     const out = html([flagged]);
     expect(out).toContain('type="password"');
     expect(out).toContain('Fill it in');
-    expect(out).toContain('I&#x27;ll type it myself');
+    expect(out).toContain('I typed it in the page');
     expect(out).not.toContain('<textarea');
     expect(out).not.toContain('cannot be answered here');
   });
@@ -99,7 +99,7 @@ describe('markFilled', () => {
     });
   });
 
-  it('replaces I will type it myself', () => {
+  it('replaces I typed it in the page', () => {
     const current = new Map<string, Draft>([
       ['r1', { kind: 'sensitive', choice: 'provided' }],
     ]);

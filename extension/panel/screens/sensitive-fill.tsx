@@ -24,8 +24,10 @@ type Props = {
   onTypeMyself: () => void;
   /** Disables every control (the card is sending or done). */
   disabled?: boolean;
-  /** "I'll type it myself" is the current answer. */
+  /** "I typed it in the page" is the current answer. */
   typedMyself?: boolean;
+  /** Skip is the current answer. */
+  skipped?: boolean;
   /** The worker call; defaults to the real worker client. */
   typeSensitive?: WorkerApi['typeSensitive'];
 };
@@ -41,6 +43,7 @@ export const SensitiveFill = ({
   onTypeMyself,
   disabled = false,
   typedMyself = false,
+  skipped = false,
   typeSensitive = defaultTypeSensitive,
 }: Props) => {
   const helpId = useId();
@@ -65,6 +68,11 @@ export const SensitiveFill = ({
       controller.current = null;
     };
   }, [runId]);
+
+  // Another answer was chosen: the typed value is not needed any more.
+  useEffect(() => {
+    if (typedMyself || skipped) controller.current?.clear();
+  }, [typedMyself, skipped]);
 
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
     controller.current?.setValue(event.target.value);

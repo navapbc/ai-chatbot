@@ -19,7 +19,7 @@ The side panel can now take a sensitive value (SSN, ID number) from the casework
 
 ## What it improves or fixes
 
-Before, a sensitive question offered only `provided` and `skip`, so the caseworker had to type the value in the page unaided, and a flagged free-text question was a dead-end card. The value was also never registered, so an echo of it could reach the model. Now the panel types it for them, the worker registers it before typing (a refusal types nothing), and later page text and screenshots are scrubbed of it. A token refresh no longer clears registered values.
+Before, a sensitive question offered only `provided` and `skip`, so the caseworker had to type the value in the page unaided, and a flagged free-text question was a dead-end card. The value was also never registered, so an echo of it could reach the model. Now the panel types it for them, the worker registers it before typing (a refusal types nothing), and later page text is scrubbed of it (a screenshot is refused while the value is in page text, and masked where it sits in a field), subject to the residuals in `docs/browser-extension-todo.md` (values under 3 characters, a worker restart, a page `beforeinput` redirect, Jev-only verdicts). A token refresh no longer clears registered values.
 
 Limits: 32 registered values per run, 512 characters per value; a value under 3 characters is typed but not scrubbed. A worker restart still loses the values. The caseworker focuses the field themselves; the agent's label is not used to locate it. Open items are under "Plan 4c-3 Follow-ups" in `docs/browser-extension-todo.md`.
 
