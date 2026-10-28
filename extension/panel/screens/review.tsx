@@ -55,6 +55,8 @@ export const ReviewPanel = ({
   useEffect(() => {
     const controller = createUnfilledField({ runId, showUnfilledField });
     unfilledRef.current = controller;
+    // A replaced controller starts clean: no stale result or busy.
+    setUnfilled(IDLE);
     const unsubscribe = controller.subscribe(setUnfilled);
     return () => {
       unsubscribe();
@@ -129,8 +131,9 @@ export const ReviewPanel = ({
             type="button"
             variant="outline"
             onClick={handleShowUnfilled}
-            disabled={unfilled.busy}
+            aria-disabled={unfilled.busy}
             aria-busy={unfilled.busy}
+            className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
           >
             {UNFILLED_COPY.button}
           </Button>

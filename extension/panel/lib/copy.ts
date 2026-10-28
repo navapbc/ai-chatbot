@@ -323,8 +323,7 @@ export const TYPE_SENSITIVE_COPY: Record<TypeSensitiveCode, string> = {
 export const UNFILLED_COPY = {
   button: 'Show me the unfilled field',
   look: 'Look for the field in your page that is highlighted or focused.',
-  sensitive:
-    'It is a sensitive field: fill it in yourself, or use Fill it in from a question.',
+  sensitive: 'It is a sensitive field: fill it in yourself in the page.',
   capped: 'There are many; showing the first.',
   none: 'No empty required fields found. Check the page before you submit.',
 } as const;

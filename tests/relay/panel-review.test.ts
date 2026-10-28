@@ -1,13 +1,13 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+import { unfilledStatusText } from '../../extension/panel/lib/copy';
+import { createUnfilledField } from '../../extension/panel/lib/unfilled-field';
+import type { UnfilledFieldResult } from '../../extension/panel/lib/worker-api';
 import {
   ConfirmedScreen,
   STOP_FAILED_TEXT,
 } from '../../extension/panel/screens/confirmed';
-import { unfilledStatusText } from '../../extension/panel/lib/copy';
-import { createUnfilledField } from '../../extension/panel/lib/unfilled-field';
-import type { UnfilledFieldResult } from '../../extension/panel/lib/worker-api';
 import { ReviewPanel } from '../../extension/panel/screens/review';
 import {
   buildReviewModel,
@@ -165,7 +165,7 @@ describe('Review: Show me the unfilled field', () => {
     expect(show).toBeGreaterThan(-1);
     expect(show).toBeLessThan(submitted);
     expect(html).toMatch(/role="status"[^>]*aria-live="polite"[^>]*><\/p>/);
-    expect(html).not.toMatch(/disabled=""[^>]*>Show me/);
+    expect(html).toMatch(/aria-disabled="false"/);
   });
 
   const text = (r: UnfilledFieldResult) => unfilledStatusText(r);
@@ -187,7 +187,8 @@ describe('Review: Show me the unfilled field', () => {
       capped: true,
     });
     expect(t).toContain('sensitive field');
-    expect(t).toContain('Fill it in');
+    expect(t).toContain('fill it in yourself in the page');
+    expect(t).not.toContain('Fill it in');
     expect(t).toContain('There are many; showing the first.');
   });
 
