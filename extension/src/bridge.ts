@@ -102,7 +102,15 @@ export type BridgeMessage =
    * (UnfilledFieldResult) or a fixed refusal, never a value, name, label or
    * page text.
    */
-  | { type: 'showUnfilledField'; runId: string };
+  | { type: 'showUnfilledField'; runId: string }
+  /**
+   * Watches the run's tab for a form submission while the panel is in
+   * Review (see armSubmitWatch); `getRunStatus` reports it as `submitted`.
+   * Idempotent. Answers `{ ok: true }` or a fixed refusal.
+   */
+  | { type: 'armSubmitWatch'; runId: string }
+  /** Stops the watch and forgets what it saw (see disarmSubmitWatch). */
+  | { type: 'disarmSubmitWatch'; runId: string };
 
 /**
  * showUnfilledField's answer: whether a field was highlighted, how many
@@ -160,6 +168,13 @@ export interface RunStatus {
    * is just momentarily empty. `runId` is set for a same-run startRun.
    */
   restarting?: boolean;
+  /**
+   * Set only while the submit watch is armed, once it saw a form submission
+   * request followed by a main-frame navigation in scope (see
+   * watchForSubmission): when, in epoch ms. Never a URL, a query or page
+   * text. A "Next" in a multi-step form looks the same.
+   */
+  submitted?: { at: number };
 }
 
 export type BridgeResponse =
@@ -197,6 +212,18 @@ interface Child {
   frameScope?: FrameScope;
 }
 
+/** The submit watch's state (see watchForSubmission). */
+interface SubmitWatch {
+  /**
+   * A main-frame form submission the page requested, not yet committed:
+   * when, whether it was a POST, the main frame's URL at the request (memory
+   * only, never reported) and the scope epoch then.
+   */
+  pending?: { at: number; post: boolean; fromUrl?: string; epoch: number };
+  /** The first submission seen while armed. */
+  submitted?: { at: number };
+}
+
 interface Run extends RunConfig {
   runId: string;
   origin: string;
@@ -219,6 +246,25 @@ interface Run extends RunConfig {
    * event and tracks no child session, and is let go when the typing ends.
    */
   typingAttached: boolean;
+  /**
+   * True while the submit watch holds chrome.debugger on the tab for itself
+   * (armed in Review with the agent not attached, say after a token
+   * refresh). Like `typingAttached` it never sets `attached`, forwards no
+   * event and tracks no child session. Typing and the unfilled-field scan
+   * use it as an existing attach (no attach of their own, no let-go). The
+   * agent's `attach` takes it over (attachTab clears it); a debugger detach,
+   * disarming and the end of the run clear it. At most one of `attached`,
+   * `typingAttached` and `reviewAttached` is set.
+   */
+  reviewAttached: boolean;
+  /**
+   * The submit watch, while armed (see armSubmitWatch); undefined when not.
+   * Memory only. A token refresh is an endRun plus begin, so the watch is
+   * lost with the old run and the panel arms it again.
+   */
+  submitWatch?: SubmitWatch;
+  /** Bumped by every disarm, so an arm queued before it does not land. */
+  watchGeneration: number;
   /**
    * This run's attach chain (see queuedAttach): created in begin, so a run
    * never inherits a stuck chain from an earlier one.
@@ -829,6 +875,8 @@ async function endRun(
     if (run === undefined) maskContexts.clear();
     current.attached = false;
     current.typingAttached = false;
+    current.reviewAttached = false;
+    current.submitWatch = undefined;
     // Always let go: a blocked run has already cleared `attached`.
     try {
       await chrome.debugger.detach({ tabId: current.tabId });
@@ -976,6 +1024,8 @@ function begin(
     stopped: false,
     attached: false,
     typingAttached: false,
+    reviewAttached: false,
+    watchGeneration: 0,
     attachChain: Promise.resolve(),
     typingNow: false,
     scanNow: false,
@@ -1344,7 +1394,8 @@ const detachTab = (tabId: number, ms = ATTACH_STEP_MS) =>
  * typing) and clears what it left, attaches, enables the bridge-owned Page
  * domain and seeds the frame scope from the frame tree, then checks the
  * scope again. Fails closed, detaching again on every failure after the
- * attach. Sets neither `attached` nor `typingAttached`: the caller does.
+ * attach. Sets none of `attached`, `typingAttached` and `reviewAttached`
+ * (it clears all three): the caller sets its own.
  */
 async function attachTab(
   current: Run,
@@ -1361,6 +1412,11 @@ async function attachTab(
   live();
   current.attached = false;
   current.typingAttached = false;
+  // The agent's attach takes over a review attach: the watch, if armed,
+  // goes on under the new attach. A submission requested under the old
+  // session is forgotten (its frame ids and URL are re-read below).
+  current.reviewAttached = false;
+  if (current.submitWatch) current.submitWatch.pending = undefined;
   // The detach below takes the highlight with it.
   clearHighlight(current, false);
   dropChildren(current);
@@ -2707,6 +2763,86 @@ function mainFrameNavigationUrl(
   return url;
 }
 
+/** A form submission counts only if it commits within this (P4c4-d). */
+const SUBMIT_WINDOW_MS = 30_000;
+const FORM_SUBMISSION_REASONS: ReadonlySet<unknown> = new Set([
+  'formSubmissionGet',
+  'formSubmissionPost',
+]);
+
+/**
+ * The submit watch (P4c4-d), from raw events of the tab's own session while
+ * armed. A main-frame `Page.frameRequestedNavigation` whose reason is a form
+ * submission, for the current tab, not `javascript:`, with the run not held,
+ * records a pending submission (any other main-frame request clears it).
+ * The next main-frame `Page.frameNavigated` consumes it, and sets
+ * `submitted` only when: within SUBMIT_WINDOW_MS, an ordinary navigation
+ * (not a back/forward-cache restore, not an error page), the run never held
+ * since the request (same scope epoch, not blocked), the URL in the run's
+ * origins, and the URL differs from the one at the request, or the request
+ * was a POST (a POST may answer on the same URL). A main-frame
+ * `Page.frameStoppedLoading` before any commit (a 204, a cancelled load)
+ * clears it. Same-document navigations, iframes and child sessions never
+ * count. Out of scope, the existing hold and leave-origin rules apply
+ * (elsewhere in onDebuggerEvent) and nothing is set. Reads event params
+ * only; keeps no URL beyond the pending request; never throws.
+ */
+function watchForSubmission(
+  current: Run,
+  source: chrome.debugger.DebuggerSession,
+  method: string,
+  params: unknown,
+) {
+  const watch = current.submitWatch;
+  if (!watch || source.sessionId !== undefined || !isObject(params)) return;
+  const mainFrameId = current.mainFrameId;
+  if (mainFrameId === undefined) return;
+  if (method === 'Page.frameRequestedNavigation') {
+    if (params.frameId !== mainFrameId) return;
+    const url = typeof params.url === 'string' ? params.url : '';
+    watch.pending =
+      FORM_SUBMISSION_REASONS.has(params.reason) &&
+      params.disposition === 'currentTab' &&
+      !isJavascriptUrl(url) &&
+      !current.blocked
+        ? {
+            at: Date.now(),
+            post: params.reason === 'formSubmissionPost',
+            fromUrl: current.frameScope.frames.get(mainFrameId)?.url,
+            epoch: current.scopeEpoch,
+          }
+        : undefined;
+    return;
+  }
+  if (method === 'Page.frameStoppedLoading') {
+    if (params.frameId === mainFrameId) watch.pending = undefined;
+    return;
+  }
+  if (method !== 'Page.frameNavigated') return;
+  const frame = isObject(params.frame) ? params.frame : undefined;
+  if (!frame || frame.parentId !== undefined || frame.id !== mainFrameId) {
+    return;
+  }
+  const pending = watch.pending;
+  watch.pending = undefined;
+  if (!pending || watch.submitted) return;
+  const url = typeof frame.url === 'string' ? frame.url : '';
+  if (
+    Date.now() - pending.at > SUBMIT_WINDOW_MS ||
+    (params.type !== undefined && params.type !== 'Navigation') ||
+    frame.unreachableUrl !== undefined ||
+    current.blocked ||
+    current.pendingOrigin !== null ||
+    current.scopeEpoch !== pending.epoch ||
+    !inRunScope(current, url) ||
+    (!pending.post &&
+      (pending.fromUrl === undefined || url === pending.fromUrl))
+  ) {
+    return;
+  }
+  watch.submitted = { at: Date.now() };
+}
+
 /** The child session a lifecycle event is about, if any. */
 function lifecycleSubject(current: Run, params: unknown): Child | undefined {
   if (!isObject(params)) return undefined;
@@ -2772,13 +2908,20 @@ export function onDebuggerEvent(
   ) {
     clearHighlight(current, true);
   }
+  // The submit watch reads raw tab events, attached or not (it reads only
+  // event params, never the page, and sends nothing on).
+  watchForSubmission(current, source, method, params);
   if (!dialogForwarded) return;
   // Nothing leaves the browser unless the agent attached and the tab is in
-  // scope. A typing attach (see typeSensitive) forwards nothing and tracks
-  // no child session; it only holds (or ends) the run the moment the main
-  // frame heads out of scope, as below. Its hold is released by onTabUpdated.
+  // scope. A typing or review attach (see typeSensitive, armSubmitWatch)
+  // forwards nothing and tracks no child session; it only holds (or ends)
+  // the run the moment the main frame heads out of scope, as below. Its hold
+  // is released by onTabUpdated.
   if (!current.attached) {
-    if (current.typingAttached && source.sessionId === undefined) {
+    if (
+      (current.typingAttached || current.reviewAttached) &&
+      source.sessionId === undefined
+    ) {
       const navUrl = mainFrameNavigationUrl(current, method, params);
       if (
         navUrl !== undefined &&
@@ -2880,6 +3023,12 @@ export function onDebuggerDetach(
   // flight fails, and the grace below applies as to any detach (the agent
   // must attach within it, or the run ends).
   current.typingAttached = false;
+  // The watch's attach is gone and so is the watch: nothing is watched
+  // until the panel arms it again (which attaches again, unless the detach
+  // grace below is running).
+  current.reviewAttached = false;
+  current.submitWatch = undefined;
+  current.watchGeneration += 1;
   current.focusWorld = undefined;
   // The highlight died with the session.
   clearHighlight(current, false);
@@ -3016,7 +3165,7 @@ async function typeSensitive(
   current.typingNow = true;
   try {
     // Not attached (a fresh run, or a refresh): attach for this typing only.
-    if (!current.attached && !current.typingAttached) {
+    if (!holdsTab(current)) {
       attachedHere = await attachForTyping(current, epoch);
     }
     refusal = await typeIntoFocused(current, value, epoch);
@@ -3026,7 +3175,7 @@ async function typeSensitive(
     else if (current.blocked) refusal = 'run is held';
     else if (error instanceof Error && error.message === FRAME_OUT_OF_SCOPE) {
       refusal = 'field out of scope';
-    } else if (!current.attached && !current.typingAttached) {
+    } else if (!holdsTab(current)) {
       refusal = 'not attached';
     } else refusal = 'type failed';
   } finally {
@@ -3054,7 +3203,9 @@ async function attachForTyping(current: Run, epoch: number): Promise<boolean> {
   if (!target) throw new Error('not attached');
   return queuedAttach(current, async () => {
     if (run !== current || current.stopped) throw new Error('run replaced');
-    if (current.attached) return false;
+    // The agent's attach, or the submit watch's, is used as is (and never
+    // let go of here).
+    if (current.attached || current.reviewAttached) return false;
     await attachTab(current, epoch, target.id, ATTACH_STEP_MS);
     current.typingAttached = true;
     return true;
@@ -3062,9 +3213,18 @@ async function attachForTyping(current: Run, epoch: number): Promise<boolean> {
 }
 
 /**
+ * True while the bridge holds chrome.debugger on the tab for anyone: the
+ * agent, a typing or scan, or the submit watch. Worker-initiated page work
+ * (typeSensitive, showUnfilledField) may run under any of them.
+ */
+const holdsTab = (current: Run) =>
+  current.attached || current.typingAttached || current.reviewAttached;
+
+/**
  * Lets go of the typing attach (queued with every attach), unless the run
  * was replaced or ended (endRun detaches) or the agent attached meanwhile
- * (which took it over and cleared `typingAttached`). Chrome sends no
+ * (which took it over and cleared `typingAttached`), or the submit watch
+ * took it over (armSubmitWatch, likewise). Chrome sends no
  * onDetach for the extension's own detach, so no detach grace starts.
  */
 function releaseTypingAttach(current: Run): Promise<void> {
@@ -3097,10 +3257,7 @@ async function typeIntoFocused(
   const live = () => {
     requireSameScope(current, epoch);
     if (run !== current) throw new Error('run replaced');
-    if (
-      (!current.attached && !current.typingAttached) ||
-      tab.scope !== current.frameScope
-    ) {
+    if (!holdsTab(current) || tab.scope !== current.frameScope) {
       throw new Error('not attached');
     }
   };
@@ -3239,9 +3396,9 @@ const HIGHLIGHT_CONFIG = {
 
 /**
  * Ends showUnfilledField's highlight: clears its timer and, with `hide`,
- * asks the page to drop it (best effort, only on the agent's live attach:
- * a detach takes the highlight with it). Sends nothing but Overlay calls,
- * which carry no page content.
+ * asks the page to drop it (best effort, only on the agent's or the submit
+ * watch's live attach: a detach takes the highlight with it). Sends nothing
+ * but Overlay calls, which carry no page content.
  */
 function clearHighlight(current: Run, hide: boolean) {
   if (current.highlightTimer === undefined) return;
@@ -3254,7 +3411,8 @@ function clearHighlight(current: Run, hide: boolean) {
 // Overlay calls, which read nothing from the page and change no DOM, so a
 // screenshot's mask window or a held tab has nothing to fear from them.
 async function hideHighlight(current: Run) {
-  if (run !== current || current.stopped || !current.attached) return;
+  if (run !== current || current.stopped) return;
+  if (!current.attached && !current.reviewAttached) return;
   const debuggee = { tabId: current.tabId };
   try {
     await withTimeout(
@@ -3295,8 +3453,9 @@ async function hideHighlight(current: Run) {
  * classified: its verdict is the reply's `sensitive`, and classifying the
  * others would add page reads and Jev requests that change nothing.
  *
- * The highlight: on the agent's attach, DOM.scrollIntoViewIfNeeded and
- * Overlay.highlightNode (no DOM footprint, so the agent's views and the
+ * The highlight: on the agent's attach or the submit watch's (both outlive
+ * the call), DOM.scrollIntoViewIfNeeded and Overlay.highlightNode (no DOM
+ * footprint, so the agent's views and the
  * screenshot mask are unchanged; Overlay events are never forwarded) for
  * HIGHLIGHT_MS. On its own attach, which is let go before answering (and a
  * detach takes an Overlay highlight with it), or when Overlay fails: the
@@ -3323,7 +3482,7 @@ async function showUnfilledField(runId: unknown): Promise<BridgeResponse> {
       clearHighlight(current, false);
       await hideHighlight(current);
     }
-    if (!current.attached && !current.typingAttached) {
+    if (!holdsTab(current)) {
       attachedHere = await attachForTyping(current, epoch);
     }
     reply = await scanAndShow(current, epoch, Date.now() + SCAN_MS);
@@ -3333,7 +3492,7 @@ async function showUnfilledField(runId: unknown): Promise<BridgeResponse> {
     else if (current.blocked) reply = refuse('run is held');
     else if (error instanceof Error && error.message === FRAME_OUT_OF_SCOPE) {
       reply = refuse('field out of scope');
-    } else if (!current.attached && !current.typingAttached) {
+    } else if (!holdsTab(current)) {
       reply = refuse('not attached');
     } else reply = refuse('scan failed');
   } finally {
@@ -3360,10 +3519,7 @@ async function scanAndShow(
   const live = () => {
     requireSameScope(current, epoch);
     if (run !== current) throw new Error('run replaced');
-    if (
-      (!current.attached && !current.typingAttached) ||
-      tab.scope !== current.frameScope
-    ) {
+    if (!holdsTab(current) || tab.scope !== current.frameScope) {
       throw new Error('not attached');
     }
     if (Date.now() > deadline) throw new Error('scan timed out');
@@ -3425,7 +3581,7 @@ async function scanAndShow(
     );
     live();
     let highlighted = false;
-    if (current.attached) {
+    if (current.attached || current.reviewAttached) {
       try {
         // Overlay needs the DOM domain on; enabling it again is harmless.
         // DOM is never disabled here: the agent relies on it.
@@ -3596,6 +3752,135 @@ async function fieldSensitive(
   }
 }
 
+// --- the submit watch (plan 4c-4) ---------------------------------------------
+
+/** armSubmitWatch's refusals: fixed strings, as typeSensitive's. */
+type WatchRefusal =
+  | 'no active run'
+  | 'wrong run'
+  | 'not attached'
+  | 'run is held';
+
+/**
+ * Arms the submit watch (P4c4-d, P4c4-e): from now until disarmed, a form
+ * submission in the run's tab followed by a main-frame navigation in scope
+ * sets `submitted` in the run status (see watchForSubmission). The panel
+ * arms it only in Review, so the agent's own Next clicks cannot count.
+ *
+ * Reads no page text (only navigation event params), so a run that needs
+ * registration may arm. Refused with no CDP call when there is no run, it
+ * is another run, or the run is held. Under the agent's attach it only
+ * marks the watch armed. Otherwise it attaches for itself (attachForReview:
+ * the attach core with the relay `attach`'s scope checks, bounded steps,
+ * queued with every attach) as `reviewAttached`, never `attached`, so agent
+ * commands still get `not attached`; a typing or scan attach in flight is
+ * taken over rather than replaced. A failed attach answers `not attached`
+ * (or `run is held` when the tab left scope) and leaves the watch unarmed,
+ * so `{ ok: true }` always means the tab is watched.
+ *
+ * Idempotent: arming again keeps what the watch saw, and re-attaches if
+ * the attach was lost (a debugger detach disarms the watch). A token
+ * refresh is an endRun plus begin: the watch is lost with the old run and
+ * the panel arms it again. Never throws, never logs.
+ */
+async function armSubmitWatch(runId: unknown): Promise<BridgeResponse> {
+  const refuse = (error: WatchRefusal): BridgeResponse => ({
+    ok: false,
+    error,
+  });
+  const current = run;
+  if (!current || current.stopped) return refuse('no active run');
+  if (runId !== current.runId) return refuse('wrong run');
+  if (current.blocked) return refuse('run is held');
+  if (current.attached || current.reviewAttached) {
+    current.submitWatch ??= {};
+    return { ok: true };
+  }
+  try {
+    await attachForReview(current, current.scopeEpoch, current.watchGeneration);
+  } catch {
+    if (run !== current || current.stopped) return refuse('no active run');
+    if (current.blocked) return refuse('run is held');
+    return refuse('not attached');
+  }
+  return { ok: true };
+}
+
+/**
+ * armSubmitWatch's attach, run through queuedAttach. Arms the watch in the
+ * same step as the flag it rests on, unless a disarm came first (its
+ * let-go, queued behind this step, then lets go of an attach made here).
+ * Throws when the watch is not armed. Refused while a detach grace is
+ * running: the run is waiting for the agent.
+ */
+async function attachForReview(
+  current: Run,
+  epoch: number,
+  generation: number,
+): Promise<void> {
+  if (current.detachTimer !== undefined) throw new Error('not attached');
+  const target = await bounded(tabTarget(current.tabId), 'targets');
+  if (!target) throw new Error('not attached');
+  await queuedAttach(current, async () => {
+    if (run !== current || current.stopped) throw new Error('run replaced');
+    if (current.watchGeneration !== generation) throw new Error('disarmed');
+    if (current.detachTimer !== undefined) throw new Error('not attached');
+    requireSameScope(current, epoch);
+    if (current.typingAttached) {
+      // A typing or scan holds the tab for itself: the watch takes that
+      // attach over (no detach, so the call in flight goes on under it, and
+      // its let-go then finds nothing to let go of).
+      current.typingAttached = false;
+      current.reviewAttached = true;
+    } else if (!current.attached && !current.reviewAttached) {
+      await attachTab(current, epoch, target.id, ATTACH_STEP_MS);
+      current.reviewAttached = true;
+    }
+    if (current.watchGeneration !== generation) throw new Error('disarmed');
+    current.submitWatch ??= {};
+  });
+}
+
+/**
+ * Disarms the submit watch: forgets a pending or seen submission (so
+ * `submitted` is no longer reported) and lets go of the watch's own attach
+ * (releaseReviewAttach), never the agent's. Answers `{ ok: true }` for the
+ * run even when nothing was armed; `no active run` or `wrong run`
+ * otherwise. Never throws, never logs.
+ */
+async function disarmSubmitWatch(runId: unknown): Promise<BridgeResponse> {
+  const current = run;
+  if (!current || current.stopped) return { ok: false, error: 'no active run' };
+  if (runId !== current.runId) return { ok: false, error: 'wrong run' };
+  current.submitWatch = undefined;
+  current.watchGeneration += 1;
+  await releaseReviewAttach(current);
+  return { ok: true };
+}
+
+/**
+ * Lets go of the watch's own attach (queued with every attach, so an arm's
+ * attach still in flight is let go of after it lands), unless the run
+ * ended or was replaced (endRun detaches), the agent took it over, or the
+ * watch was armed again meanwhile. A typing or scan running under it then
+ * fails closed (`not attached`). Chrome sends no onDetach for the
+ * extension's own detach, so no detach grace starts.
+ */
+function releaseReviewAttach(current: Run): Promise<void> {
+  return queuedAttach(current, async () => {
+    if (run !== current || current.stopped) return;
+    if (current.attached || !current.reviewAttached) return;
+    if (current.submitWatch !== undefined) return;
+    current.reviewAttached = false;
+    // The detach below takes the highlight with it.
+    clearHighlight(current, false);
+    current.focusWorld = undefined;
+    current.dialog = undefined;
+    current.frameScope = createFrameScope();
+    await detachTab(current.tabId);
+  });
+}
+
 /**
  * Lets the run go on at the origin it is held on (plan 4c's panel asks the
  * caseworker). Only an exact https origin equal to `pendingOrigin`, with the
@@ -3669,6 +3954,9 @@ function getRunStatus(): RunStatus {
   if (current.pendingOrigin !== null) {
     status.pendingOrigin = current.pendingOrigin;
   }
+  // Only while armed (the watch is undefined otherwise): a time, nothing else.
+  const submitted = current.submitWatch?.submitted;
+  if (submitted) status.submitted = { at: submitted.at };
   return status;
 }
 
@@ -3712,6 +4000,10 @@ export async function handleMessage(message: unknown): Promise<BridgeResponse> {
   }
   if (message.type === 'showUnfilledField') {
     return showUnfilledField(message.runId);
+  }
+  if (message.type === 'armSubmitWatch') return armSubmitWatch(message.runId);
+  if (message.type === 'disarmSubmitWatch') {
+    return disarmSubmitWatch(message.runId);
   }
   return { ok: false, error: 'unknown message type' };
 }

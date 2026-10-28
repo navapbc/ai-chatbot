@@ -165,6 +165,22 @@ export async function serveFixtures(): Promise<Fixtures> {
           '<!doctype html><html lang="en"><title>Submitted</title><p>Done</p></html>',
         ),
       );
+    } else if (url.pathname === '/submit-redirect' && req.method === 'POST') {
+      // Post/Redirect/Get: 303 to the page `to` names (this origin's
+      // page2.html by default, or the frame origin's away page).
+      const away = url.searchParams.get('to') === 'away';
+      req.resume();
+      req.on('end', () =>
+        res
+          .writeHead(303, {
+            location: away ? `${frameOrigin}/away.html` : '/page2.html',
+          })
+          .end(),
+      );
+    } else if (url.pathname === '/no-content' && req.method === 'POST') {
+      // A form POST the server answers with nothing: no navigation commits.
+      req.resume();
+      req.on('end', () => res.writeHead(204).end());
     } else if (url.pathname === '/api') {
       res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
     } else {

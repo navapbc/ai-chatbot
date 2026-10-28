@@ -821,3 +821,75 @@ describe('showUnfilledField attaches on demand (the agent is not attached)', () 
     expect(evaluated.error).toBe('not attached');
   });
 });
+
+describe("showUnfilledField under the submit watch's attach (Review)", () => {
+  const arm = () =>
+    bridge.handleMessage({ type: 'armSubmitWatch', runId: 'run-1' });
+  const disarm = () =>
+    bridge.handleMessage({ type: 'disarmSubmitWatch', runId: 'run-1' });
+
+  it('uses the review attach as is: no attach or let-go of its own, Overlay highlight', async () => {
+    const socket = await startedRun();
+    expect(await arm()).toEqual({ ok: true });
+    expect(attach).toHaveBeenCalledTimes(1);
+    const detaches = detach.mock.calls.length;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    expect(await show()).toEqual({
+      ok: true,
+      found: true,
+      remaining: 3,
+      sensitive: false,
+    });
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(detach.mock.calls.length).toBe(detaches);
+    // The attach outlives the call, so Overlay is used, not the fallback.
+    expect(sentTo('Overlay.highlightNode')).toHaveLength(1);
+    expect(focusCalls()).toHaveLength(0);
+    // And hidden again after about 6 s.
+    await vi.advanceTimersByTimeAsync(6_200);
+    expect(sentTo('Overlay.hideHighlight')).toHaveLength(1);
+    vi.useRealTimers();
+    // The agent-facing flag never moved.
+    expect((await status()).attached).toBe(false);
+    const evaluated = await ask(
+      socket,
+      tabCommand('c1', 'Runtime.evaluate', { expression: 'x' }),
+    );
+    expect(evaluated.error).toBe('not attached');
+    // Disarming lets go of the tab.
+    expect(await disarm()).toEqual({ ok: true });
+    expect(detach.mock.calls.length).toBe(detaches + 1);
+  });
+
+  it('arming during a scan attach takes it over: the scan finishes, the tab stays held', async () => {
+    await startedRun();
+    const gate = deferred();
+    const axStarted = deferred<void>();
+    fake.axGate = gate.promise;
+    fake.axStarted = () => axStarted.resolve();
+    const scanning = show();
+    await axStarted.promise;
+    const detaches = detach.mock.calls.length;
+    expect(await arm()).toEqual({ ok: true });
+    expect(attach).toHaveBeenCalledTimes(1);
+    gate.resolve(undefined);
+    expect(await scanning).toMatchObject({ ok: true, found: true });
+    // By the highlight the attach was the watch's, which outlives the call:
+    // Overlay. The scan's let-go then found nothing of its own and left it.
+    expect(sentTo('Overlay.highlightNode')).toHaveLength(1);
+    expect(focusCalls()).toHaveLength(0);
+    expect(detach.mock.calls.length).toBe(detaches);
+    expect(await disarm()).toEqual({ ok: true });
+    expect(detach.mock.calls.length).toBe(detaches + 1);
+  });
+
+  it('disarming lets go of the tab and ends the highlight with it', async () => {
+    await startedRun();
+    await arm();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    expect(await show()).toMatchObject({ found: true });
+    expect(await disarm()).toEqual({ ok: true });
+    await vi.advanceTimersByTimeAsync(7_000);
+    expect(sentTo('Overlay.hideHighlight')).toHaveLength(0);
+  });
+});

@@ -2588,6 +2588,231 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     }
   });
 
+  describe('the submit watch', () => {
+    type WatchStatus = {
+      active?: boolean;
+      runId?: string;
+      attached?: boolean;
+      pendingOrigin?: string;
+      submitted?: { at: number };
+    };
+    const watchStatus = () =>
+      bridgeMessage(browser.sw, {
+        type: 'getRunStatus',
+      }) as Promise<WatchStatus>;
+    const arm = (runId: string) =>
+      bridgeMessage(browser.sw, { type: 'armSubmitWatch', runId });
+    const disarm = (runId: string) =>
+      bridgeMessage(browser.sw, { type: 'disarmSubmitWatch', runId });
+    const becomesSubmitted = () =>
+      until(async () => (await watchStatus()).submitted !== undefined, 5_000);
+    /** Gives the worker time to see the events, then checks nothing was set. */
+    const staysUnsubmitted = async () => {
+      await new Promise((r) => setTimeout(r, 700));
+      expect((await watchStatus()).submitted).toBeUndefined();
+    };
+    const addForm = (html: string) =>
+      page.evaluate((h) => {
+        document.getElementById('watch-forms')?.remove();
+        const box = document.createElement('div');
+        box.id = 'watch-forms';
+        box.innerHTML = h;
+        document.body.prepend(box);
+      }, html);
+
+    it('armed without the agent: a form POST and a GET form set submitted; arming never sets attached', async () => {
+      const { cdp, runId } = await startRun();
+      expect(await extensionAttached(tabId)).toBe(false);
+      const agent = await rawAgent(cdp);
+      try {
+        expect(await arm(runId)).toEqual({ ok: true });
+        // Idempotent.
+        expect(await arm(runId)).toEqual({ ok: true });
+        // The worker holds the tab for the watch; the agent does not.
+        expect(await extensionAttached(tabId)).toBe(true);
+        const armed = await watchStatus();
+        expect(armed).toMatchObject({ active: true, runId, attached: false });
+        expect(armed.submitted).toBeUndefined();
+        const refused = await agent.call(
+          'Runtime.evaluate',
+          { expression: '1' },
+          `tab-${tabId}`,
+        );
+        expect(refused.error?.message).toContain('not attached');
+
+        // A form POST to a same-origin confirmation page.
+        const before = Date.now();
+        await page.evaluate(() =>
+          (document.getElementById('post') as HTMLFormElement).requestSubmit(),
+        );
+        await page.waitForURL(`${fixtures.origin}/submitted`);
+        await becomesSubmitted();
+        const seen = await watchStatus();
+        // A time only: no URL, no query, no page text.
+        expect(Object.keys(seen.submitted ?? {})).toEqual(['at']);
+        expect(seen.submitted?.at).toBeGreaterThanOrEqual(before);
+        expect(JSON.stringify(seen)).not.toContain('/submitted');
+        expect(JSON.stringify(seen)).not.toContain('Done');
+        expect(seen.attached).toBe(false);
+        // Disarm clears it and lets go of the watch's attach.
+        expect(await disarm(runId)).toEqual({ ok: true });
+        expect((await watchStatus()).submitted).toBeUndefined();
+        expect(await extensionAttached(tabId)).toBe(false);
+
+        // A GET form to another URL of the origin.
+        await page.goto(`${fixtures.origin}/get-submit.html`);
+        expect(await arm(runId)).toEqual({ ok: true });
+        await page.fill('#note', 'hello');
+        await page.click('button[type="submit"]');
+        await page.waitForURL(/\/get-submit\.html\?/);
+        await becomesSubmitted();
+        expect(await disarm(runId)).toEqual({ ok: true });
+        expect(await extensionAttached(tabId)).toBe(false);
+
+        // A POST answered with a 303 (Post/Redirect/Get) to a page in scope.
+        await page.goto(fixtures.formUrl);
+        expect(await arm(runId)).toEqual({ ok: true });
+        await addForm(
+          '<form id="wr" method="post" action="/submit-redirect"></form>',
+        );
+        await page.evaluate(() =>
+          (document.getElementById('wr') as HTMLFormElement).requestSubmit(),
+        );
+        await page.waitForURL(`${fixtures.origin}/page2.html`);
+        await becomesSubmitted();
+        expect(await disarm(runId)).toEqual({ ok: true });
+      } finally {
+        await agent.close();
+        await bridgeMessage(browser.sw, { type: 'stopRun' });
+        await closeAgentSessions();
+        await page.goto(fixtures.formUrl);
+      }
+    });
+
+    it('a link, a reload, a same-document move, a blocked or fetch submit, an iframe POST or a 204 do not set submitted', async () => {
+      const { runId } = await startRun();
+      try {
+        expect(await arm(runId)).toEqual({ ok: true });
+        // A link click (anchorClick) and a browser-initiated navigation.
+        await page.click('#next');
+        await page.waitForURL(`${fixtures.origin}/page2.html`);
+        await staysUnsubmitted();
+        await page.goto(fixtures.formUrl);
+        await staysUnsubmitted();
+        await page.reload();
+        await staysUnsubmitted();
+        // A same-document navigation.
+        await page.evaluate(() => history.pushState({}, '', '#step2'));
+        await staysUnsubmitted();
+        // Client-side validation blocks the submit: no navigation.
+        await addForm(
+          '<form id="wv" method="post" action="/submitted">' +
+            '<label for="wv-q">Required thing</label>' +
+            '<input id="wv-q" name="q" required>' +
+            '<button id="wv-go">Send</button></form>',
+        );
+        await page.click('#wv-go');
+        await staysUnsubmitted();
+        expect(page.url()).toBe(`${fixtures.formUrl}#step2`);
+        // A form that prevents the submit and sends it with fetch.
+        await addForm(
+          '<form id="wf" method="post" action="/submitted"' +
+            ' onsubmit="event.preventDefault(); fetch(\'/api\')">' +
+            '<button id="wf-go">Send</button></form>',
+        );
+        await page.click('#wf-go');
+        await staysUnsubmitted();
+        expect(page.url()).toBe(`${fixtures.formUrl}#step2`);
+        // A form POST inside the same-origin (srcdoc) iframe.
+        const inner = await (await page.$('#child'))?.contentFrame();
+        if (!inner) throw new Error('srcdoc frame not found');
+        await inner.evaluate((origin) => {
+          document.body.insertAdjacentHTML(
+            'beforeend',
+            `<form id="cf" method="post" action="${origin}/submitted"></form>`,
+          );
+          (document.getElementById('cf') as HTMLFormElement).requestSubmit();
+        }, fixtures.origin);
+        await until(() =>
+          page.frames().some((f) => f.url() === `${fixtures.origin}/submitted`),
+        );
+        await staysUnsubmitted();
+        // A POST answered with 204 commits nothing; a reload after it is not
+        // the submission's navigation.
+        await addForm(
+          '<form id="wn" method="post" action="/no-content"></form>',
+        );
+        await page.evaluate(() =>
+          (document.getElementById('wn') as HTMLFormElement).requestSubmit(),
+        );
+        await new Promise((r) => setTimeout(r, 700));
+        await page.reload();
+        await staysUnsubmitted();
+      } finally {
+        await bridgeMessage(browser.sw, { type: 'stopRun' });
+        await closeAgentSessions();
+        await page.goto(fixtures.formUrl);
+      }
+    });
+
+    it.each([
+      ['posted there', 'direct'],
+      ['redirected there by a 303', 'redirect'],
+    ])(
+      'a form POST %s, to an origin not allowed, holds the run as before and sets nothing',
+      async (_how, how) => {
+        const { runId } = await startRun();
+        try {
+          expect(await arm(runId)).toEqual({ ok: true });
+          await addForm(
+            how === 'direct'
+              ? `<form id="wa" method="post" action="${fixtures.frameOrigin}/away.html"></form>`
+              : '<form id="wa" method="post" action="/submit-redirect?to=away"></form>',
+          );
+          await page.evaluate(() =>
+            (document.getElementById('wa') as HTMLFormElement).requestSubmit(),
+          );
+          await until(
+            async () =>
+              (await watchStatus()).pendingOrigin === fixtures.frameOrigin,
+          );
+          await staysUnsubmitted();
+          expect(await watchStatus()).toMatchObject({ active: true, runId });
+        } finally {
+          await bridgeMessage(browser.sw, { type: 'stopRun' });
+          await closeAgentSessions();
+          await page.goto(fixtures.formUrl);
+        }
+      },
+    );
+
+    it('under the agent attach: a form POST sets submitted; disarm leaves the agent attached', async () => {
+      const { cdp, runId } = await startRun();
+      expect(
+        (await agentBrowser(['snapshot', '-i'], cdp, 'watch')).success,
+      ).toBe(true);
+      try {
+        expect(await arm(runId)).toEqual({ ok: true });
+        await page.evaluate(() =>
+          (document.getElementById('post') as HTMLFormElement).requestSubmit(),
+        );
+        await page.waitForURL(`${fixtures.origin}/submitted`);
+        await becomesSubmitted();
+        expect(await disarm(runId)).toEqual({ ok: true });
+        expect(await watchStatus()).toMatchObject({ attached: true });
+        expect((await watchStatus()).submitted).toBeUndefined();
+        expect(await extensionAttached(tabId)).toBe(true);
+        expect(
+          (await agentBrowser(['get', 'title'], cdp, 'watch')).success,
+        ).toBe(true);
+      } finally {
+        await bridgeMessage(browser.sw, { type: 'stopRun' });
+        await closeAgentSessions();
+        await page.goto(fixtures.formUrl);
+      }
+    });
+  });
+
   it('stopRun closes the agent at once and detaches', async () => {
     const { cdp } = await startRun();
     expect((await agentBrowser(['snapshot', '-i'], cdp, 'stop')).success).toBe(
