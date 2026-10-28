@@ -1040,9 +1040,9 @@ describe('the panel shell', () => {
       expect(await secret.inputValue()).toContain(SECRET);
       expect(await send.isDisabled()).toBe(true);
       await page.evaluate(() => {
-        (
-          window as unknown as { __fillReply: { ok: boolean } }
-        ).__fillReply = { ok: true };
+        (window as unknown as { __fillReply: { ok: boolean } }).__fillReply = {
+          ok: true,
+        };
       });
       await fillIt.click();
       await card.getByText('Filled in.').waitFor();
@@ -1077,9 +1077,9 @@ describe('the panel shell', () => {
       row.pending = [];
       await card.waitFor({ state: 'detached', timeout: 10_000 });
 
-      // A free-text question with a flagged prompt: a notice, no input, no
-      // buttons, and Send never enables.
-      row.pending = [
+      // A free-text question with a flagged prompt gets the typing card (a
+      // masked input, no text box) and is answered with the exact text.
+      const freeSsn = [
         {
           requestId: 'q-free-ssn',
           prompt: 'What is your Social Security number?',
@@ -1088,17 +1088,43 @@ describe('the panel shell', () => {
           allowFreeform: true,
         },
       ];
+      row.pending = freeSsn;
       row.phase = 'needs_you';
       await card
-        .getByText(
-          'This question cannot be answered here. The agent is waiting; you can Stop the run.',
-        )
+        .getByRole('button', { name: 'Fill it in' })
         .waitFor({ timeout: 10_000 });
-      expect(await card.getByRole('textbox').count()).toBe(0);
-      expect(
-        await card.getByRole('button', { name: "I'll type it myself" }).count(),
-      ).toBe(0);
+      expect(await card.getByLabel('Value to fill in').count()).toBe(1);
+      expect(await card.locator('textarea').count()).toBe(0);
+      expect(await card.getByText('cannot be answered here').count()).toBe(0);
       expect(await send.isDisabled()).toBe(true);
+      await card.getByRole('button', { name: "I'll type it myself" }).click();
+      await send.click();
+      await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(answerBodies).toHaveLength(5);
+      expect(answerBodies[4]).toEqual({
+        id: runId,
+        inputResponses: [{ requestId: 'q-free-ssn', text: 'provided' }],
+      });
+      row.phase = 'working';
+      row.pending = [];
+      await card.waitFor({ state: 'detached', timeout: 10_000 });
+
+      // Skip on the same kind of question is the text `skip`.
+      row.pending = freeSsn;
+      row.phase = 'needs_you';
+      await card
+        .getByRole('button', { name: 'Skip' })
+        .click({ timeout: 10_000 });
+      await send.click();
+      await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(answerBodies).toHaveLength(6);
+      expect(answerBodies[5]).toEqual({
+        id: runId,
+        inputResponses: [{ requestId: 'q-free-ssn', text: 'skip' }],
+      });
+      row.phase = 'working';
+      row.pending = [];
+      await card.waitFor({ state: 'detached', timeout: 10_000 });
 
       // A yes/no whose prompt only mentions a sensitive topic stays a choice.
       row.pending = [
@@ -1114,11 +1140,12 @@ describe('the panel shell', () => {
           allowFreeform: false,
         },
       ];
+      row.phase = 'needs_you';
       await card.getByRole('radio', { name: 'Yes' }).click({ timeout: 10_000 });
       await send.click();
       await card.getByText('Sent. Waiting for the agent...').waitFor();
-      expect(answerBodies).toHaveLength(5);
-      expect(answerBodies[4]).toEqual({
+      expect(answerBodies).toHaveLength(7);
+      expect(answerBodies[6]).toEqual({
         id: runId,
         inputResponses: [{ requestId: 'q-benefits', optionId: 'yes' }],
       });
