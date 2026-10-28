@@ -550,6 +550,24 @@ describe('typeSensitive refusals type nothing', () => {
 });
 
 describe('typeSensitive timing', () => {
+  it('one at a time: a second call while one is typing is refused', async () => {
+    await attachedRun();
+    const gate = deferred();
+    const axStarted = deferred<void>();
+    fake.axGate = gate.promise;
+    fake.axStarted = () => axStarted.resolve();
+    const first = type();
+    await axStarted.promise;
+    const second = await type(`${VALUE}-2`);
+    expect(second).toEqual({ ok: false, error: 'type failed' });
+    gate.resolve(undefined);
+    expect(await first).toEqual({ ok: true });
+    expect(inserts()).toHaveLength(1);
+    // Free again once the first has answered.
+    fake.axGate = undefined;
+    expect(await type()).toEqual({ ok: true });
+  });
+
   it('focus moved to an ordinary field after the check: nothing is typed there', async () => {
     // A model of the page: the checked field (1.77.1) and an ordinary one.
     // The page script moves focus while the field is judged; the typing call

@@ -51,6 +51,12 @@ import {
   redactEventParams,
   redactReply,
 } from './redaction';
+import {
+  DEEP_ACTIVE,
+  FIELD_KIND,
+  FRAME_OWNER_TAGS,
+  TYPE_INTO,
+} from './typing-scripts';
 
 // Forwards CDP between the relay and chrome.debugger for exactly one tab.
 // Ported from spike/cdp-relay/extension/sw.js. Nothing here may log or echo
@@ -1445,7 +1451,6 @@ const FRAME_STEP_MS = 3_000;
 const DISCOVERY_MS = 8_000;
 /** The bridge's isolated world for reading where keyboard focus is. */
 const FOCUS_WORLD = 'relay-focus';
-const FRAME_OWNER_TAGS = /^(IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME)$/;
 // Mouse actions that act on the page (a move only hovers).
 const MOUSE_ACTIONS = new Set(['mousePressed', 'mouseReleased', 'mouseWheel']);
 const KEY_INPUT_METHODS = new Set([
@@ -1763,35 +1768,6 @@ function inputTargetFrame(node: Record<string, unknown> | undefined) {
 }
 
 /**
- * The frame that keyboard focus is in, read in the bridge's own isolated
- * world of the main frame (page script cannot tamper with it): focus is
- * followed through open shadow roots and into reachable same-origin frames,
- * and stops at a frame whose document is not reachable (cross-origin or out
- * of process). Null when focus is on an ordinary element of a reachable
- * document; undefined when it cannot be classified (a frame owner without a
- * frame, a closed shadow root).
- */
-/**
- * The element keyboard focus is on, as a function of a document: followed
- * through open shadow roots and into reachable same-origin frames, stopping
- * at a frame whose document is not reachable (its owner is returned).
- */
-const DEEP_ACTIVE = `(doc) => {
-    let el = doc.activeElement;
-    for (let i = 0; i < 64 && el; i++) {
-      while (el.shadowRoot && el.shadowRoot.activeElement) {
-        el = el.shadowRoot.activeElement;
-      }
-      if (!${FRAME_OWNER_TAGS}.test(el.tagName)) return el;
-      let inner = null;
-      try { inner = el.contentDocument; } catch {}
-      if (!inner || !inner.activeElement) return el;
-      el = inner.activeElement;
-    }
-    return el;
-  }`;
-
-/**
  * The focused element (see DEEP_ACTIVE) as a remote object of the bridge's
  * own isolated world of the main frame, in `objectGroup` (the caller
  * releases it). Null when nothing is focused; undefined when the world
@@ -1828,6 +1804,15 @@ async function focusedElement(
   return objectIdOf(evaluated, 'result') ?? null;
 }
 
+/**
+ * The frame that keyboard focus is in, read in the bridge's own isolated
+ * world of the main frame (page script cannot tamper with it): focus is
+ * followed through open shadow roots and into reachable same-origin frames,
+ * and stops at a frame whose document is not reachable (cross-origin or out
+ * of process). Null when focus is on an ordinary element of a reachable
+ * document; undefined when it cannot be classified (a frame owner without a
+ * frame, a closed shadow root).
+ */
 async function focusedFrameId(
   current: Run,
   tab: FrameSession,
@@ -2709,76 +2694,8 @@ const MAX_TYPED_LENGTH = 512;
 // The typing call (TYPE_INTO) settles once the text is in; a page that hangs
 // it fails the typing (it is never sent again).
 const TYPE_MS = 3_000;
-// Input types whose value is the text typed into them (an input without a
-// type, or with an unknown one, reports `text`).
-const TEXT_ENTRY_TYPES = [
-  'text',
-  'password',
-  'tel',
-  'email',
-  'number',
-  'search',
-  'url',
-];
-
-/**
- * Run on the focused element in the bridge's isolated world (page script
- * cannot change what these getters answer): 'entry' for an enabled, editable
- * text input or textarea, 'frame' for a frame owner focus stopped at (a
- * frame the world cannot see into), 'other' for anything else. Never page
- * text. Not by `instanceof`: an element of a same-origin frame has that
- * frame's prototypes.
- */
-const FIELD_KIND = `function () {
-  const el = this;
-  if (!el || el.nodeType !== 1 || !el.isConnected) return 'other';
-  if (${FRAME_OWNER_TAGS}.test(el.tagName)) return 'frame';
-  const tag = el.localName;
-  if (tag === 'input') {
-    if (!${JSON.stringify(TEXT_ENTRY_TYPES)}.includes(el.type)) return 'other';
-  } else if (tag !== 'textarea') {
-    return 'other';
-  }
-  if (el.getAttribute('aria-disabled') === 'true') return 'other';
-  if (el.getAttribute('aria-readonly') === 'true') return 'other';
-  return el.matches(':enabled:read-write') ? 'entry' : 'other';
-}`;
-
-/**
- * Types `text` into the element it runs on, the field that was checked, in
- * the bridge's isolated world and in one script task, so no page script or
- * agent command can move focus between the check and the typing:
- * 'moved' (nothing typed) unless that element is still the focused one and
- * still editable; else the text is inserted at its caret as typing does
- * (execCommand insertText: beforeinput and input events, undo), or, where
- * the browser will not do that, its value is set with the element's own
- * setter (bypassing page overrides, as frameworks expect) followed by input
- * and change events. 'typed' when the value changed, 'unchanged' when not
- * (a page that refused the input). Only these words come back.
- */
-const TYPE_INTO = `function (text) {
-  const el = this;
-  if ((${DEEP_ACTIVE})(document) !== el) return 'moved';
-  if (!el.isConnected || !el.matches(':enabled:read-write')) return 'moved';
-  const before = el.value;
-  let inserted = false;
-  try {
-    inserted = el.ownerDocument.execCommand('insertText', false, text);
-  } catch {}
-  if (!inserted) {
-    let proto = Object.getPrototypeOf(el);
-    let setter;
-    while (proto && !setter) {
-      setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-      proto = Object.getPrototypeOf(proto);
-    }
-    if (!setter) return 'unchanged';
-    setter.call(el, text);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-  return el.value !== before ? 'typed' : 'unchanged';
-}`;
+/** Set while a typeSensitive call is between its checks and its reply. */
+let typingNow = false;
 
 const returnedValue = (reply: unknown) =>
   isObject(reply) && isObject(reply.result) ? reply.result.value : undefined;
@@ -2789,7 +2706,8 @@ const returnedValue = (reply: unknown) =>
  * scrubbing first (refused: nothing is typed), then the focused element is
  * checked (an enabled, editable text field, in a frame in scope, that the
  * redactor masks once filled), then it is typed into that same element
- * (TYPE_INTO, one call, never retried), not into whatever has focus. A refusal after registering leaves the value registered.
+ * (TYPE_INTO, one call, never retried), not into whatever has focus. A
+ * refusal after registering leaves the value registered.
  *
  * This is worker-initiated CDP outside the agent's command policy, so it
  * re-applies what forwardCdp applies to agent input: run live and attached,
@@ -2808,6 +2726,9 @@ async function typeSensitive(
   if (runId !== current.runId) return refuse('wrong run');
   if (!current.attached) return refuse('not attached');
   if (current.blocked) return refuse('run is held');
+  // One at a time: a second call while one is typing is refused (nothing
+  // registered, nothing typed); the panel sends one per press.
+  if (typingNow) return refuse('type failed');
   // Registered before any await, in the same turn as the checks above, so a
   // token refresh either carries it or refuses it (see startRunNow).
   if (
@@ -2820,6 +2741,7 @@ async function typeSensitive(
   }
   const epoch = current.scopeEpoch;
   let refusal: TypeRefusal | null;
+  typingNow = true;
   try {
     refusal = await typeIntoFocused(current, value, epoch);
   } catch (error) {
@@ -2830,6 +2752,8 @@ async function typeSensitive(
       refusal = 'field out of scope';
     } else if (!current.attached) refusal = 'not attached';
     else refusal = 'type failed';
+  } finally {
+    typingNow = false;
   }
   return refusal === null ? { ok: true } : refuse(refusal);
 }
@@ -2921,7 +2845,11 @@ async function typeIntoFocused(
     // No await from here to the send. The value goes to the element that
     // was checked, never to whatever has focus: TYPE_INTO re-checks focus
     // and types in the same script task (Input.insertText would type
-    // wherever focus is by the time the renderer gets it).
+    // wherever focus is by the time the renderer gets it). Not race-free:
+    // a page `beforeinput` handler runs inside that task and can move focus
+    // or the selection, so the text lands elsewhere; the field's value then
+    // did not change and the answer is 'type failed' (the value stays
+    // registered, so a 3+ character echo is still scrubbed).
     if (inputGuardSignature(current) !== signature || !inScope()) {
       return 'field out of scope';
     }

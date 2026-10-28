@@ -20,6 +20,7 @@ import {
   serveFixtures,
   startRelay,
 } from '../helpers/harness';
+import { FIELD_KIND, TYPE_INTO } from '../../../extension/src/typing-scripts';
 
 // End-to-end: agent-browser -> relay -> extension -> the caseworker's tab.
 // Run alone with `pnpm extension:build && pnpm test:relay e2e`.
@@ -2020,6 +2021,97 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     });
   });
 
+  it('the typing scripts, run in a real isolated world', async () => {
+    const p = await browser.context.newPage();
+    try {
+      await p.goto(fixtures.formUrl);
+      await p.evaluate(() => {
+        document.body.insertAdjacentHTML(
+          'beforeend',
+          '<input id="ka"><input id="kb"><input id="kr" readonly>' +
+            '<input id="kd" disabled><textarea id="kt"></textarea>' +
+            '<input id="kc" type="checkbox">' +
+            '<div id="ke" contenteditable="true" tabindex="0"></div>' +
+            '<input id="kf" value="old one"><input id="kg" value="old one">',
+        );
+      });
+      const session = await browser.context.newCDPSession(p);
+      const tree = (await session.send('Page.getFrameTree')) as {
+        frameTree: { frame: { id: string } };
+      };
+      const world = (await session.send('Page.createIsolatedWorld', {
+        frameId: tree.frameTree.frame.id,
+        worldName: 'typing-scripts-test',
+      })) as { executionContextId: number };
+      const contextId = world.executionContextId;
+      const inWorld = async (expression: string) =>
+        session.send('Runtime.evaluate', { expression, contextId });
+      const run = async (id: string, fn: string, args: unknown[] = []) => {
+        const found = (await inWorld(`document.getElementById('${id}')`)) as {
+          result: { objectId: string };
+        };
+        const reply = (await session.send('Runtime.callFunctionOn', {
+          objectId: found.result.objectId,
+          functionDeclaration: fn,
+          arguments: args.map((value) => ({ value })),
+          returnByValue: true,
+        })) as { result: { value: unknown } };
+        return reply.result.value;
+      };
+      const fieldValue = (id: string) => p.inputValue(`#${id}`);
+
+      // Which elements count as a text field.
+      expect(await run('ka', FIELD_KIND)).toBe('entry');
+      expect(await run('kt', FIELD_KIND)).toBe('entry');
+      for (const id of ['kr', 'kd', 'kc', 'ke']) {
+        expect(await run(id, FIELD_KIND)).toBe('other');
+      }
+
+      // (a) The element is not the focused one: nothing is typed anywhere.
+      await p.focus('#ka');
+      expect(await run('kb', TYPE_INTO, ['Zz-1234'])).toBe('moved');
+      expect(await fieldValue('ka')).toBe('');
+      expect(await fieldValue('kb')).toBe('');
+
+      // (b) Read-only (focusable) and disabled (not focusable): refused.
+      await p.focus('#kr');
+      expect(await run('kr', TYPE_INTO, ['Zz-1234'])).toBe('moved');
+      expect(await fieldValue('kr')).toBe('');
+      expect(await run('kd', TYPE_INTO, ['Zz-1234'])).toBe('moved');
+      expect(await fieldValue('kd')).toBe('');
+
+      // execCommand path: the old content is replaced, not appended to.
+      await p.focus('#kf');
+      expect(await run('kf', TYPE_INTO, ['Zz-1234'])).toBe('typed');
+      expect(await fieldValue('kf')).toBe('Zz-1234');
+      // The same value again: nothing to do, a success.
+      expect(await run('kf', TYPE_INTO, ['Zz-1234'])).toBe('typed');
+      expect(await fieldValue('kf')).toBe('Zz-1234');
+
+      // (c) execCommand refused: the setter fallback replaces the value and
+      // the page sees an input event.
+      await p.evaluate(() => {
+        const w = window as unknown as { inputs: number };
+        w.inputs = 0;
+        document.getElementById('kg')?.addEventListener('input', () => {
+          w.inputs += 1;
+        });
+      });
+      await inWorld('Document.prototype.execCommand = () => false; 1');
+      await p.focus('#kg');
+      expect(await run('kg', TYPE_INTO, ['Zz-1234'])).toBe('typed');
+      expect(await fieldValue('kg')).toBe('Zz-1234');
+      expect(
+        await p.evaluate(
+          () => (window as unknown as { inputs: number }).inputs,
+        ),
+      ).toBe(1);
+      await session.detach();
+    } finally {
+      await p.close();
+    }
+  });
+
   it('typeSensitive types only into a focused field the redactor masks', async () => {
     const { cdp, runId } = await startRun();
     expect(
@@ -2036,6 +2128,8 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
           '<input id="t18" name="field_18">' +
           '<label for="t19">Social Security Number</label>' +
           '<input id="t19" name="field_19" readonly>' +
+          '<div id="t20" contenteditable="true" tabindex="0"' +
+          ' aria-label="Social Security Number"></div>' +
           '</div>',
       );
     });
@@ -2099,6 +2193,25 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       expect(snap.success).toBe(true);
       expect(JSON.stringify(snap)).not.toContain(value);
       expect(JSON.stringify(snap)).not.toContain('7731');
+      // Typing again replaces what the field holds; the same value again
+      // is a success with nothing to do.
+      await page.focus('#t17');
+      expect(await typeIt()).toEqual({ ok: true });
+      expect(await page.inputValue('#t17')).toBe(value);
+      // A value under 3 characters is typed (never scrubbed: P4c3-d).
+      await page.focus('#t17');
+      expect(
+        await bridgeMessage(browser.sw, {
+          type: 'typeSensitive',
+          runId,
+          value: 'ab',
+        }),
+      ).toEqual({ ok: true });
+      expect(await page.inputValue('#t17')).toBe('ab');
+      // contenteditable is not a field the worker types into.
+      await page.focus('#t20');
+      expect(await typeIt()).toEqual({ ok: false, error: 'no focused field' });
+      expect(await page.textContent('#t20')).toBe('');
     } finally {
       await page.evaluate(() => document.getElementById('typing')?.remove());
       await inner
