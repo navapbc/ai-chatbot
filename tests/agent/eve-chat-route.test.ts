@@ -1134,6 +1134,93 @@ describe('POST /api/eve-chat relay runs', () => {
     await drain(await turn());
     expect(eve.createEveSession).toHaveBeenCalledWith('hello', undefined);
   });
+
+  describe('request aborted by the time the run row exists', () => {
+    const abortedStart = (id = RELAY_CHAT, relay: unknown = start()) => {
+      const ctl = new AbortController();
+      ctl.abort();
+      return POST(
+        new Request('http://localhost/api/eve-chat', {
+          method: 'POST',
+          signal: ctl.signal,
+          body: JSON.stringify({ id, relay }),
+        }),
+      );
+    };
+    const spyWrites = () => ({
+      advance: vi.spyOn(store, 'advance'),
+      setPending: vi.spyOn(store, 'setPending'),
+      setTurnIdle: vi.spyOn(store, 'setTurnIdle'),
+      setProgress: vi.spyOn(store, 'setProgress'),
+    });
+
+    it('ends the row, cancels the turn and starts no read loop', async () => {
+      const writes = spyWrites();
+      const res = await abortedStart();
+      await drain(res);
+
+      expect((await store.get(USER, RELAY_CHAT))?.endedAt).toBeTruthy();
+      expect(eve.cancelEveTurn).toHaveBeenCalledWith('sess-1');
+      expect(eve.openEveStream).not.toHaveBeenCalled();
+      expect(eve.parseNdjson).not.toHaveBeenCalled();
+      for (const w of Object.values(writes)) expect(w).not.toHaveBeenCalled();
+    });
+
+    it('does not undo the end or throw when the cancel fails', async () => {
+      eve.cancelEveTurn.mockRejectedValue(new Error('eve down'));
+      const res = await abortedStart();
+      expect(res.status).toBe(499);
+      expect((await store.get(USER, RELAY_CHAT))?.endedAt).toBeTruthy();
+      expect(eve.cancelEveTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it('still cancels when ending the row throws', async () => {
+      vi.spyOn(store, 'end').mockRejectedValue(new Error('db down'));
+      const res = await abortedStart();
+      expect(res.status).toBe(499);
+      expect(eve.cancelEveTurn).toHaveBeenCalledWith('sess-1');
+    });
+
+    it('behaves as before with a live signal', async () => {
+      streamEvents({ type: 'turn.started' }, waiting('tok-1'));
+      const res = await startRun(start());
+      expect(res.status).toBe(200);
+      await drain(res);
+      expect((await store.get(USER, RELAY_CHAT))?.endedAt).toBeFalsy();
+      expect(eve.cancelEveTurn).not.toHaveBeenCalled();
+      expect(eve.openEveStream).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves a web chat alone', async () => {
+      const ctl = new AbortController();
+      ctl.abort();
+      const endSpy = vi.spyOn(store, 'end');
+      streamEvents({ type: 'turn.started' });
+      const res = await POST(
+        new Request('http://localhost/api/eve-chat', {
+          method: 'POST',
+          signal: ctl.signal,
+          body: JSON.stringify({
+            id: CHAT,
+            message: { role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+          }),
+        }),
+      );
+      await drain(res);
+      expect(endSpy).not.toHaveBeenCalled();
+      expect(eve.cancelEveTurn).not.toHaveBeenCalled();
+      expect((await store.get(USER, CHAT))?.endedAt).toBeFalsy();
+    });
+
+    it('does not touch another run when the create loses the race', async () => {
+      const endSpy = vi.spyOn(store, 'end');
+      vi.spyOn(store, 'create').mockRejectedValue(new EveRunExistsError());
+      const res = await abortedStart();
+      expect(res.status).not.toBe(499);
+      expect(endSpy).not.toHaveBeenCalled();
+      expect(eve.cancelEveTurn).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('POST /api/eve-chat structured questions (relay runs)', () => {
