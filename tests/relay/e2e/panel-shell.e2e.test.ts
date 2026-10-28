@@ -227,8 +227,8 @@ beforeAll(async () => {
       );
       return;
     }
-    if (req.url?.startsWith('/api/participants?q=')) {
-      const q = new URL(req.url, 'http://x').searchParams.get('q');
+    if (req.method === 'POST' && req.url === '/api/participants') {
+      const q = (JSON.parse(raw || '{}') as { q?: string }).q ?? null;
       const body = (name: string) =>
         JSON.stringify({
           participants: [{ recordId: 'rec-1', name, county: 'Kern' }],
@@ -400,6 +400,17 @@ describe('the panel shell', () => {
     expect(await page.getByText('Stale Al').count()).toBe(0);
     expect(await page.locator('main b').count()).toBe(0);
     await page.getByText('1 result').waitFor();
+    // The term rode a POST body: no request URL the app saw contains it.
+    const searches = appRequests
+      .map((r) => JSON.parse(r) as [string, string, unknown, string])
+      .filter(([, url]) => url.startsWith('/api/participants'));
+    expect(searches.length).toBeGreaterThan(0);
+    for (const [method, url, , body] of searches) {
+      expect(method).toBe('POST');
+      expect(url).toBe('/api/participants');
+      expect(url).not.toMatch(/al/i);
+    }
+    expect(searches.some(([, , , body]) => body.includes('alice'))).toBe(true);
 
     await page.getByRole('button', { name: /Alice/ }).click();
     await page.getByRole('heading', { name: 'Ready' }).waitFor();
