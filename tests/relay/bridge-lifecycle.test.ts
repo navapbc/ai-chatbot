@@ -510,25 +510,146 @@ describe('run status after a worker restart', () => {
     );
   });
 
-  it('a same-run-id restart (token refresh) after values were registered needs registration', async () => {
-    const socket = await attachedRun('run-1');
-    expect(
-      await bridge.handleMessage({
-        type: 'addKnownValue',
-        runId: 'run-1',
-        value: 'Rosalind',
-      }),
-    ).toEqual({ ok: true });
-    expect(await start(tokenFor('run-1', 7200))).toEqual({ ok: true });
-    // Not ended on the relay: the new socket's register replaces the old one.
-    expect(socket.sent.filter((m) => m.type === 'stop')).toEqual([]);
-    expect((await status()).needsRegistration).toBe(true);
+  const addValue = (value: string, runId = 'run-1') =>
+    bridge.handleMessage({ type: 'addKnownValue', runId, value });
+  const titleOf = async (socket: FakeSocket, id: string) => {
+    const reply = await ask(socket, { id, type: 'listTargets' });
+    return (reply.result as { targetInfos: { title: string }[] }).targetInfos[0]
+      .title;
+  };
+  const refreshed = async (runId = 'run-1') => {
+    expect(await start(tokenFor(runId, 7200))).toEqual({ ok: true });
     const next = FakeSocket.all.at(-1) as FakeSocket;
     await next.open();
-    expect(
-      (await ask(next, { id: 'a', type: 'attach', targetId: 'T' })).error,
-    ).toBeUndefined();
-    expect((await screenshot(next, 's1')).error).toBe(REGISTRATION_REFUSED);
+    return next;
+  };
+
+  it('a same-run-id restart (token refresh) keeps the registered values', async () => {
+    const socket = await attachedRun('run-1');
+    expect(await addValue('Rosalind')).toEqual({ ok: true });
+    expect(await titleOf(socket, 't0')).not.toContain('Rosalind');
+    const next = await refreshed();
+    // Not ended on the relay: the new socket's register replaces the old one.
+    expect(socket.sent.filter((m) => m.type === 'stop')).toEqual([]);
+    expect((await status()).needsRegistration).toBe(false);
+    expect(await titleOf(next, 't1')).not.toContain('Rosalind');
+    // A run that never registered it would show the title as is.
+    await bridge.handleMessage({ type: 'stopRun' });
+    const fresh = await attachedRun('run-9');
+    expect(await titleOf(fresh, 't2')).toContain('Rosalind');
+  });
+
+  it('values are cleared by stopRun and not inherited by a later run', async () => {
+    await attachedRun('run-1');
+    expect(await addValue('Rosalind')).toEqual({ ok: true });
+    await bridge.handleMessage({ type: 'stopRun' });
+    const same = await attachedRun('run-1');
+    // Same id after stop: values were lost, and none are carried.
+    expect((await status()).needsRegistration).toBe(true);
+    await bridge.handleMessage({
+      type: 'registrationComplete',
+      runId: 'run-1',
+    });
+    expect(await titleOf(same, 't1')).toContain('Rosalind');
+    await bridge.handleMessage({ type: 'stopRun' });
+    const other = await attachedRun('run-2');
+    expect(await titleOf(other, 't2')).toContain('Rosalind');
+  });
+
+  it('a different run id does not inherit the values', async () => {
+    await attachedRun('run-1');
+    expect(await addValue('Rosalind')).toEqual({ ok: true });
+    const next = await refreshed('run-2');
+    expect((await status()).needsRegistration).toBe(false);
+    expect(await titleOf(next, 't1')).toContain('Rosalind');
+  });
+
+  it('the redactor cap holds across a refresh', async () => {
+    await attachedRun('run-1');
+    for (let i = 0; i < 32; i++) {
+      expect(await addValue(`value-${i}`)).toEqual({ ok: true });
+    }
+    expect((await addValue('value-extra')).ok).toBe(false);
+    await refreshed();
+    expect((await status()).needsRegistration).toBe(false);
+    // Still full after the carry: the 33rd is refused, a carried one is not.
+    expect((await addValue('value-extra')).ok).toBe(false);
+    expect(await addValue('value-0')).toEqual({ ok: true });
+  });
+
+  it('a value under 3 characters is carried the way the redactor treats it', async () => {
+    await attachedRun('run-1');
+    expect(await addValue('ab')).toEqual({ ok: true });
+    const next = await refreshed();
+    expect((await status()).needsRegistration).toBe(false);
+    // Nothing is scrubbed for it, before or after the refresh.
+    expect(await titleOf(next, 't1')).toBe('Form for Rosalind');
+    expect(await addValue('ab')).toEqual({ ok: true });
+  });
+
+  it('a value registered while startRun awaits is still scrubbed on the new run', async () => {
+    await attachedRun('run-1');
+    expect(await addValue('Rosalind')).toEqual({ ok: true });
+    const store = (
+      globalThis as unknown as {
+        chrome: { storage: { session: { set: (i: object) => Promise<void> } } };
+      }
+    ).chrome.storage.session;
+    const realSet = store.set;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = false;
+    store.set = async (items) => {
+      entered = true;
+      await gate;
+      return realSet(items);
+    };
+    const started = start(tokenFor('run-1', 7200));
+    // startRun is now blocked inside the awaits before its snapshot.
+    await vi.waitFor(() => expect(entered).toBe(true));
+    expect(await addValue('Hypatia')).toEqual({ ok: true });
+    release();
+    expect(await started).toEqual({ ok: true });
+    store.set = realSet;
+    const dbg = (
+      globalThis as unknown as {
+        chrome: { debugger: { getTargets: () => Promise<unknown[]> } };
+      }
+    ).chrome.debugger;
+    dbg.getTargets = async () => [
+      {
+        tabId: 1,
+        type: 'page',
+        id: 'T',
+        title: 'Rosalind and Hypatia',
+        url: `${ORIGIN}/form`,
+        attached: false,
+      },
+    ];
+    const next = FakeSocket.all.at(-1) as FakeSocket;
+    await next.open();
+    await ask(next, { id: 'a', type: 'attach', targetId: 'T' });
+    expect((await status()).needsRegistration).toBe(false);
+    // Both values, including the one added mid-refresh, are masked again.
+    expect(await titleOf(next, 't1')).toBe('[masked] and [masked]');
+  });
+
+  it('needsRegistration stays set across a refresh that carries values', async () => {
+    await resumed();
+    expect(await addValue('Rosalind')).toEqual({ ok: true });
+    await refreshed();
+    expect((await status()).needsRegistration).toBe(true);
+  });
+
+  it('refuses a value once the carried list is full', async () => {
+    await attachedRun('run-1');
+    for (let i = 0; i < 256; i++) {
+      expect((await addValue(' '.repeat(i + 1))).ok).toBe(true);
+    }
+    expect((await addValue('Rosalind')).ok).toBe(false);
+    expect(await addValue(' ')).toEqual({ ok: true });
   });
 
   it('a same-run-id restart with no registered values does not', async () => {

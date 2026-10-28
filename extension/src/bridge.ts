@@ -51,6 +51,12 @@ import {
   redactEventParams,
   redactReply,
 } from './redaction';
+import {
+  DEEP_ACTIVE,
+  FIELD_KIND,
+  FRAME_OWNER_TAGS,
+  TYPE_INTO,
+} from './typing-scripts';
 
 // Forwards CDP between the relay and chrome.debugger for exactly one tab.
 // Ported from spike/cdp-relay/extension/sw.js. Nothing here may log or echo
@@ -78,7 +84,13 @@ export type BridgeMessage =
    * The caseworker allowed the origin the run is held on (see holdOrigin)
    * for the rest of this run: exactly `pendingOrigin`, an https origin.
    */
-  | { type: 'allowOrigin'; origin: string };
+  | { type: 'allowOrigin'; origin: string }
+  /**
+   * Registers `value` for scrubbing, then types it into the field focused in
+   * the run's tab if the redactor masks that field (see typeSensitive).
+   * Answers `{ ok: true }` or a fixed refusal, never the value.
+   */
+  | { type: 'typeSensitive'; runId: string; value: string };
 
 /**
  * The bridge's run state for the panel. Ids and counts only: never the
@@ -214,6 +226,13 @@ interface Run extends RunConfig {
   jev?: JevClassifier;
   /** True once a known value was registered; see addKnownValue. */
   hasKnownValues: boolean;
+  /**
+   * The values addKnownValue accepted, in worker memory only, because the
+   * redactor has no getter: a same-run startRun (token refresh) registers
+   * them on the new redactor. Cleared by every other end; never logged,
+   * stored or sent.
+   */
+  knownValues: string[];
   /**
    * Set on a run rebuilt after a worker restart (its known values were lost
    * with the old worker) until the panel sends `registrationComplete`.
@@ -483,6 +502,9 @@ export function startRun(
   return serialized(() => startRunNow(msg));
 }
 
+/** Bounds the carried list; the redactor's own cap is far lower. */
+const MAX_CARRIED_VALUES = 256;
+
 async function startRunNow(
   msg: Extract<BridgeMessage, { type: 'startRun' }>,
 ): Promise<BridgeResponse> {
@@ -510,23 +532,28 @@ async function startRunNow(
   // A run restarted under the same run id (e.g. a refreshed token) is not
   // ended on the relay: its new socket's `register` replaces the old one
   // there, while a `stop` would close the run for good (and refuse the new
-  // socket). Its known values are cleared with the old run, so the panel
-  // must register them again before screenshots are allowed.
+  // socket). Its known values are carried to the new run (see below); only
+  // a restart, which loses them, makes the panel register them again before
+  // screenshots are allowed.
   // A live run of the same id says exactly whether values were lost; with
   // none (it ended on its own, or the worker restarted) the record of begun
   // run ids decides, failing closed.
-  const previous = run;
-  const sameRun = previous !== undefined && previous.runId === claims.runId;
   const begun = await readBegunRuns();
-  const valuesLost = sameRun
-    ? previous.hasKnownValues || previous.needsRegistration
-    : begun.includes(claims.runId);
   await chrome.storage.session.set({
     [BEGUN_KEY]: [
       ...begun.filter((id) => id !== claims.runId),
       claims.runId,
     ].slice(-BEGUN_CAP),
   });
+  // Snapshot after the last await, with endRun called in the same tick: its
+  // synchronous start clears `run`, so no value can register on the old run
+  // (addKnownValue is not serialized) after the list is copied.
+  const previous = run;
+  const sameRun = previous !== undefined && previous.runId === claims.runId;
+  const carried = sameRun ? previous.knownValues.slice() : [];
+  const valuesLost = sameRun
+    ? previous.needsRegistration
+    : begun.includes(claims.runId);
   await endRun('replaced', { notifyRelay: !sameRun });
   const config: RunConfig = {
     relayUrl: msg.relayUrl,
@@ -536,7 +563,32 @@ async function startRunNow(
   };
   await chrome.storage.session.set({ [STORAGE_KEY]: config });
   begin(config, socket.url, claims, false, valuesLost);
+  carryKnownValues(carried);
   return { ok: true };
+}
+
+/**
+ * Registers the values a same-run refresh carried on the run just begun.
+ * Synchronous with begin, so no event or reply is redacted without them. A
+ * value the new redactor refuses (it accepted it before) counts as lost.
+ */
+function carryKnownValues(values: string[]) {
+  const current = run;
+  if (!current || values.length === 0) return;
+  for (const value of values) {
+    if (!addAccepted(current, value)) current.needsRegistration = true;
+  }
+}
+
+/** Registers a value on the redactor and remembers it if it was accepted. */
+function addAccepted(current: Run, value: string): boolean {
+  const known = current.knownValues.includes(value);
+  // A full list would drop a value at the next refresh unflagged: refuse.
+  if (!known && current.knownValues.length >= MAX_CARRIED_VALUES) return false;
+  if (!current.redactor.addKnownValue(value)) return false;
+  if (!known) current.knownValues.push(value);
+  current.hasKnownValues = true;
+  return true;
 }
 
 /** The begun run ids; empty when unreadable or malformed. */
@@ -599,6 +651,7 @@ async function endRun(
     current.blocked = true;
     current.redactor.clear();
     current.hasKnownValues = false;
+    current.knownValues = [];
     current.jev?.stop();
     clearTimeout(current.reconnectTimer);
     clearTimeout(current.expiryTimer);
@@ -793,6 +846,7 @@ function begin(
       : createRedactor(),
     jev,
     hasKnownValues: false,
+    knownValues: [],
     needsRegistration,
     relayClosed: false,
   };
@@ -1397,7 +1451,6 @@ const FRAME_STEP_MS = 3_000;
 const DISCOVERY_MS = 8_000;
 /** The bridge's isolated world for reading where keyboard focus is. */
 const FOCUS_WORLD = 'relay-focus';
-const FRAME_OWNER_TAGS = /^(IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME)$/;
 // Mouse actions that act on the page (a move only hovers).
 const MOUSE_ACTIONS = new Set(['mousePressed', 'mouseReleased', 'mouseWheel']);
 const KEY_INPUT_METHODS = new Set([
@@ -1715,6 +1768,43 @@ function inputTargetFrame(node: Record<string, unknown> | undefined) {
 }
 
 /**
+ * The focused element (see DEEP_ACTIVE) as a remote object of the bridge's
+ * own isolated world of the main frame, in `objectGroup` (the caller
+ * releases it). Null when nothing is focused; undefined when the world
+ * cannot be made. Throws when a lookup fails.
+ */
+async function focusedElement(
+  current: Run,
+  tab: FrameSession,
+  objectGroup: string,
+): Promise<string | null | undefined> {
+  const expression = `(${DEEP_ACTIVE})(document)`;
+  const evaluate = async (contextId: number) =>
+    sessionSend(tab, 'Runtime.evaluate', {
+      expression,
+      contextId,
+      objectGroup,
+    });
+  let evaluated: unknown;
+  try {
+    if (current.focusWorld === undefined) throw new Error('no world');
+    evaluated = await evaluate(current.focusWorld);
+  } catch {
+    // No world yet, or its document is gone: make one (its context
+    // events are dropped like the mask's, see isBridgeWorldCreated).
+    const world = await sessionSend(tab, 'Page.createIsolatedWorld', {
+      frameId: current.mainFrameId,
+      worldName: FOCUS_WORLD,
+    });
+    const contextId = isObject(world) ? world.executionContextId : undefined;
+    if (typeof contextId !== 'number') return undefined;
+    current.focusWorld = contextId;
+    evaluated = await evaluate(contextId);
+  }
+  return objectIdOf(evaluated, 'result') ?? null;
+}
+
+/**
  * The frame that keyboard focus is in, read in the bridge's own isolated
  * world of the main frame (page script cannot tamper with it): focus is
  * followed through open shadow roots and into reachable same-origin frames,
@@ -1727,46 +1817,11 @@ async function focusedFrameId(
   current: Run,
   tab: FrameSession,
 ): Promise<string | null | undefined> {
-  const expression = `(() => {
-    let el = document.activeElement;
-    for (let i = 0; i < 64 && el; i++) {
-      while (el.shadowRoot && el.shadowRoot.activeElement) {
-        el = el.shadowRoot.activeElement;
-      }
-      if (!${FRAME_OWNER_TAGS}.test(el.tagName)) return el;
-      let doc = null;
-      try { doc = el.contentDocument; } catch {}
-      if (!doc || !doc.activeElement) return el;
-      el = doc.activeElement;
-    }
-    return el;
-  })()`;
   const objectGroup = checkGroup();
-  const evaluate = async (contextId: number) =>
-    sessionSend(tab, 'Runtime.evaluate', {
-      expression,
-      contextId,
-      objectGroup,
-    });
   try {
-    let evaluated: unknown;
-    try {
-      if (current.focusWorld === undefined) throw new Error('no world');
-      evaluated = await evaluate(current.focusWorld);
-    } catch {
-      // No world yet, or its document is gone: make one (its context
-      // events are dropped like the mask's, see isBridgeWorldCreated).
-      const world = await sessionSend(tab, 'Page.createIsolatedWorld', {
-        frameId: current.mainFrameId,
-        worldName: FOCUS_WORLD,
-      });
-      const contextId = isObject(world) ? world.executionContextId : undefined;
-      if (typeof contextId !== 'number') return undefined;
-      current.focusWorld = contextId;
-      evaluated = await evaluate(contextId);
-    }
-    const objectId = objectIdOf(evaluated, 'result');
-    if (!objectId) return null;
+    const objectId = await focusedElement(current, tab, objectGroup);
+    if (objectId === undefined) return undefined;
+    if (objectId === null) return null;
     // Pierced one level: a closed shadow root shows up here.
     return inputTargetFrame(
       describedNode(
@@ -2613,11 +2668,215 @@ function addKnownValue(runId: unknown, value: unknown): BridgeResponse {
   const current = run;
   if (!current || current.stopped) return { ok: false, error: 'no active run' };
   if (runId !== current.runId) return { ok: false, error: 'wrong run' };
-  if (typeof value !== 'string' || !current.redactor.addKnownValue(value)) {
+  if (typeof value !== 'string' || !addAccepted(current, value)) {
     return { ok: false, error: 'known value not registered' };
   }
-  current.hasKnownValues = true;
   return { ok: true };
+}
+
+/**
+ * typeSensitive's refusals, exactly as the panel maps them: fixed strings,
+ * never the value, a field's name or label, or page text.
+ */
+type TypeRefusal =
+  | 'no active run'
+  | 'wrong run'
+  | 'not attached'
+  | 'run is held'
+  | 'value not accepted'
+  | 'no focused field'
+  | 'field not sensitive'
+  | 'field out of scope'
+  | 'type failed';
+
+/** The redactor's own limit; checked here too so the reason is fixed. */
+const MAX_TYPED_LENGTH = 512;
+// The typing call (TYPE_INTO) settles once the text is in; a page that hangs
+// it fails the typing (it is never sent again).
+const TYPE_MS = 3_000;
+/** Set while a typeSensitive call is between its checks and its reply. */
+let typingNow = false;
+
+const returnedValue = (reply: unknown) =>
+  isObject(reply) && isObject(reply.result) ? reply.result.value : undefined;
+
+/**
+ * Types a sensitive value the caseworker gave the panel into the field they
+ * focused in the tab, for them: plan 4c-3. The value is registered for
+ * scrubbing first (refused: nothing is typed), then the focused element is
+ * checked (an enabled, editable text field, in a frame in scope, that the
+ * redactor masks once filled), then it is typed into that same element
+ * (TYPE_INTO, one call, never retried), not into whatever has focus. A
+ * refusal after registering leaves the value registered.
+ *
+ * This is worker-initiated CDP outside the agent's command policy, so it
+ * re-applies what forwardCdp applies to agent input: run live and attached,
+ * not held, tab in scope and unchanged since the call (requireSameScope),
+ * screenshots waited out and the shared tab hold kept to the send, the
+ * focused frame judged like a command's handle, a timeout. Never throws,
+ * never logs; the reply is `{ ok: true }` or one fixed TypeRefusal.
+ */
+async function typeSensitive(
+  runId: unknown,
+  value: unknown,
+): Promise<BridgeResponse> {
+  const refuse = (error: TypeRefusal): BridgeResponse => ({ ok: false, error });
+  const current = run;
+  if (!current || current.stopped) return refuse('no active run');
+  if (runId !== current.runId) return refuse('wrong run');
+  if (!current.attached) return refuse('not attached');
+  if (current.blocked) return refuse('run is held');
+  // One at a time: a second call while one is typing is refused (nothing
+  // registered, nothing typed); the panel sends one per press.
+  if (typingNow) return refuse('type failed');
+  // Registered before any await, in the same turn as the checks above, so a
+  // token refresh either carries it or refuses it (see startRunNow).
+  if (
+    typeof value !== 'string' ||
+    value.trim() === '' ||
+    value.length > MAX_TYPED_LENGTH ||
+    !addAccepted(current, value)
+  ) {
+    return refuse('value not accepted');
+  }
+  const epoch = current.scopeEpoch;
+  let refusal: TypeRefusal | null;
+  typingNow = true;
+  try {
+    refusal = await typeIntoFocused(current, value, epoch);
+  } catch (error) {
+    // The error's own text is never passed on: it may name page state.
+    if (run !== current || current.stopped) refusal = 'type failed';
+    else if (current.blocked) refusal = 'run is held';
+    else if (error instanceof Error && error.message === FRAME_OUT_OF_SCOPE) {
+      refusal = 'field out of scope';
+    } else if (!current.attached) refusal = 'not attached';
+    else refusal = 'type failed';
+  } finally {
+    typingNow = false;
+  }
+  return refusal === null ? { ok: true } : refuse(refusal);
+}
+
+/** See typeSensitive: null once the value was typed, else why not. */
+async function typeIntoFocused(
+  current: Run,
+  value: string,
+  epoch: number,
+): Promise<TypeRefusal | null> {
+  const lock = lockFor(current.tabId);
+  // The tab session as it is now; a re-attach replaces its frame scope.
+  const tab: FrameSession = {
+    scope: current.frameScope,
+    debuggee: { tabId: current.tabId },
+    rootFrameId: current.mainFrameId,
+  };
+  // After every await: the same run, attached to the same session, its tab
+  // never out of scope since the call (throws).
+  const live = () => {
+    requireSameScope(current, epoch);
+    if (run !== current) throw new Error('run replaced');
+    if (!current.attached || tab.scope !== current.frameScope) {
+      throw new Error('not attached');
+    }
+  };
+  // As forwardCdp: wait out a screenshot's mask window, check the tab, and
+  // take the shared hold with no await after the last check.
+  for (;;) {
+    await untilNoScreenshot(lock);
+    await requireTabInScope(current);
+    live();
+    if (!lock.writer) break;
+  }
+  const release = holdShared(lock);
+  const objectGroup = checkGroup();
+  try {
+    const signature = inputGuardSignature(current);
+    const objectId = await focusedElement(current, tab, objectGroup);
+    live();
+    if (objectId === null) return 'no focused field';
+    if (objectId === undefined) return 'type failed';
+    const kind = returnedValue(
+      await sessionSend(tab, 'Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: FIELD_KIND,
+        returnByValue: true,
+      }),
+    );
+    live();
+    if (kind === 'frame') return 'field out of scope';
+    if (kind !== 'entry') return 'no focused field';
+    const node = describedNode(
+      await sessionSend(tab, 'DOM.describeNode', { objectId }),
+    );
+    live();
+    const backendNodeId = node?.backendNodeId;
+    if (typeof backendNodeId !== 'number') return 'type failed';
+    // The field's frame: the context of its own main world, judged like a
+    // command's node handle (unknown or out of scope refuses).
+    const { contextIds } = await resolveFrames(
+      current,
+      tab,
+      commandAddresses({ backendNodeId }),
+    );
+    live();
+    const inScope = () =>
+      contextIds.length === 1 &&
+      contextAllowedIn(current, tab.scope, contextIds[0]);
+    if (!inScope()) return 'field out of scope';
+    // The verdict the redactor gives this field once it holds a value: the
+    // accessibility node (its accessible name included) and describe(),
+    // classifyExtra (Jev) included. Unknown is not masked.
+    const tree = await sessionSend(tab, 'Accessibility.getPartialAXTree', {
+      backendNodeId,
+      fetchRelatives: false,
+    });
+    live();
+    const axNode = (
+      isObject(tree) && Array.isArray(tree.nodes) ? tree.nodes : []
+    ).find((n) => isObject(n) && n.backendDOMNodeId === backendNodeId);
+    if (axNode === undefined) return 'type failed';
+    const masked = await current.redactor.masksFilledField(
+      axNode,
+      describeVia(tab.debuggee),
+    );
+    live();
+    if (!masked) return 'field not sensitive';
+    // No await from here to the send. The value goes to the element that
+    // was checked, never to whatever has focus: TYPE_INTO re-checks focus
+    // and types in the same script task (Input.insertText would type
+    // wherever focus is by the time the renderer gets it). Not race-free:
+    // a page `beforeinput` handler runs inside that task and can move focus
+    // or the selection, so the text lands elsewhere; the field's value then
+    // did not change and the answer is 'type failed' (the value stays
+    // registered, so a 3+ character echo is still scrubbed).
+    if (inputGuardSignature(current) !== signature || !inScope()) {
+      return 'field out of scope';
+    }
+    let typed: unknown;
+    try {
+      typed = returnedValue(
+        await withTimeout(
+          chrome.debugger.sendCommand(tab.debuggee, 'Runtime.callFunctionOn', {
+            objectId,
+            functionDeclaration: TYPE_INTO,
+            arguments: [{ value }],
+            returnByValue: true,
+            silent: true,
+          }),
+          TYPE_MS,
+          'typing',
+        ),
+      );
+    } catch {
+      return 'type failed';
+    }
+    if (typed === 'moved') return 'no focused field';
+    return typed === 'typed' ? null : 'type failed';
+  } finally {
+    await releaseGroup(tab, objectGroup);
+    release();
+  }
 }
 
 /**
@@ -2717,5 +2976,8 @@ export async function handleMessage(message: unknown): Promise<BridgeResponse> {
     return registrationComplete(message.runId, message.count);
   }
   if (message.type === 'allowOrigin') return allowOrigin(message.origin);
+  if (message.type === 'typeSensitive') {
+    return typeSensitive(message.runId, message.value);
+  }
   return { ok: false, error: 'unknown message type' };
 }

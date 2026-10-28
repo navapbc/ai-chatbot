@@ -308,11 +308,10 @@ export const createRunSession = (
       refreshFailed = false;
       refreshFailedAt = undefined;
       if (done()) return;
-      // The restarted run has no registered values (plan 4b): screenshots
-      // stay refused until this arrives. Count 0 holds while the panel
-      // registers no known values (plan 4c-1); once it does (plan 4c-3) it
-      // must send them again first and pass the real count. A failure here is
-      // retried by the poll, which sees `needsRegistration`.
+      // A same-run refresh carries the worker's registered values, and the
+      // panel holds none itself (the worker registers them), so
+      // the count is 0. Screenshots stay refused until this arrives. A
+      // failure here is retried by the poll, which sees `needsRegistration`.
       await ignore(() => deps.worker.registrationComplete(runId, 0));
     } catch {
       refreshFailed = true;
@@ -395,9 +394,9 @@ export const createRunSession = (
     inactiveSince = undefined;
     lastWorker = status;
     if (status.needsRegistration && !registering) {
-      // Count 0: this panel registers no known values (plan 4c-1). Once it
-      // does (addKnownValue, plan 4c-3), it must send them again and pass the
-      // real count here, or screenshots resume without their scrub.
+      // Count 0: the panel holds no values (the worker registers them in
+      // the worker). After a worker restart the worker has lost any typed
+      // values and this still sends 0, which the worker does not verify.
       registering = true;
       void ignore(() => deps.worker.registrationComplete(runId, 0)).then(() => {
         registering = false;

@@ -425,8 +425,6 @@ describe('answerRequests: refused before any request', () => {
     expect(NEEDS_YOU_COPY.cannotAnswer).toBe(
       'This question cannot be answered here. The agent is waiting; you can Stop the run.',
     );
-    // Nothing on the card suggests filling the page unblocks a dead end.
-    expect(NEEDS_YOU_COPY.shouldHaveOffered).not.toMatch(/page/i);
   });
 
   it('every new error class has fixed copy', () => {

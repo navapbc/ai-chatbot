@@ -1,5 +1,5 @@
 import { AppApiError } from '../../src/app-api';
-import { WorkerError } from './worker-api';
+import { type TypeSensitiveCode, WorkerError } from './worker-api';
 
 // Every message the panel shows for a failure comes from this table, chosen by
 // the error's class and code. Nothing from an error's message, body or cause
@@ -270,20 +270,45 @@ export const answerMessageFor = (error: unknown): ErrorMessage =>
 export const NEEDS_YOU_COPY = {
   title: 'The agent needs you',
   sensitive:
-    'This one is sensitive. Type it in the page yourself, then press the button.',
+    'This one is sensitive. Type it in the page yourself first, then choose "I typed it in the page" and press Send. Or type it here and press Fill it in.',
   cannotAnswer:
     'This question cannot be answered here. The agent is waiting; you can Stop the run.',
-  shouldHaveOffered:
-    'The agent should have offered "I entered it myself" and "Skip" for it.',
   noNumbers:
     'Do not type Social Security, bank, card or ID numbers here. Type those in the page.',
-  provided: 'I entered it myself',
+  typeMyself: 'I typed it in the page',
+  fillIt: 'Fill it in',
+  fillInstruction: 'Click the field in the page, then press Fill it in.',
+  fillInputLabel: 'Value to fill in',
+  showTyped: 'Show what I typed',
+  filled: 'Filled in.',
   skip: 'Skip',
   skipped: 'Skipped.',
   send: 'Send',
   sending: 'Sending...',
   sent: 'Sent. Waiting for the agent...',
 } as const;
+
+/**
+ * Fixed copy for each way "Fill it in" can fail, chosen by code. The worker's
+ * text and the value are never part of it.
+ */
+export const TYPE_SENSITIVE_COPY: Record<TypeSensitiveCode, string> = {
+  not_attached:
+    'The extension is not connected to this tab right now. Type it in the page yourself, then choose "I typed it in the page".',
+  run_held:
+    'The run is paused while the tab is on another site. Go back to the form page, or type it in the page yourself.',
+  value_not_accepted:
+    'The extension could not type that value here. Type it in the page yourself.',
+  no_focused_field: 'Click the field in the page first, then press Fill it in.',
+  field_not_sensitive:
+    'The extension does not treat that field as sensitive, so it will not type there. Type it in the page yourself.',
+  field_out_of_scope:
+    'That field is outside the page the agent is working on. Click a field on the form page, or type it yourself.',
+  type_failed:
+    'Typing did not work. Click the field again and press Fill it in, or type it in the page yourself.',
+  worker_error:
+    'The extension could not type that. Type it in the page yourself.',
+};
 
 /** Fixed messages for the Home screen's tab choices. */
 export const HOME_COPY = {
