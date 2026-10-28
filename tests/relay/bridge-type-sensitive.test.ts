@@ -849,19 +849,63 @@ describe('the attach queue: every step is bounded, one chain per run', () => {
     ).toMatchObject({ attached: true });
   }, 10_000);
 
-  it('a hung agent attach times out; the agent attaches again', async () => {
-    const socket = await startedRun();
-    fake.attachGate = new Promise(() => {});
-    const first = await ask(socket, {
-      id: 'a1',
-      type: 'attach',
-      targetId: 'T',
+  describe('the agent attach has a longer step bound (fake timers)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
     });
-    expect(first.error).toBe('attach timed out');
-    expect(
-      (await ask(socket, { id: 'a2', type: 'attach', targetId: 'T' })).error,
-    ).toBeUndefined();
-  }, 10_000);
+
+    /** Sends an attach and reports when its reply arrives. */
+    const agentAttach = (socket: FakeSocket, id: string) => {
+      const state: { reply?: Sent } = {};
+      const done = ask(socket, { id, type: 'attach', targetId: 'T' }).then(
+        (reply) => {
+          state.reply = reply;
+        },
+      );
+      return { state, done };
+    };
+
+    it('a hung agent attach times out after the agent bound, not the typing one', async () => {
+      const socket = await startedRun();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      fake.attachGate = new Promise(() => {});
+      const first = agentAttach(socket, 'a1');
+      await vi.advanceTimersByTimeAsync(9_000);
+      // Past the 3 s typing bound: still waiting.
+      expect(first.state.reply).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1_500);
+      await first.done;
+      expect(first.state.reply?.error).toBe('attach timed out');
+      vi.useRealTimers();
+      expect(
+        (await ask(socket, { id: 'a2', type: 'attach', targetId: 'T' })).error,
+      ).toBeUndefined();
+    });
+
+    it('a slow but completing agent attach succeeds', async () => {
+      const socket = await startedRun();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      fake.frameTreeGate = new Promise((resolve) => setTimeout(resolve, 4_000));
+      const slow = agentAttach(socket, 'a1');
+      await vi.advanceTimersByTimeAsync(4_100);
+      await slow.done;
+      expect(slow.state.reply?.error).toBeUndefined();
+      vi.useRealTimers();
+      expect(
+        (await bridge.handleMessage({ type: 'getRunStatus' })) as object,
+      ).toMatchObject({ attached: true });
+    });
+
+    it('a typing attach still gives up after the typing bound', async () => {
+      await startedRun();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      fake.frameTreeGate = new Promise((resolve) => setTimeout(resolve, 4_000));
+      const typing = type();
+      await vi.advanceTimersByTimeAsync(4_100);
+      expect(await typing).toEqual({ ok: false, error: 'not attached' });
+      expect(inserts()).toHaveLength(0);
+    });
+  });
 
   it('a new run starts with its own chain and typing slot', async () => {
     await startedRun('run-1');

@@ -281,7 +281,11 @@ Minors by area:
 - [ ] An agent `attach` can cut off a typing call that is still in flight. The reply then says the typing failed (`type failed` or `not attached`) even though the value may have landed. This is benign: the value stays registered and a retry is safe.
 - [ ] A typing attach refused because another debugger client holds the tab is covered only by the unit fake. Playwright's CDP session in the e2e does not block the attach.
 - [ ] Typing into a field in a same-origin (srcdoc) frame while the agent is not attached is not tested in real Chromium. If the bridge cannot find the frame's context, the answer is `field out of scope` (fails closed).
-- [ ] Each step of the per-run attach queue is bounded at 3 s. A `chrome.debugger.attach` that lands after its timeout leaves the tab attached with no flag set until the next attach (which detaches first) or the end of the run. The debugger banner can stay up during that time.
+- [ ] An old run's attach step can fail after the run was replaced. It then skips its detach, so as not to cut the new run's attach, and an attach that lands late can leave the tab attached, with the banner up, until the next attach.
+- [ ] `typeSensitive`'s `finally` awaits `releaseTypingAttach`, so its reply can be delayed by up to about 15 s when the queue is stuck behind slow steps.
+- [ ] There is no test for an attach that lands after its timeout.
+- [ ] The agent's attach steps are bounded at 10 s each, so about 50 s for a whole attach. Its worst case behind one typing step stays under the agent's 120 s command timeout.
+- [ ] Each typing step of the per-run attach queue is bounded at 3 s. A `chrome.debugger.attach` that lands after its timeout leaves the tab attached with no flag set until the next attach (which detaches first) or the end of the run. The debugger banner can stay up during that time.
 
 ## Plan 5: Rollout
 
