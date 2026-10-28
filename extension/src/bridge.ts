@@ -4165,6 +4165,31 @@ async function confirmationAttempt(
   }
 }
 
+/** Dates, year first or last, with '-', '/' or '.' between the parts. */
+const DATE_SHAPED = [
+  /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/,
+  /^\d{1,2}[-/.]\d{1,2}[-/.](?:\d{2}|\d{4})$/,
+];
+
+/** Lower case, letters and digits only: how values are compared. */
+const comparable = (value: string) =>
+  value.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * True when `token` (4 or more letters and digits) is inside a value the
+ * run registered (current.knownValues, which the redactor mirrors), in
+ * either as-typed or letters-and-digits-only form.
+ */
+function partOfKnownValue(current: Run, token: string): boolean {
+  const lower = token.toLowerCase();
+  const bare = comparable(token);
+  if (bare.length < CONFIRMATION_TOKEN_MIN) return false;
+  return current.knownValues.some(
+    (value) =>
+      value.toLowerCase().includes(lower) || comparable(value).includes(bare),
+  );
+}
+
 /**
  * The confirmation readConfirmation may keep, built fresh from the script's
  * answer, or undefined. Dropped (never trimmed or partly kept) unless: the
@@ -4172,8 +4197,9 @@ async function confirmationAttempt(
  * (isSensitiveField: belt and braces); the token is a string of
  * CONFIRMATION_TOKEN_MIN..MAX token characters with a digit; it has no
  * sensitive shape (hasSensitiveShape: an SSN, or 9 or more digits, so a
- * long numeric confirmation number is dropped too); it holds no registered
- * value (hasKnownValue); the page showed no SSN-shaped value near it
+ * long numeric confirmation number is dropped too) and no 9 digits however
+ * separated; it is not a date; it holds no registered value (hasKnownValue)
+ * and is not part of one (partOfKnownValue); the page showed no SSN-shaped value near it
  * (`nearSensitive` exactly false); and the run is still live, unheld and
  * registered. Any doubt, or a throw, drops it.
  */
@@ -4198,7 +4224,13 @@ function vetConfirmation(
       return;
     }
     if (hasSensitiveShape(token)) return;
+    // Nine or more digits however separated (123/45/6789, 123_45_6789).
+    if (token.replace(/\D/g, '').length >= 9) return;
+    // A date after a label is not a confirmation number.
+    if (DATE_SHAPED.some((shape) => shape.test(token))) return;
     if (current.redactor.hasKnownValue(token)) return;
+    // Part of a registered value (the last 4 digits of a typed SSN, say).
+    if (partOfKnownValue(current, token)) return;
     if (current.stopped || current.blocked || current.needsRegistration) {
       return;
     }

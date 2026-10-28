@@ -282,16 +282,20 @@ export const CONFIRMATION_TOKEN_MIN = 4;
 export const CONFIRMATION_TOKEN_MAX = 32;
 
 // A label, as a label: a whole word (never "confirmation numbers are
-// emailed"), then up to 8 of ':', '#' and whitespace, then the whole run of
-// token characters (never cut short: a run over 32 is dropped, not trimmed).
-// Group 1 is the label, group 2 the run.
+// emailed"), then either the word `is` or `was` between whitespace and up
+// to 8 of whitespace and ':' ("Your confirmation number is AB-1234"), or up
+// to 8 of ':', '#' and whitespace, then the whole run of token characters
+// (never cut short: a run over 32 is dropped, not trimmed). Group 1 is the
+// label, group 2 the run.
 const LABELLED_TOKEN =
-  /(?<![A-Za-z0-9])(confirmation[ \t]*#|(?:confirmation[ \t]+(?:number|code)|(?:reference|application|tracking)[ \t]+number)(?![A-Za-z0-9]))[\s:#]{0,8}([A-Za-z0-9][A-Za-z0-9\-_/.]*)/gi;
+  /(?<![A-Za-z0-9])(confirmation[ \t]*#|(?:confirmation[ \t]+(?:number|code)|(?:reference|application|tracking)[ \t]+number)(?![A-Za-z0-9]))(?:[ \t]+(?:is|was)(?![A-Za-z0-9])[\s:]{1,8}|[\s:#]{0,8})([A-Za-z0-9][A-Za-z0-9\-_/.]*)/gi;
 // Sentence punctuation after a token ("... is AB-1234.").
 const TRAILING_PUNCTUATION = /[._/-]+$/;
 const HAS_DIGIT = /\d/;
-// SSN_SHAPED covers dashes and none; this covers spaces and dots.
-const SPACED_SSN = /(?<!\d)\d{3}[ .]\d{2}[ .]\d{4}(?!\d)/;
+// SSN_SHAPED covers dashes and none; this covers any one or two other
+// separators (spaces, dots, slashes, underscores, mixed: "123-45 6789").
+const SPACED_SSN =
+  /(?<!\d)\d{3}[^\dA-Za-z]{1,2}\d{2}[^\dA-Za-z]{1,2}\d{4}(?!\d)/;
 const WHITESPACE_RUN = /\s+/g;
 
 /**
@@ -300,7 +304,8 @@ const WHITESPACE_RUN = /\s+/g;
  * hidden elements are left out), the first CONFIRMATION_TEXT_CAP characters,
  * and matches only a label from CONFIRMATION_LABEL_KINDS followed by a token
  * of CONFIRMATION_TOKEN_MIN..MAX token characters with a digit (trailing
- * sentence punctuation trimmed). A `confirmation` label wins over an earlier
+ * sentence punctuation trimmed), never the local part of an email address
+ * (a token followed by '@'). A `confirmation` label wins over an earlier
  * other one. Answers `{ token, label, nearSensitive }` (the label canonical,
  * from the fixed list, never as the page wrote it; `nearSensitive` true when
  * the text within CONFIRMATION_NEAR_CHARS of the match holds an SSN-shaped
@@ -327,10 +332,12 @@ export const CONFIRMATION_READ = `(doc) => {
       ) {
         continue;
       }
+      const end = match.index + match[0].length;
+      // "Reference number: john.doe1@example.com": an address, not a number.
+      if (text.charAt(end) === '@') continue;
       const raw = match[1].toLowerCase().replace(${WHITESPACE_RUN}, ' ');
       const label = raw.includes('#') ? 'confirmation #' : raw;
       if (!Object.prototype.hasOwnProperty.call(kinds, label)) continue;
-      const end = match.index + match[0].length;
       const near = text.slice(
         Math.max(0, match.index - ${CONFIRMATION_NEAR_CHARS}),
         end + ${CONFIRMATION_NEAR_CHARS},

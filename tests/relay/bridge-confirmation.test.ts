@@ -264,13 +264,17 @@ const settled = async (n = 1) => {
   await new Promise((r) => setTimeout(r, 50));
 };
 
-/** An armed run (agent attached) that saw a submission and read the page. */
-async function readOnce(text: string) {
+/**
+ * An armed run (agent attached) that saw a submission and read the page
+ * `tries` times (3 for a token after an `other` label or none: it is vetted
+ * only after the last read).
+ */
+async function readOnce(text: string, tries = 1) {
   fake.pageText = text;
   const socket = await attachedRun();
   await arm();
   submit();
-  await settled();
+  await settled(tries);
   return { socket, seen: await status() };
 }
 
@@ -301,6 +305,9 @@ describe('a vetted confirmation number reaches getRunStatus, and only it', () =>
     ['Confirmation #AB12', 'AB12', 'confirmation'],
     ['Your confirmation code:\n  X9Y8Z7', 'X9Y8Z7', 'confirmation'],
     ['CONFIRMATION NUMBER  ab_12.c', 'ab_12.c', 'confirmation'],
+    ['Your confirmation number is AB-1234.', 'AB-1234', 'confirmation'],
+    ['Confirmation number was: AB-1234', 'AB-1234', 'confirmation'],
+    ['Your application number is 2024-0017', '2024-0017', 'other'],
   ])('%j gives %s (%s)', async (text, token, kind) => {
     await readOnce(text);
     expect((await confirmed()).submitted?.confirmation).toEqual({
@@ -355,6 +362,20 @@ describe('a token is dropped (submitted stays { at })', () => {
       'Your confirmation number will be emailed: AB-1234',
     ],
     ['no label at all', 'Thank you. AB-1234 is on its way.'],
+    [
+      'a label then is and a word',
+      'Your confirmation number is pending (2 days).',
+    ],
+    ['nine digits split by slashes', 'Confirmation number: 123/45/6789'],
+    ['nine digits split by underscores', 'Confirmation number: 123_45_6789'],
+    [
+      'an SSN with mixed separators (the token is its first part)',
+      'Confirmation number: 123-45 6789',
+    ],
+    ['a date, year first, with slashes', 'Confirmation number: 2024/11/03'],
+    ['a date, year last', 'Confirmation number: 11/03/2024'],
+    ['a date, year first, with dashes', 'Confirmation number: 2024-11-03'],
+    ['a short date with dots', 'Confirmation code: 3.11.24'],
   ])('%s', async (_name, text) => {
     const { seen } = await readOnce(text);
     expect(seen.submitted).toEqual({ at: expect.any(Number) });
@@ -412,6 +433,42 @@ describe('a token is dropped (submitted stays { at })', () => {
     expect((await confirmed()).submitted?.confirmation?.token).toBe('AB-1234');
   });
 
+  it('a token that is part of a registered value is dropped (the last 4 of a typed SSN)', async () => {
+    fake.pageText = 'Confirmation number: 6789';
+    await attachedRun();
+    expect(
+      await bridge.handleMessage({
+        type: 'addKnownValue',
+        runId: 'run-1',
+        value: '123-45-6789',
+      }),
+    ).toEqual({ ok: true });
+    await arm();
+    submit();
+    await settled();
+    expect((await status()).submitted).toEqual({ at: expect.any(Number) });
+  });
+
+  it('a mixed-separator SSN near a clean token sets nearSensitive', async () => {
+    const { seen } = await readOnce(
+      'SSN: 123-45 6789\nConfirmation number: AB-1234',
+    );
+    expect(seen.submitted).toEqual({ at: expect.any(Number) });
+  });
+
+  it('a 4-character token unrelated to a registered value is kept', async () => {
+    fake.pageText = 'Confirmation number: AB12';
+    await attachedRun();
+    await bridge.handleMessage({
+      type: 'addKnownValue',
+      runId: 'run-1',
+      value: '123-45-6789',
+    });
+    await arm();
+    submit();
+    expect((await confirmed()).submitted?.confirmation?.token).toBe('AB12');
+  });
+
   it('a token equal to a registered value is dropped', async () => {
     fake.pageText = 'Confirmation number: AB-1234';
     const socket = await attachedRun();
@@ -429,11 +486,32 @@ describe('a token is dropped (submitted stays { at })', () => {
     expect(JSON.stringify(socket.sent)).not.toContain('AB-1234');
   });
 
-  it('a label outside the fixed list from the script is dropped', async () => {
+  it('a label outside the fixed list from the script is dropped (after the last read)', async () => {
     fake.answer = { token: '4455', label: 'case number', nearSensitive: false };
-    const { seen } = await readOnce('');
+    const { seen } = await readOnce('', 3);
     expect(seen.submitted).toEqual({ at: expect.any(Number) });
-  });
+  }, 10_000);
+
+  it('the local part of an email address after a reference number label is dropped', async () => {
+    const { seen } = await readOnce(
+      'Reference number: john.doe1@example.com',
+      3,
+    );
+    expect(seen.submitted).toEqual({ at: expect.any(Number) });
+  }, 10_000);
+
+  it.each(['123/45/6789', '123_45_6789'])(
+    'the digit-count rule alone: %s with nearSensitive false',
+    async (token) => {
+      fake.answer = {
+        token,
+        label: 'confirmation number',
+        nearSensitive: false,
+      };
+      const { seen } = await readOnce('');
+      expect(seen.submitted).toEqual({ at: expect.any(Number) });
+    },
+  );
 
   it('a malformed answer is dropped', async () => {
     fake.answer = { token: 1234, label: 'confirmation number' };
