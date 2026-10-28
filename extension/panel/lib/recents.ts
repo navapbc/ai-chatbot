@@ -10,6 +10,23 @@ export type Recent = {
   endedReason?: string;
 };
 
+/**
+ * Why a recent ended. The run session writes `user`, `submitted`, `stopped`
+ * and `worker-ended`; the starter writes `start-failed` (a start that left no
+ * run; hidden on Home) and the open-time sweep writes `swept` (a run nothing
+ * held, stopped on the server; shown as ended).
+ */
+export type RecentEndedReason =
+  | 'user'
+  | 'submitted'
+  | 'stopped'
+  | 'worker-ended'
+  | 'start-failed'
+  | 'swept';
+
+export const START_FAILED = 'start-failed' satisfies RecentEndedReason;
+export const SWEPT = 'swept' satisfies RecentEndedReason;
+
 const KEY = 'recentRuns';
 const MAX_RECENTS = 10;
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -123,6 +140,10 @@ export const markRecentEnded = async (
     // Value-free: the recents list is a convenience.
   }
 };
+
+/** The recents Home lists: a start that failed and left no run is hidden. */
+export const visibleRecents = (list: readonly Recent[]): Recent[] =>
+  list.filter((r) => r.endedReason !== START_FAILED);
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;

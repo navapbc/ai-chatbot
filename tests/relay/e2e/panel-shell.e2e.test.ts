@@ -320,6 +320,11 @@ describe('the panel shell', () => {
     expect(expected).not.toBe('rgba(0, 0, 0, 0)');
     expect(actual).toBe(expected);
 
+    // The seeded recent has no end reason and the worker holds nothing, so
+    // the open-time sweep stops it: give the fake app its row (else the stop
+    // is a 404, which Chromium logs as a console error).
+    const seededId = '00000000-0000-4000-8000-000000000001';
+    runs.set(seededId, { ended: false });
     await page.evaluate(() =>
       chrome.storage.local.set({
         recentRuns: [
@@ -344,6 +349,20 @@ describe('the panel shell', () => {
     await page.getByText('Seeded Site, 5 minutes ago').waitFor();
     expect(await page.getByText('Planted Site').count()).toBe(0);
     expect(configCalls).toBe(2);
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          async () =>
+            (
+              (await chrome.storage.local.get('recentRuns')).recentRuns as {
+                endedReason?: string;
+              }[]
+            )?.[0]?.endedReason,
+        ),
+      )
+      .toBe('swept');
+    expect(appCalls).toContain(`POST /api/relay/runs/${seededId}/stop`);
+    expect(runs.get(seededId)?.ended).toBe(true);
 
     // No console or CSP error beyond that 401.
     expect(errors).toEqual([]);

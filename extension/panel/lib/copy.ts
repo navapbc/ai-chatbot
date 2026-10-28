@@ -315,6 +315,8 @@ export const HOME_COPY = {
   httpsOnly:
     'The agent works on https pages only. Open the form page in this tab first.',
   cannotOpen: 'Could not open that site. Check the address and try again.',
+  /** After a recent's site and time, for any end (a swept run included). */
+  ended: ' (ended)',
 } as const;
 
 /**

@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useMemo, useReducer } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
 import { APP_ORIGIN } from '../src/config';
 import { createAppApi } from '../src/app-api';
 import { NotConnectedError } from './lib/copy';
-import { markRecentEnded } from './lib/recents';
+import { sweepStaleRecents } from './lib/orphan-sweep';
+import { loadRecents, markRecentEnded } from './lib/recents';
 import {
   createRunSession,
   rebuildRun,
   type SessionRun,
 } from './lib/run-session';
-import { startRun } from './lib/run-starter';
+import { startingRunId, startRun } from './lib/run-starter';
 import { type Action, initialState, reducer, type Target } from './lib/state';
 import { createWorkerApi } from './lib/worker-api';
 import { ConfirmedScreen } from './screens/confirmed';
@@ -70,9 +71,25 @@ const rebuild = () => {
   });
 };
 
+// Stops server runs that nothing holds (see orphan-sweep.ts). Fire and
+// forget: it never changes the screen and never throws.
+const sweep = () => {
+  if (!APP_ORIGIN) return;
+  void sweepStaleRecents({
+    api: createAppApi({ origin: APP_ORIGIN }),
+    worker: createWorkerApi(),
+    loadRecents,
+    markRecentEnded,
+    now: () => Date.now(),
+    startingRunId,
+  }).catch(() => {});
+};
+
 export const App = ({ onStart }: { onStart?: OnStart }) => {
   const [state, dispatch] = useReducer(reducer, initialState);
   const starter = useMemo(() => onStart ?? createStarter(dispatch), [onStart]);
+  // Once per panel open: the probe effect runs again on every retry.
+  const swept = useRef(false);
 
   useEffect(() => {
     if (state.screen !== 'loading') return;
@@ -86,6 +103,11 @@ export const App = ({ onStart }: { onStart?: OnStart }) => {
             ? { type: 'runRebuilt', config, ...rebuilt }
             : { type: 'probeSucceeded', config },
         );
+        // Signed in, and the worker's run (if any) is rebuilt: now sweep.
+        if (!swept.current) {
+          swept.current = true;
+          sweep();
+        }
       },
       (error) => current && dispatch({ type: 'probeFailed', error }),
     );

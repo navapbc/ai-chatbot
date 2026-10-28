@@ -5,6 +5,9 @@ import {
   loadRecents,
   markRecentEnded,
   type Recent,
+  START_FAILED,
+  SWEPT,
+  visibleRecents,
 } from '../../extension/panel/lib/recents';
 
 const KEY = 'recentRuns';
@@ -149,6 +152,42 @@ describe('recents', () => {
     await addRecent(rec(1), NOW);
     await markRecentEnded(id(1), 'Not Valid!');
     expect((await loadRecents(NOW))[0].endedReason).toBeUndefined();
+  });
+});
+
+describe('recents: start-failed and swept', () => {
+  it('stores both new reasons, keeping exactly the four keys', async () => {
+    await addRecent(rec(1), NOW);
+    await addRecent(rec(2), NOW);
+    await markRecentEnded(id(1), START_FAILED);
+    await markRecentEnded(id(2), SWEPT);
+    const list = await loadRecents(NOW);
+    expect(list.find((r) => r.runId === id(1))?.endedReason).toBe(
+      'start-failed',
+    );
+    expect(list.find((r) => r.runId === id(2))?.endedReason).toBe('swept');
+    for (const entry of store[KEY] as Record<string, unknown>[]) {
+      expect(Object.keys(entry).sort()).toEqual([
+        'endedReason',
+        'runId',
+        'siteName',
+        'startedAt',
+      ]);
+    }
+  });
+
+  it('Home hides start-failed and still lists swept, ended and live runs', () => {
+    const list = [
+      rec(1),
+      rec(2, { endedReason: 'start-failed' }),
+      rec(3, { endedReason: 'swept' }),
+      rec(4, { endedReason: 'user' }),
+    ];
+    expect(visibleRecents(list).map((r) => r.runId)).toEqual([
+      id(1),
+      id(3),
+      id(4),
+    ]);
   });
 });
 
