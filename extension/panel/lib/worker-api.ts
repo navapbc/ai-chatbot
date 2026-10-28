@@ -54,6 +54,32 @@ const CODE_FOR_TEXT: Record<string, WorkerErrorCode> = {
   'relay URL must not carry credentials': 'relay_unreachable',
 };
 
+export type TypeSensitiveCode =
+  | 'not_attached'
+  | 'run_held'
+  | 'value_not_accepted'
+  | 'no_focused_field'
+  | 'field_not_sensitive'
+  | 'field_out_of_scope'
+  | 'type_failed'
+  | 'worker_error';
+
+export type TypeSensitiveResult =
+  | { ok: true }
+  | { ok: false; code: TypeSensitiveCode };
+
+// typeSensitive's refusals (extension/src/bridge.ts) by exact text. 'no active
+// run' and 'wrong run' are absent on purpose: they fall to worker_error.
+const TYPE_CODE_FOR_TEXT: Record<string, TypeSensitiveCode> = {
+  'not attached': 'not_attached',
+  'run is held': 'run_held',
+  'value not accepted': 'value_not_accepted',
+  'no focused field': 'no_focused_field',
+  'field not sensitive': 'field_not_sensitive',
+  'field out of scope': 'field_out_of_scope',
+  'type failed': 'type_failed',
+};
+
 type Send = (message: unknown) => Promise<unknown>;
 
 const chromeSend: Send = (message) =>
@@ -87,6 +113,11 @@ export interface WorkerApi {
   registrationComplete(runId: string, count: number): Promise<void>;
   allowOrigin(origin: string): Promise<void>;
   getRunStatus(): Promise<RunStatus>;
+  /**
+   * Types a sensitive value into the focused field in the page. The result
+   * carries a code only: never the value and never the worker's text.
+   */
+  typeSensitive(runId: string, value: string): Promise<TypeSensitiveResult>;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -118,7 +149,28 @@ export const createWorkerApi = (sendMessage: Send = chromeSend): WorkerApi => {
     await call(message);
   };
 
+  const typeSensitive = async (
+    runId: string,
+    value: string,
+  ): Promise<TypeSensitiveResult> => {
+    let reply: unknown;
+    try {
+      reply = await sendMessage({ type: 'typeSensitive', runId, value });
+    } catch {
+      return { ok: false, code: 'worker_error' };
+    }
+    if (!isRecord(reply)) return { ok: false, code: 'worker_error' };
+    if (reply.ok === true) return { ok: true };
+    const code =
+      typeof reply.error === 'string' &&
+      Object.hasOwn(TYPE_CODE_FOR_TEXT, reply.error)
+        ? TYPE_CODE_FOR_TEXT[reply.error]
+        : 'worker_error';
+    return { ok: false, code };
+  };
+
   return {
+    typeSensitive,
     startRun: (args) => send({ type: 'startRun', ...args }),
     stopRun: (runId) =>
       send(

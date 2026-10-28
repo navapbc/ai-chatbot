@@ -3,6 +3,7 @@ import {
   createWorkerApi,
   WorkerError,
 } from '../../extension/panel/lib/worker-api';
+import { TYPE_SENSITIVE_COPY } from '../../extension/panel/lib/copy';
 
 const fake = (reply: unknown) => vi.fn(async (_m: unknown) => reply);
 
@@ -87,5 +88,90 @@ describe('worker errors', () => {
       .getRunStatus()
       .catch((e) => e);
     expect(b.code).toBe('worker_unreachable');
+  });
+});
+
+describe('typeSensitive', () => {
+  const VALUE = 'SECRET-VALUE-9';
+
+  it('sends one message and resolves ok', async () => {
+    const send = fake({ ok: true });
+    expect(await createWorkerApi(send).typeSensitive('run1', VALUE)).toEqual({
+      ok: true,
+    });
+    expect(send.mock.calls[0][0]).toEqual({
+      type: 'typeSensitive',
+      runId: 'run1',
+      value: VALUE,
+    });
+  });
+
+  it.each([
+    ['not attached', 'not_attached'],
+    ['run is held', 'run_held'],
+    ['value not accepted', 'value_not_accepted'],
+    ['no focused field', 'no_focused_field'],
+    ['field not sensitive', 'field_not_sensitive'],
+    ['field out of scope', 'field_out_of_scope'],
+    ['type failed', 'type_failed'],
+    ['no active run', 'worker_error'],
+    ['wrong run', 'worker_error'],
+    ['something new', 'worker_error'],
+    ['constructor', 'worker_error'],
+    ['__proto__', 'worker_error'],
+  ])('maps %s to %s', async (text, code) => {
+    const api = createWorkerApi(fake({ ok: false, error: text }));
+    expect(await api.typeSensitive('run1', VALUE)).toEqual({
+      ok: false,
+      code,
+    });
+  });
+
+  it('maps a malformed reply to worker_error', async () => {
+    const api = createWorkerApi(fake(undefined));
+    expect(await api.typeSensitive('run1', VALUE)).toEqual({
+      ok: false,
+      code: 'worker_error',
+    });
+  });
+
+  it('drops a thrown error and never echoes the value', async () => {
+    const api = createWorkerApi(async () => {
+      throw new Error(`boom ${VALUE}`);
+    });
+    const result = await api.typeSensitive('run1', VALUE);
+    expect(result).toEqual({ ok: false, code: 'worker_error' });
+    expect(JSON.stringify(result)).not.toContain(VALUE);
+    expect(JSON.stringify(result)).not.toContain('boom');
+  });
+
+  it('has no value property on any result', async () => {
+    const ok = await createWorkerApi(
+      fake({ ok: true, value: VALUE }),
+    ).typeSensitive('r', VALUE);
+    const bad = await createWorkerApi(
+      fake({ ok: false, error: 'type failed', value: VALUE }),
+    ).typeSensitive('r', VALUE);
+    for (const r of [ok, bad]) {
+      expect(r).not.toHaveProperty('value');
+      expect(JSON.stringify(r)).not.toContain(VALUE);
+    }
+  });
+
+  it('has fixed non-empty copy for every code', () => {
+    const codes = [
+      'not_attached',
+      'run_held',
+      'value_not_accepted',
+      'no_focused_field',
+      'field_not_sensitive',
+      'field_out_of_scope',
+      'type_failed',
+      'worker_error',
+    ] as const;
+    for (const code of codes) {
+      expect(TYPE_SENSITIVE_COPY[code].length).toBeGreaterThan(10);
+    }
+    expect(Object.keys(TYPE_SENSITIVE_COPY).sort()).toEqual([...codes].sort());
   });
 });
