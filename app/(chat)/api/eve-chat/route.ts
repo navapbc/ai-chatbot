@@ -134,10 +134,15 @@ async function prepareRelayStart(
 ): Promise<
   { ok: true; start: RelayStartReady } | { ok: false; res: Response }
 > {
-  const refuse = (reason?: string) => ({
-    ok: false as const,
-    res: new ChatSDKError('bad_request:api', reason).toResponse(),
-  });
+  const refuse = (reason?: string) => {
+    // The reason is one of this file's fixed codes, never a value from the
+    // request, so it is safe to log; without it a refusal leaves no trace.
+    console.error('[eve-chat] relay start refused:', reason ?? 'unspecified');
+    return {
+      ok: false as const,
+      res: new ChatSDKError('bad_request:api', reason).toResponse(),
+    };
+  };
   // The client no longer writes the opening message: the server does.
   if (body.message !== undefined) return refuse('message_not_allowed');
   const parsed = parseRelayStart(body.relay);
@@ -145,7 +150,11 @@ async function prepareRelayStart(
   const url = process.env.RELAY_PUBLIC_URL
     ? toRelayWsUrl(process.env.RELAY_PUBLIC_URL)
     : null;
-  if (!url || !UUID.test(chatId)) return refuse();
+  if (!url) {
+    console.error('[eve-chat] RELAY_PUBLIC_URL is unset or not a relay URL');
+    return refuse();
+  }
+  if (!UUID.test(chatId)) return refuse();
   // Relay runs ignore the dev-only modelOverride rule: the allowlist governs.
   if (parsed.model !== undefined && !isRelayModelAllowed(parsed.model)) {
     return refuse('model_not_allowed');

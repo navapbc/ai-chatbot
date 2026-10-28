@@ -377,6 +377,47 @@ describe('prose guard: boundaries, escapes and unicode digits', () => {
   });
 });
 
+describe('prose guard: a record read back from Postgres jsonb', () => {
+  // jsonb stores object keys shortest first, then bytewise, so the stored
+  // record's key order differs from the source file's. A sensitive key whose
+  // value is withheld must not make the next key's value (a date, an id)
+  // look like a leaked value.
+  const jsonbOrder = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(jsonbOrder);
+    if (v && typeof v === 'object') {
+      return Object.fromEntries(
+        Object.entries(v as Record<string, unknown>)
+          .sort(
+            ([a], [b]) =>
+              a.length - b.length || (a < b ? -1 : a > b ? 1 : 0),
+          )
+          .map(([k, c]) => [k, jsonbOrder(c)]),
+      );
+    }
+    return v;
+  };
+  const refuses = (text: string) =>
+    mustRefuseRelayText(stripSensitiveText(text));
+
+  it.each(PARTICIPANTS.map((p) => [p.record_id, p] as const))(
+    'never refuses the opening message for %s in jsonb key order',
+    (_id, p) => {
+      expect(refuses(opening(jsonbOrder(p) as typeof p))).toBe(false);
+    },
+  );
+
+  it.each([
+    ['a value after a withheld value in prose', `ssn: ${WITHHELD} 123-45-6789`],
+    ['a value after a null value in prose', 'ssn: null 123-45-6789'],
+    [
+      'a second sensitive key with a value after a withheld one',
+      `ssn: ${WITHHELD}, "account number": "4567890123"`,
+    ],
+  ])('still refuses %s', (_n, text) => {
+    expect(refuses(text)).toBe(true);
+  });
+});
+
 describe('ZIP+4, phones and dates stay out of the prose guard', () => {
   const refuses = (text: string) =>
     mustRefuseRelayText(stripSensitiveText(text));
