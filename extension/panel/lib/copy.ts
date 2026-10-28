@@ -399,6 +399,8 @@ export const SUBMIT_COPY = {
     'Check the form on the page, then submit it there yourself. The panel watches for the page to move on after you submit.',
   checking:
     'The page moved on after a form was sent. Checking it for a confirmation number...',
+  /** The name of Review's submission status line. */
+  statusLabel: 'Submission check',
   askTitle: 'Did you submit the form?',
   askBody:
     'The page moved on after a form was sent. Going to the next step of a form looks the same.',

@@ -133,12 +133,16 @@ export const ReviewPanel = ({
         )}
       </details>
       <p className="text-sm">{SUBMIT_COPY.reviewHint}</p>
-      {submission?.stage === 'checking' ? (
-        // Rendered only while checking, so no empty status line lingers.
-        <p role="status" aria-live="polite" className="text-sm">
-          {SUBMIT_COPY.checking}
-        </p>
-      ) : null}
+      {/* Always mounted and empty unless checking: screen readers announce
+          a change to a live region, not one inserted already filled. */}
+      <p
+        role="status"
+        aria-live="polite"
+        aria-label={SUBMIT_COPY.statusLabel}
+        className="text-sm"
+      >
+        {submission?.stage === 'checking' ? SUBMIT_COPY.checking : null}
+      </p>
       {submission?.stage === 'ask' ? (
         <SubmitPrompt
           token={submission.confirmation?.token}

@@ -2096,6 +2096,57 @@ describe('run session: the submit watch', () => {
     t.session.dispose();
   });
 
+  it('a confirmation number arriving under an open prompt never stops the run; the prompt shows it', async () => {
+    const { t, w } = review();
+    await tick(3000);
+    const at = Date.now();
+    w.submitted = { at };
+    await tick(1000 + CONFIRMATION_WAIT_MS);
+    expect(t.last()?.submission).toEqual({ stage: 'ask' });
+    w.submitted = { at, confirmation: NUMBER };
+    await tick(6000);
+    expect(count(t.calls, 'serverStop')).toBe(0);
+    expect(t.last()?.status).toBe('running');
+    expect(t.last()?.submission).toEqual({
+      stage: 'ask',
+      confirmation: NUMBER,
+    });
+    t.session.dispose();
+  });
+
+  it('a confirmation number while the last server phase is working never stops the run', async () => {
+    const t = setup();
+    t.plan.row = async () => liveRow({ phase: 'working' });
+    t.plan.status = async () =>
+      ours({
+        armed: true,
+        submitted: { at: Date.now(), confirmation: NUMBER },
+      });
+    await tick(20_000);
+    expect(count(t.calls, 'serverStop')).toBe(0);
+    expect(count(t.calls, 'arm')).toBe(0);
+    expect(t.last()?.status).toBe('running');
+    expect(t.last()?.submission).toBeUndefined();
+    t.session.dispose();
+  });
+
+  it('"I submitted it" under a prompt showing another label keeps that number as manual', async () => {
+    const { t, w } = review();
+    await tick(3000);
+    w.submitted = { at: Date.now(), confirmation: OTHER };
+    await tick(1000);
+    expect(t.last()?.submission?.stage).toBe('ask');
+    await t.session.stop('submitted');
+    expect(t.last()).toMatchObject({
+      endedReason: 'submitted',
+      confirmedHow: 'manual',
+      confirmation: OTHER,
+    });
+    expect(count(t.calls, 'serverStop')).toBe(1);
+    expect(count(t.calls, 'workerStop')).toBe(1);
+    t.session.dispose();
+  });
+
   it('"I submitted it" is a manual confirmation with no number, even while checking', async () => {
     const { t, w } = review();
     await tick(3000);

@@ -14,6 +14,7 @@ import {
   STOP_FAILED_TEXT,
 } from '../../extension/panel/screens/confirmed';
 import { ReviewPanel } from '../../extension/panel/screens/review';
+import { ENDED_TEXT } from '../../extension/panel/screens/running';
 import {
   buildReviewModel,
   isConfirming,
@@ -326,13 +327,18 @@ describe('Review: a detected submission', () => {
     expect(out).toContain('I submitted it');
     expect(out).not.toContain(SUBMIT_COPY.checking);
     expect(out).not.toContain(SUBMIT_COPY.askTitle);
-    // Only the unfilled-field status line: no empty extra one.
-    expect(out.match(/role="status"/g)).toHaveLength(1);
+    // The submission line is mounted, named and empty.
+    expect(out.match(/role="status"/g)).toHaveLength(2);
+    expect(out).toMatch(
+      /<p role="status" aria-live="polite" aria-label="Submission check" class="text-sm"><\/p>/,
+    );
   });
 
-  it('checking: a status line, no prompt', () => {
+  it('checking: the same status line gets the text, no prompt', () => {
     const out = render({ stage: 'checking' });
-    expect(out).toContain(SUBMIT_COPY.checking);
+    expect(out).toContain(
+      `aria-label="Submission check" class="text-sm">${SUBMIT_COPY.checking}</p>`,
+    );
     expect(out).not.toContain(SUBMIT_COPY.askTitle);
     expect(out.match(/role="status"/g)).toHaveLength(2);
   });
@@ -360,6 +366,27 @@ describe('Review: a detected submission', () => {
       confirmation: { token: '<b>x</b>', kind: 'other' },
     });
     expect(hostile).not.toContain('<b>x');
+  });
+
+  it('the ended text does not claim a submission happened', () => {
+    expect(ENDED_TEXT.submitted).toBe('The run ended as submitted.');
+  });
+
+  it('a manual confirmation keeps a number from another label, labelled as a number on the page', () => {
+    const out = renderToStaticMarkup(
+      createElement(ConfirmedScreen, {
+        siteName: 'example.gov',
+        stopFailed: false,
+        how: 'manual',
+        confirmation: { token: '20240017', kind: 'other' },
+        onStartAnother: () => {},
+        onHome: () => {},
+      }),
+    );
+    expect(out).toContain('You said you submitted the form on example.gov.');
+    expect(out).toContain(CONFIRMED_COPY.otherLabel);
+    expect(out).toContain('>20240017<');
+    expect(out).not.toContain('Confirmation number');
   });
 
   it('copy never claims the form is complete or accepted', () => {

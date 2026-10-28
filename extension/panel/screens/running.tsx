@@ -50,9 +50,9 @@ type Props = {
   allowSiteDeps?: AllowSiteCardDeps;
 };
 
-const ENDED_TEXT: Record<EndedReason, string> = {
+export const ENDED_TEXT: Record<EndedReason, string> = {
   user: 'You stopped this run.',
-  submitted: 'The run ended after the form was submitted.',
+  submitted: 'The run ended as submitted.',
   stopped: 'This run was stopped.',
   'worker-ended':
     'The run ended in the browser. The tab may have closed or moved to another site, or the time ran out.',

@@ -497,6 +497,9 @@ export const createRunSession = (
     const number = reduceConfirmation(raw.confirmation);
     if (!number) return;
     seen.confirmation = number;
+    // Under an open prompt the caseworker decides, whatever arrives late:
+    // the panel never stops the run while it is asking.
+    if (asking) return;
     if (number.kind === 'confirmation') {
       // The number is held before the stop, which ends the worker's read.
       void beginStop('submitted', 'detected', number);
@@ -732,7 +735,15 @@ export const createRunSession = (
       };
     },
     stop(reason = 'user') {
-      return beginStop(reason, reason === 'submitted' ? 'manual' : undefined);
+      if (reason !== 'submitted') return beginStop(reason);
+      // "I submitted it" under a prompt that shows a number after another
+      // label keeps that number for Confirmed (shown as a number on the
+      // page, never as a confirmation number).
+      const shown =
+        asking && seen?.confirmation?.kind === 'other'
+          ? seen.confirmation
+          : undefined;
+      return beginStop('submitted', 'manual', shown);
     },
     confirmSubmission() {
       if (!seen) return beginStop('submitted', 'manual');
@@ -754,8 +765,11 @@ export const createRunSession = (
       disposed = true;
       stopTimers();
       clearSubmission();
-      // The panel closed in review: let go of the watch's attach (best
-      // effort). A reopened panel arms it again.
+      // Unmounted in review (the run screen went away): let go of the
+      // watch's attach. A page unload does not run React cleanup, so on a
+      // real panel close this disarm is effectively never sent and the
+      // worker's review attach lasts until the run ends (or a reopened
+      // panel arms it again).
       if (wantArmed && !ended) {
         wantArmed = false;
         enqueueDisarm();

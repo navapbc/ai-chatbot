@@ -745,7 +745,8 @@ describe('the panel shell', () => {
       const show = left.getByRole('button', {
         name: 'Show me the unfilled field',
       });
-      const status = left.getByRole('status');
+      // The unfilled-field line (the submission line is named).
+      const status = left.locator('[role="status"]:not([aria-label])');
       expect(await status.textContent()).toBe('');
       await show.dblclick();
       await expect
@@ -896,7 +897,7 @@ describe('the panel shell', () => {
         const stored = await page.evaluate(async () =>
           JSON.stringify([
             await chrome.storage.local.get(null),
-            await chrome.storage.session.get(null).catch(() => ({})),
+            await chrome.storage.session.get(null),
           ]),
         );
         expect(stored).not.toContain('AB-1234');
