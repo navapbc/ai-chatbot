@@ -81,6 +81,10 @@ interface Fake {
   /** Holds the accessibility lookup of the field, when set. */
   axGate?: Promise<unknown>;
   axStarted?: () => void;
+  /** The tab's URL (chrome.tabs.get). */
+  tabUrl: string;
+  /** chrome.debugger.attach fails (say, another client holds the tab). */
+  attachFails: boolean;
 }
 
 let fake: Fake;
@@ -96,7 +100,16 @@ const freshFake = (): Fake => ({
   describeFails: false,
   pageText: '',
   typeInto: async () => ({ result: { type: 'string', value: 'typed' } }),
+  tabUrl: `${ORIGIN}/form`,
+  attachFails: false,
 });
+
+const attach = vi.fn(async () => {
+  if (fake.attachFails) {
+    throw new Error('Another debugger is already attached to the tab');
+  }
+});
+const detach = vi.fn(async () => {});
 
 const sendCommand = vi.fn(
   async (
@@ -217,7 +230,7 @@ function stubChrome() {
   vi.stubGlobal('WebSocket', FakeSocket);
   const storage = new Map<string, unknown>();
   vi.stubGlobal('chrome', {
-    tabs: { get: async () => ({ url: `${ORIGIN}/form` }) },
+    tabs: { get: async () => ({ url: fake.tabUrl }) },
     storage: {
       session: {
         set: async (items: Record<string, unknown>) => {
@@ -241,8 +254,8 @@ function stubChrome() {
           attached: false,
         },
       ],
-      attach: async () => {},
-      detach: async () => {},
+      attach,
+      detach,
       sendCommand,
     },
   });
@@ -252,6 +265,8 @@ beforeEach(async () => {
   vi.resetModules();
   fake = freshFake();
   sendCommand.mockClear();
+  attach.mockClear();
+  detach.mockClear();
   stubChrome();
   bridge = await import('@/extension/src/bridge');
 });
@@ -440,17 +455,11 @@ describe('typeSensitive refusals type nothing', () => {
     expect(inserts()).toHaveLength(0);
   });
 
-  it('not attached', async () => {
+  it('not attached: the attach for typing fails', async () => {
     await startedRun();
+    fake.attachFails = true;
     await refused('not attached');
-  });
-
-  it('not attached after a same-run refresh (documented gap)', async () => {
-    // A token refresh restarts the run detached; only the agent's next
-    // command attaches it again, so Fill it in is refused until then.
-    await attachedRun();
-    await startedRun();
-    await refused('not attached');
+    expect(attach).toHaveBeenCalledTimes(1);
   });
 
   it('run is held', async () => {
@@ -554,6 +563,236 @@ describe('typeSensitive refusals type nothing', () => {
       tabCommand('e2', 'Runtime.evaluate', { expression: 'x' }),
     );
     expect(JSON.stringify(echoed)).not.toContain(VALUE);
+  });
+});
+
+describe('typeSensitive attaches on demand (the agent is not attached)', () => {
+  /** A run the agent attached, then a same-run token refresh. */
+  const refreshedRun = async () => {
+    await attachedRun();
+    const socket = await startedRun();
+    attach.mockClear();
+    detach.mockClear();
+    return socket;
+  };
+
+  /** Starts typing and waits until the field is being judged. */
+  const typingHeld = async () => {
+    const gate = deferred();
+    const axStarted = deferred<void>();
+    fake.axGate = gate.promise;
+    fake.axStarted = () => axStarted.resolve();
+    const typing = type();
+    await axStarted.promise;
+    return { typing, open: () => gate.resolve(undefined) };
+  };
+
+  const status = async () =>
+    (await bridge.handleMessage({ type: 'getRunStatus' })) as {
+      attached?: boolean;
+    };
+
+  it('after a same-run refresh: attaches, types once, replies ok and lets go', async () => {
+    const socket = await refreshedRun();
+    expect(await type()).toEqual({ ok: true });
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(inserts()).toHaveLength(1);
+    expect(inserts()[0][2]).toMatchObject({
+      objectId: '1.77.1',
+      arguments: [{ value: VALUE }],
+    });
+    // Let go again before answering: the agent's daemon is still stale.
+    expect(detach.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(detach.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+      attach.mock.invocationCallOrder[0],
+    );
+    // The agent-facing flag never moved: its commands still get
+    // `not attached`, so the Eve tool rotates its stale daemon.
+    expect((await status()).attached).toBe(false);
+    const evaluated = await ask(
+      socket,
+      tabCommand('c1', 'Runtime.evaluate', { expression: 'x' }),
+    );
+    expect(evaluated.error).toBe('not attached');
+    const listed = await ask(socket, { id: 'l1', type: 'listTargets' });
+    expect(listed.result).toMatchObject({
+      targetInfos: [{ targetId: 'T', attached: false }],
+    });
+  });
+
+  it('a fresh run the agent never attached: typed the same way', async () => {
+    const socket = await startedRun();
+    expect(await type()).toEqual({ ok: true });
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(inserts()).toHaveLength(1);
+    expect(
+      (
+        await ask(
+          socket,
+          tabCommand('c1', 'Runtime.evaluate', { expression: 'x' }),
+        )
+      ).error,
+    ).toBe('not attached');
+  });
+
+  it('an agent command during a typing attach is refused before it reaches the page', async () => {
+    const socket = await refreshedRun();
+    const held = await typingHeld();
+    expect((await status()).attached).toBe(false);
+    const resolvesBefore = sentTo('DOM.resolveNode').length;
+    const callsBefore = sendCommand.mock.calls.length;
+    const reply = await ask(
+      socket,
+      tabCommand('c1', 'DOM.resolveNode', { backendNodeId: FIELD }),
+    );
+    expect(reply.error).toBe('not attached');
+    expect(sentTo('DOM.resolveNode')).toHaveLength(resolvesBefore);
+    expect(sendCommand.mock.calls.length).toBe(callsBefore);
+    held.open();
+    expect(await held.typing).toEqual({ ok: true });
+  });
+
+  it('events from a typing attach are not forwarded and start no child session', async () => {
+    const socket = await refreshedRun();
+    const held = await typingHeld();
+    const before = socket.sent.length;
+    bridge.onDebuggerEvent({ tabId: 1 }, 'Runtime.consoleAPICalled', {
+      type: 'log',
+      args: [{ type: 'string', value: 'hello' }],
+      executionContextId: 1,
+    });
+    bridge.onDebuggerEvent({ tabId: 1 }, 'Page.frameNavigated', {
+      frame: { id: 'T', url: `${ORIGIN}/form#2` },
+    });
+    bridge.onDebuggerEvent({ tabId: 1 }, 'Target.attachedToTarget', {
+      sessionId: 'child-1',
+      targetInfo: {
+        targetId: 'C',
+        type: 'iframe',
+        url: `${ORIGIN}/child`,
+        attached: true,
+      },
+      waitingForDebugger: false,
+    });
+    expect(socket.sent.slice(before)).toEqual([]);
+    held.open();
+    expect(await held.typing).toEqual({ ok: true });
+    // The child was never tracked: a command naming it is refused.
+    const reply = await ask(socket, {
+      id: 'c1',
+      type: 'cdp',
+      sessionId: 'child-1',
+      method: 'Runtime.evaluate',
+      params: { expression: 'x' },
+    });
+    expect(reply.error).toBe('not attached');
+    expect(socket.sent.filter((m) => m.type === 'event')).toEqual([]);
+  });
+
+  it('an out-of-scope tab refuses before any attach', async () => {
+    await refreshedRun();
+    fake.tabUrl = AWAY;
+    expect(await type()).toEqual({ ok: false, error: 'run is held' });
+    expect(attach).not.toHaveBeenCalled();
+    expect(detach).not.toHaveBeenCalled();
+    expect(inserts()).toHaveLength(0);
+  });
+
+  it('a failed attach answers not attached and the value stays registered', async () => {
+    const socket = await refreshedRun();
+    fake.attachFails = true;
+    fake.label = 'Middle name';
+    expect(await type()).toEqual({ ok: false, error: 'not attached' });
+    expect(inserts()).toHaveLength(0);
+    // The agent attaches later; the page echoes the value: scrubbed.
+    fake.attachFails = false;
+    expect(
+      (await ask(socket, { id: 'a2', type: 'attach', targetId: 'T' })).error,
+    ).toBeUndefined();
+    fake.pageText = `You entered ${VALUE}`;
+    const echoed = await ask(
+      socket,
+      tabCommand('e1', 'Runtime.evaluate', { expression: 'x' }),
+    );
+    expect(echoed.error).toBeUndefined();
+    expect(JSON.stringify(echoed)).not.toContain(VALUE);
+  });
+
+  it('a later agent attach works and takes the tab over', async () => {
+    const socket = await refreshedRun();
+    expect(await type()).toEqual({ ok: true });
+    expect(
+      (await ask(socket, { id: 'a2', type: 'attach', targetId: 'T' })).error,
+    ).toBeUndefined();
+    expect((await status()).attached).toBe(true);
+    expect(
+      (
+        await ask(
+          socket,
+          tabCommand('c1', 'Runtime.evaluate', { expression: 'x' }),
+        )
+      ).error,
+    ).toBeUndefined();
+    // Typing now uses the agent's attach: no attach or detach of its own.
+    attach.mockClear();
+    detach.mockClear();
+    expect(await type()).toEqual({ ok: true });
+    expect(attach).not.toHaveBeenCalled();
+    expect(detach).not.toHaveBeenCalled();
+    expect((await status()).attached).toBe(true);
+  });
+
+  it('an agent attach during typing takes over: the typing fails, the tab stays attached', async () => {
+    const socket = await refreshedRun();
+    const held = await typingHeld();
+    const attached = ask(socket, { id: 'a2', type: 'attach', targetId: 'T' });
+    // The agent's attach has let go of the typing one and attached again.
+    await vi.waitFor(() => expect(attach).toHaveBeenCalledTimes(2));
+    held.open();
+    expect(await held.typing).toEqual({ ok: false, error: 'type failed' });
+    expect((await attached).error).toBeUndefined();
+    expect(inserts()).toHaveLength(0);
+    expect((await status()).attached).toBe(true);
+    // The typing's own let-go did not detach the agent's attach.
+    const lastAttach = attach.mock.invocationCallOrder.at(-1) ?? 0;
+    expect(
+      detach.mock.invocationCallOrder.filter((n) => n > lastAttach),
+    ).toEqual([]);
+  });
+
+  it('a debugger detach during typing clears the typing attach', async () => {
+    const socket = await refreshedRun();
+    const held = await typingHeld();
+    bridge.onDebuggerDetach({ tabId: 1 }, 'target_closed');
+    held.open();
+    expect(await held.typing).toEqual({ ok: false, error: 'not attached' });
+    expect(inserts()).toHaveLength(0);
+    // Nothing announced to the agent, which was never given this session.
+    expect(
+      socket.sent.filter((m) => m.method === 'Target.detachedFromTarget'),
+    ).toEqual([]);
+    // The run waits for the agent now, not for typing.
+    attach.mockClear();
+    expect(await type()).toEqual({ ok: false, error: 'not attached' });
+    expect(attach).not.toHaveBeenCalled();
+  });
+
+  it('a hold that starts during a typing attach refuses with run is held', async () => {
+    const socket = await refreshedRun();
+    const held = await typingHeld();
+    const before = socket.sent.length;
+    bridge.onDebuggerEvent({ tabId: 1 }, 'Page.frameNavigated', {
+      frame: { id: 'T', url: AWAY },
+    });
+    expect(await status()).toMatchObject({
+      pendingOrigin: 'https://away.example',
+    });
+    held.open();
+    expect(await held.typing).toEqual({ ok: false, error: 'run is held' });
+    expect(inserts()).toHaveLength(0);
+    expect(socket.sent.slice(before).filter((m) => m.type === 'event')).toEqual(
+      [],
+    );
   });
 });
 
