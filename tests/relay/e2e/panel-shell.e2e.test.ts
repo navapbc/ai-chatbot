@@ -864,11 +864,11 @@ describe('the panel shell', () => {
       await card.getByText('Social Security number').waitFor();
       await card
         .getByText(
-          'This one is sensitive. Type it in the page yourself, then press the button.',
+          'This one is sensitive. Type it here and the extension fills it in, or type it in the page yourself.',
         )
         .waitFor();
-      // No text input for the sensitive question: only the one textarea.
-      expect(await card.getByRole('textbox').count()).toBe(1);
+      // The sensitive question gets a masked input, not a textarea: one only.
+      expect(await card.locator('textarea').count()).toBe(1);
 
       const send = card.getByRole('button', { name: 'Send' });
       expect(await send.isDisabled()).toBe(true);
@@ -901,7 +901,7 @@ describe('the panel shell', () => {
         .toBeGreaterThan(mark + 1);
       await box.fill(ANSWER);
       expect(await send.isDisabled()).toBe(true);
-      await card.getByRole('button', { name: 'I entered it myself' }).click();
+      await card.getByRole('button', { name: "I'll type it myself" }).click();
       expect(await send.isDisabled()).toBe(false);
 
       // The server refuses the text: fixed copy, the text is cleared.
@@ -964,7 +964,7 @@ describe('the panel shell', () => {
       row.pending = [null, PENDING[1]];
       row.phase = 'needs_you';
       await card.waitFor({ timeout: 10_000 });
-      expect(await card.getByRole('textbox').count()).toBe(0);
+      expect(await card.locator('textarea').count()).toBe(0);
       await card.getByRole('button', { name: 'Skip' }).click();
       expect(
         await card
@@ -979,6 +979,100 @@ describe('the panel shell', () => {
         id: runId,
         inputResponses: [{ requestId: 'q-ssn', optionId: 'skip' }],
       });
+      row.phase = 'working';
+      row.pending = [];
+      await card.waitFor({ state: 'detached', timeout: 10_000 });
+
+      // Fill it in: the masked input, fixed refusal copy, then success. The
+      // value reaches only the worker message, never an answer POST.
+      const SECRET = 'Zq9-Tangerine-Value-731';
+      await page.evaluate(() => {
+        const w = window as unknown as {
+          __fillCalls: { runId: string; value: string }[];
+          __fillReply: { ok: boolean; error?: string };
+        };
+        w.__fillCalls = [];
+        w.__fillReply = { ok: false, error: 'no focused field' };
+        const send = chrome.runtime.sendMessage.bind(chrome.runtime);
+        chrome.runtime.sendMessage = ((...args: unknown[]) => {
+          const m = args[0] as { type?: string; runId: string; value: string };
+          if (m?.type === 'typeSensitive') {
+            w.__fillCalls.push({ runId: m.runId, value: m.value });
+            // The panel's client passes a callback; answer it as Chrome does.
+            if (typeof args[1] === 'function') {
+              (args[1] as (r: unknown) => void)(w.__fillReply);
+              return undefined;
+            }
+            return Promise.resolve(w.__fillReply);
+          }
+          return (send as (...a: unknown[]) => unknown)(...args);
+        }) as typeof chrome.runtime.sendMessage;
+      });
+      row.pending = [PENDING[1]];
+      row.phase = 'needs_you';
+      await card.waitFor({ timeout: 10_000 });
+      const secret = card.getByLabel('Value to fill in');
+      const fillIt = card.getByRole('button', { name: 'Fill it in' });
+      expect(await secret.getAttribute('type')).toBe('password');
+      expect(await secret.getAttribute('autocomplete')).toBe('off');
+      expect(await secret.getAttribute('name')).toBeNull();
+      expect(await secret.getAttribute('id')).toBeNull();
+      expect(await fillIt.isDisabled()).toBe(true);
+      await card
+        .getByText('Click the field in the page, then press Fill it in.')
+        .waitFor();
+      await secret.fill(`  ${SECRET}\n`);
+      const eye = card.getByRole('button', { name: 'Show what I typed' });
+      expect(await eye.getAttribute('aria-pressed')).toBe('false');
+      await eye.click();
+      expect(await eye.getAttribute('aria-pressed')).toBe('true');
+      expect(await secret.getAttribute('type')).toBe('text');
+      await eye.click();
+      expect(await secret.getAttribute('type')).toBe('password');
+      await fillIt.click();
+      await card
+        .getByRole('alert')
+        .filter({
+          hasText: 'Click the field in the page first, then press Fill it in.',
+        })
+        .waitFor();
+      // The value is kept for a retry and sent trimmed.
+      expect(await secret.inputValue()).toContain(SECRET);
+      expect(await send.isDisabled()).toBe(true);
+      await page.evaluate(() => {
+        (
+          window as unknown as { __fillReply: { ok: boolean } }
+        ).__fillReply = { ok: true };
+      });
+      await fillIt.click();
+      await card.getByText('Filled in.').waitFor();
+      expect(await card.getByLabel('Value to fill in').count()).toBe(0);
+      expect(
+        await page.evaluate(
+          () =>
+            (
+              window as unknown as {
+                __fillCalls: { runId: string; value: string }[];
+              }
+            ).__fillCalls,
+        ),
+      ).toEqual([
+        { runId, value: SECRET },
+        { runId, value: SECRET },
+      ]);
+      // The value is nowhere in the panel's DOM text after success.
+      expect(await page.evaluate(() => document.body.innerHTML)).not.toContain(
+        'Tangerine',
+      );
+      expect(await send.isDisabled()).toBe(false);
+      await send.click();
+      await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(answerBodies).toHaveLength(4);
+      expect(answerBodies[3]).toEqual({
+        id: runId,
+        inputResponses: [{ requestId: 'q-ssn', optionId: 'provided' }],
+      });
+      expect(JSON.stringify(answerBodies)).not.toContain('Tangerine');
       row.phase = 'working';
       row.pending = [];
       await card.waitFor({ state: 'detached', timeout: 10_000 });
@@ -1002,7 +1096,7 @@ describe('the panel shell', () => {
         .waitFor({ timeout: 10_000 });
       expect(await card.getByRole('textbox').count()).toBe(0);
       expect(
-        await card.getByRole('button', { name: 'I entered it myself' }).count(),
+        await card.getByRole('button', { name: "I'll type it myself" }).count(),
       ).toBe(0);
       expect(await send.isDisabled()).toBe(true);
 
@@ -1023,8 +1117,8 @@ describe('the panel shell', () => {
       await card.getByRole('radio', { name: 'Yes' }).click({ timeout: 10_000 });
       await send.click();
       await card.getByText('Sent. Waiting for the agent...').waitFor();
-      expect(answerBodies).toHaveLength(4);
-      expect(answerBodies[3]).toEqual({
+      expect(answerBodies).toHaveLength(5);
+      expect(answerBodies[4]).toEqual({
         id: runId,
         inputResponses: [{ requestId: 'q-benefits', optionId: 'yes' }],
       });
@@ -1260,7 +1354,7 @@ describe('the panel shell', () => {
       await none(allow, review);
       await needsYou.getByLabel('County of residence').fill(ANSWER);
       await needsYou
-        .getByRole('button', { name: 'I entered it myself' })
+        .getByRole('button', { name: "I'll type it myself" })
         .click();
       await needsYou.getByRole('button', { name: 'Send' }).click();
       await needsYou.getByText('Sent. Waiting for the agent...').waitFor();

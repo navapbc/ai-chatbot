@@ -3,6 +3,8 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Textarea } from '@/components/ui/textarea';
+import type { WorkerApi } from '../lib/worker-api';
+import { SensitiveFill } from './sensitive-fill';
 import type {
   InputAnswer,
   PendingInputRequest,
@@ -30,9 +32,10 @@ import {
 // text node only, capped, never used in a key, an id, the URL, the title or
 // storage. Typed text lives only in this component's state: never logged,
 // never stored, cleared after a successful send and dropped on unmount. A
-// sensitive question never gets a text input: only "I entered it myself"
-// and "Skip". The card is keyed by its request ids in the parent, so a new
-// question set starts fresh and the same set keeps what was typed.
+// sensitive question has no text input in the draft: its masked SensitiveFill
+// input keeps the value itself and the answer is only `provided` or `skip`.
+// The card is keyed by its request ids in the parent, so a new question set
+// starts fresh and the same set keeps what was typed.
 
 export { NEEDS_YOU_COPY };
 export const MAX_PROMPT = 300;
@@ -50,6 +53,8 @@ type Props = {
   runId: string;
   pending: PendingInputRequest[];
   sendAnswers: SendAnswers;
+  /** The worker call behind "Fill it in"; defaults to the real client. */
+  typeSensitive?: WorkerApi['typeSensitive'];
 };
 
 const cutText = (text: unknown, max: number): string =>
@@ -61,7 +66,8 @@ type Draft =
   | { kind: 'text'; text: string }
   | { kind: 'skip' }
   | { kind: 'option'; index: number }
-  | { kind: 'sensitive'; choice: SensitiveChoice };
+  // `filled` is a flag only: the typed value never leaves SensitiveFill.
+  | { kind: 'sensitive'; choice: SensitiveChoice; filled?: boolean };
 
 type Question = {
   request: PendingInputRequest;
@@ -125,7 +131,12 @@ const answerFor = (
 
 type Failure = ErrorMessage;
 
-export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
+export const NeedsYouCard = ({
+  runId,
+  pending,
+  sendAnswers,
+  typeSensitive,
+}: Props) => {
   const prefix = useId();
   const questions = toQuestions(pending);
   const [drafts, setDrafts] = useState<Map<string, Draft>>(() => new Map());
@@ -232,6 +243,16 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
       setDraft(requestId, chosen ? null : { kind: 'sensitive', choice });
     };
 
+  // The value was typed in the page: the answer is `provided`, as if the
+  // caseworker had typed it themselves.
+  const handleFilled = (requestId: string) => () => {
+    setDraft(requestId, {
+      kind: 'sensitive',
+      choice: 'provided',
+      filled: true,
+    });
+  };
+
   const handleOption = (requestId: string) => (value: string) => {
     setDraft(requestId, { kind: 'option', index: Number(value) });
   };
@@ -296,6 +317,7 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
             sensitiveAnswer(q.request, 'provided') !== null &&
             sensitiveAnswer(q.request, 'skip') !== null;
           const chosen = draft?.kind === 'sensitive' ? draft.choice : null;
+          const filled = draft?.kind === 'sensitive' && draft.filled === true;
           return (
             <div
               key={requestId}
@@ -312,20 +334,25 @@ export const NeedsYouCard = ({ runId, pending, sendAnswers }: Props) => {
               {answerable ? (
                 <>
                   <p className="text-sm">{NEEDS_YOU_COPY.sensitive}</p>
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      variant={chosen === 'provided' ? 'default' : 'outline'}
-                      aria-pressed={chosen === 'provided'}
+                  {filled ? (
+                    <p role="status" className="text-sm">
+                      {NEEDS_YOU_COPY.filled}
+                    </p>
+                  ) : (
+                    <SensitiveFill
+                      runId={runId}
                       disabled={locked}
-                      onClick={handleSensitive(
+                      typedMyself={chosen === 'provided'}
+                      typeSensitive={typeSensitive}
+                      onFilled={handleFilled(requestId)}
+                      onTypeMyself={handleSensitive(
                         requestId,
                         'provided',
                         chosen === 'provided',
                       )}
-                    >
-                      {NEEDS_YOU_COPY.provided}
-                    </Button>
+                    />
+                  )}
+                  <div className="flex flex-wrap gap-2">
                     <Button
                       type="button"
                       variant={chosen === 'skip' ? 'default' : 'outline'}

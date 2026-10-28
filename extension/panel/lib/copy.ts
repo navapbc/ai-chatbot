@@ -270,7 +270,7 @@ export const answerMessageFor = (error: unknown): ErrorMessage =>
 export const NEEDS_YOU_COPY = {
   title: 'The agent needs you',
   sensitive:
-    'This one is sensitive. Type it in the page yourself, then press the button.',
+    'This one is sensitive. Type it here and the extension fills it in, or type it in the page yourself.',
   cannotAnswer:
     'This question cannot be answered here. The agent is waiting; you can Stop the run.',
   shouldHaveOffered:
@@ -278,6 +278,12 @@ export const NEEDS_YOU_COPY = {
   noNumbers:
     'Do not type Social Security, bank, card or ID numbers here. Type those in the page.',
   provided: 'I entered it myself',
+  typeMyself: "I'll type it myself",
+  fillIt: 'Fill it in',
+  fillInstruction: 'Click the field in the page, then press Fill it in.',
+  fillInputLabel: 'Value to fill in',
+  showTyped: 'Show what I typed',
+  filled: 'Filled in.',
   skip: 'Skip',
   skipped: 'Skipped.',
   send: 'Send',
