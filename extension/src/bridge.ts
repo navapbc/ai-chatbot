@@ -108,7 +108,7 @@ export type BridgeMessage =
  * showUnfilledField's answer: whether a field was highlighted, how many
  * required fields are still empty (`remaining`, every one the scan found),
  * whether the highlighted one is sensitive (any doubt counts as sensitive),
- * and whether more than UNFILLED_CLASSIFY_CAP were found.
+ * and whether more than UNFILLED_SCAN_CAP were found.
  */
 export interface UnfilledFieldResult {
   ok: true;
@@ -3218,8 +3218,8 @@ type ScanRefusal =
   | 'registration pending'
   | 'scan failed';
 
-/** Candidates classified; more than this sets `capped` (P4c4-a). */
-const UNFILLED_CLASSIFY_CAP = 12;
+/** More candidates than this sets `capped` (P4c4-a). */
+const UNFILLED_SCAN_CAP = 12;
 /** One deadline for a whole call's page work after the attach. */
 const SCAN_MS = 8_000;
 /** Kept for the highlight: classification stops this long before it. */
@@ -3250,6 +3250,9 @@ function clearHighlight(current: Run, hide: boolean) {
   if (hide) void hideHighlight(current);
 }
 
+// Not under the tab lock or the scope checks of a page read: it sends only
+// Overlay calls, which read nothing from the page and change no DOM, so a
+// screenshot's mask window or a held tab has nothing to fear from them.
 async function hideHighlight(current: Run) {
   if (run !== current || current.stopped || !current.attached) return;
   const debuggee = { tabId: current.tabId };
@@ -3284,13 +3287,13 @@ async function hideHighlight(current: Run) {
  * one deadline (SCAN_MS).
  *
  * One SCAN_UNFILLED evaluation in the bridge's `relay-focus` isolated world
- * (page script cannot change what it reads) answers only a count and kind
- * words. The first candidate is checked to be in a frame in scope and is
- * classified: sensitive when its attributes or accessible name are flagged
- * by isSensitiveField or the redactor masks it once filled
- * (masksFilledField), and on any failure or timeout. That verdict is the
- * reply's `sensitive`; the rest of the first UNFILLED_CLASSIFY_CAP are then
- * classified best effort (P4c4-a), never changing the reply.
+ * (page script cannot change what it reads) answers
+ * nothing but a count. The first candidate is checked to be in a frame in
+ * scope and is classified: sensitive when its attributes or accessible name
+ * are flagged by isSensitiveField or the redactor masks it once filled
+ * (masksFilledField), and on any failure or timeout. Only that field is
+ * classified: its verdict is the reply's `sensitive`, and classifying the
+ * others would add page reads and Jev requests that change nothing.
  *
  * The highlight: on the agent's attach, DOM.scrollIntoViewIfNeeded and
  * Overlay.highlightNode (no DOM footprint, so the agent's views and the
@@ -3380,7 +3383,7 @@ async function scanAndShow(
     live();
     if (found === undefined) throw new Error('scan failed');
     const { listId, count } = found;
-    const capped = count > UNFILLED_CLASSIFY_CAP;
+    const capped = count > UNFILLED_SCAN_CAP;
     if (count === 0) return { ok: true, found: false, remaining: 0 };
     const objectId = objectIdOf(
       await send('Runtime.callFunctionOn', {
@@ -3421,50 +3424,6 @@ async function scanAndShow(
       classifyBy,
     );
     live();
-    // The rest of the first UNFILLED_CLASSIFY_CAP (P4c4-a), best effort:
-    // their verdicts are not in the reply, and no failure changes it.
-    const classifyLimit = Math.min(count, UNFILLED_CLASSIFY_CAP);
-    for (let index = 1; index < classifyLimit; index++) {
-      if (Date.now() >= classifyBy) break;
-      try {
-        const otherId = objectIdOf(
-          await sessionSend(
-            tab,
-            'Runtime.callFunctionOn',
-            {
-              objectId: listId,
-              functionDeclaration: UNFILLED_AT,
-              arguments: [{ value: index }],
-              objectGroup,
-            },
-            classifyBy,
-          ),
-          'result',
-        );
-        live();
-        if (otherId === undefined) continue;
-        const other = describedNode(
-          await sessionSend(
-            tab,
-            'DOM.describeNode',
-            { objectId: otherId },
-            classifyBy,
-          ),
-        );
-        live();
-        if (typeof other?.backendNodeId !== 'number') continue;
-        await fieldSensitive(
-          current,
-          tab,
-          other.backendNodeId,
-          other.attributes,
-          classifyBy,
-        );
-      } catch {
-        // Not in the reply; live() below answers an ended or held run.
-      }
-      live();
-    }
     let highlighted = false;
     if (current.attached) {
       try {
@@ -3474,12 +3433,18 @@ async function scanAndShow(
         live();
         await send('Overlay.enable');
         live();
-        await send('DOM.scrollIntoViewIfNeeded', { backendNodeId });
-        live();
-        await send('Overlay.highlightNode', {
-          backendNodeId,
-          highlightConfig: HIGHLIGHT_CONFIG,
-        });
+        try {
+          await send('DOM.scrollIntoViewIfNeeded', { backendNodeId });
+          live();
+          await send('Overlay.highlightNode', {
+            backendNodeId,
+            highlightConfig: HIGHLIGHT_CONFIG,
+          });
+        } catch (error) {
+          // Turn Overlay off again before the fallback (best effort).
+          await send('Overlay.disable').catch(() => {});
+          throw error;
+        }
         highlighted = true;
         // Armed before anything else can throw, so a drawn highlight always
         // ends.
@@ -3564,7 +3529,6 @@ async function scanUnfilled(
     await send('Runtime.callFunctionOn', {
       objectId: listId,
       functionDeclaration: UNFILLED_SUMMARY,
-      arguments: [{ value: UNFILLED_CLASSIFY_CAP }],
       returnByValue: true,
     }),
   );

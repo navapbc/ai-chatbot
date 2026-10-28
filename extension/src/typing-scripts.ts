@@ -128,17 +128,15 @@ export const NOT_ANSWER_TYPES = [
  * ARIA widgets (role textbox, searchbox, combobox, checkbox, switch,
  * radiogroup, listbox) with aria-required="true" count when empty.
  *
- * Answers `{ els, kinds }`: the candidate elements and, per candidate, one
- * fixed kind word ('text', 'select', 'radio', 'checkbox', 'aria'). Values
+ * Answers `{ els }`: the candidate elements. Values
  * are read here only to decide emptiness; nothing derived from a value, a
  * label, a name or page text is returned. The caller keeps the object by
- * reference and projects only counts and kinds (UNFILLED_SUMMARY).
+ * reference and projects only the count (UNFILLED_SUMMARY).
  */
 export const SCAN_UNFILLED = `(doc) => {
   const skip = ${JSON.stringify(NOT_ANSWER_TYPES)};
   const maxNodes = 20000;
   const els = [];
-  const kinds = [];
   const radioGroups = new Set();
   let visited = 0;
   const ariaRequired = (el) => el.getAttribute('aria-required') === 'true';
@@ -158,9 +156,8 @@ export const SCAN_UNFILLED = `(doc) => {
       (r) => r.name === el.name && r.form === el.form,
     );
   };
-  const add = (el, kind) => {
+  const add = (el) => {
     els.push(el);
-    kinds.push(kind);
   };
   const consider = (el) => {
     const tag = el.localName;
@@ -176,28 +173,28 @@ export const SCAN_UNFILLED = `(doc) => {
           (group.some(ariaRequired) && !group.some((r) => r.checked));
         if (!missing || !usable(el)) return;
         radioGroups.add(key);
-        add(el, 'radio');
+        add(el);
         return;
       }
       if (type === 'checkbox') {
         const missing = el.validity.valueMissing || (ariaRequired(el) && !el.checked);
-        if (missing && usable(el)) add(el, 'checkbox');
+        if (missing && usable(el)) add(el);
         return;
       }
       if (el.readOnly) return;
       const missing = el.validity.valueMissing || (ariaRequired(el) && el.value === '');
-      if (missing && usable(el)) add(el, 'text');
+      if (missing && usable(el)) add(el);
       return;
     }
     if (tag === 'textarea') {
       if (el.readOnly) return;
       const missing = el.validity.valueMissing || (ariaRequired(el) && el.value === '');
-      if (missing && usable(el)) add(el, 'text');
+      if (missing && usable(el)) add(el);
       return;
     }
     if (tag === 'select') {
       const missing = el.validity.valueMissing || (ariaRequired(el) && el.value === '');
-      if (missing && usable(el)) add(el, 'select');
+      if (missing && usable(el)) add(el);
       return;
     }
     if (!ariaRequired(el)) return;
@@ -218,7 +215,7 @@ export const SCAN_UNFILLED = `(doc) => {
     } else {
       return;
     }
-    if (empty && usable(el)) add(el, 'aria');
+    if (empty && usable(el)) add(el);
   };
   const walk = (root) => {
     for (const el of root.querySelectorAll('*')) {
@@ -231,15 +228,12 @@ export const SCAN_UNFILLED = `(doc) => {
     }
   };
   walk(doc);
-  return { els, kinds };
+  return { els };
 }`;
 
-/**
- * Run on SCAN_UNFILLED's answer: how many candidates there are and the kind
- * words of the first `cap`, nothing else.
- */
-export const UNFILLED_SUMMARY = `function (cap) {
-  return { count: this.els.length, kinds: this.kinds.slice(0, cap) };
+/** Run on SCAN_UNFILLED's answer: how many candidates, nothing else. */
+export const UNFILLED_SUMMARY = `function () {
+  return { count: this.els.length };
 }`;
 
 /** Run on SCAN_UNFILLED's answer: the candidate at `index`, by reference. */

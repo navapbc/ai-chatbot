@@ -72,8 +72,8 @@ interface Fake {
   fieldContext: number;
   axMissing: boolean;
   axFails: boolean;
-  /** The backend node id of a later candidate whose lookup fails. */
-  otherFails?: number;
+  /** Overlay.highlightNode fails (after Overlay.enable succeeded). */
+  highlightFails: boolean;
   /** Overlay.enable fails (the domain is unavailable). */
   overlayFails: boolean;
   /** What the agent's Runtime.evaluate gets back. */
@@ -99,6 +99,7 @@ const freshFake = (): Fake => ({
   fieldContext: 1,
   axMissing: false,
   axFails: false,
+  highlightFails: false,
   overlayFails: false,
   pageText: '',
   tabUrl: `${ORIGIN}/form`,
@@ -145,16 +146,8 @@ const sendCommand = vi.fn(
         return { result: { type: 'string', value: fake.pageText } };
       case 'Runtime.callFunctionOn': {
         const body = String(params.functionDeclaration);
-        if (params.objectId === LIST && body.includes('this.kinds')) {
-          return {
-            result: {
-              type: 'object',
-              value: {
-                count: fake.count,
-                kinds: Array(Math.min(fake.count, 12)).fill('text'),
-              },
-            },
-          };
+        if (params.objectId === LIST && body.includes('this.els.length')) {
+          return { result: { type: 'object', value: { count: fake.count } } };
         }
         if (params.objectId === LIST && body.includes('this.els[')) {
           const index = (params.arguments as Array<{ value: number }>)[0].value;
@@ -211,9 +204,8 @@ const sendCommand = vi.fn(
         return {};
       case 'Accessibility.getPartialAXTree':
         if (params.backendNodeId !== FIELD) {
-          if (params.backendNodeId === fake.otherFails) {
-            throw new Error('No node with given id');
-          }
+          // A later candidate's lookup never answers.
+          await new Promise(() => {});
           return {
             nodes: [
               {
@@ -241,6 +233,10 @@ const sendCommand = vi.fn(
                 },
               ],
             };
+      case 'Overlay.highlightNode':
+        if (fake.highlightFails)
+          throw new Error('Could not compute box model.');
+        return {};
       case 'Overlay.enable':
         if (fake.overlayFails) throw new Error("'Overlay.enable' wasn't found");
         return {};
@@ -459,34 +455,26 @@ describe('showUnfilledField finds and highlights the first empty required field'
     },
   );
 
-  it('classifies the first 12 candidates, at most, one lookup each', async () => {
-    await attachedRun();
-    await show();
-    expect(sentTo('Accessibility.getPartialAXTree')).toHaveLength(3);
-    sendCommand.mockClear();
+  it('classifies only the highlighted candidate; the others never delay it', async () => {
+    // Any lookup of a later candidate would hang (see the fake).
     fake.count = 13;
-    await show();
-    const looked = sentTo('Accessibility.getPartialAXTree').map(
-      ([, , p]) => p?.backendNodeId,
-    );
-    expect(looked).toHaveLength(12);
-    expect(looked[0]).toBe(FIELD);
-    expect(looked).not.toContain(OTHER_BASE + 12);
-  });
-
-  it('a later candidate that fails to classify changes nothing in the reply', async () => {
-    fake.otherFails = OTHER_BASE + 2;
     await attachedRun();
     expect(await show()).toEqual({
       ok: true,
       found: true,
-      remaining: 3,
+      remaining: 13,
       sensitive: false,
+      capped: true,
     });
+    const looked = sentTo('Accessibility.getPartialAXTree').map(
+      ([, , p]) => p?.backendNodeId,
+    );
+    expect(looked).toEqual([FIELD]);
+    const fetched = sentTo('Runtime.callFunctionOn')
+      .filter(([, , p]) => String(p?.functionDeclaration).includes('this.els['))
+      .map(([, , p]) => (p?.arguments as Array<{ value: number }>)[0].value);
+    expect(fetched).toEqual([0]);
     expect(sentTo('Overlay.highlightNode')).toHaveLength(1);
-    expect(sentTo('Overlay.highlightNode')[0][2]).toMatchObject({
-      backendNodeId: FIELD,
-    });
   });
 
   it('a first candidate whose lookup hangs is sensitive and still highlighted', async () => {
@@ -541,6 +529,23 @@ describe('showUnfilledField finds and highlights the first empty required field'
     expect(sentTo('Overlay.highlightNode')).toHaveLength(0);
     expect(focusCalls()).toHaveLength(1);
     expect(focusCalls()[0][2]).toMatchObject({ objectId: CANDIDATE });
+  });
+
+  it('a highlight that fails after Overlay.enable turns Overlay off, then scrolls and focuses', async () => {
+    fake.highlightFails = true;
+    await attachedRun();
+    expect(await show()).toMatchObject({ ok: true, found: true });
+    expect(sentTo('Overlay.disable')).toHaveLength(1);
+    const order = sendCommand.mock.calls.map(([, m, p]) =>
+      m === 'Runtime.callFunctionOn' &&
+      String(p?.functionDeclaration).includes('focus(')
+        ? 'focus'
+        : m,
+    );
+    expect(order.indexOf('Overlay.disable')).toBeLessThan(
+      order.indexOf('focus'),
+    );
+    expect(focusCalls()).toHaveLength(1);
   });
 
   it('Overlay events are never forwarded to the agent', async () => {
