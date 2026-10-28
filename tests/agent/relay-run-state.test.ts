@@ -98,6 +98,7 @@ describe('GET /api/relay/runs/[runId]', () => {
       'endedAt',
       'origin',
       'pending',
+      'phase',
       'progress',
       'runId',
     ]);
@@ -108,6 +109,39 @@ describe('GET /api/relay/runs/[runId]', () => {
       endedAt: null,
       progress: PROGRESS,
       pending: PENDING,
+      phase: 'needs_you',
+    });
+  });
+
+  describe('phase', () => {
+    const phaseOf = async () => (await (await get(RUN)).json()).phase;
+
+    it('is working while the turn runs and nothing is pending', async () => {
+      await store.setPending(USER, RUN, []);
+      expect(await phaseOf()).toBe('working');
+    });
+
+    it('is review when the turn is idle and nothing is pending', async () => {
+      await store.setPending(USER, RUN, []);
+      await store.setTurnIdle(USER, RUN, true);
+      expect(await phaseOf()).toBe('review');
+    });
+
+    it('is needs_you when questions are pending, even with an idle turn', async () => {
+      await store.setTurnIdle(USER, RUN, true);
+      expect(await phaseOf()).toBe('needs_you');
+    });
+
+    it('is ended for an ended run, whatever else the row holds', async () => {
+      await store.setTurnIdle(USER, RUN, true);
+      await store.end(USER, RUN);
+      expect(await phaseOf()).toBe('ended');
+    });
+
+    it('never exposes turnIdle itself', async () => {
+      await store.setTurnIdle(USER, RUN, true);
+      const text = await (await get(RUN)).text();
+      expect(text).not.toContain('turnIdle');
     });
   });
 

@@ -72,6 +72,7 @@ import {
   type EveRunStore,
   setRunStoreForTests,
 } from '@/lib/ai/eve/run-store';
+import * as runState from '@/app/(chat)/api/relay/runs/[runId]/route';
 
 const USER = 'user-1';
 const CHAT = 'chat-1';
@@ -2354,6 +2355,25 @@ describe('POST /api/eve-chat after the client leaves', () => {
       expect(row?.streamIndex).toBe(3);
     });
 
+    it('records the idle turn after the client cancels mid-turn', async () => {
+      await seedRelay();
+      await store.setTurnIdle(USER, RELAY_CHAT, true);
+      const stream = gatedStream([said('Working')], [waiting('tok-1')]);
+      const res = await say('next');
+      const reader = (res.body as ReadableStream).getReader();
+      await reader.read();
+      await stream.reachedGate;
+      // Claimed: the turn is running.
+      expect((await store.get(USER, RELAY_CHAT))?.turnIdle).toBe(false);
+      await reader.cancel();
+      stream.open();
+      await stream.released;
+
+      const row = await store.get(USER, RELAY_CHAT);
+      expect(row?.turnIdle).toBe(true);
+      expect(row?.streamIndex).toBe(2);
+    });
+
     it('closes the Eve stream body once the turn ends', async () => {
       await seedRelay();
       const cancel = vi.fn(async () => {});
@@ -2431,5 +2451,247 @@ describe('POST /api/eve-chat after the client leaves', () => {
       await settle();
       expect(cancel).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('POST /api/eve-chat turn status (relay runs)', () => {
+  const RELAY_CHAT = '7d2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b';
+  const ORIGIN = 'https://apply.example.gov';
+  const nameReq = {
+    requestId: 'call-a',
+    prompt: 'Name?',
+    display: 'text' as const,
+    options: [],
+    allowFreeform: true,
+  };
+  const asked = {
+    type: 'input.requested',
+    data: {
+      requests: [
+        { ...nameReq, action: { kind: 'tool-call', callId: 'call-a' } },
+      ],
+    },
+  };
+
+  const post = (body: Record<string, unknown>, id = RELAY_CHAT) =>
+    POST(
+      new Request('http://localhost/api/eve-chat', {
+        method: 'POST',
+        body: JSON.stringify({ id, ...body }),
+      }),
+    );
+  const start = () =>
+    post({
+      relay: {
+        origin: ORIGIN,
+        participant: { recordId: PARTICIPANTS[0].record_id },
+      },
+    });
+  const say = (text: string, id = RELAY_CHAT) =>
+    post({ message: { role: 'user', parts: [{ type: 'text', text }] } }, id);
+  const phase = async (runId = RELAY_CHAT): Promise<string> => {
+    const res = await runState.GET(
+      new Request(`http://localhost/api/relay/runs/${runId}`),
+      { params: Promise.resolve({ runId }) },
+    );
+    expect(res.status).toBe(200);
+    return (await res.json()).phase;
+  };
+  const seedRelay = () =>
+    store.create(USER, RELAY_CHAT, {
+      eveSessionId: 'sess-1',
+      continuationToken: 'tok-0',
+      relayOrigin: ORIGIN,
+    });
+
+  /** The next stream read waits at a gate after `before`. */
+  const gatedStream = (before: unknown[], after: unknown[]) => {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => {
+      open = r;
+    });
+    let atGate!: () => void;
+    const reachedGate = new Promise<void>((r) => {
+      atGate = r;
+    });
+    eve.parseNdjson.mockImplementationOnce(async function* () {
+      for (const e of before) yield e;
+      atGate();
+      await gate;
+      for (const e of after) yield e;
+    });
+    return { open, reachedGate };
+  };
+
+  beforeEach(() => {
+    vi.stubEnv('RELAY_RUNS_ENABLED', '1');
+    vi.stubEnv('RELAY_PUBLIC_URL', 'https://relay.example.gov');
+    authMock.mockResolvedValue({
+      user: { id: USER, email: 'caseworker@example.gov' },
+    });
+    setParticipantSourceForTests(createStaticParticipantSource(PARTICIPANTS));
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-1',
+      sessionId: 'sess-1',
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    setParticipantSourceForTests(undefined);
+  });
+
+  it('a first turn starts working and is review at session.waiting', async () => {
+    const stream = gatedStream([{ type: 'turn.started' }], [waiting('tok-0')]);
+    const res = await start();
+    expect(res.status).toBe(200);
+    const drained = drain(res);
+    await stream.reachedGate;
+    expect((await store.get(USER, RELAY_CHAT))?.turnIdle).toBe(false);
+    expect(await phase()).toBe('working');
+    stream.open();
+    await drained;
+
+    expect((await store.get(USER, RELAY_CHAT))?.turnIdle).toBe(true);
+    expect(await phase()).toBe('review');
+  });
+
+  it('a turn that ends with a question is needs_you, though idle', async () => {
+    streamEvents(asked, waiting('tok-0'));
+    await drain(await start());
+
+    const row = await store.get(USER, RELAY_CHAT);
+    expect(row?.turnIdle).toBe(true);
+    expect(row?.pendingRequests).toEqual([nameReq]);
+    expect(await phase()).toBe('needs_you');
+  });
+
+  it('records idle only after the turn\'s pending list is persisted', async () => {
+    const order: string[] = [];
+    const realSetPending = store.setPending.bind(store);
+    store.setPending = vi.fn(
+      async (...args: Parameters<EveRunStore['setPending']>) => {
+        order.push(`setPending:${args[2].length}`);
+        return realSetPending(...args);
+      },
+    );
+    const realSetTurnIdle = store.setTurnIdle.bind(store);
+    store.setTurnIdle = vi.fn(
+      async (...args: Parameters<EveRunStore['setTurnIdle']>) => {
+        order.push(`setTurnIdle:${args[2]}`);
+        return realSetTurnIdle(...args);
+      },
+    );
+    streamEvents(asked, waiting('tok-0'));
+    await drain(await start());
+    expect(order).toEqual(['setPending:1', 'setTurnIdle:true']);
+  });
+
+  it('an answer turn is working from the claim and review at the next waiting', async () => {
+    await seedRelay();
+    await store.setPending(USER, RELAY_CHAT, [nameReq]);
+    await store.setTurnIdle(USER, RELAY_CHAT, true);
+    expect(await phase()).toBe('needs_you');
+
+    const stream = gatedStream([{ type: 'turn.started' }], [waiting('tok-1')]);
+    const res = await post({
+      inputResponses: [{ requestId: 'call-a', text: 'Ada' }],
+    });
+    expect(res.status).toBe(200);
+    const drained = drain(res);
+    await stream.reachedGate;
+    expect((await store.get(USER, RELAY_CHAT))?.turnIdle).toBe(false);
+    expect(await phase()).toBe('working');
+    stream.open();
+    await drained;
+
+    expect((await store.get(USER, RELAY_CHAT))?.turnIdle).toBe(true);
+    expect(await phase()).toBe('review');
+  });
+
+  it('a follow-up flips idle off right after the claim, before Eve', async () => {
+    await seedRelay();
+    await store.setTurnIdle(USER, RELAY_CHAT, true);
+    let idleAtContinue: boolean | undefined;
+    eve.continueEveSession.mockImplementation(async () => {
+      idleAtContinue = (await store.get(USER, RELAY_CHAT))?.turnIdle;
+      return { continuationToken: 'tok-1', sessionId: 'sess-1' };
+    });
+    streamEvents({ type: 'turn.started' }, waiting('tok-1'));
+    await drain(await say('next'));
+    expect(idleAtContinue).toBe(false);
+    expect((await store.get(USER, RELAY_CHAT))?.turnIdle).toBe(true);
+  });
+
+  it('a refused follow-up never touches the flag', async () => {
+    await seedRelay();
+    await store.setPending(USER, RELAY_CHAT, [nameReq]);
+    await store.setTurnIdle(USER, RELAY_CHAT, true);
+    const spy = vi.spyOn(store, 'setTurnIdle');
+    const res = await say('next');
+    expect(res.status).toBe(400);
+    expect(spy).not.toHaveBeenCalled();
+    expect((await store.get(USER, RELAY_CHAT))?.turnIdle).toBe(true);
+  });
+
+  it('puts the flag back when Eve rejects the follow-up and the claim rolls back', async () => {
+    await seedRelay();
+    await store.setTurnIdle(USER, RELAY_CHAT, true);
+    eve.continueEveSession.mockRejectedValue(new Error('eve down'));
+    const res = await say('next');
+    expect(res.status).toBe(503);
+    const row = await store.get(USER, RELAY_CHAT);
+    expect(row?.continuationToken).toBe('tok-0');
+    expect(row?.turnIdle).toBe(true);
+    expect(await phase()).toBe('review');
+  });
+
+  it('an ended run answers ended', async () => {
+    streamEvents(waiting('tok-0'));
+    await drain(await start());
+    await store.end(USER, RELAY_CHAT);
+    expect(await phase()).toBe('ended');
+  });
+
+  it('a failing idle write never fails the stream, and advance still happens', async () => {
+    await seedRelay();
+    store.setTurnIdle = vi.fn().mockRejectedValue(new Error('db down'));
+    const advance = vi.spyOn(store, 'advance');
+    streamEvents({ type: 'turn.started' }, waiting('tok-1'));
+    const res = await say('next');
+    expect(res.status).toBe(200);
+    let text = '';
+    const reader = (res.body as unknown as ReadableStream<string>).getReader();
+    for (let r = await reader.read(); !r.done; r = await reader.read()) {
+      text += r.value;
+    }
+    expect(text).not.toContain('"type":"error"');
+    // Both writes (claim and waiting) were tried and failed.
+    expect(store.setTurnIdle).toHaveBeenCalledTimes(2);
+    expect(advance).toHaveBeenCalledTimes(1);
+    const row = await store.get(USER, RELAY_CHAT);
+    expect(row?.streamIndex).toBe(2);
+    expect(row?.continuationToken).toBe('tok-1');
+    const lines = vi
+      .mocked(console.error)
+      .mock.calls.filter((c) => c[0] === '[eve-chat] turn idle write failed');
+    expect(lines).toEqual([
+      ['[eve-chat] turn idle write failed'],
+      ['[eve-chat] turn idle write failed'],
+    ]);
+  });
+
+  it('a web chat never touches the flag', async () => {
+    const spy = vi.spyOn(store, 'setTurnIdle');
+    streamEvents({ type: 'turn.started' }, waiting('tok-0'));
+    await drain(await turn('hi'));
+    eve.continueEveSession.mockResolvedValue({
+      continuationToken: 'tok-w1',
+      sessionId: 'sess-1',
+    });
+    streamEvents({ type: 'turn.started' }, waiting('tok-w1'));
+    await drain(await turn('again'));
+    expect(eve.continueEveSession).toHaveBeenCalledTimes(1);
+    expect(spy).not.toHaveBeenCalled();
+    expect((await store.get(USER, CHAT))?.turnIdle).toBe(false);
   });
 });

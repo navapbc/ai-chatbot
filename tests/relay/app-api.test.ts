@@ -289,6 +289,28 @@ describe('errors', () => {
     expect((await caught(b.api.getConfig())).code).toBe('server_error');
   });
 
+  it('getRunState returns the phase, and tolerates a missing or unknown one', async () => {
+    const body = {
+      runId: RUN,
+      origin: 'o',
+      ended: false,
+      endedAt: null,
+      progress: null,
+      pending: [],
+    };
+    for (const phase of ['working', 'needs_you', 'review', 'ended']) {
+      const { api } = setup(() => json({ ...body, phase }));
+      expect((await api.getRunState(RUN)).phase).toBe(phase);
+    }
+    const missing = setup(() => json(body));
+    expect((await missing.api.getRunState(RUN)).phase).toBeUndefined();
+    const unknown = setup(() => json({ ...body, phase: 'whatever' }));
+    expect((await unknown.api.getRunState(RUN)).runId).toBe(RUN);
+    // The existing checks still hold.
+    const bad = setup(() => json({ ...body, phase: 'working', pending: 'x' }));
+    expect((await caught(bad.api.getRunState(RUN))).code).toBe('server_error');
+  });
+
   it('a fetch rejection is network with status 0 and no cause text', async () => {
     const api = createAppApi({
       origin: ORIGIN,

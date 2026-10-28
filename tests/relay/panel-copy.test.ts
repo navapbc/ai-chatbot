@@ -23,6 +23,7 @@ const WORKER_CODES: WorkerErrorCode[] = [
   'no_active_run',
   'wrong_run',
   'origin_not_pending',
+  'too_many_origins',
   'relay_unreachable',
   'worker_error',
 ];

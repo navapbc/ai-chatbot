@@ -1,12 +1,15 @@
-import type { AppApi } from '../../src/app-api';
+import type { PendingInputRequest } from '../../../lib/ai/eve/input-requests';
+import type { RunProgress } from '../../../lib/relay/progress';
+import type { AppApi, RunPhase, RunState } from '../../src/app-api';
 import type { RunStatus } from '../../src/bridge';
+import { createActionLog } from './action-log';
 import type { Target } from './state';
 import type { WorkerApi } from './worker-api';
 
 // Watches a run the panel started (or rebuilt after reopening) until it ends.
 //
 // - Polls the worker's getRunStatus every 2 s and the server's run state every
-//   5 s; a poll is skipped while the previous one of its kind is in flight,
+//   3 s; a poll is skipped while the previous one of its kind is in flight,
 //   and a failed poll keeps the last state (errors never end a run).
 // - The server row says `ended`: the run ended (reason `stopped`).
 // - The worker holds no run, or another run (another window replaced it),
@@ -28,7 +31,7 @@ import type { WorkerApi } from './worker-api';
 // mount sends nothing for the disposed session.
 
 export const WORKER_POLL_MS = 2000;
-export const SERVER_POLL_MS = 5000;
+export const SERVER_POLL_MS = 3000;
 /**
  * A fresh run may read inactive briefly before the worker holds it. Covered by
  * WORKER_GONE_AFTER_MS, which is longer: no separate check is needed.
@@ -48,8 +51,28 @@ export const REFRESH_BEFORE_MS = 5 * 60_000;
 export const REFRESH_RETRY_MS = 60_000;
 /** A rebuilt run's expiry is unknown: assume this little is left. */
 export const ESTIMATED_LEFT_S = 5 * 60;
+// esbuild defines this only in a test-hooks build given
+// EXTENSION_TEST_ORIGIN_HOLD_MS (scripts/extension-build-config.ts), for the
+// panel exactly as for the worker; undeclared otherwise (a unit test too).
+declare const __ORIGIN_HOLD_MS__: number | undefined;
+/**
+ * The bridge's origin hold (extension/src/bridge.ts ORIGIN_HOLD_MS and
+ * ORIGIN_HOLD_CAP_MS): 60 s per pending origin in a shipped build, restarted
+ * by a move to another origin, twice that in total. The worker status
+ * carries no start time, so the panel counts from when it first saw each
+ * origin. The countdown is informational only: the worker decides.
+ */
+export const ORIGIN_HOLD_MS =
+  typeof __ORIGIN_HOLD_MS__ === 'number' ? __ORIGIN_HOLD_MS__ : 60_000;
+export const ORIGIN_HOLD_CAP_MS = 2 * ORIGIN_HOLD_MS;
+/**
+ * A hold's countdown is known only when an accepted worker answer within
+ * this long before showed this run with no pending origin: the hold began in
+ * that gap, so a countdown from the first sight overstates by less than it.
+ */
+export const HOLD_KNOWN_GAP_MS = 2 * WORKER_POLL_MS + 1000;
 
-export type EndedReason = 'user' | 'stopped' | 'worker-ended';
+export type EndedReason = 'user' | 'submitted' | 'stopped' | 'worker-ended';
 
 export type SessionRun = {
   runId: string;
@@ -60,13 +83,46 @@ export type SessionRun = {
   expiresAtEstimated?: boolean;
 };
 
+const SERVER_PHASES = new Set(['working', 'needs_you', 'review']);
+
 export type RunSessionState = {
   status: 'running' | 'ended';
+  /** Latest progress the server holds, null until the first server poll. */
+  progress: RunProgress | null;
+  /** Open questions; always empty once the run ended. */
+  pending: PendingInputRequest[];
+  /** From the server; `ended` whenever the session itself ended. */
+  phase: RunPhase;
+  /** Session-local log of reported actions (untrusted text, never stored). */
+  actions: string[];
   endedReason?: EndedReason;
+  /** The https origin the worker holds the tab on, waiting for a decision. */
   pendingOrigin?: string;
+  /**
+   * With pendingOrigin: when this session first saw the CURRENT pending
+   * origin (ms epoch). Reset when the pending origin changes or clears.
+   */
+  holdSeenAt?: number;
+  /**
+   * With pendingOrigin: whether this session saw the hold begin, i.e. an
+   * accepted worker answer at most HOLD_KNOWN_GAP_MS before the first
+   * pending one showed this run with no pending origin. False for a hold
+   * already under way at the session's first answer (a panel opened
+   * mid-hold) and for every later origin in such a hold.
+   */
+  holdCountdownKnown?: boolean;
+  /**
+   * Only when holdCountdownKnown: when the hold ends at the latest (ms
+   * epoch), min(holdSeenAt + 60 s, first sight of the hold + 120 s). Never
+   * earlier than the bridge's own deadline, since every sight is at or after
+   * the event it sees.
+   */
+  holdEndsAt?: number;
   jevFailures?: number;
   refreshFailed?: boolean;
   expiresAtEstimated?: boolean;
+  /** The run's live expiry, Unix time in SECONDS (a refresh moves it). */
+  expiresAt: number;
   secondsLeft: number;
   stopping: boolean;
   stopFailed?: boolean;
@@ -91,9 +147,13 @@ export type RunSessionDeps = {
 
 export type RunSession = {
   subscribe(cb: (state: RunSessionState) => void): () => void;
-  stop(): Promise<void>;
+  /** `submitted` only when the caseworker pressed "I submitted it". */
+  stop(reason?: 'user' | 'submitted'): Promise<void>;
   dispose(): void;
 };
+
+const isObject = (v: unknown): v is RunProgress =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
 
 const ignore = async (task: () => Promise<unknown>): Promise<boolean> => {
   try {
@@ -125,6 +185,16 @@ export const createRunSession = (
   // Reading the server once more before ending the run as worker-ended.
   let confirming = false;
   let lastWorker: RunStatus | undefined;
+  let serverProgress: RunProgress | null = null;
+  let serverPending: PendingInputRequest[] = [];
+  let serverPhase: RunPhase = 'working';
+  const actionLog = createActionLog();
+  // The origin hold as this session saw it (see RunSessionState). A chain is
+  // an unbroken run of accepted answers that show a pending origin.
+  let lastClearAt: number | undefined;
+  let hold:
+    | { origin: string; seenAt: number; chainSeenAt: number; known: boolean }
+    | undefined;
 
   let workerInFlight = false;
   let serverInFlight = false;
@@ -143,6 +213,11 @@ export const createRunSession = (
   const snapshot = (): RunSessionState => {
     const state: RunSessionState = {
       status: ended ? 'ended' : 'running',
+      progress: serverProgress,
+      pending: ended ? [] : serverPending,
+      phase: ended ? 'ended' : serverPhase,
+      actions: actionLog.entries(),
+      expiresAt,
       secondsLeft: secondsLeft(),
       stopping: stopping && !ended,
     };
@@ -150,6 +225,16 @@ export const createRunSession = (
     if (!ended && lastWorker?.active && lastWorker.runId === runId) {
       if (lastWorker.pendingOrigin) {
         state.pendingOrigin = lastWorker.pendingOrigin;
+      }
+      if (hold && hold.origin === lastWorker.pendingOrigin) {
+        state.holdSeenAt = hold.seenAt;
+        state.holdCountdownKnown = hold.known;
+        if (hold.known) {
+          state.holdEndsAt = Math.min(
+            hold.seenAt + ORIGIN_HOLD_MS,
+            hold.chainSeenAt + ORIGIN_HOLD_CAP_MS,
+          );
+        }
       }
       if (typeof lastWorker.jevFailures === 'number') {
         state.jevFailures = lastWorker.jevFailures;
@@ -225,7 +310,7 @@ export const createRunSession = (
       if (done()) return;
       // The restarted run has no registered values (plan 4b): screenshots
       // stay refused until this arrives. Count 0 holds while the panel
-      // registers no known values (plan 4c-1); once it does (plan 4c-2) it
+      // registers no known values (plan 4c-1); once it does (plan 4c-3) it
       // must send them again first and pass the real count. A failure here is
       // retried by the poll, which sees `needsRegistration`.
       await ignore(() => deps.worker.registrationComplete(runId, 0));
@@ -264,7 +349,33 @@ export const createRunSession = (
     endByWorker();
   };
 
+  /** Follows the hold through one accepted answer for this run. */
+  const trackHold = (status: RunStatus) => {
+    const now = deps.now();
+    const pendingOrigin =
+      status.active && typeof status.pendingOrigin === 'string'
+        ? status.pendingOrigin
+        : undefined;
+    if (!pendingOrigin) {
+      hold = undefined;
+      lastClearAt = status.active ? now : undefined;
+      return;
+    }
+    if (hold?.origin === pendingOrigin) return;
+    if (hold) {
+      // Another origin in the same hold: the bridge restarts its wait.
+      hold = { ...hold, origin: pendingOrigin, seenAt: now };
+      return;
+    }
+    const known =
+      lastClearAt !== undefined && now - lastClearAt <= HOLD_KNOWN_GAP_MS;
+    hold = { origin: pendingOrigin, seenAt: now, chainSeenAt: now, known };
+    lastClearAt = undefined;
+  };
+
   const onWorkerStatus = (status: RunStatus) => {
+    if (status.active && status.runId === runId) trackHold(status);
+    else trackHold({ ok: true, active: false });
     if (status.active && status.runId !== runId) {
       lastWorker = status;
       endByWorker();
@@ -285,7 +396,7 @@ export const createRunSession = (
     lastWorker = status;
     if (status.needsRegistration && !registering) {
       // Count 0: this panel registers no known values (plan 4c-1). Once it
-      // does (addKnownValue, plan 4c-2), it must send them again and pass the
+      // does (addKnownValue, plan 4c-3), it must send them again and pass the
       // real count here, or screenshots resume without their scrub.
       registering = true;
       void ignore(() => deps.worker.registrationComplete(runId, 0)).then(() => {
@@ -316,32 +427,52 @@ export const createRunSession = (
     onWorkerStatus(status);
   };
 
+  /** Keeps what a live server row says; a bad shape never throws. */
+  const takeRow = (row: RunState) => {
+    serverProgress = isObject(row.progress) ? row.progress : null;
+    serverPending = Array.isArray(row.pending) ? row.pending : [];
+    serverPhase =
+      typeof row.phase === 'string' && SERVER_PHASES.has(row.phase)
+        ? (row.phase as RunPhase)
+        : 'working';
+    const actions = serverProgress?.actions;
+    if (Array.isArray(actions)) actionLog.add(actions);
+  };
+
   const pollServer = async () => {
     if (serverInFlight || halted()) return;
     serverInFlight = true;
     let rowEnded = false;
+    let row: RunState | undefined;
     try {
-      rowEnded = (await deps.api.getRunState(runId)).ended === true;
+      row = await deps.api.getRunState(runId);
+      rowEnded = row.ended === true;
     } catch {
+      row = undefined;
       rowEnded = false;
     } finally {
       serverInFlight = false;
     }
-    if (done() || !rowEnded) return;
+    if (done()) return;
+    if (row && !rowEnded) {
+      takeRow(row);
+      emit();
+    }
+    if (!rowEnded) return;
     // The worker may still hold this run: release the tab's debugger. The
     // stop names this run, so another window's run is left alone.
     void ignore(() => deps.worker.stopRun(runId));
     finish('stopped');
   };
 
-  const stopNow = async () => {
+  const stopNow = async (reason: 'user' | 'submitted') => {
     let failed = !(await ignore(() => deps.api.stopRun(runId)));
     // A refresh in flight would restart the worker after its stop.
     if (refreshPromise) await refreshPromise;
     // Scoped to this run: a run another window started is left alone.
     if (!(await ignore(() => deps.worker.stopRun(runId)))) failed = true;
     stopFailed = failed;
-    finish('user');
+    finish(reason);
   };
 
   return {
@@ -353,12 +484,12 @@ export const createRunSession = (
         listeners.delete(cb);
       };
     },
-    stop() {
+    stop(reason = 'user') {
       if (stopPromise) return stopPromise;
       if (ended) return Promise.resolve();
       stopping = true;
       emit();
-      stopPromise = stopNow();
+      stopPromise = stopNow(reason);
       return stopPromise;
     },
     dispose() {

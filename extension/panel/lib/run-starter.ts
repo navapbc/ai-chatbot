@@ -1,6 +1,7 @@
 import { inScope } from '../../../lib/relay/policy';
-import { type AppApi, AppApiError } from '../../src/app-api';
+import type { AppApi } from '../../src/app-api';
 import { StartInFlightError, TabGoneError, TabMovedError } from './copy';
+import { FIRST_CHUNK_TIMEOUT_MS, postEveChatTurn } from './eve-chat-post';
 import { addRecent } from './recents';
 import type { StartRequest } from './start-request';
 import type { WorkerApi } from './worker-api';
@@ -48,21 +49,12 @@ export type StartResult =
   | { ok: true; runId: string; expiresAt: number; tabId: number }
   | { ok: false; error: unknown; runId?: string };
 
-/** Bounds the eve-chat request: headers and the first chunk. */
-export const FIRST_CHUNK_TIMEOUT_MS = 15_000;
+export { FIRST_CHUNK_TIMEOUT_MS };
 const MAX_SITE_NAME = 100;
 
 // One start at a time per panel. Module-level: the shell builds fresh deps for
 // every press, so a flag on deps would never see the other start.
 let inFlight = false;
-
-const codeForStatus = (status: number): AppApiError['code'] => {
-  if (status === 401) return 'signed_out';
-  if (status === 403) return 'forbidden';
-  if (status === 429) return 'rate_limited';
-  if (status === 400) return 'bad_request';
-  return 'server_error';
-};
 
 const checkTab = async (deps: StartDeps, tabId: number, origin: string) => {
   let tab: { id?: number; url?: string } | undefined;
@@ -80,50 +72,15 @@ const checkTab = async (deps: StartDeps, tabId: number, origin: string) => {
 
 /**
  * Creates the run on the server. Resolves once the first chunk of the turn's
- * stream arrives; the stream is then cancelled, which the route ignores.
+ * stream arrives; the stream is then cancelled, which the route ignores. An
+ * error body is never read: its text must not reach the panel.
  */
-const createRun = async (
+const createRun = (
   deps: StartDeps,
   runId: string,
   request: StartRequest,
-): Promise<void> => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FIRST_CHUNK_TIMEOUT_MS);
-  try {
-    let response: Response;
-    try {
-      response = await deps.fetch(`${deps.appOrigin}/api/eve-chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: runId, relay: request }),
-        credentials: 'include',
-        cache: 'no-store',
-        redirect: 'error',
-        signal: controller.signal,
-      });
-    } catch {
-      throw new AppApiError('network', 0);
-    }
-    if (!response.ok) {
-      // The body is never read: its text must not reach the panel.
-      response.body?.cancel().catch(() => {});
-      throw new AppApiError(codeForStatus(response.status), response.status);
-    }
-    if (!response.body) throw new AppApiError('network', 0);
-    const reader = response.body.getReader();
-    let first: ReadableStreamReadResult<Uint8Array>;
-    try {
-      first = await reader.read();
-    } catch {
-      throw new AppApiError('network', 0);
-    }
-    // Not awaited: the panel never waits on the turn.
-    reader.cancel().catch(() => {});
-    if (first.done) throw new AppApiError('network', 0);
-  } finally {
-    clearTimeout(timer);
-  }
-};
+): Promise<void> =>
+  postEveChatTurn(deps, JSON.stringify({ id: runId, relay: request }));
 
 const ignore = async (task: () => Promise<unknown>) => {
   try {

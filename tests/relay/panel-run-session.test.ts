@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createRunSession,
   GRACE_MS,
+  ORIGIN_HOLD_CAP_MS,
+  ORIGIN_HOLD_MS,
   REFRESH_BEFORE_MS,
   REFRESH_RETRY_MS,
   type RunSessionDeps,
@@ -14,6 +16,7 @@ import {
   WORKER_GONE_AFTER_MS,
   WORKER_POLL_MS,
 } from '../../extension/panel/lib/run-session';
+import type { PendingInputRequest } from '../../lib/ai/eve/input-requests';
 import { createControllerLifecycle } from '../../extension/panel/lib/search-controller';
 import {
   AppApiError,
@@ -163,22 +166,24 @@ afterEach(() => {
 });
 
 describe('run session: polling', () => {
-  it('polls the worker every 2 s and the server every 5 s', async () => {
+  it('polls the worker every 2 s and the server every 3 s', async () => {
     const t = setup();
     expect(WORKER_POLL_MS).toBe(2000);
-    expect(SERVER_POLL_MS).toBe(5000);
+    expect(SERVER_POLL_MS).toBe(3000);
     // Nothing runs synchronously at creation.
     expect(t.calls).toEqual([]);
     await tick(1999);
     expect(count(t.calls, 'status')).toBe(0);
     await tick(1);
     expect(count(t.calls, 'status')).toBe(1);
-    await tick(3000);
-    expect(count(t.calls, 'status')).toBe(2);
+    await tick(1000);
+    expect(count(t.calls, 'status')).toBe(1);
     expect(count(t.calls, 'row')).toBe(1);
+    await tick(1000);
+    expect(count(t.calls, 'status')).toBe(2);
     await tick(5000);
-    expect(count(t.calls, 'status')).toBe(5);
-    expect(count(t.calls, 'row')).toBe(2);
+    expect(count(t.calls, 'status')).toBe(4);
+    expect(count(t.calls, 'row')).toBe(3);
     expect(t.last()?.status).toBe('running');
     t.session.dispose();
   });
@@ -198,8 +203,9 @@ describe('run session: polling', () => {
     t.plan.row = async () => liveRow();
     await tick(2000);
     expect(count(t.calls, 'status')).toBe(2);
-    await tick(3000);
     expect(count(t.calls, 'row')).toBe(2);
+    await tick(3000);
+    expect(count(t.calls, 'row')).toBe(3);
     t.session.dispose();
   });
 
@@ -248,6 +254,11 @@ describe('run session: polling', () => {
     expect(seen).toEqual([
       {
         status: 'running',
+        progress: null,
+        pending: [],
+        phase: 'working',
+        actions: [],
+        expiresAt: EXPIRES,
         secondsLeft: 1800,
         stopping: false,
       },
@@ -274,6 +285,232 @@ describe('run session: polling', () => {
     t.plan.status = async () => ours();
     await tick(2000);
     expect(count(t.calls, 'registration')).toBe(1);
+    t.session.dispose();
+  });
+});
+
+describe('run session: progress, questions and phase', () => {
+  const progress = (actions?: string[]) => ({
+    sections: [{ name: 'Contact', status: 'filling' as const, filled: 1 }],
+    current: 'Contact',
+    ...(actions ? { actions } : {}),
+  });
+  const question = (id: string) =>
+    ({ id, prompt: 'Which county?' }) as unknown as RunState['pending'][number];
+
+  it('starts with no progress, no questions, working and an empty log', () => {
+    const t = setup();
+    expect(t.last()).toMatchObject({
+      progress: null,
+      pending: [],
+      phase: 'working',
+      actions: [],
+    });
+    t.session.dispose();
+  });
+
+  it('carries the latest progress and pending from the server poll', async () => {
+    const t = setup();
+    const p1 = progress();
+    t.plan.row = async () =>
+      liveRow({ progress: p1, pending: [question('q1')], phase: 'needs_you' });
+    await tick(3000);
+    expect(t.last()).toMatchObject({
+      progress: p1,
+      pending: [question('q1')],
+      phase: 'needs_you',
+    });
+    const p2 = { ...progress(), current: 'Income' };
+    t.plan.row = async () => liveRow({ progress: p2, phase: 'working' });
+    await tick(3000);
+    expect(t.last()).toMatchObject({
+      progress: p2,
+      pending: [],
+      phase: 'working',
+    });
+    t.session.dispose();
+  });
+
+  it.each(['working', 'needs_you', 'review'] as const)(
+    'maps the server phase %s',
+    async (phase) => {
+      const t = setup();
+      t.plan.row = async () => liveRow({ phase });
+      await tick(3000);
+      expect(t.last()?.phase).toBe(phase);
+      t.session.dispose();
+    },
+  );
+
+  it('maps an unknown, non-string or missing phase to working', async () => {
+    const t = setup();
+    t.plan.row = async () => liveRow({ phase: 'review' });
+    await tick(3000);
+    expect(t.last()?.phase).toBe('review');
+    for (const phase of ['bogus', 7, null, 'ended', undefined]) {
+      t.plan.row = async () => liveRow({ phase } as Partial<RunState>);
+      await tick(3000);
+      expect(t.last()?.phase).toBe('working');
+      t.plan.row = async () => liveRow({ phase: 'review' });
+      await tick(3000);
+      expect(t.last()?.phase).toBe('review');
+    }
+    t.session.dispose();
+  });
+
+  it('a failed server poll keeps the last progress and phase', async () => {
+    const t = setup();
+    t.plan.row = async () => liveRow({ progress: progress(), phase: 'review' });
+    await tick(3000);
+    t.plan.row = async () => {
+      throw new AppApiError('network', 0);
+    };
+    await tick(9000);
+    expect(t.last()).toMatchObject({ phase: 'review', status: 'running' });
+    expect(t.last()?.progress).not.toBeNull();
+    t.session.dispose();
+  });
+
+  it('server ended: phase ended and pending empty', async () => {
+    const t = setup();
+    t.plan.row = async () =>
+      liveRow({ pending: [question('q1')], phase: 'needs_you' });
+    await tick(3000);
+    expect(t.last()?.pending).toHaveLength(1);
+    t.plan.row = async () =>
+      liveRow({
+        ended: true,
+        endedAt: 'x',
+        pending: [question('q1')],
+        phase: 'ended',
+      });
+    await tick(3000);
+    expect(t.last()).toMatchObject({
+      status: 'ended',
+      phase: 'ended',
+      pending: [],
+    });
+    t.session.dispose();
+  });
+
+  it('worker-ended: phase ended and pending empty', async () => {
+    const t = setup();
+    t.plan.row = async () =>
+      liveRow({ pending: [question('q1')], phase: 'needs_you' });
+    await tick(3000);
+    t.plan.status = async () => inactive;
+    await tick(30_000);
+    expect(t.last()).toMatchObject({
+      status: 'ended',
+      endedReason: 'worker-ended',
+      phase: 'ended',
+      pending: [],
+    });
+    t.session.dispose();
+  });
+
+  it('user Stop: phase ended and pending empty', async () => {
+    const t = setup();
+    t.plan.row = async () =>
+      liveRow({ pending: [question('q1')], phase: 'needs_you' });
+    await tick(3000);
+    await t.session.stop();
+    expect(t.last()).toMatchObject({
+      status: 'ended',
+      endedReason: 'user',
+      phase: 'ended',
+      pending: [],
+    });
+    t.session.dispose();
+  });
+
+  it("stop('submitted'): server stop then worker stop once each, ends submitted", async () => {
+    const t = setup();
+    await tick(3000);
+    const order: string[] = [];
+    t.api.stopRun.mockImplementation(async () => {
+      order.push('server');
+      return { ended: true, alreadyEnded: false };
+    });
+    t.worker.stopRun.mockImplementation(async () => {
+      order.push('worker');
+    });
+    await t.session.stop('submitted');
+    expect(order).toEqual(['server', 'worker']);
+    expect(t.last()).toMatchObject({
+      status: 'ended',
+      endedReason: 'submitted',
+    });
+    expect(t.markRecentEnded).toHaveBeenCalledWith(RUN_ID, 'submitted');
+    t.session.dispose();
+  });
+
+  it('stop() defaults to the user reason', async () => {
+    const t = setup();
+    await t.session.stop();
+    expect(t.markRecentEnded).toHaveBeenCalledWith(RUN_ID, 'user');
+    t.session.dispose();
+  });
+
+  it("stop('submitted') with a failing server stop still ends and sets stopFailed", async () => {
+    const t = setup();
+    t.api.stopRun.mockRejectedValue(new AppApiError('network', 0));
+    await t.session.stop('submitted');
+    expect(t.last()).toMatchObject({
+      status: 'ended',
+      endedReason: 'submitted',
+      stopFailed: true,
+    });
+    expect(t.worker.stopRun).toHaveBeenCalledTimes(1);
+    t.session.dispose();
+  });
+
+  it('a double press calls each stop once', async () => {
+    const t = setup();
+    await Promise.all([t.session.stop('submitted'), t.session.stop('user')]);
+    expect(t.api.stopRun).toHaveBeenCalledTimes(1);
+    expect(t.worker.stopRun).toHaveBeenCalledTimes(1);
+    expect(t.last()?.endedReason).toBe('submitted');
+    t.session.dispose();
+  });
+
+  it('feeds the action log from every poll without repeats', async () => {
+    const t = setup();
+    t.plan.row = async () =>
+      liveRow({ progress: progress(['a', 'b', 'c', 'd', 'e']) });
+    await tick(3000);
+    expect(t.last()?.actions).toEqual(['a', 'b', 'c', 'd', 'e']);
+    await tick(3000);
+    expect(t.last()?.actions).toEqual(['a', 'b', 'c', 'd', 'e']);
+    t.plan.row = async () =>
+      liveRow({ progress: progress(['b', 'c', 'd', 'e', 'f']) });
+    await tick(3000);
+    expect(t.last()?.actions).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+    // Progress without actions, or no progress, keeps the log.
+    t.plan.row = async () => liveRow({ progress: progress() });
+    await tick(3000);
+    t.plan.row = async () => liveRow({ progress: null });
+    await tick(3000);
+    expect(t.last()?.actions).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+    t.session.dispose();
+  });
+
+  it('progress that goes backwards or repeats does not throw', async () => {
+    const t = setup();
+    for (const actions of [['a', 'b'], ['a'], [], ['a', 'b'], ['b']]) {
+      t.plan.row = async () => liveRow({ progress: progress(actions) });
+      await tick(3000);
+      expect(t.last()?.status).toBe('running');
+    }
+    t.session.dispose();
+  });
+
+  it('keeps the log after the run ended', async () => {
+    const t = setup();
+    t.plan.row = async () => liveRow({ progress: progress(['a']) });
+    await tick(3000);
+    await t.session.stop();
+    expect(t.last()?.actions).toEqual(['a']);
     t.session.dispose();
   });
 });
@@ -504,6 +741,11 @@ describe('run session: stop', () => {
     expect(t.last()).toEqual({
       status: 'ended',
       endedReason: 'user',
+      progress: null,
+      pending: [],
+      phase: 'ended',
+      actions: [],
+      expiresAt: EXPIRES,
       secondsLeft: expect.any(Number),
       stopping: false,
     });
@@ -804,14 +1046,232 @@ describe('run session: secondsLeft', () => {
   });
 });
 
+describe('run session: origin hold', () => {
+  const A = 'https://login.example.gov';
+  const B = 'https://idp.example.gov';
+  const C = 'https://mfa.example.gov';
+
+  it('mirrors the bridge hold: 60 s per origin, 120 s in total', () => {
+    expect(ORIGIN_HOLD_MS).toBe(60_000);
+    expect(ORIGIN_HOLD_CAP_MS).toBe(120_000);
+  });
+
+  it('no hold: no hold fields', async () => {
+    const t = setup();
+    await tick(4000);
+    const state = t.last();
+    expect(state?.holdSeenAt).toBeUndefined();
+    expect(state?.holdEndsAt).toBeUndefined();
+    expect(state?.holdCountdownKnown).toBeUndefined();
+    t.session.dispose();
+  });
+
+  it('a hold seen start at runtime: holdSeenAt is the first sight, the countdown is known', async () => {
+    const t = setup();
+    await tick(2000); // clear
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000); // first sight at NOW + 4000
+    expect(t.last()).toMatchObject({
+      pendingOrigin: A,
+      holdSeenAt: NOW + 4000,
+      holdCountdownKnown: true,
+      holdEndsAt: NOW + 4000 + ORIGIN_HOLD_MS,
+    });
+    await tick(4000); // the same origin again: unchanged
+    expect(t.last()).toMatchObject({
+      holdSeenAt: NOW + 4000,
+      holdEndsAt: NOW + 4000 + ORIGIN_HOLD_MS,
+    });
+    t.session.dispose();
+  });
+
+  it('the first worker answer already shows a hold: no countdown', async () => {
+    const t = setup();
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    expect(t.last()).toMatchObject({
+      pendingOrigin: A,
+      holdSeenAt: NOW + 2000,
+      holdCountdownKnown: false,
+    });
+    expect(t.last()?.holdEndsAt).toBeUndefined();
+    t.session.dispose();
+  });
+
+  it('a failed first poll does not count as seeing the run clear', async () => {
+    const t = setup();
+    t.plan.status = async () => {
+      throw new WorkerError('worker_unreachable');
+    };
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    expect(t.last()?.holdCountdownKnown).toBe(false);
+    t.session.dispose();
+  });
+
+  it('a clear answer too long before the hold leaves the countdown unknown', async () => {
+    const t = setup();
+    await tick(2000); // clear at NOW + 2000
+    t.plan.status = async () => {
+      throw new WorkerError('worker_unreachable');
+    };
+    await tick(4000); // two failed polls
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000); // 6 s after the last clear answer
+    expect(t.last()?.holdCountdownKnown).toBe(false);
+    t.session.dispose();
+  });
+
+  it('one failed poll between a clear answer and the hold keeps it known', async () => {
+    const t = setup();
+    await tick(2000); // clear at NOW + 2000
+    t.plan.status = async () => {
+      throw new WorkerError('worker_unreachable');
+    };
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000); // seen at NOW + 6000, 4 s after the clear answer
+    expect(t.last()).toMatchObject({
+      holdCountdownKnown: true,
+      holdSeenAt: NOW + 6000,
+    });
+    t.session.dispose();
+  });
+
+  it('a failed poll mid-hold changes nothing', async () => {
+    const t = setup();
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    t.plan.status = async () => {
+      throw new WorkerError('worker_unreachable');
+    };
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    expect(t.last()).toMatchObject({
+      pendingOrigin: A,
+      holdSeenAt: NOW + 4000,
+      holdCountdownKnown: true,
+    });
+    t.session.dispose();
+  });
+
+  it('a changed pending origin resets holdSeenAt; the 120 s cap counts from the first', async () => {
+    const t = setup();
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000); // A at NOW + 4000
+    await tick(44_000);
+    t.plan.status = async () => ours({ pendingOrigin: B });
+    await tick(2000); // B at NOW + 50_000
+    expect(t.last()).toMatchObject({
+      pendingOrigin: B,
+      holdSeenAt: NOW + 50_000,
+      holdCountdownKnown: true,
+      holdEndsAt: NOW + 50_000 + ORIGIN_HOLD_MS,
+    });
+    await tick(48_000);
+    t.plan.status = async () => ours({ pendingOrigin: C });
+    await tick(2000); // C at NOW + 100_000: the cap binds
+    expect(t.last()).toMatchObject({
+      pendingOrigin: C,
+      holdSeenAt: NOW + 100_000,
+      holdCountdownKnown: true,
+      holdEndsAt: NOW + 4000 + ORIGIN_HOLD_CAP_MS,
+    });
+    t.session.dispose();
+  });
+
+  it('a change in a hold whose start was not seen stays unknown', async () => {
+    const t = setup();
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: B });
+    await tick(2000);
+    expect(t.last()).toMatchObject({
+      pendingOrigin: B,
+      holdSeenAt: NOW + 4000,
+      holdCountdownKnown: false,
+    });
+    expect(t.last()?.holdEndsAt).toBeUndefined();
+    t.session.dispose();
+  });
+
+  it('a cleared hold clears the fields; a later hold starts fresh', async () => {
+    const t = setup();
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000); // unknown
+    t.plan.status = async () => ours();
+    await tick(2000);
+    expect(t.last()?.pendingOrigin).toBeUndefined();
+    expect(t.last()?.holdSeenAt).toBeUndefined();
+    expect(t.last()?.holdCountdownKnown).toBeUndefined();
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    expect(t.last()).toMatchObject({
+      pendingOrigin: A,
+      holdSeenAt: NOW + 6000,
+      holdCountdownKnown: true,
+      holdEndsAt: NOW + 6000 + ORIGIN_HOLD_MS,
+    });
+    t.session.dispose();
+  });
+
+  it('an inactive answer clears the hold and does not count as clear', async () => {
+    const t = setup();
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    t.plan.status = async () => inactive;
+    await tick(2000);
+    expect(t.last()?.holdSeenAt).toBeUndefined();
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    expect(t.last()?.holdCountdownKnown).toBe(false);
+    t.session.dispose();
+  });
+
+  it('an ended run shows no hold', async () => {
+    const t = setup();
+    await tick(2000);
+    t.plan.status = async () => ours({ pendingOrigin: A });
+    await tick(2000);
+    await t.session.stop();
+    expect(t.last()?.status).toBe('ended');
+    expect(t.last()?.pendingOrigin).toBeUndefined();
+    expect(t.last()?.holdSeenAt).toBeUndefined();
+    expect(t.last()?.holdEndsAt).toBeUndefined();
+    t.session.dispose();
+  });
+
+  it('exposes the live expiry in seconds, updated by a refresh', async () => {
+    const t = setup({ expiresAt: NOW / 1000 + 60 });
+    expect(t.last()?.expiresAt).toBe(NOW / 1000 + 60);
+    await tick(2000); // refresh: the token route answers now + 1800
+    await tick(2000);
+    expect(t.last()?.expiresAt).toBe(Math.floor((NOW + 2000) / 1000) + 1800);
+    t.session.dispose();
+  });
+});
+
 describe('run session: no applicant data', () => {
   const STATE_KEYS = new Set([
     'status',
+    'progress',
+    'pending',
+    'phase',
+    'actions',
     'endedReason',
     'pendingOrigin',
+    'holdSeenAt',
+    'holdEndsAt',
+    'holdCountdownKnown',
     'jevFailures',
     'refreshFailed',
     'expiresAtEstimated',
+    'expiresAt',
     'secondsLeft',
     'stopping',
     'stopFailed',
@@ -827,7 +1287,7 @@ describe('run session: no applicant data', () => {
         token: 'tok-secret',
       }) as RunStatus;
     t.plan.row = async () =>
-      ({ ...liveRow(), pending: [{ prompt: 'Zelda Quill' }] }) as RunState;
+      ({ ...liveRow(), participant: 'Zelda Quill' }) as RunState;
     await tick(10_000);
     await t.session.stop();
     expect(t.states.length).toBeGreaterThan(3);
@@ -1025,5 +1485,95 @@ describe('rebuildRun', () => {
         ),
       ),
     ).toBeNull();
+  });
+});
+
+describe('a reopened panel lands on the right card', () => {
+  const rebuiltSetup = async (
+    status: () => Promise<RunStatus>,
+    row: () => Promise<RunState>,
+  ) => {
+    const calls: string[] = [];
+    const rebuilt = await rebuildRun({
+      api: {
+        getRunState: vi.fn(async (id: string) => {
+          calls.push(`row:${id}`);
+          return row();
+        }),
+      },
+      worker: {
+        getRunStatus: vi.fn(async () => {
+          calls.push('status');
+          return status();
+        }),
+        stopRun: vi.fn(async () => {}),
+      },
+      now: () => NOW,
+    });
+    if (!rebuilt) throw new Error('not rebuilt');
+    const t = setup(rebuilt.run);
+    t.plan.status = status;
+    t.plan.row = row;
+    return { t, rebuilt, calls };
+  };
+  const question = {
+    requestId: 'r1',
+    prompt: 'Which income?',
+    options: ['a', 'b'],
+  } as unknown as PendingInputRequest;
+
+  it('pending questions land on needs_you with an empty log', async () => {
+    const { t, rebuilt } = await rebuiltSetup(
+      async () => ours(),
+      async () =>
+        liveRow({
+          phase: 'needs_you',
+          pending: [question],
+          progress: { actions: ['clicked A'], sections: [] },
+        } as Partial<RunState>),
+    );
+    expect(rebuilt.run.expiresAtEstimated).toBe(true);
+    expect(t.last().actions).toEqual([]);
+    expect(t.last().progress).toBeNull();
+    await tick(SERVER_POLL_MS);
+    expect(t.last().phase).toBe('needs_you');
+    expect(t.last().pending).toHaveLength(1);
+    expect(t.last().progress).not.toBeNull();
+    t.session.dispose();
+  });
+
+  it('phase review lands on review', async () => {
+    const { t } = await rebuiltSetup(
+      async () => ours(),
+      async () => liveRow({ phase: 'review' } as Partial<RunState>),
+    );
+    await tick(SERVER_POLL_MS);
+    expect(t.last().phase).toBe('review');
+    t.session.dispose();
+  });
+
+  it('a worker origin hold shows the pending origin on the first poll', async () => {
+    const { t } = await rebuiltSetup(
+      async () => ours({ pendingOrigin: 'https://other.example.gov' }),
+      async () => liveRow(),
+    );
+    await tick(WORKER_POLL_MS);
+    expect(t.last().pendingOrigin).toBe('https://other.example.gov');
+    expect(t.last().holdCountdownKnown).toBe(false);
+    t.session.dispose();
+  });
+
+  it('an ended row is not rebuilt, and a rebuild calls only the status and the row', async () => {
+    const ended = await rebuildRun({
+      api: { getRunState: async () => liveRow({ ended: true }) },
+      worker: { getRunStatus: async () => ours(), stopRun: async () => {} },
+      now: () => NOW,
+    });
+    expect(ended).toBeNull();
+    const { calls } = await rebuiltSetup(
+      async () => ours(),
+      async () => liveRow(),
+    );
+    expect(calls).toEqual(['status', `row:${RUN_ID}`]);
   });
 });

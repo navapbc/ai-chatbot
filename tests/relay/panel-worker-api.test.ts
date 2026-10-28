@@ -55,8 +55,13 @@ describe('worker errors', () => {
     ['token is invalid or expired', 'token_invalid'],
     ['tab is outside the allowed origin', 'tab_out_of_scope'],
     ['origin not pending', 'origin_not_pending'],
+    ['too many allowed origins', 'too_many_origins'],
     ['relay URL is invalid', 'relay_unreachable'],
     ['something new', 'worker_error'],
+    // Exact own-key lookups: a prototype name is no code.
+    ['constructor', 'worker_error'],
+    ['toString', 'worker_error'],
+    ['__proto__', 'worker_error'],
   ])('maps %s to %s with a fixed message', async (text, code) => {
     const api = createWorkerApi(fake({ ok: false, error: text }));
     const error = await api.stopRun().catch((e) => e);

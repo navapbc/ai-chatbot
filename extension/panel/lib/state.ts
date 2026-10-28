@@ -15,6 +15,7 @@ export type Screen =
   | 'ready'
   | 'starting'
   | 'running'
+  | 'confirmed'
   | 'signedOut'
   | 'error';
 
@@ -38,6 +39,8 @@ export type State = {
    */
   run?: SessionRun;
   error?: ErrorMessage;
+  /** Set on the Confirmed screen: whether the stop could be confirmed. */
+  confirmed?: { stopFailed: boolean };
 };
 
 export type Action =
@@ -64,6 +67,10 @@ export type Action =
   | { type: 'runStarted'; runId: string; expiresAt: number; tabId: number }
   /** The run ended and the caseworker left its screen. */
   | { type: 'runEnded' }
+  /** The caseworker said they submitted; the run is over. */
+  | { type: 'runConfirmed'; stopFailed: boolean }
+  /** From Confirmed: the same person and site, back on Ready. */
+  | { type: 'startAnother' }
   /** The panel reopened while the worker held a live run (see rebuildRun). */
   | {
       type: 'runRebuilt';
@@ -95,7 +102,13 @@ export const reducer = (state: State, action: Action): State => {
     return { ...state, target: action.target, screen: 'participant' };
   }
   if (action.type === 'clearTarget') {
-    const { target: _target, participant: _participant, ...rest } = state;
+    const {
+      target: _target,
+      participant: _participant,
+      run: _run,
+      confirmed: _confirmed,
+      ...rest
+    } = state;
     return { ...rest, screen: 'home' };
   }
   if (action.type === 'chooseParticipant') {
@@ -144,6 +157,20 @@ export const reducer = (state: State, action: Action): State => {
       ...rest
     } = state;
     return { ...rest, screen: 'home' };
+  }
+  if (action.type === 'runConfirmed') {
+    if (state.screen !== 'running') return state;
+    const { run: _run, error: _error, ...rest } = state;
+    return {
+      ...rest,
+      screen: 'confirmed',
+      confirmed: { stopFailed: action.stopFailed },
+    };
+  }
+  if (action.type === 'startAnother') {
+    if (state.screen !== 'confirmed') return state;
+    const { run: _run, error: _error, confirmed: _confirmed, ...rest } = state;
+    return { ...rest, screen: 'ready' };
   }
   if (action.type === 'runRebuilt') {
     if (state.screen !== 'loading') return state;

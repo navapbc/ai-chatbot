@@ -31,6 +31,13 @@ import {
 
 const ROOT = path.resolve(__dirname, '../../..');
 const HEADED = process.env.RELAY_E2E_HEADED === '1';
+/**
+ * The bridge's origin hold in this file's build (the shipped bridge holds
+ * 60 s): long enough for the panel's 2 s worker poll to show the card and a
+ * test to press Allow, short enough that a run nobody allows ends in seconds.
+ * Only a test-hooks build takes it (the hooks change nothing the panel sees).
+ */
+const PANEL_HOLD_MS = 8_000;
 
 let out: string;
 let browser: ExtensionBrowser;
@@ -45,9 +52,30 @@ const eveChatOrigins: (string | undefined)[] = [];
 /** The status the next POST /api/eve-chat answers with. */
 let eveChatStatus = 200;
 /** Runs eve-chat created: the fake server rows the panel reads and stops. */
-const runs = new Map<string, { ended: boolean }>();
+const runs = new Map<
+  string,
+  { ended: boolean; phase?: string; pending?: unknown[]; progress?: unknown }
+>();
+/** Answer turns (`inputResponses` bodies) POSTed to /api/eve-chat. */
+const answerBodies: unknown[] = [];
+const answerOrigins: (string | undefined)[] = [];
+/** When set, the fake app answers POST /stop with a 500 (row still ends). */
+let stopFails = false;
+/** The refusal reason the next answer turn gets as a 400, or null for 200. */
+let answerRefusal: string | null = null;
 /** GET /api/relay/runs/:id polls, kept apart from `appCalls`. */
 const pollCalls: string[] = [];
+
+/** Canned progress the fake app reports for every run. */
+const CANNED_PROGRESS = {
+  sections: [
+    { name: 'Applicant', status: 'done', filled: 4, total: 4 },
+    { name: '<b>Household</b>', status: 'filling', filled: 2, total: 6 },
+    { name: 'Income', status: 'waiting', filled: 0 },
+  ],
+  current: '<b>Household</b>',
+  actions: ['Typed the household size', 'Chose the county'],
+};
 
 const readBody = (req: import('node:http').IncomingMessage) =>
   new Promise<string>((resolve) => {
@@ -63,9 +91,30 @@ beforeAll(async () => {
   fixtures = await serveFixtures();
   app = createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/eve-chat') {
+      const text = await readBody(req);
+      const parsed = JSON.parse(text) as { inputResponses?: unknown };
+      if (parsed.inputResponses !== undefined) {
+        // An answer turn: the run row is left as it is.
+        answerBodies.push(parsed);
+        answerOrigins.push(req.headers.origin);
+        if (answerRefusal) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              code: 'bad_request:api',
+              message: "The request couldn't be processed.",
+              cause: answerRefusal,
+            }),
+          );
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('data: {"type":"start"}\n\n');
+        return;
+      }
       appCalls.push('POST /api/eve-chat');
       eveChatOrigins.push(req.headers.origin);
-      eveChatBodies.push(JSON.parse(await readBody(req)));
+      eveChatBodies.push(parsed);
       if (eveChatStatus !== 200) {
         res.writeHead(eveChatStatus, { 'content-type': 'application/json' });
         res.end('{"code":"rate_limit:chat","message":"limit"}');
@@ -113,6 +162,10 @@ beforeAll(async () => {
       }
       const alreadyEnded = row.ended;
       row.ended = true;
+      if (stopFails) {
+        res.writeHead(500).end();
+        return;
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ended: true, alreadyEnded }));
       return;
@@ -132,8 +185,9 @@ beforeAll(async () => {
           origin: fixtures.origin,
           ended: row.ended,
           endedAt: row.ended ? new Date().toISOString() : null,
-          progress: null,
-          pending: [],
+          progress: row.progress ?? CANNED_PROGRESS,
+          pending: row.ended ? [] : (row.pending ?? []),
+          phase: row.ended ? 'ended' : (row.phase ?? 'working'),
         }),
       );
       return;
@@ -191,7 +245,16 @@ beforeAll(async () => {
   execFileSync(
     path.join(ROOT, 'node_modules/.bin/tsx'),
     ['scripts/build-extension.ts', '--out', out],
-    { cwd: ROOT, env: { ...env, APP_ORIGIN: origin }, stdio: 'ignore' },
+    {
+      cwd: ROOT,
+      env: {
+        ...env,
+        APP_ORIGIN: origin,
+        EXTENSION_TEST_HOOKS: '1',
+        EXTENSION_TEST_ORIGIN_HOLD_MS: String(PANEL_HOLD_MS),
+      },
+      stdio: 'ignore',
+    },
   );
   browser = await launchExtensionBrowser({
     extensionDir: out,
@@ -349,6 +412,18 @@ describe('the panel shell', () => {
     const page = await browser.context.newPage();
     // The panel is a tab here: "Use this tab" must see the site's real tab
     // (the worker checks its real URL), not the panel itself.
+    // Counts the panel's worker stop messages (the worker has no log of them).
+    await page.addInitScript(() => {
+      const w = window as unknown as { __workerStops: number };
+      w.__workerStops = 0;
+      const send = chrome.runtime.sendMessage.bind(chrome.runtime);
+      chrome.runtime.sendMessage = ((...args: unknown[]) => {
+        if ((args[0] as { type?: string })?.type === 'stopRun') {
+          w.__workerStops += 1;
+        }
+        return (send as (...a: unknown[]) => unknown)(...args);
+      }) as typeof chrome.runtime.sendMessage;
+    });
     await page.addInitScript((origin: string) => {
       const query = chrome.tabs.query.bind(chrome.tabs);
       chrome.tabs.query = (async () =>
@@ -500,6 +575,20 @@ describe('the panel shell', () => {
       await expect
         .poll(() => elapsed.textContent(), { timeout: 5_000 })
         .not.toBe(first);
+      // Canned progress: bar, collapsed done section, open active section.
+      await page.getByText('6 fields so far').waitFor();
+      await page.getByText('Section 2 of 3').waitFor();
+      const sectionList = page.getByRole('list', { name: 'Form sections' });
+      await sectionList.getByText('Applicant').waitFor();
+      await sectionList.getByText('4 of 4').waitFor();
+      await sectionList.getByText('Typed the household size').waitFor();
+      await sectionList.getByText('Chose the county').waitFor();
+      // Markup in a section name renders as text, not as an element.
+      await sectionList.getByText('<b>Household</b>').waitFor();
+      expect(await sectionList.locator('b').count()).toBe(0);
+      expect(await sectionList.locator('[aria-current="step"]').count()).toBe(
+        1,
+      );
       // No way off a live run except Stop.
       expect(
         await page.getByRole('button', { name: 'Back to Home' }).count(),
@@ -534,6 +623,129 @@ describe('the panel shell', () => {
       await site.close();
     }
   }, 30_000);
+
+  it('Review: shows only while the phase is review; I submitted it stops both sides and confirms; Start another and Back to Home', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    const row = runs.get(runId);
+    if (!row) throw new Error('no run row');
+    try {
+      await page.getByText('6 fields so far').waitFor();
+      const heading = page.getByRole('heading', {
+        name: 'Ready for your review',
+      });
+      // Working: no review panel.
+      expect(await heading.count()).toBe(0);
+      row.progress = {
+        sections: [
+          { name: 'Applicant', status: 'done', filled: 4, total: 4 },
+          { name: 'Income', status: 'needs_you', filled: 1, total: 3 },
+        ],
+        actions: ['Typed the income'],
+      };
+      row.phase = 'review';
+      await heading.waitFor({ timeout: 8_000 });
+      await page
+        .getByText('The agent has stopped. It has not submitted the form.')
+        .waitFor();
+      const left = page.getByRole('region', { name: 'Ready for your review' });
+      await left.getByText('Income', { exact: true }).waitFor();
+      await left.getByText('1 of 3').waitFor();
+      expect(await left.getByText('Applicant', { exact: true }).count()).toBe(
+        0,
+      );
+      // The action log is collapsed by default and shows the agent's steps.
+      const details = left.locator('details');
+      expect(
+        await details.evaluate((d) => (d as HTMLDetailsElement).open),
+      ).toBe(false);
+      await details.locator('summary').click();
+      await details.getByText('Typed the income').waitFor();
+      await page
+        .getByText('Check the form on the page, then submit it there yourself.')
+        .waitFor();
+      expect(await page.getByText(/unfilled field/i).count()).toBe(0);
+      expect(await page.getByRole('button', { name: 'Show me' }).count()).toBe(
+        0,
+      );
+
+      // Back to working: the panel goes away.
+      row.phase = 'working';
+      await expect.poll(() => heading.count(), { timeout: 8_000 }).toBe(0);
+      row.phase = 'review';
+      await heading.waitFor({ timeout: 8_000 });
+
+      await page.getByRole('button', { name: 'I submitted it' }).click();
+      await page.getByRole('heading', { name: 'Submitted' }).waitFor();
+      await page
+        .getByText('You said you submitted the form on localhost.')
+        .waitFor();
+      expect(stopCalls(runId)).toBe(1);
+      expect(
+        await page.evaluate(
+          () => (window as unknown as { __workerStops: number }).__workerStops,
+        ),
+      ).toBe(1);
+      expect(row.ended).toBe(true);
+      expect((await runStatus(page)).active).toBe(false);
+      // The stop worked: no stop notice. Focus is on the Confirmed heading.
+      expect(await page.getByText(/could not reach/).count()).toBe(0);
+      expect(
+        await page.evaluate(() => document.activeElement?.textContent),
+      ).toBe('Submitted');
+      const recents = await page.evaluate(
+        async () => (await chrome.storage.local.get('recentRuns')).recentRuns,
+      );
+      expect(recents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ runId, endedReason: 'submitted' }),
+        ]),
+      );
+
+      // Another form for the same person on the same site.
+      await page
+        .getByRole('button', { name: 'Start another form for this person' })
+        .click();
+      await page.getByRole('heading', { name: 'Ready' }).waitFor();
+      await page.getByText('Alice', { exact: false }).first().waitFor();
+      await page.getByText('localhost', { exact: false }).first().waitFor();
+      await page.getByRole('button', { name: 'Start' }).waitFor();
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 60_000);
+
+  it('Confirmed: a failing server stop still confirms, with the stop notice; Back to Home clears the person and the site', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    stopFails = true;
+    const row = runs.get(runId);
+    if (!row) throw new Error('no run row');
+    try {
+      row.phase = 'review';
+      await page
+        .getByRole('button', { name: 'I submitted it' })
+        .click({ timeout: 10_000 });
+      await page.getByRole('heading', { name: 'Submitted' }).waitFor();
+      await page
+        .getByText(
+          'We could not reach the app or the extension to confirm the stop. The agent may still be working: check the page and use Stop if it is.',
+        )
+        .waitFor();
+      expect(await page.getByRole('button', { name: 'Stop' }).count()).toBe(0);
+      await page.getByRole('button', { name: 'Back to Home' }).click();
+      await page.getByRole('heading', { name: 'Home' }).waitFor();
+      expect(await page.getByText('Alice', { exact: false }).count()).toBe(0);
+      expect(
+        await page.getByRole('button', { name: 'Use this tab' }).count(),
+      ).toBe(1);
+    } finally {
+      stopFails = false;
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 40_000);
 
   it('a run the worker ended by itself is stopped on the server once', async () => {
     const { site, page, runId } = await startOnRealTab();
@@ -599,6 +811,528 @@ describe('the panel shell', () => {
       await site.close();
     }
   }, 40_000);
+
+  it('Needs You: answers a text and a sensitive question in one batch, only while the phase is needs_you', async () => {
+    const ANSWER = 'Kern-County-Answer-42';
+    const seen: string[] = [];
+    const PENDING = [
+      {
+        requestId: 'q-text',
+        prompt: 'County of residence <b>x</b>',
+        display: 'text',
+        options: [],
+        allowFreeform: true,
+      },
+      {
+        requestId: 'q-ssn',
+        prompt: 'Social Security number',
+        display: 'select',
+        options: [
+          { id: 'provided', label: 'I entered it myself' },
+          { id: 'skip', label: 'Skip' },
+        ],
+        allowFreeform: false,
+      },
+    ];
+    const { site, page, runId } = await startOnRealTab();
+    page.on('console', (msg) => seen.push(msg.text()));
+    answerBodies.length = 0;
+    answerOrigins.length = 0;
+    answerRefusal = null;
+    const row = runs.get(runId);
+    if (!row) throw new Error('no run row');
+    const card = page.getByRole('region', { name: 'The agent needs you' });
+    const pollsSince = () =>
+      pollCalls.filter((c) => c === `GET /api/relay/runs/${runId}`).length;
+    try {
+      // Pending questions while the agent works or after it stopped: no card.
+      for (const phase of ['working', 'review']) {
+        row.phase = phase;
+        row.pending = PENDING;
+        const before = pollsSince();
+        await expect
+          .poll(pollsSince, { timeout: 10_000 })
+          .toBeGreaterThan(before + 1);
+        expect(await card.count()).toBe(0);
+      }
+
+      row.phase = 'needs_you';
+      await card.waitFor({ timeout: 10_000 });
+      // The prompt is text, not markup.
+      await card.getByText('County of residence <b>x</b>').waitFor();
+      expect(await card.locator('b').count()).toBe(0);
+      await card.getByText('Social Security number').waitFor();
+      await card
+        .getByText(
+          'This one is sensitive. Type it in the page yourself, then press the button.',
+        )
+        .waitFor();
+      // No text input for the sensitive question: only the one textarea.
+      expect(await card.getByRole('textbox').count()).toBe(1);
+
+      const send = card.getByRole('button', { name: 'Send' });
+      expect(await send.isDisabled()).toBe(true);
+      const box = card.getByLabel('County of residence <b>x</b>');
+      expect(await box.getAttribute('autocomplete')).toBe('off');
+      expect(await box.getAttribute('maxlength')).toBe('2000');
+      // The fixed no-numbers line sits under the input and describes it.
+      const warning = card.getByText(
+        'Do not type Social Security, bank, card or ID numbers here. Type those in the page.',
+      );
+      const warningId = await warning.getAttribute('id');
+      expect(warningId).toBeTruthy();
+      expect(await box.getAttribute('aria-describedby')).toBe(warningId);
+      await box.fill(ANSWER);
+      expect(await send.isDisabled()).toBe(true);
+
+      // The same pending set re-reported by later polls keeps what was typed.
+      let mark = pollsSince();
+      await expect
+        .poll(pollsSince, { timeout: 10_000 })
+        .toBeGreaterThan(mark + 1);
+      expect(await box.inputValue()).toBe(ANSWER);
+      // A changed id set resets the card.
+      row.pending = [{ ...PENDING[0], requestId: 'q-text-2' }, PENDING[1]];
+      await expect.poll(() => box.inputValue(), { timeout: 10_000 }).toBe('');
+      row.pending = PENDING;
+      mark = pollsSince();
+      await expect
+        .poll(pollsSince, { timeout: 10_000 })
+        .toBeGreaterThan(mark + 1);
+      await box.fill(ANSWER);
+      expect(await send.isDisabled()).toBe(true);
+      await card.getByRole('button', { name: 'I entered it myself' }).click();
+      expect(await send.isDisabled()).toBe(false);
+
+      // The server refuses the text: fixed copy, the text is cleared.
+      answerRefusal = 'sensitive_value_in_message';
+      await send.click();
+      await card
+        .getByRole('alert')
+        .getByText("We can't send that here")
+        .waitFor();
+      await card
+        .getByRole('alert')
+        .getByText('Type that value in the page yourself, then press Skip.')
+        .waitFor();
+      // Focus moved to the alert, not lost with the disabled Send.
+      expect(
+        await page.evaluate(() => document.activeElement?.getAttribute('role')),
+      ).toBe('alert');
+      expect(await box.inputValue()).toBe('');
+      expect(await send.isDisabled()).toBe(true);
+      expect(answerBodies).toHaveLength(1);
+
+      // Answer again: one POST with exactly the batch.
+      answerRefusal = null;
+      await box.fill(ANSWER);
+      expect(await send.isDisabled()).toBe(false);
+      await send.click();
+      await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(
+        await page.evaluate(() => document.activeElement?.getAttribute('role')),
+      ).toBe('status');
+      expect(answerBodies).toHaveLength(2);
+      expect(answerBodies[1]).toEqual({
+        id: runId,
+        inputResponses: [
+          { requestId: 'q-text', text: ANSWER },
+          { requestId: 'q-ssn', optionId: 'provided' },
+        ],
+      });
+      expect(answerOrigins).toEqual([
+        `chrome-extension://${EXTENSION_ID}`,
+        `chrome-extension://${EXTENSION_ID}`,
+      ]);
+      // Still the same pending set: the card stays sent and disabled.
+      const before = pollsSince();
+      await expect
+        .poll(pollsSince, { timeout: 10_000 })
+        .toBeGreaterThan(before + 1);
+      await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(await send.isDisabled()).toBe(true);
+      expect(await box.isDisabled()).toBe(true);
+      expect(answerBodies).toHaveLength(2);
+
+      // The agent took the answers: the card goes away.
+      row.phase = 'working';
+      row.pending = [];
+      await card.waitFor({ state: 'detached', timeout: 10_000 });
+
+      // A lone sensitive question (plus a malformed entry the card ignores):
+      // its button only selects; Send sends.
+      row.pending = [null, PENDING[1]];
+      row.phase = 'needs_you';
+      await card.waitFor({ timeout: 10_000 });
+      expect(await card.getByRole('textbox').count()).toBe(0);
+      await card.getByRole('button', { name: 'Skip' }).click();
+      expect(
+        await card
+          .getByRole('button', { name: 'Skip' })
+          .getAttribute('aria-pressed'),
+      ).toBe('true');
+      expect(answerBodies).toHaveLength(2);
+      await send.click();
+      await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(answerBodies).toHaveLength(3);
+      expect(answerBodies[2]).toEqual({
+        id: runId,
+        inputResponses: [{ requestId: 'q-ssn', optionId: 'skip' }],
+      });
+      row.phase = 'working';
+      row.pending = [];
+      await card.waitFor({ state: 'detached', timeout: 10_000 });
+
+      // A free-text question with a flagged prompt: a notice, no input, no
+      // buttons, and Send never enables.
+      row.pending = [
+        {
+          requestId: 'q-free-ssn',
+          prompt: 'What is your Social Security number?',
+          display: 'text',
+          options: [],
+          allowFreeform: true,
+        },
+      ];
+      row.phase = 'needs_you';
+      await card
+        .getByText(
+          'This question cannot be answered here. The agent is waiting; you can Stop the run.',
+        )
+        .waitFor({ timeout: 10_000 });
+      expect(await card.getByRole('textbox').count()).toBe(0);
+      expect(
+        await card.getByRole('button', { name: 'I entered it myself' }).count(),
+      ).toBe(0);
+      expect(await send.isDisabled()).toBe(true);
+
+      // A yes/no whose prompt only mentions a sensitive topic stays a choice.
+      row.pending = [
+        {
+          requestId: 'q-benefits',
+          prompt:
+            'Does anyone in the household receive Social Security benefits?',
+          display: 'select',
+          options: [
+            { id: 'yes', label: 'Yes' },
+            { id: 'no', label: 'No' },
+          ],
+          allowFreeform: false,
+        },
+      ];
+      await card.getByRole('radio', { name: 'Yes' }).click({ timeout: 10_000 });
+      await send.click();
+      await card.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(answerBodies).toHaveLength(4);
+      expect(answerBodies[3]).toEqual({
+        id: runId,
+        inputResponses: [{ requestId: 'q-benefits', optionId: 'yes' }],
+      });
+      row.phase = 'working';
+      row.pending = [];
+      await card.waitFor({ state: 'detached', timeout: 10_000 });
+
+      // The typed answer reached no console line, the title or storage.
+      expect(await page.title()).not.toContain(ANSWER);
+      expect(page.url()).not.toContain(ANSWER);
+      const stored = await page.evaluate(async () =>
+        JSON.stringify([
+          await chrome.storage.local.get(null),
+          await chrome.storage.session.get(null),
+        ]),
+      );
+      expect(stored).not.toContain(ANSWER);
+      for (const line of seen) expect(line).not.toContain(ANSWER);
+    } finally {
+      answerRefusal = null;
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 90_000);
+
+  type HoldStatus = Status & { pendingOrigin?: string };
+
+  /** Sends the run's tab to the other fixture origin: the worker holds. */
+  const leaveForFrameOrigin = async (
+    site: import('playwright').Page,
+    page: import('playwright').Page,
+  ) => {
+    // A query and a fragment the card must never show.
+    const away = `${fixtures.frameOrigin}/oopif.html?case=Zelda-Quill#frag-77`;
+    await site.evaluate((u) => {
+      location.href = u;
+    }, away);
+    await expect
+      .poll(async () => ((await runStatus(page)) as HoldStatus).pendingOrigin, {
+        timeout: 5_000,
+      })
+      .toBe(fixtures.frameOrigin);
+  };
+
+  const stoppedFor = (runId: string, reason: string) =>
+    relay.logs.some(
+      (l) =>
+        l.event === 'run-stopped' &&
+        (l as { runId?: string }).runId === runId &&
+        (l as { reason?: string }).reason === reason,
+    );
+
+  it('Allow this site: names the origin and the tab URL; Allow lets the run go on', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    const seen: string[] = [];
+    page.on('console', (msg) => seen.push(msg.text()));
+    try {
+      // The progress comes from the first server poll (3 s), after the first
+      // worker poll (2 s): the panel has seen the run clear, so it sees the
+      // hold begin and can show a countdown.
+      await page.getByText('6 fields so far').waitFor();
+      await leaveForFrameOrigin(site, page);
+      const heading = page.getByRole('heading', { name: 'Allow this site?' });
+      await heading.waitFor({ timeout: 5_000 });
+      // Focus moves to the card once, when it appears.
+      expect(await page.evaluate(() => document.activeElement?.id ?? '')).toBe(
+        'allow-site-title',
+      );
+      await page
+        .getByText(
+          `The page moved to ${fixtures.frameOrigin}. The agent is paused until you decide.`,
+        )
+        .waitFor();
+      // The tab's actual URL: origin plus path, never the query or fragment.
+      await page
+        .getByText(`The tab is now on: ${fixtures.frameOrigin}/oopif.html`, {
+          exact: true,
+        })
+        .waitFor();
+      // The panel saw the hold begin (it polled the clear run first).
+      // The build's shortened hold (the panel gets the same define).
+      const left = await page
+        .getByText(/^About \d+ seconds? left$/)
+        .textContent();
+      expect(Number(left?.match(/\d+/)?.[0])).toBeLessThanOrEqual(
+        PANEL_HOLD_MS / 1000,
+      );
+      const shown = await page.locator('body').innerText();
+      expect(shown).not.toMatch(/Zelda|frag-77/);
+      // Nothing allowed yet: the worker still holds.
+      expect(((await runStatus(page)) as HoldStatus).pendingOrigin).toBe(
+        fixtures.frameOrigin,
+      );
+
+      // A hold takes precedence: a review phase shows no review panel.
+      const heldRun = runs.get(runId);
+      if (heldRun) heldRun.phase = 'review';
+      // Wait for the panel's next server poll to have read the review phase.
+      const polled = pollCalls.length;
+      await expect
+        .poll(() => pollCalls.length, { timeout: 5_000 })
+        .toBeGreaterThan(polled);
+      expect(await heading.count()).toBe(1);
+      expect(
+        await page
+          .getByRole('heading', { name: 'Ready for your review' })
+          .count(),
+      ).toBe(0);
+      if (heldRun) heldRun.phase = 'working';
+
+      await page
+        .getByRole('button', { name: 'Allow this site for this run' })
+        .click();
+      // One predicate: the same run, still active, and no longer held.
+      await expect
+        .poll(
+          async () => {
+            const status = (await runStatus(page)) as HoldStatus;
+            return {
+              active: status.active,
+              runId: status.runId,
+              held: status.pendingOrigin ?? null,
+            };
+          },
+          { timeout: 5_000 },
+        )
+        .toEqual({ active: true, runId, held: null });
+      // The P4c2-e note, which outlives the card.
+      await page
+        .getByText(
+          /^Allowed\. While the tab stays on that site this run cannot be extended and ends at .+\.$/,
+        )
+        .waitFor();
+      await expect.poll(() => heading.count(), { timeout: 5_000 }).toBe(0);
+
+      // Past the hold: the run goes on at the new origin.
+      await new Promise((r) => setTimeout(r, PANEL_HOLD_MS + 1_000));
+      const after = (await runStatus(page)) as HoldStatus;
+      expect({ active: after.active, runId: after.runId }).toEqual({
+        active: true,
+        runId,
+      });
+      expect(after.pendingOrigin).toBeUndefined();
+      expect(stoppedFor(runId, 'left-origin')).toBe(false);
+      await page.getByRole('heading', { name: 'Running' }).waitFor();
+      await page.getByText(/^Allowed\. While the tab stays/).waitFor();
+      for (const line of seen) expect(line).not.toMatch(/Zelda|frag-77|oopif/);
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 60_000);
+
+  it('Allow this site: nobody answers, the run ends after the hold and the card goes', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    try {
+      await page.getByText('Site: localhost').waitFor();
+      await leaveForFrameOrigin(site, page);
+      const heading = page.getByRole('heading', { name: 'Allow this site?' });
+      await heading.waitFor({ timeout: 5_000 });
+      // The hold runs out; the panel waits out WORKER_GONE_AFTER_MS (7 s).
+      await page
+        .getByText('The run ended in the browser.', { exact: false })
+        .waitFor({ timeout: PANEL_HOLD_MS + 20_000 });
+      expect(stoppedFor(runId, 'left-origin')).toBe(true);
+      expect(await heading.count()).toBe(0);
+      expect(
+        await page
+          .getByRole('button', { name: 'Allow this site for this run' })
+          .count(),
+      ).toBe(0);
+      expect((await runStatus(page)).active).toBe(false);
+      await expect.poll(() => stopCalls(runId), { timeout: 5_000 }).toBe(1);
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 60_000);
+
+  it('runs one form end to end: progress, questions, an allowed move, review, submitted, another form', async () => {
+    // Driven as panel.html in a tab (a real side panel cannot be driven
+    // headless), against the real worker and relay; the fake app's run row
+    // changes over time the way the server's would. The only stubs are the
+    // tab query (the panel is a tab) and the unlisted-origin move, which is a
+    // real navigation of the run's tab.
+    const ANSWER = 'End-To-End-Answer-91';
+    const PENDING = [
+      {
+        requestId: 'q-text',
+        prompt: 'County of residence',
+        display: 'text',
+        options: [],
+        allowFreeform: true,
+      },
+      {
+        requestId: 'q-ssn',
+        prompt: 'Social Security number',
+        display: 'select',
+        options: [
+          { id: 'provided', label: 'I entered it myself' },
+          { id: 'skip', label: 'Skip' },
+        ],
+        allowFreeform: false,
+      },
+    ];
+    const { site, page, runId } = await startOnRealTab();
+    const seen: string[] = [];
+    page.on('console', (msg) => seen.push(msg.text()));
+    page.on('pageerror', (error) => seen.push(error.message));
+    answerBodies.length = 0;
+    answerRefusal = null;
+    const row = runs.get(runId);
+    if (!row) throw new Error('no run row');
+    const needsYou = page.getByRole('region', { name: 'The agent needs you' });
+    const allow = page.getByRole('heading', { name: 'Allow this site?' });
+    const review = page.getByRole('heading', { name: 'Ready for your review' });
+    const none = async (...gone: import('playwright').Locator[]) => {
+      for (const l of gone) expect(await l.count()).toBe(0);
+    };
+    try {
+      // Working, with progress: sections and actions, nothing else.
+      await page.getByText('6 fields so far').waitFor();
+      await none(needsYou, allow, review);
+
+      // Text and sensitive questions: the card, only on needs_you.
+      row.pending = PENDING;
+      row.phase = 'needs_you';
+      await needsYou.waitFor({ timeout: 10_000 });
+      await needsYou.getByText('Social Security number').waitFor();
+      await none(allow, review);
+      await needsYou.getByLabel('County of residence').fill(ANSWER);
+      await needsYou
+        .getByRole('button', { name: 'I entered it myself' })
+        .click();
+      await needsYou.getByRole('button', { name: 'Send' }).click();
+      await needsYou.getByText('Sent. Waiting for the agent...').waitFor();
+      expect(answerBodies).toEqual([
+        {
+          id: runId,
+          inputResponses: [
+            { requestId: 'q-text', text: ANSWER },
+            { requestId: 'q-ssn', optionId: 'provided' },
+          ],
+        },
+      ]);
+
+      // The agent took them: working again, no stale card.
+      row.pending = [];
+      row.phase = 'working';
+      await needsYou.waitFor({ state: 'detached', timeout: 10_000 });
+      await page.getByText('6 fields so far').waitFor();
+      await none(allow, review);
+
+      // The tab leaves for another origin: the allow card, then Allow.
+      await leaveForFrameOrigin(site, page);
+      await allow.waitFor({ timeout: 5_000 });
+      await none(needsYou, review);
+      await page
+        .getByRole('button', { name: 'Allow this site for this run' })
+        .click();
+      await expect.poll(() => allow.count(), { timeout: 5_000 }).toBe(0);
+      const status = (await runStatus(page)) as HoldStatus;
+      expect({ active: status.active, runId: status.runId }).toEqual({
+        active: true,
+        runId,
+      });
+
+      // The turn idles: the review panel, and nothing stale beside it.
+      row.phase = 'review';
+      await review.waitFor({ timeout: 10_000 });
+      await none(needsYou, allow);
+
+      // Submitted: one stop on each side, Confirmed, then another form.
+      await page.getByRole('button', { name: 'I submitted it' }).click();
+      await page.getByRole('heading', { name: 'Submitted' }).waitFor();
+      await none(needsYou, allow, review);
+      expect(row.ended).toBe(true);
+      expect(stopCalls(runId)).toBe(1);
+      expect((await runStatus(page)).active).toBe(false);
+      await page
+        .getByRole('button', { name: 'Start another form for this person' })
+        .click();
+      await page.getByRole('heading', { name: 'Ready' }).waitFor();
+      await page.getByRole('button', { name: 'Start' }).waitFor();
+      await none(needsYou, allow, review);
+
+      // The fake app saw each call once, in this order; the answer turn is
+      // the one eve-chat POST after the first, which `answerBodies` counted.
+      expect(appCalls).toEqual([
+        'POST /api/eve-chat',
+        'POST /api/relay/token',
+        `POST /api/relay/runs/${runId}/stop`,
+      ]);
+      expect(answerBodies).toHaveLength(1);
+      // No applicant text in the console, and nothing from the move's URL.
+      for (const line of seen) {
+        expect(line).not.toContain(ANSWER);
+        expect(line).not.toMatch(/Zelda|frag-77|oopif/);
+      }
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 90_000);
 
   it('saves details for 8 hours, reuses them, expires them and clears them', async () => {
     const seen: string[] = [];

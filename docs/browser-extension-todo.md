@@ -84,7 +84,7 @@ Landed on `feat/sensitive-redaction-impl`; see `docs/changes/2026-10-26-add-sens
 
 ## Plan 4: Side Panel And App API
 
-- [ ] The six screens and saved details with the 8-hour limit (the participant API is done, plan 4a). Plan 4c-1 built Home, both participant screens, Ready, Starting, Running (Stop only) and saved details; Review and Confirmed are plan 4c-2.
+- [ ] The six screens and saved details with the 8-hour limit (the participant API is done, plan 4a). Plan 4c-1 built Home, both participant screens, Ready, Starting, Running (Stop only) and saved details; plan 4c-2 added the Running view, Needs You, Allow this site, Review and Confirmed.
 - [x] Runtime Jev route `app/(chat)/api/relay/classify-field/route.ts` (plan 4a); `CLAUDE.md` updated.
 - [x] 4b: the worker calls classify-field, sending only the `DESCRIPTOR_KEYS` string fields of each descriptor (the route sanitizes them with `describeFieldForJev` before asking Jev), and ORs the verdict with the deterministic `isSensitiveField`, so Jev can only escalate masking. A `null` answer (no verdict: Jev disabled or failing) leaves the deterministic verdict and is not cached (plan 4b; residuals in "Plan 4b follow-ups").
 - [ ] Typing sensitive values from the panel into the page, and registering them with the worker through `addKnownValue`. Values are lost on a worker restart, so the panel re-registers them after each restart.
@@ -97,14 +97,14 @@ Landed on `feat/sensitive-redaction-impl`; see `docs/changes/2026-10-26-add-sens
 - [x] (plan 4a: relay-only lookup, partial unique index, other-user refusal before session creation) Chat-id squatting on the internal token route: another user who creates an `EveRun` row for the same chat id first makes the route 404 for the real owner, and if a run id leaks, that user can obtain an agent token for the run with an origin they chose (hijack). The session binding (the route mints only for the Eve session stored on the row) narrows this to the squatter's own session but does not stop it; fix with user binding, plus a partial unique index on `EveRun.chatId` where `relayOrigin` is not null, or a relay-only store lookup.
 - [x] `EVE_INTERNAL_SECRET` minimum length (32; shorter is treated as unset). Owner: the deployed secret must meet it.
 - [x] The agent-token route reads its body through a bounded reader (`lib/relay/read-bounded-body.ts`).
-- [ ] Per-run "Allow this site?" approval for a redirect. Partly done (plan 4b): the worker holds the run for 60 s (120 s cap) when the tab leaves for another https origin, and the `allowOrigin` message adds the origin (max 3). The prompt UI is plan 4c.
+- [ ] Per-run "Allow this site?" approval for a redirect. Partly done (plan 4b): the worker holds the run for 60 s (120 s cap) when the tab leaves for another https origin, and the `allowOrigin` message adds the origin (max 3). The prompt UI landed in plan 4c-2.
 - [x] Serialize `startRun` so concurrent calls cannot orphan a run (plan 4b: `startRun`, `stopRun` and `resumeRun` share one queue).
 - [x] Mint-side claim validation and refusing an empty secret in `mintRelayToken`; value-free log line on route misconfiguration; `Cache-Control: no-store` on error responses.
 - [x] Gate the service-worker test hooks (`bridgeHandleMessage`, `bridgeOnDebuggerDetach`) behind a build define before real extension pages exist (plan 4b: `EXTENSION_TEST_HOOKS=1`; refused with `EXTENSION_RELEASE=1`).
 - [x] A Stop issued while the socket is reconnecting drops the `stop` frame; send it on reopen (plan 4b: queued for 30 s or token expiry, memory only, so a worker restart loses it).
 - [x] Decide whether a detach for reasons other than `canceled_by_user` should end the run (plan 4b: ends it with `debugger-detached` after 5 s without a re-attach).
 
-- [ ] Plan 4c-1 is done (see `docs/changes/2026-10-29-add-side-panel-start-flow.md`); plan 4c-2 remains. Plan 4c: the panel; saved details; typing sensitive values plus `addKnownValue`; the "Allow this site?" prompt. `startRun` serialization, hook gating, Stop while reconnecting and the detach decision landed in plan 4b (above). See "Plan 4c carry-forward".
+- [ ] Plan 4c-1 is done (see `docs/changes/2026-10-29-add-side-panel-start-flow.md`); plan 4c-2 is done (see `docs/changes/2026-10-30-add-side-panel-running-view.md`); plan 4c-3 remains. Plan 4c: the panel; saved details; typing sensitive values plus `addKnownValue`; the "Allow this site?" prompt. `startRun` serialization, hook gating, Stop while reconnecting and the detach decision landed in plan 4b (above). See "Plan 4c carry-forward".
 - [x] 4b: how the extension authenticates to the app: CORS, cookies, SameSite. Settled by a spike (Chromium 145): a Lax cookie reaches the app from the worker and extension pages once `host_permissions` covers `APP_ORIGIN`; `auth.ts` is unchanged. Third-party-cookie blocking is untested.
 - [x] 4b: a read route for run state (`GET /api/relay/runs/[runId]`: origin, progress, `pending`, `ended`, `endedAt`). Still open: there is no stream-resume GET on `eve-chat`.
 - [x] 4b: a server-side Stop (`POST /api/relay/runs/[runId]/stop`: ends the row, cancels the Eve turn). Nothing calls it yet; the 4c panel must call it as well as the worker `stopRun`. Tokens minted before Stop stay valid up to 1800 s and the hub does not know `endedAt`.
@@ -180,9 +180,9 @@ Contracts the panel must honor:
 - [x] (plan 4c-1: the run session polls `getRunStatus` every 2 s and treats 7 s of continuous inactivity for its run as an end; an extra read of the server first) Call the server Stop for worker-initiated ends too (only while a panel is open; see I1 under 'Must land before') (`left-origin`, `token-expired`, `debugger-canceled`, `debugger-detached`, tab closed). Those tell only the hub: the server row stays live, the Eve turn keeps running and `relay/agent-token` keeps minting. The bridge has no push, so poll `getRunStatus` to notice an end.
 - [x] (plan 4c-1: refresh at 5 min left, retry every 60 s, then `registrationComplete(runId, 0)`) Token refresh (a same-run-id `startRun`): it is refused when the tab is on an origin added by `allowOrigin` (only the token origin is checked); it drops the extra origins, detaches the debugger, sends no `resumed`, clears known values and requires re-registration. A refused refresh means the run dies at `exp` (see the 4c-2 carry-forward). Refresh BEFORE `exp`: the worker's own `token-expired` sends `stop`, and the hub then closes the run for good.
 - [ ] Jev disabled is a supported configuration: `classify-field` answers `null` for unflagged fields and masking is deterministic only. `jevFailures` grows with every `null`, so it is not an outage signal.
-- [ ] After a worker restart, send `runId` with `registrationComplete` and `addKnownValue`, and call `registrationComplete` (count may be 0) promptly; the run stalls fail-closed until then. Partly done (plan 4c-1): the panel sends `runId` and calls `registrationComplete(runId, 0)` after every `startRun` and refresh. Open: a worker restart without a panel refresh is not detected, and the count is always 0 until 4c-2 types values.
-- [ ] Hide pending questions when the run state says `ended`. Nothing to hide yet: the 4c-1 panel shows no pending questions (4c-2).
-- [ ] The allow-origin prompt shows the tab's actual URL as well as `pendingOrigin`, and is never auto-approved. A prompt-injected agent can also trigger holds by clicking links.
+- [ ] After a worker restart, send `runId` with `registrationComplete` and `addKnownValue`, and call `registrationComplete` (count may be 0) promptly; the run stalls fail-closed until then. Partly done (plan 4c-1): the panel sends `runId` and calls `registrationComplete(runId, 0)` after every `startRun` and refresh. Open: a worker restart without a panel refresh is not detected, and the count is always 0 until 4c-3 types values.
+- [x] Hide pending questions when the run state says `ended` (done in plan 4c-2: the route returns `[]` once ended and the panel shows no cards).
+- [x] The allow-origin prompt shows the tab's actual URL (origin plus path) as well as `pendingOrigin`, and is never auto-approved (plan 4c-2). A prompt-injected agent can still trigger holds by clicking links; the card shows where the tab is.
 - [ ] During a hold the Eve tool returns the out-of-scope refusal; the agent should be told to wait and retry.
 - [ ] Show `jevFailures` as a count, not as an outage signal.
 - [ ] `RELAY_EXTENSION_ORIGIN` must be set at deploy for the origin check; `APP_ORIGIN` must exactly match the deployed app origin for cookie auth.
@@ -209,7 +209,7 @@ Other follow-ups:
 - [ ] The session's `workerGone` branch for a row that already ended skips the scoped worker stop.
 - [ ] Dead constant `GRACE_MS` in `extension/panel/lib/run-session.ts`; the bridge-constant test reads `bridge.ts` with a regex (export `STOP_WAIT_MS` instead); no render tests for `running.tsx` copy.
 - [ ] Single-run worker: a start in a second panel window replaces the first window's worker run (the first window's session then notices the replacement and stops its server run).
-- [ ] Every panel open mid-run refreshes the token at once, which detaches the debugger, clears known values and drops allowed origins. 4c-2 must re-register values before `registrationComplete` and re-allow or re-prompt origins.
+- [ ] Every panel open mid-run refreshes the token at once, which detaches the debugger, clears known values and drops allowed origins. 4c-3 must re-register values before `registrationComplete` and re-allow or re-prompt origins.
 - [ ] `siteName` is the hostname for "Use this tab" and is cut to 100 UTF-16 units, which can split a surrogate pair.
 - [ ] The recents read-modify-write is serialized by a mutex within one window, not across windows.
 - [x] `ensureSweepAlarm` now checks `alarms.get` first and creates the alarm only when none exists, and the worker also sweeps once at every start. Still open: it uses the global `chrome`.
@@ -237,13 +237,27 @@ Minors by area:
 
 ## Plan 4c-2 carry-forward
 
-- [ ] Running view with sections, progress and the action log (`state.run` and `getRunState.progress`).
-- [ ] Needs You cards from `getRunState.pending`; ordinary answers go through `eve-chat` `inputResponses`. Hide them once the run is `ended`.
+- [x] Running view with sections, progress and the action log (plan 4c-2).
+- [x] Needs You cards from `getRunState.pending`; ordinary answers go through `eve-chat` `inputResponses`; hidden once the run is `ended` (plan 4c-2). Sensitive questions only offer `provided` and `skip`.
 - [ ] Token refresh is refused while the tab is on an origin added by `allowOrigin` (only the token origin is checked), so the run then dies at `exp`; fix the refresh or re-allow the origin before the run can outlive its token.
 - [ ] Typing sensitive values into the page: `addKnownValue(runId, ...)`, then `registrationComplete(runId, count)` with the real count. Re-register after any refresh or worker restart.
-- [ ] The allow-this-site prompt shows the tab's actual URL as well as `pendingOrigin` and is never auto-approved; a prompt-injected agent can trigger holds by clicking links.
-- [ ] Review and Confirmed screens; "show me the unfilled field".
-- [ ] The Eve tool waits and retries during an origin hold instead of returning the out-of-scope refusal.
+- [x] The allow-this-site prompt shows the tab's actual URL as well as `pendingOrigin` and is never auto-approved (plan 4c-2).
+- [x] Review and Confirmed screens (plan 4c-2; 'I submitted it' is manual).
+- [ ] "Show me the unfilled field" (plan 4c-3), automatic submit detection and the confirmation number (plan 4c-3).
+- [ ] The Eve tool waits and retries during an origin hold instead of returning the out-of-scope refusal. Panel consequence: if the agent ends its turn on the refusal, the hold clearing shows Review ("The agent has stopped") and nothing in the panel can resume it, so Allow achieves nothing.
+
+## Plan 4c-2 Follow-ups
+
+- [ ] The panel-shell e2e now takes about 154 s; check it against the relay-e2e CI job's 20 minute limit, and consider splitting the Needs You scenario (about 55 s of its 90 s budget).
+- [ ] A stale `review` phase can show after a replayed turn: a follow-up arriving between turn A's final swap and its `session.waiting` replays A's waiting and leaves `turnIdle` true while B runs, and "I submitted it" then cancels B. Root fix: hold the claim until `session.waiting` (see the claim item above). The panel offers no follow-up input while `working`. The variant a panel answer can reach instead ends on a re-asked, already-answered Needs You card; a cheap guard is to show `needs_you` only when `turnIdle` too, with idle written after `advance` (optional: the review judged the current ordering acceptable).
+- [ ] The Confirmed stop-failed copy mentions a Stop control that is not on that screen.
+- [ ] `turnIdle` is written before the cursor `advance`, so `review` can show a moment before the cursor moves; write it after, in a `finally`. The rollback branch where the row was not idle has no test.
+- [ ] A free-text sensitive question has no panel path until plan 4c-3 (dead-end card). A bare SSN or short ID in a free-text answer can pass the server's prose guard; the card only warns.
+- [ ] A server refusal clears every typed text field in the batch (the server does not say which). Whether Eve splits parallel `ask_question` calls across separate `input.requested` events is unverified (decides how often `missing_answer` occurs).
+- [ ] Allow-site: a second press after an unanswered worker call can show 'hold ended' though the first went through; `tabNotFound` and `token_invalid` refusals show the generic hold-ended copy; the double announcement (focus plus `role=alert`) and the note persisting after the tab returns are unaddressed.
+- [ ] A user Stop in flight followed by "I submitted it" returns the same promise, so the run ends as `user` yet Confirmed shows.
+- [ ] `RunState.phase` is typed `RunPhase | string`; the session emits every 3 s even when nothing changed (memoise in the UI).
+- [ ] Missing tests: rendered hold card, `openedMidRun` render, a B-to-C allow e2e, progress sections checked only by count text in the e2e.
 
 ## Plan 5: Rollout
 

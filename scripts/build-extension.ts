@@ -57,6 +57,7 @@ function buildPanel(
   out: string,
   metafile: string | undefined,
   appOrigin: string,
+  originHoldMs: number | undefined,
 ) {
   const panel = path.join(ROOT, 'extension/panel');
   const tokens = path.join(panel, 'tokens.css');
@@ -72,7 +73,13 @@ function buildPanel(
   }
   execFileSync(
     path.join(ROOT, 'node_modules/.bin/esbuild'),
-    panelEsbuildArgs(ROOT, path.join(out, 'panel.js'), metafile, appOrigin),
+    panelEsbuildArgs(
+      ROOT,
+      path.join(out, 'panel.js'),
+      metafile,
+      appOrigin,
+      originHoldMs,
+    ),
     { cwd: ROOT, stdio: 'inherit' },
   );
   // No --postcss: the panel CSS uses no nesting, and the CLI's own pipeline
@@ -110,7 +117,7 @@ try {
     ),
     { cwd: ROOT, stdio: 'inherit' },
   );
-  buildPanel(out, metafile, appOrigin);
+  buildPanel(out, metafile, appOrigin, originHoldMs);
   const source = JSON.parse(
     readFileSync(path.join(ROOT, 'extension/manifest.json'), 'utf8'),
   );

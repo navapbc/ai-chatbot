@@ -126,6 +126,9 @@ describe('the panel bundle', () => {
     expect(css).toMatch(/--primary:\s*320 47% 47%/);
     expect(css).toMatch(/--radius:\s*0\.75rem/);
     expect(css).toMatch(/\.bg-primary\s*\{/);
+    // The indeterminate bar pulses only when motion is allowed.
+    expect(css).toContain('motion-safe');
+    expect(css).toMatch(/--font-ibm-plex-mono:/);
     expect(css).not.toContain('@tailwind');
     expect(css).not.toContain('@import');
   });

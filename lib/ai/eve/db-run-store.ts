@@ -10,6 +10,7 @@ import {
   getEveRunByChatId,
   setEveRunPending,
   setEveRunProgress,
+  setEveRunTurnIdle,
   swapEveRunToken,
 } from '@/lib/db/queries';
 import type { EveRun } from '@/lib/db/schema';
@@ -52,6 +53,7 @@ const toRecord = (row: EveRun): EveRunRecord => ({
   pendingRequests: row.pendingRequests,
   progress: row.progress,
   endedAt: row.endedAt,
+  turnIdle: row.turnIdle,
 });
 
 /** Postgres-backed run store over the EveRun table (lib/db/queries.ts). */
@@ -89,6 +91,8 @@ export function createDbRunStore(): EveRunStore {
       setEveRunPending({ userId, chatId, pendingRequests }),
     setProgress: (userId, chatId, progress) =>
       setEveRunProgress({ userId, chatId, progress }),
+    setTurnIdle: (userId, chatId, idle) =>
+      setEveRunTurnIdle({ userId, chatId, idle }),
     remove: (userId, chatId) => deleteEveRun({ userId, chatId }),
     end: (userId, chatId) => endEveRun({ userId, chatId }),
   };
