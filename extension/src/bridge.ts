@@ -538,7 +538,11 @@ async function startRunNow(
   }
   const url = await tabUrl(msg.tabId);
   if (url === null) return { ok: false, error: 'tab not found' };
-  if (!inScope(url, claims.origin)) return { ok: false, error: OUT_OF_SCOPE };
+  // The tab may also sit on an origin the live run of this same id was
+  // allowed (see carriedOrigins); rechecked below against the snapshot.
+  if (!inScope(url, claims.origin) && !onCarriedOrigin(url, claims)) {
+    return { ok: false, error: OUT_OF_SCOPE };
+  }
 
   // A run restarted under the same run id (e.g. a refreshed token) is not
   // ended on the relay: its new socket's `register` replaces the old one
@@ -565,6 +569,21 @@ async function startRunNow(
   const valuesLost = sameRun
     ? previous.needsRegistration
     : begun.includes(claims.runId);
+  // Allowed origins carry only for the same run id and token origin, copied
+  // here (endRun clears them). The tab check is repeated against this copy:
+  // a run that ended or changed during the awaits above carries nothing, so
+  // a tab on an origin that is no longer allowed is refused, with the old
+  // run left as it was.
+  const carriedOrigins =
+    sameRun && previous.origin === claims.origin
+      ? previous.extraOrigins.slice(0, MAX_EXTRA_ORIGINS)
+      : [];
+  if (
+    !inScope(url, claims.origin) &&
+    !carriedOrigins.some((origin) => inScope(url, origin))
+  ) {
+    return { ok: false, error: OUT_OF_SCOPE };
+  }
   // From here until begin finishes `run` is briefly undefined; a same-run
   // refresh is not a gone run, so getRunStatus says `restarting` (cleared in
   // finally, so a throw cannot leave it set).
@@ -580,6 +599,7 @@ async function startRunNow(
     await chrome.storage.session.set({ [STORAGE_KEY]: config });
     begin(config, socket.url, claims, false, valuesLost);
     carryKnownValues(carried);
+    carryExtraOrigins(carriedOrigins);
     return { ok: true };
   } finally {
     if (sameRun) {
@@ -595,6 +615,32 @@ async function startRunNow(
  */
 const restartingRunIds: string[] = [];
 let resumesInFlight = 0;
+
+/** True when the live run has this id and token origin and allowed an origin `url` is in. */
+function onCarriedOrigin(
+  url: string,
+  claims: { runId: string; origin: string },
+): boolean {
+  const current = run;
+  return (
+    current !== undefined &&
+    !current.stopped &&
+    current.runId === claims.runId &&
+    current.origin === claims.origin &&
+    current.extraOrigins.some((origin) => inScope(url, origin))
+  );
+}
+
+/**
+ * Sets the origins a same-run refresh carried on the run just begun (memory
+ * only, deduped, at most MAX_EXTRA_ORIGINS). Synchronous with begin. The
+ * hold state is not carried: the new run starts unheld.
+ */
+function carryExtraOrigins(origins: string[]) {
+  const current = run;
+  if (!current || origins.length === 0) return;
+  current.extraOrigins = [...new Set(origins)].slice(0, MAX_EXTRA_ORIGINS);
+}
 
 /**
  * Registers the values a same-run refresh carried on the run just begun.

@@ -575,15 +575,26 @@ describe('allowOrigin', () => {
     expect((await evaluate(socket)).error).toBe(OUT_OF_SCOPE);
   });
 
-  it('is cleared by a replacement run (same run id too)', async () => {
+  it('is cleared by a replacement run with another run id', async () => {
+    await attachedRun('run-1');
+    commit(`${B}/x`);
+    expect(await allow(B)).toEqual({ ok: true });
+    commit(`${ORIGIN}/form`);
+    const socket = await attachedRun('run-2');
+    commit(`${B}/x`);
+    expect((await status()).pendingOrigin).toBe(B);
+    expect((await evaluate(socket)).error).toBe(OUT_OF_SCOPE);
+  });
+
+  it('is carried by a same-run-id refresh (see the token refresh tests)', async () => {
     await attachedRun('run-1');
     commit(`${B}/x`);
     expect(await allow(B)).toEqual({ ok: true });
     commit(`${ORIGIN}/form`);
     const socket = await attachedRun('run-1');
     commit(`${B}/x`);
-    expect((await status()).pendingOrigin).toBe(B);
-    expect((await evaluate(socket)).error).toBe(OUT_OF_SCOPE);
+    expect((await status()).pendingOrigin).toBeUndefined();
+    expect((await evaluate(socket)).error).toBeUndefined();
   });
 });
 
@@ -802,5 +813,157 @@ describe('a command whose scope check spans a hold (A -> B -> A before the send)
     release();
     expect((await pending).error).toBeUndefined();
     expect(sent('Input.dispatchMouseEvent')).toBe(1);
+  });
+});
+
+describe('a token refresh and the allowed origins', () => {
+  const refresh = (runId = 'run-1', token = tokenFor(runId)) =>
+    bridge.handleMessage({
+      type: 'startRun',
+      relayUrl: RELAY,
+      token,
+      tabId: 1,
+      allowedFrameOrigins: [],
+    });
+
+  /** Allows `origin` (hold, then allow) and goes back to the token origin. */
+  const allowed = async (socket: FakeSocket, origin: string) => {
+    commit(`${origin}/x`);
+    expect(await allow(origin)).toEqual({ ok: true });
+    expect((await evaluate(socket)).error).toBeUndefined();
+  };
+
+  const gateTabs = () => {
+    let open = () => {};
+    fake.tabsGate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return () => open();
+  };
+  const waitForGate = async () => {
+    for (let i = 0; i < 200 && !fake.tabsWaiting; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(fake.tabsWaiting).toBe(true);
+  };
+
+  const reopened = async () => {
+    const next = FakeSocket.all.at(-1) as FakeSocket;
+    await next.open();
+    await ask(next, { id: `a${++seq}`, type: 'attach', targetId: 'T' });
+    return next;
+  };
+
+  it('a same-run refresh on an allowed origin succeeds and the origin stays allowed', async () => {
+    const socket = await attachedRun();
+    await allowed(socket, B);
+    expect(await refresh()).toEqual({ ok: true });
+    const next = await reopened();
+    expect((await status()).active).toBe(true);
+    // No new allowOrigin: B is still in scope for commands and navigation.
+    expect((await evaluate(next)).error).toBeUndefined();
+    commit(`${B}/other`);
+    expect((await status()).pendingOrigin).toBeUndefined();
+    expect((await evaluate(next)).error).toBeUndefined();
+    // A never-allowed origin still holds the run.
+    commit(`${C}/x`);
+    expect((await status()).pendingOrigin).toBe(C);
+    expect((await evaluate(next)).error).toBeDefined();
+  });
+
+  it('a refresh with the tab on a never-allowed origin is refused', async () => {
+    const socket = await attachedRun();
+    await allowed(socket, B);
+    fake.tabUrl = `${C}/x`;
+    expect(await refresh()).toEqual({ ok: false, error: OUT_OF_SCOPE });
+  });
+
+  it('a refresh during a hold on a not-yet-allowed origin is refused', async () => {
+    const socket = await attachedRun();
+    commit(`${B}/login`);
+    expect((await status()).pendingOrigin).toBe(B);
+    expect(await refresh()).toEqual({ ok: false, error: OUT_OF_SCOPE });
+    // The held run is untouched and B can still be allowed.
+    expect(stops(socket)).toEqual([]);
+    expect(await allow(B)).toEqual({ ok: true });
+  });
+
+  it('a different run id does not inherit the origins', async () => {
+    const socket = await attachedRun('run-1');
+    await allowed(socket, B);
+    expect(await refresh('run-2')).toEqual({ ok: false, error: OUT_OF_SCOPE });
+  });
+
+  it('a worker restart carries none', async () => {
+    const socket = await attachedRun();
+    await allowed(socket, B);
+    vi.resetModules();
+    bridge = await import('@/extension/src/bridge');
+    expect(await refresh()).toEqual({ ok: false, error: OUT_OF_SCOPE });
+  });
+
+  it('three origins carry and a fourth allowOrigin is still refused', async () => {
+    const socket = await attachedRun();
+    const D = 'https://d.gov';
+    const E = 'https://e.gov';
+    await allowed(socket, B);
+    await allowed(socket, C);
+    await allowed(socket, D);
+    expect(await refresh()).toEqual({ ok: true });
+    const next = await reopened();
+    for (const origin of [B, C, D]) {
+      commit(`${origin}/y`);
+      expect((await status()).pendingOrigin).toBeUndefined();
+      expect((await evaluate(next)).error).toBeUndefined();
+    }
+    commit(`${E}/y`);
+    expect(await allow(E)).toEqual({
+      ok: false,
+      error: 'too many allowed origins',
+    });
+  });
+
+  it('an origin gone mid-refresh (run ended) does not leave the tab accepted', async () => {
+    const socket = await attachedRun();
+    await allowed(socket, B);
+    const release = gateTabs();
+    const pending = refresh();
+    await waitForGate();
+    // The run ends (the tab went to http: and stopRun would queue behind
+    // the refresh) while the refresh awaits the tab URL, which reads B.
+    commit('http://insecure.test/');
+    await vi.waitFor(() => expect(stops(socket)).toEqual(['left-origin']));
+    fake.tabUrl = `${B}/x`;
+    release();
+    expect(await pending).toEqual({ ok: false, error: OUT_OF_SCOPE });
+    expect((await status()).active).toBe(false);
+  });
+
+  it('a run that ends after the first tab check but before the snapshot carries nothing', async () => {
+    const socket = await attachedRun();
+    await allowed(socket, B);
+    const store = (
+      globalThis as unknown as {
+        chrome: { storage: { session: { set: (i: object) => Promise<void> } } };
+      }
+    ).chrome.storage.session;
+    const realSet = store.set;
+    let open = () => {};
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    let entered = false;
+    store.set = async (items) => {
+      entered = true;
+      await gate;
+      return realSet(items);
+    };
+    const pending = refresh();
+    await vi.waitFor(() => expect(entered).toBe(true));
+    commit('http://insecure.test/');
+    await vi.waitFor(() => expect(stops(socket)).toEqual(['left-origin']));
+    open();
+    expect(await pending).toEqual({ ok: false, error: OUT_OF_SCOPE });
+    store.set = realSet;
   });
 });
