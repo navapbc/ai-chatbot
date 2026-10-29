@@ -40,6 +40,9 @@ jobs:
     outputs:
       environment: ${{ steps.env.outputs.environment }}
       should_deploy: ${{ steps.env.outputs.should_deploy }}
+      # 'true' only for dev and prod with the repository variable
+      # RELAY_ENABLED == 'true'; preview environments never get a relay.
+      relay_enabled: ${{ steps.env.outputs.relay_enabled }}
 
     steps:
       - name: Determine environment
@@ -63,8 +66,19 @@ jobs:
             SHOULD_DEPLOY="true"
           fi
 
+          # RELAY_ENABLED is a repository variable (this job has no
+          # environment), so scope it here: an allowlist of dev and prod, so
+          # preview, preview-pr-N and any future environment stay without one.
+          RELAY_ENABLED="false"
+          if [[ "${{ vars.RELAY_ENABLED }}" == "true" ]]; then
+            if [[ "$ENVIRONMENT" == "dev" ]] || [[ "$ENVIRONMENT" == "prod" ]]; then
+              RELAY_ENABLED="true"
+            fi
+          fi
+
           echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT
           echo "should_deploy=${SHOULD_DEPLOY}" >> $GITHUB_OUTPUT
+          echo "relay_enabled=${RELAY_ENABLED}" >> $GITHUB_OUTPUT
           echo "Environment: ${ENVIRONMENT} (deploy: ${SHOULD_DEPLOY})"
 
   # Build and push Docker images
@@ -78,8 +92,8 @@ jobs:
 
     outputs:
       chatbot_image: ${{ steps.images.outputs.chatbot_image }}
-      # Empty unless vars.RELAY_ENABLED == 'true' (see the relay build step).
-      relay_image: ${{ vars.RELAY_ENABLED == 'true' && steps.images.outputs.relay_image || '' }}
+      # Empty unless setup enabled the relay (see the relay build step).
+      relay_image: ${{ needs.setup.outputs.relay_enabled == 'true' && steps.images.outputs.relay_image || '' }}
 
     steps:
       - name: Checkout code
@@ -142,12 +156,14 @@ jobs:
       # build args or secrets; RELAY_TOKEN_SECRET comes from Secret Manager at
       # runtime (terraform/relay.tf).
       #
-      # Opt-in per repository. The relay is built and deployed only when the
-      # GitHub Actions repository variable RELAY_ENABLED is 'true'; otherwise
-      # Terraform gets relay_image_url="" and plans exactly as before the relay
-      # existed (no relay service, no relay secrets referenced). To turn it on:
-      # create the Secret Manager secrets relay-token-secret-{dev,preview,prod}
-      # (>= 32 chars) and eve-internal-secret-{dev,preview,prod}, grant
+      # Opt-in per repository, dev and prod only. The relay is built and
+      # deployed only when the GitHub Actions repository variable RELAY_ENABLED
+      # is 'true' and the environment is dev or prod (setup's relay_enabled);
+      # otherwise Terraform gets relay_image_url="" and plans exactly as before
+      # the relay existed (no relay service, no relay secrets referenced).
+      # Preview environments never get a relay. To turn it on: create the
+      # Secret Manager secrets relay-token-secret-{dev,prod} (>= 32 chars) and
+      # eve-internal-secret-{dev,prod}, grant
       # roles/logging.configWriter to github-actions-deploy (the relay's
       # request-log exclusion needs logging.exclusions.create; without it the
       # apply fails before the relay exists. Alternatively set
@@ -159,7 +175,7 @@ jobs:
       # deliberately (drop deletion_protection on the relay service first, or
       # `terraform state rm` it).
       - name: Build and push relay image
-        if: vars.RELAY_ENABLED == 'true'
+        if: needs.setup.outputs.relay_enabled == 'true'
         run: |
           docker build \
             -f relay/Dockerfile \

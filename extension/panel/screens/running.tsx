@@ -9,6 +9,7 @@ import type {
 } from '../lib/run-session';
 import type { Confirmation } from '../lib/worker-api';
 import { showAllowSite } from '../lib/allow-site';
+import { POLICY_RESTRICTED_COPY } from '../lib/copy';
 import { createAnswerSender } from '../lib/answer-client';
 import { buildProgressView } from '../lib/progress-view';
 import { createControllerLifecycle } from '../lib/search-controller';
@@ -70,6 +71,16 @@ const endsInText = (secondsLeft: number): string => {
   const minutes = Math.max(1, Math.ceil(secondsLeft / 60));
   const unit = minutes === 1 ? 'minute' : 'minutes';
   return `This run ends in ${minutes} ${unit}.`;
+};
+
+/** The policy explanation, only while the run is live and restricted. */
+export const PolicyNotice = ({ state }: { state: RunSessionState | null }) => {
+  if (state?.status === 'ended' || !state?.policyRestricted) return null;
+  return (
+    <p role="alert" className="text-sm font-semibold">
+      {POLICY_RESTRICTED_COPY}
+    </p>
+  );
 };
 
 /**
@@ -212,6 +223,7 @@ export const RunningScreen = ({
           ) : null}
         </div>
       ) : null}
+      <PolicyNotice state={state} />
       {heldOn && state ? (
         // Above the questions and the progress: the agent is paused until
         // the caseworker decides. Keyed by the origin, so a new origin gets

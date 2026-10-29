@@ -294,6 +294,14 @@ export const NEEDS_YOU_COPY = {
 } as const;
 
 /**
+ * Shown when Chrome blocks part of what the extension needs by the
+ * organization's policy (a refused attach, command or screenshot). Fixed
+ * text: Chrome's own message is never shown.
+ */
+export const POLICY_RESTRICTED_COPY =
+  "Chrome is blocking part of what this extension needs here because of your organization's policy. Ask IT to allow the extension.";
+
+/**
  * Fixed copy for each way "Fill it in" can fail, chosen by code. The worker's
  * text and the value are never part of it.
  */
@@ -309,11 +317,17 @@ export const TYPE_SENSITIVE_COPY: Record<TypeSensitiveCode, string> = {
     'The extension does not treat that field as sensitive, so it will not type there. Type it in the page yourself.',
   field_out_of_scope:
     'That field is outside the page the agent is working on. Click a field on the form page, or type it yourself.',
+  restricted_by_policy:
+    `${POLICY_RESTRICTED_COPY} Until then, type it in the page yourself.`,
   type_failed:
     'Typing did not work. Click the field again and press Fill it in, or type it in the page yourself.',
   worker_error:
     'The extension could not type that. Type it in the page yourself.',
 };
+
+/** Ready: Chrome's own bar for the debugger access the agent uses. */
+export const DEBUGGER_BAR_COPY =
+  'While the agent works, Chrome may show a bar saying the browser is being debugged; that is expected.';
 
 /**
  * Review's "Show me the unfilled field" result. Fixed text and one integer;
@@ -337,6 +351,8 @@ export const UNFILLED_REFUSAL_COPY: Record<UnfilledFieldCode, string> = {
     'The field is outside the page the agent is working on. Look at the form page yourself.',
   registration_pending:
     'The extension is still getting ready. Wait a moment and try again.',
+  restricted_by_policy:
+    `${POLICY_RESTRICTED_COPY} Until then, look at the page yourself.`,
   scan_failed:
     'Could not check the page. Look at it yourself before you submit.',
   worker_error:

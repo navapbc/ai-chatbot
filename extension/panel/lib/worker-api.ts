@@ -61,6 +61,7 @@ export type TypeSensitiveCode =
   | 'no_focused_field'
   | 'field_not_sensitive'
   | 'field_out_of_scope'
+  | 'restricted_by_policy'
   | 'type_failed'
   | 'worker_error';
 
@@ -77,6 +78,7 @@ const TYPE_CODE_FOR_TEXT: Record<string, TypeSensitiveCode> = {
   'no focused field': 'no_focused_field',
   'field not sensitive': 'field_not_sensitive',
   'field out of scope': 'field_out_of_scope',
+  'restricted by policy': 'restricted_by_policy',
   'type failed': 'type_failed',
 };
 
@@ -85,6 +87,7 @@ export type UnfilledFieldCode =
   | 'run_held'
   | 'field_out_of_scope'
   | 'registration_pending'
+  | 'restricted_by_policy'
   | 'scan_failed'
   | 'worker_error';
 
@@ -105,6 +108,7 @@ const UNFILLED_CODE_FOR_TEXT: Record<string, UnfilledFieldCode> = {
   'run is held': 'run_held',
   'field out of scope': 'field_out_of_scope',
   'registration pending': 'registration_pending',
+  'restricted by policy': 'restricted_by_policy',
   'scan failed': 'scan_failed',
 };
 
@@ -116,6 +120,7 @@ export type SubmitWatchCode =
   | 'wrong_run'
   | 'run_held'
   | 'not_attached'
+  | 'restricted_by_policy'
   | 'worker_error';
 
 export type SubmitWatchResult =
@@ -129,6 +134,7 @@ const WATCH_CODE_FOR_TEXT: Record<string, SubmitWatchCode> = {
   'wrong run': 'wrong_run',
   'run is held': 'run_held',
   'not attached': 'not_attached',
+  'restricted by policy': 'restricted_by_policy',
 };
 
 /** A confirmation number the worker read off the page, and its label kind. */
@@ -325,9 +331,16 @@ export const createWorkerApi = (sendMessage: Send = chromeSend): WorkerApi => {
     const reply = await call({ type: 'getRunStatus' });
     // `armed` is a flag and `submitted` is reduced to its fixed shape:
     // nothing else the worker might add rides along with the page's token.
-    const { armed: _armed, submitted: rawSubmitted, ...rest } = reply;
+    const {
+      armed: _armed,
+      policyRestricted: rawPolicy,
+      submitted: rawSubmitted,
+      ...rest
+    } = reply;
     const status = rest as unknown as RunStatus;
     if (reply.active === true) status.armed = reply.armed === true;
+    // A flag too: true only when the worker says exactly true.
+    if (rawPolicy === true) status.policyRestricted = true;
     const submitted = reduceSubmitted(rawSubmitted);
     if (submitted) status.submitted = submitted;
     return status;

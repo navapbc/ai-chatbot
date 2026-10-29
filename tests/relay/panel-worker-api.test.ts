@@ -4,6 +4,8 @@ import {
   WorkerError,
 } from '../../extension/panel/lib/worker-api';
 import {
+  DEBUGGER_BAR_COPY,
+  POLICY_RESTRICTED_COPY,
   TYPE_SENSITIVE_COPY,
   UNFILLED_REFUSAL_COPY,
 } from '../../extension/panel/lib/copy';
@@ -172,6 +174,7 @@ describe('typeSensitive', () => {
       'no_focused_field',
       'field_not_sensitive',
       'field_out_of_scope',
+      'restricted_by_policy',
       'type_failed',
       'worker_error',
     ] as const;
@@ -287,6 +290,7 @@ describe('showUnfilledField', () => {
         'field_out_of_scope',
         'not_attached',
         'registration_pending',
+        'restricted_by_policy',
         'run_held',
         'scan_failed',
         'worker_error',
@@ -426,3 +430,59 @@ describe('getRunStatus: armed and submitted', () => {
 });
 
 const OTHER_OK = { token: '20240017', kind: 'other' };
+
+describe('restricted by policy', () => {
+  const reply = (error: string) => fake({ ok: false, error });
+
+  it('maps the fixed refusal for typing, the unfilled field and the watch', async () => {
+    expect(
+      await createWorkerApi(reply('restricted by policy')).typeSensitive(
+        'r',
+        'v',
+      ),
+    ).toEqual({ ok: false, code: 'restricted_by_policy' });
+    expect(
+      await createWorkerApi(reply('restricted by policy')).showUnfilledField(
+        'r',
+      ),
+    ).toEqual({ ok: false, code: 'restricted_by_policy' });
+    expect(
+      await createWorkerApi(reply('restricted by policy')).armSubmitWatch('r'),
+    ).toEqual({ ok: false, code: 'restricted_by_policy' });
+  });
+
+  it('has fixed copy for the code, never Chrome text', () => {
+    for (const text of [
+      TYPE_SENSITIVE_COPY.restricted_by_policy,
+      UNFILLED_REFUSAL_COPY.restricted_by_policy,
+      POLICY_RESTRICTED_COPY,
+      DEBUGGER_BAR_COPY,
+    ]) {
+      expect(text.length).toBeGreaterThan(0);
+      expect(text).not.toMatch(
+        /Host access|Screenshot capture|restricted by policy/,
+      );
+    }
+    expect(POLICY_RESTRICTED_COPY).toMatch(/Ask IT/);
+    expect(TYPE_SENSITIVE_COPY.restricted_by_policy).toMatch(
+      /type it in the page yourself/,
+    );
+    expect(DEBUGGER_BAR_COPY).toMatch(/being debugged/);
+  });
+
+  it('reduces policyRestricted on the run status to true or absent', async () => {
+    const status = (extra: Record<string, unknown>) =>
+      createWorkerApi(
+        fake({ ok: true, active: true, runId: 'r', ...extra }),
+      ).getRunStatus();
+    expect((await status({ policyRestricted: true })).policyRestricted).toBe(
+      true,
+    );
+    for (const bad of ['yes', 1, 'Host access is restricted by policy', {}]) {
+      expect(await status({ policyRestricted: bad })).not.toHaveProperty(
+        'policyRestricted',
+      );
+    }
+    expect(await status({})).not.toHaveProperty('policyRestricted');
+  });
+});

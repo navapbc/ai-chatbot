@@ -194,6 +194,13 @@ export interface RunStatus {
    * attach or a token refresh lost it, so the panel knows to arm again.
    */
   armed?: boolean;
+  /**
+   * True once the agent's attach (or a typing, scan or review attach) was
+   * refused because the browser's enterprise policy restricts this
+   * extension (see isPolicyRestriction). A flag only: Chrome's own text is
+   * never kept. Cleared by the next successful attach and with a new run.
+   */
+  policyRestricted?: boolean;
 }
 
 /** A vetted confirmation number and the kind of label it followed. */
@@ -292,6 +299,8 @@ interface Run extends RunConfig {
    * event and tracks no child session, and is let go when the typing ends.
    */
   typingAttached: boolean;
+  /** An attach was refused by enterprise policy (see RunStatus). */
+  policyRestricted: boolean;
   /**
    * True while the submit watch holds chrome.debugger on the tab for itself
    * (armed in Review with the agent not attached, say after a token
@@ -1076,6 +1085,7 @@ function begin(
     stopped: false,
     attached: false,
     typingAttached: false,
+    policyRestricted: false,
     reviewAttached: false,
     watchGeneration: 0,
     attachChain: Promise.resolve(),
@@ -1110,17 +1120,23 @@ function begin(
   connect(current);
 }
 
+// The relay selects this fixed subprotocol; the token rides beside it in the
+// offer, so it never appears in a URL (and so in no request log).
+const RELAY_SUBPROTOCOL = 'relay.v1';
+
+/** Opens the `/extension` socket; the URL carries no query. */
+const relaySocket = (socketUrl: string, token: string) =>
+  new WebSocket(socketUrl, [RELAY_SUBPROTOCOL, token]);
+
 function connect(current: Run) {
   if (current.stopped || run !== current) return;
   if (current.exp <= nowSeconds()) {
     void endRun('token-expired');
     return;
   }
-  const url = new URL(current.socketUrl);
-  url.searchParams.set('token', current.token);
   let ws: WebSocket;
   try {
-    ws = new WebSocket(url.toString());
+    ws = relaySocket(current.socketUrl, current.token);
   } catch {
     scheduleReconnect(current);
     return;
@@ -1171,10 +1187,12 @@ function connect(current: Run) {
         type: 'reply',
         id: msg.id,
         // A CDP error message can quote page text: scrub known values.
-        error: redactErrorMessage(
-          current.redactor,
-          error instanceof Error ? error.message : 'command failed',
-        ),
+        error: isPolicyRestriction(error)
+          ? POLICY_AGENT_MESSAGE
+          : redactErrorMessage(
+              current.redactor,
+              error instanceof Error ? error.message : 'command failed',
+            ),
       });
     }
   };
@@ -1274,11 +1292,9 @@ function deliverStop(pending: PendingStop) {
     dropStop(pending);
     return;
   }
-  const url = new URL(pending.socketUrl);
-  url.searchParams.set('token', pending.token);
   let ws: WebSocket;
   try {
-    ws = new WebSocket(url.toString());
+    ws = relaySocket(pending.socketUrl, pending.token);
   } catch {
     retryStop(pending);
     return;
@@ -1433,6 +1449,36 @@ const ATTACH_STEP_MS = 3_000;
 // and rotates, and the stale queued step may still finish, which is
 // harmless because the next attach detaches first.
 const AGENT_ATTACH_STEP_MS = 10_000;
+
+/**
+ * Chrome 155 rejects chrome.debugger calls on a managed browser when policy
+ * blocks the extension's host access or screenshots. The two phrases are
+ * Chrome's; they are matched here and never forwarded, logged or stored.
+ */
+const POLICY_PHRASES = [
+  'Host access is restricted by policy',
+  'Screenshot capture is restricted by policy',
+];
+export const isPolicyRestriction = (error: unknown): boolean => {
+  const message =
+    error instanceof Error
+      ? error.message
+      : isObject(error) && typeof error.message === 'string'
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : '';
+  return POLICY_PHRASES.some((phrase) => message.includes(phrase));
+};
+/** The fixed refusal the worker answers for a policy restriction. */
+export const POLICY_REFUSAL = 'restricted by policy';
+/** What the agent is told: fixed, never Chrome's text. */
+export const POLICY_AGENT_MESSAGE =
+  "This browser is restricted by your organization's policy for this site.";
+/** Runs whose screenshot mask step hit a policy restriction (mask errors are
+ * otherwise folded into one fixed mask refusal). */
+const maskPolicyHits = new WeakSet<Run>();
+
 const bounded = <T>(promise: Promise<T>, what: string, ms = ATTACH_STEP_MS) =>
   withTimeout(promise, ms, what);
 
@@ -1486,8 +1532,10 @@ async function attachTab(
   } catch (error) {
     // A timed-out attach may still land: let go (best effort).
     await detachTab(current.tabId, stepMs);
+    if (isPolicyRestriction(error)) current.policyRestricted = true;
     throw error;
   }
+  current.policyRestricted = false;
   try {
     live();
     // The bridge owns the Page domain: leave-origin detection reads Page
@@ -2381,6 +2429,7 @@ async function captureWithRetries(
   capture: () => Promise<unknown>,
   deadline: number,
 ): Promise<unknown> {
+  maskPolicyHits.delete(current);
   for (let attempt = 0; ; attempt++) {
     try {
       return await captureMasked(current, capture, deadline);
@@ -2393,6 +2442,9 @@ async function captureWithRetries(
         !current.stopped &&
         !current.blocked;
       if (!retry) {
+        if (isPolicyRestriction(error) || maskPolicyHits.delete(current)) {
+          throw new Error(POLICY_AGENT_MESSAGE);
+        }
         throw error instanceof ScreenshotMaskError
           ? new ScreenshotMaskError()
           : error;
@@ -2537,6 +2589,10 @@ async function captureMasked(
     frames.flatMap(([, child]) => (child.targetId ? [child.targetId] : [])),
   );
   const isCoveredFrame = (frameId: string) => covered.has(frameId);
+  // Restores go through maskSend too; a restore failing with the policy
+  // phrase must not mark the capture, so only apply, settle, verify and the
+  // capture itself can (the refusal stays fail closed either way).
+  let restoring = false;
   const maskSend =
     (debuggee: chrome.debugger.DebuggerSession, child?: Child) =>
     (method: string, params?: Record<string, unknown>) =>
@@ -2546,7 +2602,12 @@ async function captureMasked(
         ),
         MASK_STEP_MS,
         'screenshot mask',
-      );
+      ).catch((error: unknown) => {
+        if (!restoring && isPolicyRestriction(error)) {
+          maskPolicyHits.add(current);
+        }
+        throw error;
+      });
   // A field is masked by its value too: a value-shaped number, or a value
   // the caseworker registered. Known values stay in the worker.
   const isSensitiveValue = (value: string) =>
@@ -2590,7 +2651,10 @@ async function captureMasked(
         'masking',
       );
     },
-    restore: () => mask.restore(),
+    restore: () => {
+      restoring = true;
+      return mask.restore();
+    },
   }));
   const known = new Set(current.children.keys());
   return withScreenshotMask(sessions, async () => {
@@ -3178,6 +3242,7 @@ type TypeRefusal =
   | 'no focused field'
   | 'field not sensitive'
   | 'field out of scope'
+  | 'restricted by policy'
   | 'type failed';
 
 /** The redactor's own limit; checked here too so the reason is fixed. */
@@ -3247,6 +3312,7 @@ async function typeSensitive(
   } catch (error) {
     // The error's own text is never passed on: it may name page state.
     if (run !== current || current.stopped) refusal = 'type failed';
+    else if (isPolicyRestriction(error)) refusal = POLICY_REFUSAL;
     else if (current.blocked) refusal = 'run is held';
     else if (error instanceof Error && error.message === FRAME_OUT_OF_SCOPE) {
       refusal = 'field out of scope';
@@ -3424,8 +3490,8 @@ async function typeIntoFocused(
           'typing',
         ),
       );
-    } catch {
-      return 'type failed';
+    } catch (error) {
+      return isPolicyRestriction(error) ? POLICY_REFUSAL : 'type failed';
     }
     if (typed === 'moved') return 'no focused field';
     return typed === 'typed' ? null : 'type failed';
@@ -3448,6 +3514,7 @@ type ScanRefusal =
   | 'run is held'
   | 'field out of scope'
   | 'registration pending'
+  | 'restricted by policy'
   | 'scan failed';
 
 /** More candidates than this sets `capped` (P4c4-a). */
@@ -3564,6 +3631,7 @@ async function showUnfilledField(runId: unknown): Promise<BridgeResponse> {
   } catch (error) {
     // The error's own text is never passed on: it may name page state.
     if (run !== current || current.stopped) reply = refuse('scan failed');
+    else if (isPolicyRestriction(error)) reply = refuse(POLICY_REFUSAL);
     else if (current.blocked) reply = refuse('run is held');
     else if (error instanceof Error && error.message === FRAME_OUT_OF_SCOPE) {
       reply = refuse('field out of scope');
@@ -3834,6 +3902,7 @@ type WatchRefusal =
   | 'no active run'
   | 'wrong run'
   | 'not attached'
+  | 'restricted by policy'
   | 'run is held';
 
 /**
@@ -3901,8 +3970,9 @@ async function armSubmitWatch(
   }
   try {
     await flight.done;
-  } catch {
+  } catch (error) {
     if (run !== current || current.stopped) return refuse('no active run');
+    if (isPolicyRestriction(error)) return refuse(POLICY_REFUSAL);
     if (current.blocked) return refuse('run is held');
     return refuse('not attached');
   }
@@ -4313,6 +4383,7 @@ function getRunStatus(): RunStatus {
     status.jevFailures = current.jev.failures();
     status.jevRequests = current.jev.requests();
   }
+  if (current.policyRestricted) status.policyRestricted = true;
   if (current.pendingOrigin !== null) {
     status.pendingOrigin = current.pendingOrigin;
   }

@@ -241,6 +241,17 @@ describe('run session: polling', () => {
     t.session.dispose();
   });
 
+  it('shows policyRestricted from the worker status only while it is true', async () => {
+    const t = setup();
+    t.plan.status = async () => ours({ policyRestricted: true });
+    await tick(2000);
+    expect(t.last()?.policyRestricted).toBe(true);
+    t.plan.status = async () => ours();
+    await tick(2000);
+    expect(t.last()?.policyRestricted).toBeUndefined();
+    t.session.dispose();
+  });
+
   it('transient errors from either poll never end the run', async () => {
     const t = setup();
     await tick(2000);

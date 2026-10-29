@@ -18,10 +18,10 @@ Living tracker for the Chrome extension work. Compiled on 2026-10-23 from the re
 Nothing here has been applied. The relay stays off until `RELAY_ENABLED` is `true`.
 
 - [ ] Set `RELAY_EXTENSION_ORIGIN` (`chrome-extension://<id>` from `extension/EXTENSION_ID`) in deployment; unset, the extension-origin check is off. Build the released extension with `APP_ORIGIN` equal to the deployed app origin and `EXTENSION_RELEASE=1`.
-- [ ] Create Secret Manager secrets: `relay-token-secret-{dev,preview,prod}` (32+ characters) and `eve-internal-secret-{dev,preview,prod}`.
+- [ ] Create Secret Manager secrets: `relay-token-secret-{dev,prod}` (32+ characters) and `eve-internal-secret-{dev,prod}` (`deploy.yml` deploys the relay to dev and prod only).
 - [ ] Grant `roles/logging.configWriter` to the deploy service account, or set `relay_exclude_request_logs = false` knowingly (that leaves token-bearing request URLs in Cloud Logging).
 - [ ] Set the GitHub repository variable `RELAY_ENABLED=true` only after the two items above. Turning it off later plans a destroy; on dev and prod deletion protection makes that apply fail.
-- [ ] Do not set `RELAY_TOKEN_ENDPOINT_ENABLED` anywhere until the panel exists (plan 4c); the auth path is done in plan 4b (runs are user-bound).
+- [ ] Set `RELAY_TOKEN_ENDPOINT_ENABLED` only in the order `docs/rollout-pilot.md` gives (the panel and the user-bound auth path exist; the flag turns on after the relay is verified).
 - [ ] Before deploying plan 4a: migrations 0008 (Participant) and 0009 (partial unique index on `EveRun.chatId`) are applied by `scripts/start-container.sh` (`pnpm tsx lib/db/migrate`, `set -euo pipefail`) on the first deploy that carries this merge, and a failure crash-loops the new revision. BEFORE that deploy, `SELECT "chatId", count(*) FROM "EveRun" WHERE "relayOrigin" IS NOT NULL GROUP BY 1 HAVING count(*) > 1;` must return no rows (in practice none exist: `RELAY_RUNS_ENABLED` is set nowhere in deployment). No down migrations; rolling back the code is safe (old code ignores `Participant`; the index only touches relay rows). Run `scripts/seed-participants.ts` manually (the container does not), and make sure `EVE_INTERNAL_SECRET` and `RELAY_TOKEN_SECRET` are each at least 32 characters (a short `RELAY_TOKEN_SECRET` makes both token routes return 500).
 - [ ] Only if running more than one relay instance: create `relay-redis-url-<env>` and first close the multi-instance gaps listed under plan 5.
 - [ ] Run the manual cloud check (plan task 11) after the first apply: e2e against the deployed relay, compare round trip, snapshot and fill times with the spike (56 ms, about 600 ms, about 240 ms), and search the Eve Postgres world for relay token strings.
@@ -322,13 +322,40 @@ Minors by area:
 
 ## Plan 5: Rollout
 
-- [ ] Test banner suppression (force-install, `--silent-debugger-extension-api`) on a managed Chrome; add `minimum_chrome_version` to the manifest.
+Plan 5 (`docs/plans/2026-11-04-pilot-rollout.md`, change doc `docs/changes/2026-11-04-add-pilot-rollout.md`) closed the items ticked below. Nothing was applied or deployed.
+
+- [x] Debugging banner and Chrome policy copy: the Ready screen explains the debugger bar; a refused attach sets `RunStatus.policyRestricted` and shows fixed panel copy; a refused CDP command or screenshot gives the agent a fixed message only.
+- [x] `minimum_chrome_version` (120) is in the manifest; the owner still confirms it against the managed fleet.
+- [x] Token exposure on the extension leg: the token travels as the subprotocol `relay.v1, <token>`; the query fallback on `/extension` remains for the transition (see follow-ups). The agent leg keeps its query token (agent-browser cannot send a header); shorter or single-use tokens are deferred.
+- [x] `promote.yml` fails, not warns, when the relay image for the promoted SHA is missing while the relay is enabled; a plan-time data source checks `eve-internal-secret-<env>` (`terraform/relay.tf`).
+- [x] Exact relay host: `relay_allowed_hosts` and `relay_allowed_host_suffixes` variables, switched in two applies (not yet done in any environment). Concurrency is unchanged (default 80).
+- [x] Relay observability: `severity` on every line, socket errors logged by code, `origin` on the accepted line, a 64 MiB outbound backpressure cap, and an optional log-based metric on `command.durationMs`.
+- [ ] Test banner suppression (force-install, `--silent-debugger-extension-api`) on a managed Chrome; the runbook has the check.
+- [ ] Chrome Web Store listing (a store id differs from the manifest `key` id; re-derive `RELAY_EXTENSION_ID` and `RELAY_EXTENSION_ORIGIN`).
 - [ ] Multi-instance gaps, all required before raising `relay_max_instances` above 1: origin binding is per hub; a mismatched `ext-up` can close the legitimate agent; `busy` is per hub; an agent on a hub that never saw the run is never closed; no tombstone across hubs; `ext-down` and `ext-up` can reorder on Redis; pending sockets miss a remote `closeRun`.
 - [ ] Bus items: Redis error listener is a silent no-op; document at-most-once async delivery.
-- [ ] Relay observability: OpenTelemetry spans for connect, disconnect and round trips; log socket errors; add `origin` to the attach log line; backpressure on 32 MiB frames.
-- [ ] Token exposure in the URL query: move the token to `Sec-WebSocket-Protocol` on the extension leg, a private path for the Eve to relay leg, shorter or single-use tokens.
-- [ ] `promote.yml` should fail hard, not warn, when the relay image for the promoted SHA is missing while `RELAY_ENABLED` is true; add a plan-time data source for `eve-internal-secret-*`.
-- [ ] Set the exact relay host in `RELAY_ALLOWED_HOSTS` instead of the `.run.app` suffix; state a number for Cloud Run concurrency (default 80, about two sockets per run).
+- [ ] Relay OpenTelemetry spans for connect, disconnect and round trips (logs and one metric only so far).
+
+## Plan 5 Follow-ups
+
+- [ ] Remove the `/extension` query-token fallback once no old clients remain; optionally scope `relay.v1` selection to `/extension` (today `handleProtocols` selects it on any path that offers it).
+- [ ] No ERROR-level relay events yet: the hub swallows exceptions.
+- [ ] The socket-error throttle reports its dropped count only on the next logged error, and the limit (10 per 60 s) is process-wide. An optional summary line at window rollover is not built.
+- [ ] The accepted log line carries `origin`, which shows which benefits site a caseworker works on: confirm the relay log bucket's retention and IAM match the app's logs. Do not add `sub`.
+- [ ] Relay restart or the one-hour socket close: the outcome is unverified. The worker reconnects with the same token (the close is not 1000 or 1008), the Eve tool rotates and retries, and the panel shows no reconnecting state. Earlier notes that such restarts simply end runs are not confirmed; runbook section 8.7 has the operator record what happens.
+- [ ] Exact-host switch: the two-apply sequence has not been run in any environment; a wrong host makes every request answer 421.
+- [ ] Terraform: `terraform fmt -check` exits 3 on 8 pre-existing unformatted files (`cloud_sql.tf`, `iam.tf`, `storage.tf`, `github-actions/*`, `shared-preview-vpc/*`); the variable validations and preconditions were not exercised with non-default values and no plan was ever run.
+- [ ] The new `relay_*` variables cannot be set until a PR wires them into `deploy.yml` (`-var=`) and `promote.yml` (`TF_VAR_`); otherwise the other workflow plans them back to defaults.
+- [ ] `RELAY_ENABLED` must be a repository variable (an environment-level one would plan a relay destroy on develop pushes) and turns on both the dev and prod relays; if a preview already has a relay, its next push plans a destroy.
+- [ ] Open question: whether the deploy identity has `logging.logMetrics.create` (and the exclusion permission), the same `roles/logging.configWriter` question as the request-log exclusion.
+- [ ] The CRX3 is verified only by a test-written parser with a throwaway key; Chrome has not accepted one, and the real `.pem` match is untested (fallback: `chrome --pack-extension`). The Web Store note that the manifest `key` may need removing is unverified.
+- [ ] Policy error mapping covers `attach()`, the CDP send and the screenshot path; a policy error in attach's inner `Page.enable` or `getFrameTree` is not mapped, the capture-time mapping is code-reviewed only, and nothing has run on a managed Chrome 155.
+- [ ] Panel notice only for a refused attach; consider setting `policyRestricted` on CDP/screenshot policy hits (needs a clearing rule on a successful capture).
+- [ ] `maskPolicyHits` is cleared once per capture, not per attempt: a policy hit in a retried attempt followed by a non-policy failure reports the policy message (still fails closed).
+- [ ] The backpressure check is `buffered > MAX` before each send, so queued bytes can reach about 64 MiB plus one 32 MiB frame (about 96 MiB) before a close, on a 512Mi instance.
+- [ ] The `relay_extension_origin` precondition reads `extension/EXTENSION_ID` with `file()` whenever the relay exists, because `||` does not short-circuit in Terraform 1.9.0 (harmless: `relay.tf` already needs the file for `RELAY_EXTENSION_ID`).
+- [ ] Migration timing: `origin/develop` is at migration 0006 and `origin/main` has none of 0007 to 0011 (refs may be stale). 0007 creates `EveRun`, so it ships with the first deploy of this work.
+- [ ] Runbook command forms marked "confirm" (the `jq` path for `gcloud run services describe` and the quoted-string log read) need checking against a real project.
 
 ## Cleanup Before Plans 3 And 4 Build On This
 
@@ -342,7 +369,7 @@ Minors by area:
 - Non-default-port origins such as `https://host:8443` are valid exact origins.
 - The relay e2e suite now passes locally.
 - One relay instance only; `REDIS_URL` is refused unless `RELAY_MULTI_INSTANCE_ACKNOWLEDGED=1`.
-- A run token can be replayed for its 30-minute lifetime after a run closes.
+- After a terminal close the hub keeps a tombstone for the token TTL (30 minutes), so a re-dial with the same token is refused in that window. It is in memory only (a relay restart clears it) and is set only on terminal closes, not on every socket drop.
 - One in-flight command can race a navigation (check-then-send); a short window of events can follow an off-origin navigation if the agent never enabled the Page domain.
 - A relay run row left behind after `RELAY_RUNS_ENABLED` is turned off still continues as a relay run, while the agent-token route returns 404, so its browser calls fail closed.
 

@@ -1,4 +1,12 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import {
+  DEBUGGER_BAR_COPY,
+  POLICY_RESTRICTED_COPY,
+} from '../../extension/panel/lib/copy';
+import { ReadyScreen } from '../../extension/panel/screens/ready';
+import { PolicyNotice } from '../../extension/panel/screens/running';
 import { AppApiError } from '../../extension/src/app-api';
 import { DETAIL_FIELDS } from '../../extension/panel/lib/saved-details';
 import {
@@ -258,5 +266,49 @@ describe('ready screen reducer actions', () => {
     expect(e.error).toBeUndefined();
     const home: State = { screen: 'home' };
     expect(reducer(home, { type: 'goBack' })).toBe(home);
+  });
+});
+
+describe('ReadyScreen: the debugger bar sentence', () => {
+  it('says Chrome will show a being-debugged bar and that it is expected', () => {
+    const out = renderToStaticMarkup(
+      createElement(ReadyScreen, {
+        state: {
+          screen: 'ready',
+          config: { models, defaultModel: 'claude-opus-5' },
+          target: {
+            tabId: 1,
+            origin: 'https://example.gov',
+            siteName: 'Example Benefits',
+          },
+          participant: {
+            kind: 'record',
+            recordId: 'rec-1',
+            name: 'Zelda Quill',
+          },
+        } as never,
+        dispatch: () => {},
+        onStart: () => undefined,
+      }),
+    );
+    expect(DEBUGGER_BAR_COPY).toBe(
+      'While the agent works, Chrome may show a bar saying the browser is being debugged; that is expected.',
+    );
+    expect(out).toContain(DEBUGGER_BAR_COPY);
+  });
+});
+
+describe('PolicyNotice', () => {
+  const html = (state: unknown) =>
+    renderToStaticMarkup(
+      createElement(PolicyNotice, { state: state as never }),
+    );
+  it('shows the fixed explanation as an alert only while live and restricted', () => {
+    const live = html({ status: 'running', policyRestricted: true });
+    expect(live).toContain('role="alert"');
+    expect(live).toContain(POLICY_RESTRICTED_COPY.replace("'", '&#x27;'));
+    expect(html({ status: 'running' })).toBe('');
+    expect(html({ status: 'ended', policyRestricted: true })).toBe('');
+    expect(html(null)).toBe('');
   });
 });

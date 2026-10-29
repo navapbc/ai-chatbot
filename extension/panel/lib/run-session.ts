@@ -154,6 +154,8 @@ export type RunSessionState = {
    */
   holdEndsAt?: number;
   jevFailures?: number;
+  /** The browser's policy blocks the extension on this site (a flag). */
+  policyRestricted?: boolean;
   refreshFailed?: boolean;
   expiresAtEstimated?: boolean;
   /** The run's live expiry, Unix time in SECONDS (a refresh moves it). */
@@ -312,6 +314,7 @@ export const createRunSession = (
           );
         }
       }
+      if (lastWorker.policyRestricted === true) state.policyRestricted = true;
       if (typeof lastWorker.jevFailures === 'number') {
         state.jevFailures = lastWorker.jevFailures;
       }

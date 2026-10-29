@@ -33,7 +33,7 @@ async function main() {
 
   const port = Number(process.env.PORT ?? 8080);
   server.listen(port, '0.0.0.0', () => {
-    console.log(JSON.stringify({ event: 'listening', port }));
+    console.log(JSON.stringify({ event: 'listening', severity: 'INFO', port }));
   });
 
   const shutdown = () => {
