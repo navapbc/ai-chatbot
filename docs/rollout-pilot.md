@@ -241,28 +241,51 @@ gets a preview deploy.
   | `relay_exclude_request_logs` | `true` | the request-log exclusion (section 3) |
 
   The app-side ones take effect only where the relay is deployed.
-- **Neither workflow passes any of these yet.** Setting them needs a PR
-  (Claude-reviewable) that wires each one into **both**
-  `deploy.yml`'s "Terraform Plan" step (as `-var=`) and `promote.yml`'s
-  "Terraform Plan" step (as a `TF_VAR_` environment entry, because a tag that
-  predates a variable would reject `-var=`). Wiring only one lets the other
-  workflow plan the value back to its default on its next run (the same hazard
-  `jev_features` documents). Both Terraform jobs have `environment:`, so the
-  values can come from GitHub environment-level variables (`dev`, `prod`);
-  their names are to be chosen in that PR (none exist yet).
-- **Pass a variable only when it is set.** An unset `vars.X` expands to the
-  empty string, so a bare `-var=name=${{ vars.X }}` or `TF_VAR_name` entry
-  would (a) turn `relay_allowed_host_suffixes` into `""` in the same apply as
-  `relay_allowed_hosts`, skipping the comparison step of the two-apply switch
-  (section 4.4; a wrong host then answers 421 for everything, `/healthz`
-  included), and (b) fail the plan for the number and bool variables. In BOTH
-  workflows, add the argument only when the variable is set, or use
-  `${{ vars.X || '<default>' }}` with the Terraform default: `relay_min_instances`
-  `0`, `relay_runs_enabled` `false`, `relay_token_endpoint_enabled` `false`,
-  `relay_extension_origin` `""`, `relay_allowed_models` `""`,
-  `relay_allowed_hosts` `""`, `relay_allowed_host_suffixes` `.run.app`,
-  `relay_command_duration_metric_enabled` `false`. The suffix variable must
-  keep `.run.app` until the second apply of the switch in 4.4.
+- **How to set them: GitHub environment-level variables.** Set these on the
+  `dev` or `prod` environment (Settings, Environments, `<env>`, Environment
+  variables), **not** at repository level, where a value would reach every
+  environment, previews included (harmless where no relay is deployed, but
+  not what you mean):
+
+  | GitHub environment variable | Terraform variable | Accepted values |
+  | --- | --- | --- |
+  | `RELAY_MIN_INSTANCES` | `relay_min_instances` | `0` or `1` |
+  | `RELAY_RUNS_ENABLED` | `relay_runs_enabled` | `true` or `false` |
+  | `RELAY_TOKEN_ENDPOINT_ENABLED` | `relay_token_endpoint_enabled` | `true` or `false` |
+  | `RELAY_EXTENSION_ORIGIN` | `relay_extension_origin` | `chrome-extension://<32 characters a-p>` |
+  | `RELAY_ALLOWED_MODELS` | `relay_allowed_models` | comma-separated ids of `A-Z a-z 0-9 . _ / : -` |
+  | `RELAY_ALLOWED_HOSTS` | `relay_allowed_hosts` | comma-separated bare host names |
+  | `RELAY_ALLOWED_HOST_SUFFIXES` | `relay_allowed_host_suffixes` | comma-separated suffixes (leading dot allowed), or `none` |
+  | `RELAY_COMMAND_DURATION_METRIC_ENABLED` | `relay_command_duration_metric_enabled` | `true` or `false` |
+
+  `relay_exclude_request_logs` is not wired; it keeps its default `true`.
+- **Both workflows pass them the same way.** The `terraform` job in
+  `deploy.yml` and the `promote` job in `promote.yml` each have a "Relay
+  Terraform variables" step, just before "Terraform Plan", that maps the eight
+  `vars.*` above into its environment and runs
+  `scripts/relay-terraform-vars.sh >> "$GITHUB_ENV"`. The script prints a
+  `TF_VAR_<name>=<value>` line for each variable that is set, and the plan
+  step reads them as environment. One script for both means a promote cannot
+  plan a value back to its default (the hazard `jev_features` documents).
+  `promote.yml` takes the script from the commit the workflow runs from (a
+  sparse checkout of `github.sha` into `workflow-ref/`), not from the
+  promoted tag, so it works for tags that predate it; Terraform at an older
+  tag ignores any `TF_VAR_` it does not declare.
+- **An unset (or blank) variable is not passed**, so Terraform's default
+  applies (the table above in this section). That is why
+  `relay_allowed_host_suffixes` keeps `.run.app` until you deliberately set
+  `RELAY_ALLOWED_HOST_SUFFIXES=none`: deleting the variable restores
+  `.run.app`, it does not empty the list. `none` is the only way to pass an
+  empty suffix list, and the script refuses it unless `RELAY_ALLOWED_HOSTS` is
+  set in the same environment (section 4.4).
+- **An invalid value fails the step** before any plan, with a fixed message
+  that names the variable and never prints the value; check the table above.
+  Host names and suffixes are lowercased; spaces around commas are dropped.
+- **Older tags.** Promoting a tag whose `terraform/variables.tf` predates a
+  pilot variable plans that tag's own behavior for it (for example its fixed
+  `.run.app` suffix or minimum 0 instances), whatever the environment variable
+  says, until the next `deploy.yml` run or a newer promote. Only promote tags
+  built after this wiring once the pilot variables are set.
 
 ### 4.2 Before setting `RELAY_ENABLED`
 
@@ -291,10 +314,11 @@ Infrastructure" instead, run it from `develop` (for dev) or `main` (for prod):
 dispatching with `environment` `dev` from any other branch deploys that
 branch's code to dev.
 
-1. Set the environment variables for `<env>` through the wiring from 4.1:
-   `relay_min_instances = 1` and, optionally,
-   `relay_command_duration_metric_enabled = true` (needs
-   `logging.logMetrics.create`). Leave the run flags off.
+1. Set the GitHub environment variables for `<env>` (4.1):
+   `RELAY_MIN_INSTANCES=1` and, optionally,
+   `RELAY_COMMAND_DURATION_METRIC_ENABLED=true` (needs
+   `logging.logMetrics.create`). Leave `RELAY_RUNS_ENABLED` and
+   `RELAY_TOKEN_ENDPOINT_ENABLED` unset.
 2. Set the repository variable `RELAY_ENABLED=true`.
 3. Push to `develop` (or merge the next PR into it) for dev. The "Deploy
    Infrastructure" workflow builds `labs-asp-relay:<short sha>` and applies.
@@ -339,19 +363,23 @@ a comparison of values, done before dropping the suffix. This switch is safe
 to do now only because the run flags are still off: a lockout breaks no
 caseworker's run, and the suffix can be restored with another apply.
 
-1. Platform: set `relay_allowed_hosts = "<relay-host>"` (from 4.3 step 5) and
-   keep `relay_allowed_host_suffixes` at `".run.app"`. Apply (for dev, push
-   to `develop`). The validation rejects a scheme, port, path or space.
+1. Platform: set the environment variable `RELAY_ALLOWED_HOSTS=<relay-host>`
+   (from 4.3 step 5) and leave `RELAY_ALLOWED_HOST_SUFFIXES` unset, so
+   `relay_allowed_host_suffixes` stays `".run.app"`. Apply (for dev, push to
+   `develop`). The workflow step and the Terraform validation reject a
+   scheme, port, path or space.
 2. Check, before going on: the relay revision's `RELAY_ALLOWED_HOSTS` contains
    exactly the host part of the app's `RELAY_PUBLIC_URL`. Read both values
    one variable at a time (same `jq` filter as 4.3 step 5, with
    `labs-asp-relay-<env>` and `RELAY_ALLOWED_HOSTS` for the relay) and compare
    them character for character. If they differ, fix `relay_allowed_hosts`
    and apply again; do not drop the suffix.
-3. Platform: set `relay_allowed_host_suffixes = ""`. Apply.
+3. Platform: set the environment variable `RELAY_ALLOWED_HOST_SUFFIXES=none`
+   (passes `relay_allowed_host_suffixes = ""`; deleting the variable would
+   not, see 4.1). Apply.
 4. Check: `/healthz` answers 200 on `<relay-host>` (8.1), and a wrong Host
-   answers 421 (8.2). If `/healthz` answers 421, set the suffix back to
-   `".run.app"` and apply to recover.
+   answers 421 (8.2). If `/healthz` answers 421, delete
+   `RELAY_ALLOWED_HOST_SUFFIXES` (back to `".run.app"`) and apply to recover.
 
 The `lifecycle` precondition in `terraform/relay.tf` refuses a plan with both
 lists empty.
@@ -703,7 +731,11 @@ machine. One apply, pilot environment only:
 - `relay_extension_origin = "chrome-extension://<id>"` (6.4)
 - `relay_allowed_models` as decided in section 1
 
-`RELAY_RUNS_ENABLED=1` also turns on trace scrubbing
+Through the GitHub environment variables of that environment (4.1):
+`RELAY_RUNS_ENABLED=true`, `RELAY_TOKEN_ENDPOINT_ENABLED=true`,
+`RELAY_EXTENSION_ORIGIN` and `RELAY_ALLOWED_MODELS`.
+
+`RELAY_RUNS_ENABLED=1` on the app also turns on trace scrubbing
 (`lib/observability/scrubbing-exporter.ts`): it applies to every span the Eve
 process exports, web chats included.
 Then run 8.4 to 8.7.
@@ -711,7 +743,9 @@ Then run 8.4 to 8.7.
 ### 9.2 Rollback
 
 1. **Flags off first** (Platform): set `relay_runs_enabled = false` and
-   `relay_token_endpoint_enabled = false` and apply. The relay routes answer
+   `relay_token_endpoint_enabled = false` (set the environment variables
+   `RELAY_RUNS_ENABLED` and `RELAY_TOKEN_ENDPOINT_ENABLED` to `false`, or
+   delete them) and apply. The relay routes answer
    404. A relay run row left from before continues as a relay run, but the
    agent-token route answers 404, so its browser calls fail closed. The panel's
    config probe then answers 404 and shows the `not_found` screen with no

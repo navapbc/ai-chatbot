@@ -310,6 +310,27 @@ jobs:
 
           echo "VPC CIDRs configured for ${ENV}"
 
+      # Relay pilot settings (terraform/variables.tf relay_runs_enabled and
+      # the rest). These are GitHub ENVIRONMENT-level variables (dev, prod),
+      # read here through this job's `environment:`; unlike the repository-
+      # level RELAY_ENABLED gate in setup. promote.yml runs the same script
+      # with the same mapping, so the two workflows cannot plan different
+      # values. The script prints a TF_VAR_ line only for a variable that is
+      # set (an unset one keeps the Terraform default) and fails on an invalid
+      # value without printing it. Do not also pass these as -var= below: -var
+      # overrides TF_VAR_. They only take effect where the relay is deployed.
+      - name: Relay Terraform variables
+        env:
+          RELAY_RUNS_ENABLED: ${{ vars.RELAY_RUNS_ENABLED }}
+          RELAY_TOKEN_ENDPOINT_ENABLED: ${{ vars.RELAY_TOKEN_ENDPOINT_ENABLED }}
+          RELAY_EXTENSION_ORIGIN: ${{ vars.RELAY_EXTENSION_ORIGIN }}
+          RELAY_ALLOWED_MODELS: ${{ vars.RELAY_ALLOWED_MODELS }}
+          RELAY_ALLOWED_HOSTS: ${{ vars.RELAY_ALLOWED_HOSTS }}
+          RELAY_ALLOWED_HOST_SUFFIXES: ${{ vars.RELAY_ALLOWED_HOST_SUFFIXES }}
+          RELAY_MIN_INSTANCES: ${{ vars.RELAY_MIN_INSTANCES }}
+          RELAY_COMMAND_DURATION_METRIC_ENABLED: ${{ vars.RELAY_COMMAND_DURATION_METRIC_ENABLED }}
+        run: bash scripts/relay-terraform-vars.sh >> "$GITHUB_ENV"
+
       - name: Terraform Plan
         working-directory: ./terraform
         run: |

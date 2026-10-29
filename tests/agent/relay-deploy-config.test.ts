@@ -234,3 +234,103 @@ describe('deploy.yml relay scope', () => {
     );
   });
 });
+
+describe('relay Terraform variables wiring', () => {
+  const deploy = read('.github/workflows/deploy.yml');
+  const promote = read('.github/workflows/promote.yml');
+  const script = read('scripts/relay-terraform-vars.sh');
+  const declared = new Set(
+    variableBlocks(read('terraform/variables.tf')).keys(),
+  );
+
+  const names = [
+    'RELAY_RUNS_ENABLED',
+    'RELAY_TOKEN_ENDPOINT_ENABLED',
+    'RELAY_EXTENSION_ORIGIN',
+    'RELAY_ALLOWED_MODELS',
+    'RELAY_ALLOWED_HOSTS',
+    'RELAY_ALLOWED_HOST_SUFFIXES',
+    'RELAY_MIN_INSTANCES',
+    'RELAY_COMMAND_DURATION_METRIC_ENABLED',
+  ];
+
+  /** The text of the step named `name`, up to the next step. */
+  const step = (workflow: string, name: string): string => {
+    const start = workflow.indexOf(`- name: ${name}\n`);
+    if (start === -1) return '';
+    const next = workflow.indexOf('\n      - name: ', start + 1);
+    return workflow.slice(start, next === -1 ? undefined : next);
+  };
+
+  /** Terraform variables the script can print, from its emit calls. */
+  const emitted = [
+    ...new Set(
+      [...script.matchAll(/^\s*(?:bool_var \w+|emit) (relay_\w+)/gm)].map(
+        (m) => m[1],
+      ),
+    ),
+  ];
+
+  it.each([
+    [
+      'deploy.yml',
+      deploy,
+      'bash scripts/relay-terraform-vars.sh >> "$GITHUB_ENV"',
+    ],
+    [
+      'promote.yml',
+      promote,
+      'bash workflow-ref/scripts/relay-terraform-vars.sh >> "$GITHUB_ENV"',
+    ],
+  ])(
+    '%s runs the script before its plan and maps every variable',
+    (_, workflow, command) => {
+      const vars = step(workflow, 'Relay Terraform variables');
+      expect(vars).toContain(`run: ${command}`);
+      for (const name of names) {
+        expect(vars).toContain(`${name}: \${{ vars.${name} }}`);
+      }
+      const varsAt = workflow.indexOf('- name: Relay Terraform variables');
+      const planAt = workflow.indexOf('- name: Terraform Plan');
+      expect(varsAt).toBeGreaterThan(-1);
+      expect(planAt).toBeGreaterThan(varsAt);
+    },
+  );
+
+  it('promote.yml takes the script from the workflow ref after the tag checkout', () => {
+    const checkout = step(
+      promote,
+      'Checkout relay variable script from the workflow ref',
+    );
+    expect(checkout).toContain('ref: ${{ github.sha }}');
+    expect(checkout).toContain('path: workflow-ref');
+    expect(checkout).toContain('persist-credentials: false');
+    const tagAt = promote.indexOf('- name: Checkout code at specified version');
+    const refAt = promote.indexOf(
+      '- name: Checkout relay variable script from the workflow ref',
+    );
+    const varsAt = promote.indexOf('- name: Relay Terraform variables');
+    expect(tagAt).toBeGreaterThan(-1);
+    expect(refAt).toBeGreaterThan(tagAt);
+    expect(varsAt).toBeGreaterThan(refAt);
+  });
+
+  it('emits exactly the eight pilot variables, all declared in variables.tf', () => {
+    expect(emitted.sort()).toEqual(
+      names.map((name) => name.toLowerCase()).sort(),
+    );
+    for (const name of emitted) {
+      expect(declared.has(name), `${name} is declared`).toBe(true);
+    }
+    expect(script).not.toContain('relay_image_url');
+  });
+
+  it('does not also pass the pilot variables as -var= (which beats TF_VAR_)', () => {
+    for (const workflow of [deploy, promote]) {
+      for (const name of emitted) {
+        expect(workflow).not.toContain(`-var="${name}=`);
+        expect(workflow).not.toContain(`-var=${name}=`);
+      }
+    }
+  });
+});

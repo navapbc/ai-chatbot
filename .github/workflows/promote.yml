@@ -36,6 +36,20 @@ jobs:
         with:
           ref: ${{ github.event.inputs.version }}
 
+      # The tag above may predate scripts/relay-terraform-vars.sh, so take the
+      # script from the commit this workflow file runs from (github.sha), the
+      # same commit whose step below maps the variables. It must come after
+      # the tag checkout, which cleans the workspace. Terraform at an older tag
+      # ignores any TF_VAR_ it does not declare, so old tags still plan.
+      - name: Checkout relay variable script from the workflow ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: workflow-ref
+          persist-credentials: false
+          sparse-checkout: scripts/relay-terraform-vars.sh
+          sparse-checkout-cone-mode: false
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
@@ -90,6 +104,25 @@ jobs:
         run: |
           terraform init \
             -backend-config="prefix=terraform/state/${{ github.event.inputs.environment }}"
+
+      # Relay pilot settings: GitHub ENVIRONMENT-level variables (dev, prod),
+      # read through this job's `environment:`; unlike the repository-level
+      # RELAY_ENABLED, which must never be set per environment. Same script
+      # and mapping as deploy.yml's "Relay Terraform variables" step, so a
+      # promote cannot plan these back to their defaults. Unset variables
+      # print nothing (Terraform default); an invalid value fails here without
+      # being printed.
+      - name: Relay Terraform variables
+        env:
+          RELAY_RUNS_ENABLED: ${{ vars.RELAY_RUNS_ENABLED }}
+          RELAY_TOKEN_ENDPOINT_ENABLED: ${{ vars.RELAY_TOKEN_ENDPOINT_ENABLED }}
+          RELAY_EXTENSION_ORIGIN: ${{ vars.RELAY_EXTENSION_ORIGIN }}
+          RELAY_ALLOWED_MODELS: ${{ vars.RELAY_ALLOWED_MODELS }}
+          RELAY_ALLOWED_HOSTS: ${{ vars.RELAY_ALLOWED_HOSTS }}
+          RELAY_ALLOWED_HOST_SUFFIXES: ${{ vars.RELAY_ALLOWED_HOST_SUFFIXES }}
+          RELAY_MIN_INSTANCES: ${{ vars.RELAY_MIN_INSTANCES }}
+          RELAY_COMMAND_DURATION_METRIC_ENABLED: ${{ vars.RELAY_COMMAND_DURATION_METRIC_ENABLED }}
+        run: bash workflow-ref/scripts/relay-terraform-vars.sh >> "$GITHUB_ENV"
 
       # relay_image_url defaults to "" (no relay), so leaving it out would plan
       # to DESTROY an already-deployed relay. Pass the relay image deploy.yml
