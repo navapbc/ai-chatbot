@@ -20,6 +20,10 @@ export interface RelayServerOptions {
 
 const DEFAULT_MAX_PAYLOAD = 32 * 1024 * 1024;
 const POLICY_CLOSE = 1008;
+// The extension leg offers `relay.v1, <token>` as Sec-WebSocket-Protocol.
+// The relay always selects this fixed value (Chrome fails a handshake whose
+// response selects none, or one that was not offered) and never the token.
+const RELAY_SUBPROTOCOL = 'relay.v1';
 const EXTENSION_ORIGIN_PREFIX = 'chrome-extension://';
 // Hub events that carry a method the agent sent on to the extension.
 const FORWARDED_METHOD_EVENTS = new Set(['command', 'command-failed']);
@@ -43,6 +47,34 @@ const classifyPath = (path: string): string =>
   path === '/extension' || path === '/cdp' || path === '/healthz'
     ? path
     : 'other';
+
+type ExtensionToken =
+  | { ok: true; token: string }
+  | { ok: false; reason: 'no-token' | 'token' };
+
+/**
+ * The extension leg's token: from the subprotocol offer when the client sent
+ * one (exactly `relay.v1, <token>`), else from the query (transition only).
+ * A subprotocol offer is never combined with the query.
+ */
+const extensionToken = (
+  req: IncomingMessage,
+  queryToken: string,
+): ExtensionToken => {
+  const header = req.headers['sec-websocket-protocol'];
+  if (header === undefined) {
+    return queryToken === ''
+      ? { ok: false, reason: 'no-token' }
+      : { ok: true, token: queryToken };
+  }
+  const offered = header.split(',').map((p) => p.trim());
+  if (offered[0] !== RELAY_SUBPROTOCOL) return { ok: false, reason: 'token' };
+  if (offered.length === 1) return { ok: false, reason: 'no-token' };
+  if (offered.length !== 2 || offered[1] === '') {
+    return { ok: false, reason: 'token' };
+  }
+  return { ok: true, token: offered[1] };
+};
 
 const rawToString = (data: RawData): string => {
   if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
@@ -101,6 +133,9 @@ export function createRelayServer(opts: RelayServerOptions): Server {
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: opts.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD,
+    // Selects only the fixed value, never anything else the client offered.
+    handleProtocols: (offered) =>
+      offered.has(RELAY_SUBPROTOCOL) ? RELAY_SUBPROTOCOL : false,
   });
 
   const hostOk = (req: IncomingMessage): boolean => {
@@ -156,6 +191,11 @@ export function createRelayServer(opts: RelayServerOptions): Server {
     if (!hostOk(req)) return reject(socket, path, 'host');
     if (path !== '/extension' && path !== '/cdp') {
       return reject(socket, path, 'path');
+    }
+    if (path === '/extension') {
+      const found = extensionToken(req, token);
+      if (!found.ok) return reject(socket, path, found.reason);
+      token = found.token;
     }
     if (token === '') return reject(socket, path, 'no-token');
     const claims: RelayClaims | null = verifyRelayToken(token, opts.secret);

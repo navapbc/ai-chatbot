@@ -1110,17 +1110,23 @@ function begin(
   connect(current);
 }
 
+// The relay selects this fixed subprotocol; the token rides beside it in the
+// offer, so it never appears in a URL (and so in no request log).
+const RELAY_SUBPROTOCOL = 'relay.v1';
+
+/** Opens the `/extension` socket; the URL carries no query. */
+const relaySocket = (socketUrl: string, token: string) =>
+  new WebSocket(socketUrl, [RELAY_SUBPROTOCOL, token]);
+
 function connect(current: Run) {
   if (current.stopped || run !== current) return;
   if (current.exp <= nowSeconds()) {
     void endRun('token-expired');
     return;
   }
-  const url = new URL(current.socketUrl);
-  url.searchParams.set('token', current.token);
   let ws: WebSocket;
   try {
-    ws = new WebSocket(url.toString());
+    ws = relaySocket(current.socketUrl, current.token);
   } catch {
     scheduleReconnect(current);
     return;
@@ -1274,11 +1280,9 @@ function deliverStop(pending: PendingStop) {
     dropStop(pending);
     return;
   }
-  const url = new URL(pending.socketUrl);
-  url.searchParams.set('token', pending.token);
   let ws: WebSocket;
   try {
-    ws = new WebSocket(url.toString());
+    ws = relaySocket(pending.socketUrl, pending.token);
   } catch {
     retryStop(pending);
     return;

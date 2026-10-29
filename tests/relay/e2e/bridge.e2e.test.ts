@@ -330,6 +330,136 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     });
   });
 
+  describe('extension token in the subprotocol', () => {
+    /**
+     * Opens a raw WebSocket from the extension's service worker (so the
+     * Origin is the extension's) and resolves with the selected protocol, or
+     * 'error' when Chrome reports the handshake failed.
+     */
+    const dial = (url: string, protocols?: string[]) =>
+      browser.sw.evaluate(
+        ({ u, p }) =>
+          new Promise<string>((resolve) => {
+            // The browser's own WebSocket: the `ws` import above does not
+            // exist inside the service worker.
+            const Socket = Reflect.get(globalThis, 'WebSocket') as new (
+              url: string,
+              protocols?: string[],
+            ) => {
+              protocol: string;
+              onopen: (() => void) | null;
+              onerror: (() => void) | null;
+              close(): void;
+            };
+            const ws = p ? new Socket(u, p) : new Socket(u);
+            const timer = setTimeout(() => resolve('timeout'), 5_000);
+            ws.onopen = () => {
+              clearTimeout(timer);
+              const selected = ws.protocol;
+              ws.close();
+              resolve(selected);
+            };
+            ws.onerror = () => {
+              clearTimeout(timer);
+              resolve('error');
+            };
+          }),
+        { u: url, p: protocols },
+      );
+
+    it('the bridge offers relay.v1 and the token, with no query in the URL', async () => {
+      // A stand-in relay that records the handshake and selects relay.v1.
+      const server = new WebSocketServer({
+        host: '127.0.0.1',
+        port: 0,
+        handleProtocols: (offered) =>
+          offered.has('relay.v1') ? 'relay.v1' : false,
+      });
+      await once(server, 'listening');
+      const port = (server.address() as AddressInfo).port;
+      const connected = once(server, 'connection');
+      const tokens = mintRunTokens(relay.secret, fixtures.origin);
+      try {
+        expect(
+          await bridgeMessage(browser.sw, {
+            type: 'startRun',
+            relayUrl: `ws://127.0.0.1:${port}`,
+            token: tokens.extension,
+            tabId,
+          }),
+        ).toEqual({ ok: true });
+        const [ws, req] = (await connected) as [
+          WebSocket,
+          { url?: string; headers: Record<string, string | undefined> },
+        ];
+        expect(req.url).toBe('/extension');
+        expect(req.headers['sec-websocket-protocol']).toBe(
+          `relay.v1, ${tokens.extension}`,
+        );
+        expect(ws.protocol).toBe('relay.v1');
+      } finally {
+        await bridgeMessage(browser.sw, { type: 'stopRun' });
+        server.close();
+      }
+    });
+
+    it('the real relay accepts the subprotocol and, for now, a query token; it refuses bad tokens and logs none', async () => {
+      const before = relay.logs.length;
+      const base = `${relay.url}/extension`;
+      const fresh = () => mintRunTokens(relay.secret, fixtures.origin);
+      const sub = fresh();
+      const query = fresh();
+      const otherSecret = mintRunTokens(
+        randomBytes(32).toString('hex'),
+        fixtures.origin,
+      );
+      const expired = mintRelayToken(
+        {
+          runId: fresh().runId,
+          role: 'extension',
+          origin: fixtures.origin,
+          sub: 'e2e-user',
+        },
+        relay.secret,
+        { now: Math.floor(Date.now() / 1000) - 3_600 },
+      );
+      const agentRole = fresh();
+
+      expect(await dial(base, ['relay.v1', sub.extension])).toBe('relay.v1');
+      expect(await dial(`${base}?token=${query.extension}`)).toBe('');
+      expect(await dial(base, ['relay.v1', otherSecret.extension])).toBe(
+        'error',
+      );
+      expect(await dial(base, ['relay.v1', expired])).toBe('error');
+      expect(await dial(base, ['relay.v1', agentRole.agent])).toBe('error');
+      expect(await dial(base, ['relay.v1'])).toBe('error');
+
+      await until(
+        () =>
+          relay.logs.slice(before).filter((l) => l.event === 'upgrade-rejected')
+            .length === 4,
+      );
+      const lines = relay.logs.slice(before);
+      expect(
+        lines
+          .filter((l) => l.event === 'upgrade-rejected')
+          .map((l) => l.reason),
+      ).toEqual(['token', 'token', 'role', 'no-token']);
+      const accepted = lines.filter((l) => l.event === 'accepted');
+      expect(accepted.map((l) => l.runId)).toEqual([sub.runId, query.runId]);
+      const text = JSON.stringify(relay.logs);
+      for (const t of [
+        sub.extension,
+        query.extension,
+        otherSecret.extension,
+        expired,
+        agentRole.agent,
+      ]) {
+        for (const part of t.split('.')) expect(text).not.toContain(part);
+      }
+    });
+  });
+
   describe('driven by agent-browser', () => {
     let cdp: string;
 

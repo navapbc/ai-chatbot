@@ -31,7 +31,10 @@ class FakeSocket {
   onopen: null | (() => unknown) = null;
   onmessage: null | ((event: { data: string }) => unknown) = null;
   onclose: null | ((event: { code: number }) => unknown) = null;
-  constructor(readonly url: string) {
+  constructor(
+    readonly url: string,
+    readonly protocols?: string | string[],
+  ) {
     FakeSocket.all.push(this);
   }
   send(data: string) {
@@ -170,6 +173,42 @@ async function attachedRun(runId = 'run-1') {
   return socket;
 }
 
+describe('relay socket handshake', () => {
+  it('the run socket carries the token as a subprotocol, never in the URL', async () => {
+    const token = tokenFor('run-1');
+    expect(await start(token)).toEqual({ ok: true });
+    const socket = FakeSocket.all.at(-1) as FakeSocket;
+    expect(socket.url).toBe(`${RELAY}/extension`);
+    expect(socket.protocols).toEqual(['relay.v1', token]);
+  });
+
+  it('a reconnect offers the same subprotocol and no query', async () => {
+    vi.useFakeTimers();
+    const socket = await attachedRun('run-1');
+    expect(socket.protocols?.[0]).toBe('relay.v1');
+    socket.drop(1006);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const again = FakeSocket.all.at(-1) as FakeSocket;
+    expect(again).not.toBe(socket);
+    expect(again.url).toBe(`${RELAY}/extension`);
+    expect(again.protocols).toEqual(socket.protocols);
+  });
+
+  it('the stop delivery socket carries the token as a subprotocol, never in the URL', async () => {
+    const token = tokenFor('run-1');
+    expect(await start(token)).toEqual({ ok: true });
+    const socket = FakeSocket.all.at(-1) as FakeSocket;
+    await socket.open();
+    socket.drop(1006);
+    await bridge.handleMessage({ type: 'stopRun' });
+    const delivery = FakeSocket.all.at(-1) as FakeSocket;
+    expect(delivery).not.toBe(socket);
+    expect(delivery.url).toBe(`${RELAY}/extension`);
+    expect(delivery.protocols).toEqual(['relay.v1', token]);
+    for (const s of FakeSocket.all) expect(s.url).not.toContain('?');
+  });
+});
+
 describe('startRun serialization', () => {
   it('two concurrent startRun calls leave exactly one run and one socket', async () => {
     const token = tokenFor('run-1');
@@ -231,7 +270,9 @@ describe('startRun serialization', () => {
     await Promise.all([bridge.resumeRun(), start(token)]);
     // One run socket (the resumed run's was closed); any other live socket
     // only delivers the resumed run's stop.
-    const runSockets = live().filter((s) => s.url.includes(token));
+    const runSockets = live().filter(
+      (s) => Array.isArray(s.protocols) && s.protocols[1] === token,
+    );
     expect(runSockets).toHaveLength(1);
     expect(FakeSocket.all[0].closedByClient).toBe(true);
     expect((await status()).runId).toBe('run-new');

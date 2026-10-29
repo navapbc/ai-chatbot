@@ -72,17 +72,21 @@ const url = (path: string, tok?: string) =>
 function connect(
   target: string,
   headers: Record<string, string> = {},
+  protocols?: string[],
 ): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(target, { headers });
+    const ws = new WebSocket(target, protocols, { headers });
     sockets.push(ws);
     ws.once('open', () => resolve(ws));
     ws.once('error', reject);
   });
 }
 
-const rejected = (target: string, headers: Record<string, string> = {}) =>
-  expect(connect(target, headers)).rejects.toBeDefined();
+const rejected = (
+  target: string,
+  headers: Record<string, string> = {},
+  protocols?: string[],
+) => expect(connect(target, headers, protocols)).rejects.toBeDefined();
 
 const nextMessage = (ws: WebSocket) =>
   new Promise<Record<string, unknown>>((resolve) =>
@@ -393,6 +397,109 @@ describe('relay server', () => {
       await reasonOf(url('/cdp', token('agent')), { origin: ORIGIN }),
     ).toBe('origin');
     expect(await reasonOf(url('/nope', token('agent')))).toBe('path');
+  });
+
+  describe('extension token in the subprotocol', () => {
+    const ext = { origin: EXT_ORIGIN };
+    const reasonsLogged = async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      return logs
+        .filter((l) => l.event === 'upgrade-rejected')
+        .map((l) => l.reason);
+    };
+    const noTokenLogged = () => {
+      const output = JSON.stringify(logs);
+      for (const t of tokens) {
+        expect(output).not.toContain(t);
+        for (const part of t.split('.')) expect(output).not.toContain(part);
+      }
+      expect(output).not.toContain('relay.v1');
+    };
+
+    beforeEach(() => start());
+
+    it('accepts relay.v1 plus the token, selects relay.v1, and runs', async () => {
+      const t = token('extension');
+      const ws = await connect(url('/extension'), ext, ['relay.v1', t]);
+      expect(ws.protocol).toBe('relay.v1');
+      ws.send(
+        JSON.stringify({
+          type: 'register',
+          runId: RUN,
+          tabId: 7,
+          origin: ORIGIN,
+        }),
+      );
+      const agent = await connect(url('/cdp', token('agent')));
+      const eventAtAgent = nextMessage(agent);
+      ws.send(JSON.stringify({ type: 'event', method: 'Page.x', params: {} }));
+      expect(await eventAtAgent).toMatchObject({ method: 'Page.x' });
+      expect(logs).toContainEqual(
+        expect.objectContaining({ event: 'accepted', role: 'extension' }),
+      );
+      noTokenLogged();
+    });
+
+    it('still accepts a query token with no subprotocol (transition)', async () => {
+      const ws = await connect(url('/extension', token('extension')), ext);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      expect(ws.protocol).toBe('');
+    });
+
+    it('refuses a bad, expired or wrong-role subprotocol token with the fixed reason', async () => {
+      await rejected(url('/extension'), ext, [
+        'relay.v1',
+        token('extension', { secret: `${SECRET}-x` }),
+      ]);
+      await rejected(url('/extension'), ext, [
+        'relay.v1',
+        token('extension', { now: 1000 }),
+      ]);
+      await rejected(url('/extension'), ext, ['relay.v1', 'garbage']);
+      await rejected(url('/extension'), ext, ['relay.v1', token('agent')]);
+      expect(await reasonsLogged()).toEqual(['token', 'token', 'token', 'role']);
+      noTokenLogged();
+    });
+
+    it('refuses relay.v1 with no token, even when the query carries one', async () => {
+      await rejected(url('/extension'), ext, ['relay.v1']);
+      await rejected(url('/extension', token('extension')), ext, ['relay.v1']);
+      expect(await reasonsLogged()).toEqual(['no-token', 'no-token']);
+      noTokenLogged();
+    });
+
+    it('refuses a first protocol that is not relay.v1, or extra protocols', async () => {
+      const t = token('extension');
+      await rejected(url('/extension'), ext, [t, 'relay.v1']);
+      await rejected(url('/extension'), ext, ['relay.v2', t]);
+      await rejected(url('/extension'), ext, [t]);
+      await rejected(url('/extension'), ext, ['relay.v1', t, 'extra']);
+      // A subprotocol offer wins over the query: the query is not a fallback.
+      await rejected(url('/extension', t), ext, ['other']);
+      expect(await reasonsLogged()).toEqual([
+        'token',
+        'token',
+        'token',
+        'token',
+        'token',
+      ]);
+      noTokenLogged();
+    });
+
+    it('keeps the origin check on the subprotocol path', async () => {
+      const t = token('extension');
+      await rejected(url('/extension'), {}, ['relay.v1', t]);
+      await rejected(url('/extension'), { origin: ORIGIN }, ['relay.v1', t]);
+      expect(await reasonsLogged()).toEqual(['origin', 'origin']);
+    });
+
+    it('/cdp still needs the query token and ignores a subprotocol token', async () => {
+      await rejected(url('/cdp'), {}, ['relay.v1', token('agent')]);
+      expect(await reasonsLogged()).toEqual(['no-token']);
+      noTokenLogged();
+      const ws = await connect(url('/cdp', token('agent')));
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+    });
   });
 
   describe('Host allowlist', () => {
