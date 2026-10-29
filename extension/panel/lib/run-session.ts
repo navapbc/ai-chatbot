@@ -35,11 +35,11 @@ import {
 //   when the run ends. Every arm and disarm goes through one chain (one call
 //   at a time), and an arm is sent only while review still wants it, so no
 //   arm follows a disarm. A submission the worker saw counts only from polls
-//   issued after the last reset arm succeeded. With a number after a
-//   `confirmation` label the run is stopped as submitted at once (the number
-//   copied first); otherwise, once the number read is over (a number after
-//   another label, or CONFIRMATION_WAIT_MS with none), the caseworker is
-//   asked. A wrong stop cannot be undone, so only that one label stops it.
+//   issued after the last reset arm succeeded. A submission never stops the
+//   run by itself (a "Next" in a multi-step form looks the same, and a stop
+//   cannot be undone): the caseworker is asked at once, with the number the
+//   page showed once the worker read one, and only "Yes, I did" or "I
+//   submitted it" stops it.
 //
 // Nothing here ever sees an applicant value: only ids, origins and counts.
 // No I/O runs at creation (only timers), so a StrictMode mount, dispose and
@@ -92,10 +92,10 @@ export const HOLD_KNOWN_GAP_MS = 2 * WORKER_POLL_MS + 1000;
 /**
  * The worker's number read ends within this of the submission
  * (extension/src/bridge.ts CONFIRMATION_READ_MS; a test compares them). The
- * status cannot tell "not read yet" from "none found", so the panel waits
- * this long from first seeing a submission before it asks.
+ * status cannot tell "not read yet" from "none found", so the prompt says it
+ * is looking for a number for this long from first sight, and only that.
  */
-export const CONFIRMATION_WAIT_MS = 12_000;
+export const CONFIRMATION_LOOK_MS = 12_000;
 
 export type EndedReason = 'user' | 'submitted' | 'stopped' | 'worker-ended';
 
@@ -103,12 +103,11 @@ export type EndedReason = 'user' | 'submitted' | 'stopped' | 'worker-ended';
 export type ConfirmedHow = 'detected' | 'manual';
 
 /**
- * A submission the worker saw while in review: `checking` while the number
- * read may still answer, `ask` once the caseworker must say.
+ * A submission the worker saw while in review: the caseworker is asked at
+ * once. `confirmation` once the worker read a number; `looking` while none
+ * has arrived and the read may still answer.
  */
-export type SubmissionView =
-  | { stage: 'checking' }
-  | { stage: 'ask'; confirmation?: Confirmation };
+export type SubmissionView = { looking: boolean; confirmation?: Confirmation };
 
 export type SessionRun = {
   runId: string;
@@ -167,8 +166,8 @@ export type RunSessionState = {
   /** Ended as submitted: how it was confirmed. */
   confirmedHow?: ConfirmedHow;
   /**
-   * Ended as submitted from the page: the number it showed, for the
-   * Confirmed screen only (never stored, logged or sent anywhere).
+   * Ended as submitted while the prompt showed a number from the page: that
+   * number, for the Confirmed screen only (never stored, logged or sent).
    */
   confirmation?: Confirmation;
 };
@@ -272,8 +271,8 @@ export const createRunSession = (
   let rearmFrom = 0;
   let dismissedAt: number | undefined;
   let seen: { at: number; confirmation?: Confirmation } | undefined;
-  let asking = false;
-  let askTimer: Timer | undefined;
+  let looking = false;
+  let lookTimer: Timer | undefined;
   let confirmedHow: ConfirmedHow | undefined;
   let confirmation: Confirmation | undefined;
 
@@ -321,11 +320,9 @@ export const createRunSession = (
     if (estimated && !ended) state.expiresAtEstimated = true;
     if (stopFailed) state.stopFailed = true;
     if (!ended && !stopping && seen) {
-      state.submission = asking
-        ? seen.confirmation
-          ? { stage: 'ask', confirmation: { ...seen.confirmation } }
-          : { stage: 'ask' }
-        : { stage: 'checking' };
+      state.submission = seen.confirmation
+        ? { looking: false, confirmation: { ...seen.confirmation } }
+        : { looking };
     }
     if (ended && endedReason === 'submitted' && confirmedHow) {
       state.confirmedHow = confirmedHow;
@@ -358,9 +355,9 @@ export const createRunSession = (
 
   const clearSubmission = () => {
     seen = undefined;
-    asking = false;
-    if (askTimer !== undefined) deps.clearTimeout(askTimer);
-    askTimer = undefined;
+    looking = false;
+    if (lookTimer !== undefined) deps.clearTimeout(lookTimer);
+    lookTimer = undefined;
   };
 
   /** Queues one watch call behind the others; the chain never rejects. */
@@ -483,30 +480,22 @@ export const createRunSession = (
     if (!raw || typeof raw.at !== 'number' || !Number.isFinite(raw.at)) return;
     if (dismissedAt !== undefined && raw.at <= dismissedAt) return;
     if (!seen || seen.at !== raw.at) {
+      // Asked at once; "looking" only until the worker's read is over.
       clearSubmission();
       const at = raw.at;
       seen = { at };
-      askTimer = deps.setTimeout(() => {
-        askTimer = undefined;
+      looking = true;
+      lookTimer = deps.setTimeout(() => {
+        lookTimer = undefined;
         if (done() || seen?.at !== at) return;
-        asking = true;
+        looking = false;
         emit();
-      }, CONFIRMATION_WAIT_MS);
+      }, CONFIRMATION_LOOK_MS);
     }
     // Copied, reduced to {token, kind}: nothing else the status carries.
+    // Shown in the open prompt; whatever its label, it never stops the run.
     const number = reduceConfirmation(raw.confirmation);
-    if (!number) return;
-    seen.confirmation = number;
-    // Under an open prompt the caseworker decides, whatever arrives late:
-    // the panel never stops the run while it is asking.
-    if (asking) return;
-    if (number.kind === 'confirmation') {
-      // The number is held before the stop, which ends the worker's read.
-      void beginStop('submitted', 'detected', number);
-      return;
-    }
-    // Another label is the read's last word: ask now.
-    asking = true;
+    if (number) seen.confirmation = number;
   };
 
   const refresh = async () => {
@@ -736,16 +725,13 @@ export const createRunSession = (
     },
     stop(reason = 'user') {
       if (reason !== 'submitted') return beginStop(reason);
-      // "I submitted it" under a prompt that shows a number after another
-      // label keeps that number for Confirmed (shown as a number on the
-      // page, never as a confirmation number).
-      const shown =
-        asking && seen?.confirmation?.kind === 'other'
-          ? seen.confirmation
-          : undefined;
-      return beginStop('submitted', 'manual', shown);
+      // "I submitted it" under a prompt that shows a number keeps it for
+      // Confirmed, labelled by its kind as the prompt labels it.
+      return beginStop('submitted', 'manual', seen?.confirmation);
     },
     confirmSubmission() {
+      // The number known at this moment goes to Confirmed (copied first:
+      // the stop ends the worker's read).
       if (!seen) return beginStop('submitted', 'manual');
       return beginStop('submitted', 'detected', seen.confirmation);
     },

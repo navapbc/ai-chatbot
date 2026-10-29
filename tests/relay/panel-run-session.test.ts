@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  CONFIRMATION_WAIT_MS,
+  CONFIRMATION_LOOK_MS,
   createRunSession,
   GRACE_MS,
   ORIGIN_HOLD_CAP_MS,
@@ -1733,7 +1733,7 @@ describe('run session: the submit watch', () => {
   const ARM = `arm:${RUN_ID}`;
   const DISARM = `disarm:${RUN_ID}`;
 
-  it('CONFIRMATION_WAIT_MS mirrors the bridge CONFIRMATION_READ_MS', () => {
+  it('CONFIRMATION_LOOK_MS mirrors the bridge CONFIRMATION_READ_MS', () => {
     const source = readFileSync(
       path.resolve(__dirname, '../../extension/src/bridge.ts'),
       'utf8',
@@ -1744,7 +1744,7 @@ describe('run session: the submit watch', () => {
         ?.replace(/_/g, ''),
     );
     expect(read).toBe(12_000);
-    expect(CONFIRMATION_WAIT_MS).toBe(read);
+    expect(CONFIRMATION_LOOK_MS).toBe(read);
   });
 
   it('arms with reset on entering review, holds while armed, disarms on leaving, arms afresh on return', async () => {
@@ -1838,7 +1838,7 @@ describe('run session: the submit watch', () => {
     await tick(3000);
     w.submitted = { at: Date.now(), confirmation: OTHER };
     await tick(1000);
-    expect(t.last()?.submission?.stage).toBe('ask');
+    expect(t.last()?.submission).toBeDefined();
     // The watch is lost and the re-arm hangs; No queues a reset arm behind.
     w.armed = false;
     const hang = deferred<SubmitWatchResult>();
@@ -1856,7 +1856,23 @@ describe('run session: the submit watch', () => {
     t.session.dispose();
   });
 
-  it('a number after a confirmation label confirms after one server stop then one worker stop, with the number', async () => {
+  it('a confirmation number never stops the run without a press; the prompt shows it at once', async () => {
+    const { t, w } = review();
+    await tick(3000);
+    w.submitted = { at: Date.now(), confirmation: NUMBER };
+    await tick(1000);
+    expect(t.last()?.submission).toEqual({
+      looking: false,
+      confirmation: NUMBER,
+    });
+    await tick(30_000);
+    expect(count(t.calls, 'serverStop')).toBe(0);
+    expect(count(t.calls, 'workerStop')).toBe(0);
+    expect(t.last()?.status).toBe('running');
+    t.session.dispose();
+  });
+
+  it('Yes stops once (server then worker) and carries the number known at that moment', async () => {
     const { t, w } = review();
     await tick(3000);
     const order: string[] = [];
@@ -1872,6 +1888,7 @@ describe('run session: the submit watch', () => {
     };
     w.submitted = { at: Date.now(), confirmation: NUMBER };
     await tick(1000);
+    await t.session.confirmSubmission();
     expect(order).toEqual(['server', 'worker']);
     expect(t.last()).toMatchObject({
       status: 'ended',
@@ -1885,15 +1902,15 @@ describe('run session: the submit watch', () => {
     t.session.dispose();
   });
 
-  it('a double detection, and presses during the stop, stop once', async () => {
+  it('Yes pressed twice, and I submitted it during the stop, stop once', async () => {
     const { t, w } = review();
     await tick(3000);
     const server = deferred<{ ended: boolean; alreadyEnded: boolean }>();
     t.plan.serverStop = () => server.promise;
     w.submitted = { at: Date.now(), confirmation: NUMBER };
     await tick(1000);
+    void t.session.confirmSubmission();
     expect(t.last()?.stopping).toBe(true);
-    // Polls keep running only if the session forgot it is stopping.
     await tick(6000);
     void t.session.confirmSubmission();
     void t.session.stop('submitted');
@@ -1908,7 +1925,7 @@ describe('run session: the submit watch', () => {
     t.session.dispose();
   });
 
-  it('a submission seen before the reset arm lands never counts (a stale confirmation cannot stop the run)', async () => {
+  it('a submission seen before the reset arm lands never counts (no prompt, no stop)', async () => {
     const { t, w } = review();
     // The worker still holds a confirmed submission from an earlier review.
     w.armed = true;
@@ -1935,17 +1952,17 @@ describe('run session: the submit watch', () => {
     // Entering review at 3 s, then the 4 s and 6 s polls.
     await tick(7000);
     expect(watchCalls(t.calls)).toEqual([ARM_RESET, ARM_RESET, ARM_RESET]);
-    expect(count(t.calls, 'serverStop')).toBe(0);
+    expect(t.last()?.submission).toBeUndefined();
     t.session.dispose();
   });
 
-  it('a number after another label asks at once, showing it; Yes confirms as detected with it', async () => {
+  it('a number after another label shows as such; Yes confirms as detected with it', async () => {
     const { t, w } = review();
     await tick(3000);
     w.submitted = { at: Date.now(), confirmation: OTHER };
     await tick(1000);
     expect(t.last()?.submission).toEqual({
-      stage: 'ask',
+      looking: false,
       confirmation: OTHER,
     });
     expect(count(t.calls, 'serverStop')).toBe(0);
@@ -1963,17 +1980,17 @@ describe('run session: the submit watch', () => {
     t.session.dispose();
   });
 
-  it('no number: checking for 12 s from first sight, then asks; Yes confirms as detected with no number', async () => {
+  it('no number: the prompt shows at once, looking for 12 s from first sight, then not; Yes confirms with no number', async () => {
     const { t, w } = review();
     await tick(3000);
     w.submitted = { at: Date.now() };
     await tick(1000);
     // First seen at the 4 s poll.
-    expect(t.last()?.submission).toEqual({ stage: 'checking' });
-    await tick(CONFIRMATION_WAIT_MS - 1);
-    expect(t.last()?.submission).toEqual({ stage: 'checking' });
+    expect(t.last()?.submission).toEqual({ looking: true });
+    await tick(CONFIRMATION_LOOK_MS - 1);
+    expect(t.last()?.submission).toEqual({ looking: true });
     await tick(1);
-    expect(t.last()?.submission).toEqual({ stage: 'ask' });
+    expect(t.last()?.submission).toEqual({ looking: false });
     expect(count(t.calls, 'serverStop')).toBe(0);
     await t.session.confirmSubmission();
     expect(t.last()).toMatchObject({
@@ -1984,38 +2001,30 @@ describe('run session: the submit watch', () => {
     t.session.dispose();
   });
 
-  it('a confirmation number arriving during the wait stops at once', async () => {
-    const { t, w } = review();
-    await tick(3000);
-    const at = Date.now();
-    w.submitted = { at };
-    await tick(5000);
-    expect(t.last()?.submission).toEqual({ stage: 'checking' });
-    w.submitted = { at, confirmation: NUMBER };
-    await tick(2000);
-    expect(t.last()).toMatchObject({
-      status: 'ended',
-      confirmedHow: 'detected',
-      confirmation: NUMBER,
-    });
-    expect(count(t.calls, 'serverStop')).toBe(1);
-    t.session.dispose();
-  });
-
-  it('another label arriving during the wait asks at once', async () => {
-    const { t, w } = review();
-    await tick(3000);
-    const at = Date.now();
-    w.submitted = { at };
-    await tick(3000);
-    w.submitted = { at, confirmation: OTHER };
-    await tick(2000);
-    expect(t.last()?.submission).toEqual({
-      stage: 'ask',
-      confirmation: OTHER,
-    });
-    expect(count(t.calls, 'serverStop')).toBe(0);
-    t.session.dispose();
+  it('a number arriving later updates the open prompt and never stops the run', async () => {
+    for (const number of [NUMBER, OTHER]) {
+      const { t, w } = review();
+      await tick(3000);
+      const at = Date.now();
+      w.submitted = { at };
+      await tick(5000);
+      expect(t.last()?.submission).toEqual({ looking: true });
+      w.submitted = { at, confirmation: number };
+      await tick(2000);
+      expect(t.last()?.submission).toEqual({
+        looking: false,
+        confirmation: number,
+      });
+      // Even after the looking window.
+      await tick(CONFIRMATION_LOOK_MS);
+      expect(t.last()?.submission).toEqual({
+        looking: false,
+        confirmation: number,
+      });
+      expect(count(t.calls, 'serverStop')).toBe(0);
+      expect(t.last()?.status).toBe('running');
+      t.session.dispose();
+    }
   });
 
   it('No clears the prompt and re-arms with reset; the old submission never comes back; a later one is seen', async () => {
@@ -2024,7 +2033,7 @@ describe('run session: the submit watch', () => {
     const first = Date.now();
     w.submitted = { at: first, confirmation: OTHER };
     await tick(1000);
-    expect(t.last()?.submission?.stage).toBe('ask');
+    expect(t.last()?.submission).toBeDefined();
     // The reset arm hangs, and meanwhile the worker still reports it.
     const hang = deferred<SubmitWatchResult>();
     t.plan.arm = () => hang.promise;
@@ -2044,7 +2053,7 @@ describe('run session: the submit watch', () => {
     // The next submission is seen.
     w.submitted = { at: first + 30_000 };
     await tick(2000);
-    expect(t.last()?.submission).toEqual({ stage: 'checking' });
+    expect(t.last()?.submission).toEqual({ looking: true });
     expect(t.last()?.status).toBe('running');
     t.session.dispose();
   });
@@ -2054,7 +2063,7 @@ describe('run session: the submit watch', () => {
     await tick(3000);
     w.submitted = { at: Date.now(), confirmation: OTHER };
     await tick(1000);
-    expect(t.last()?.submission?.stage).toBe('ask');
+    expect(t.last()?.submission).toBeDefined();
     t.plan.row = async () => liveRow({ phase: 'working' });
     await tick(2000);
     expect(t.last()?.submission).toBeUndefined();
@@ -2077,7 +2086,7 @@ describe('run session: the submit watch', () => {
     t.session.dispose();
   });
 
-  it('a failed stop still ends as a detected submission with the number and stopFailed', async () => {
+  it('a failed stop after Yes still ends as a detected submission with the number and stopFailed', async () => {
     const { t, w } = review();
     await tick(3000);
     t.plan.serverStop = async () => {
@@ -2085,6 +2094,7 @@ describe('run session: the submit watch', () => {
     };
     w.submitted = { at: Date.now(), confirmation: NUMBER };
     await tick(1000);
+    await t.session.confirmSubmission();
     expect(t.last()).toMatchObject({
       status: 'ended',
       endedReason: 'submitted',
@@ -2093,24 +2103,6 @@ describe('run session: the submit watch', () => {
       confirmation: NUMBER,
     });
     expect(count(t.calls, 'workerStop')).toBe(1);
-    t.session.dispose();
-  });
-
-  it('a confirmation number arriving under an open prompt never stops the run; the prompt shows it', async () => {
-    const { t, w } = review();
-    await tick(3000);
-    const at = Date.now();
-    w.submitted = { at };
-    await tick(1000 + CONFIRMATION_WAIT_MS);
-    expect(t.last()?.submission).toEqual({ stage: 'ask' });
-    w.submitted = { at, confirmation: NUMBER };
-    await tick(6000);
-    expect(count(t.calls, 'serverStop')).toBe(0);
-    expect(t.last()?.status).toBe('running');
-    expect(t.last()?.submission).toEqual({
-      stage: 'ask',
-      confirmation: NUMBER,
-    });
     t.session.dispose();
   });
 
@@ -2130,12 +2122,12 @@ describe('run session: the submit watch', () => {
     t.session.dispose();
   });
 
-  it('"I submitted it" under a prompt showing another label keeps that number as manual', async () => {
+  it('"I submitted it" under a prompt showing a number keeps it, as manual', async () => {
     const { t, w } = review();
     await tick(3000);
     w.submitted = { at: Date.now(), confirmation: OTHER };
     await tick(1000);
-    expect(t.last()?.submission?.stage).toBe('ask');
+    expect(t.last()?.submission).toBeDefined();
     await t.session.stop('submitted');
     expect(t.last()).toMatchObject({
       endedReason: 'submitted',
@@ -2163,6 +2155,7 @@ describe('run session: the submit watch', () => {
     await tick(3000);
     w.submitted = { at: Date.now(), confirmation: NUMBER };
     await tick(1000);
+    await t.session.confirmSubmission();
     expect(t.last()?.confirmation).toEqual(NUMBER);
     const sent = JSON.stringify([
       t.calls,

@@ -808,7 +808,7 @@ describe('the panel shell', () => {
       await page.getByRole('button', { name: 'I submitted it' }).click();
       await page.getByRole('heading', { name: 'Submitted' }).waitFor();
       await page
-        .getByText('You said you submitted the form on localhost.')
+        .getByText('You confirmed the form was submitted on localhost.')
         .waitFor();
       expect(stopCalls(runId)).toBe(1);
       expect(
@@ -891,10 +891,24 @@ describe('the panel shell', () => {
           .waitFor({ timeout: 8_000 });
         await armed(page);
         await submitIn(site, 'alnum');
+        // Asked at once, the number filled in when the worker read it; the
+        // run is not stopped until the caseworker says so.
+        const prompt = page.getByRole('region', {
+          name: 'Did you submit the form?',
+        });
+        await prompt.waitFor({ timeout: 10_000 });
+        await prompt.getByText('AB-1234', { exact: true }).waitFor();
+        await prompt
+          .getByText('Confirmation number', { exact: true })
+          .waitFor();
+        expect(stopCalls(runId)).toBe(0);
+        expect(await workerStops(page)).toBe(0);
+        expect((await runStatus(page)).active).toBe(true);
+        await prompt.getByRole('button', { name: 'Yes, I did' }).click();
+        await page.getByRole('heading', { name: 'Submitted' }).waitFor();
         await page
-          .getByRole('heading', { name: 'Submitted' })
-          .waitFor({ timeout: 10_000 });
-        await page.getByText('The form was submitted on localhost.').waitFor();
+          .getByText('You confirmed the form was submitted on localhost.')
+          .waitFor();
         await page.getByText('Confirmation number', { exact: true }).waitFor();
         await page.getByText('AB-1234', { exact: true }).waitFor();
         expect(stopCalls(runId)).toBe(1);
@@ -941,6 +955,9 @@ describe('the panel shell', () => {
         });
         await prompt.waitFor({ timeout: 10_000 });
         await prompt.getByText('20240017').waitFor();
+        await prompt
+          .getByText('Number shown on the page', { exact: true })
+          .waitFor();
         await prompt.getByRole('button', { name: 'No, not yet' }).click();
         await expect.poll(() => prompt.count()).toBe(0);
         // Still running, still in review.
@@ -949,13 +966,20 @@ describe('the panel shell', () => {
         expect((await runStatus(page)).active).toBe(true);
         await site.goto(fixtures.formUrl);
         await submitIn(site, 'other');
+        // The prompt opens at once; the number fills in when the worker's
+        // read gives it (Yes carries what is shown at that moment).
         await prompt.waitFor({ timeout: 10_000 });
+        await prompt.getByText('20240017', { exact: true }).waitFor();
         await prompt.getByRole('button', { name: 'Yes, I did' }).click();
         await page.getByRole('heading', { name: 'Submitted' }).waitFor();
-        await page.getByText('The form was submitted on localhost.').waitFor();
+        await page
+          .getByText('You confirmed the form was submitted on localhost.')
+          .waitFor();
         await page.getByText('Number shown on the page').waitFor();
         await page.getByText('20240017', { exact: true }).waitFor();
-        expect(await page.getByText('Confirmation number').count()).toBe(0);
+        expect(
+          await page.getByText('Confirmation number', { exact: true }).count(),
+        ).toBe(0);
         expect(stopCalls(runId)).toBe(1);
         expect(await workerStops(page)).toBe(1);
         expect(JSON.stringify(appRequests)).not.toContain('20240017');
@@ -1163,9 +1187,14 @@ describe('the panel shell', () => {
 
       // The caseworker presses the page's own submit button.
       await site.click('#e-go');
-      await page
-        .getByRole('heading', { name: 'Submitted' })
-        .waitFor({ timeout: 10_000 });
+      const prompt = page.getByRole('region', {
+        name: 'Did you submit the form?',
+      });
+      await prompt.waitFor({ timeout: 10_000 });
+      await prompt.getByText('AB-1234', { exact: true }).waitFor();
+      expect(stopCalls(runId)).toBe(0);
+      await prompt.getByRole('button', { name: 'Yes, I did' }).click();
+      await page.getByRole('heading', { name: 'Submitted' }).waitFor();
       await page.getByText('Confirmation number', { exact: true }).waitFor();
       await page.getByText('AB-1234', { exact: true }).waitFor();
       expect(stopCalls(runId)).toBe(1);
@@ -1195,6 +1224,21 @@ describe('the panel shell', () => {
     const appSeen = appRequests.length;
     const frameStart = relay.frames.length;
     const values = [SSN_ECHO, '123456789', '1234567890'];
+    const readOver = () =>
+      expect
+        .poll(
+          async () =>
+            (await page
+              .getByRole('status', { name: 'Submission check' })
+              .textContent()) ?? 'x',
+          { timeout: 20_000 },
+        )
+        .toBe('');
+    const noNumber = async () => {
+      for (const label of ['Confirmation number', 'Number shown on the page']) {
+        expect(await page.getByText(label, { exact: true }).count()).toBe(0);
+      }
+    };
     try {
       row.phase = 'review';
       const review = page.getByRole('region', {
@@ -1206,11 +1250,12 @@ describe('the panel shell', () => {
       const prompt = page.getByRole('region', {
         name: 'Did you submit the form?',
       });
-      // The panel waits out the worker's whole 12 s read first.
-      await prompt.waitFor({ timeout: 20_000 });
+      // Asked at once; the looking line clears when the worker's read is
+      // over (12 s), and only then is "no number" an answer.
+      await prompt.waitFor({ timeout: 10_000 });
+      await readOver();
       // No number is offered, and the run is still going.
-      expect(await page.getByText('Confirmation number').count()).toBe(0);
-      expect(await page.getByText('Number shown on the page').count()).toBe(0);
+      await noNumber();
       expect(stopCalls(runId)).toBe(0);
       expect((await runStatus(page)).active).toBe(true);
       await nowhereBut(page, site, values, seen, appSeen);
@@ -1222,14 +1267,13 @@ describe('the panel shell', () => {
       await site.goto(fixtures.formUrl);
       await armed(page);
       await submitIn(site, 'ten');
-      await prompt.waitFor({ timeout: 20_000 });
-      expect(await page.getByText('Confirmation number').count()).toBe(0);
-      expect(await page.getByText('Number shown on the page').count()).toBe(0);
+      await prompt.waitFor({ timeout: 10_000 });
+      await readOver();
+      await noNumber();
       await nowhereBut(page, site, values, seen, appSeen);
       await prompt.getByRole('button', { name: 'Yes, I did' }).click();
       await page.getByRole('heading', { name: 'Submitted' }).waitFor();
-      expect(await page.getByText('Confirmation number').count()).toBe(0);
-      expect(await page.getByText('Number shown on the page').count()).toBe(0);
+      await noNumber();
       expect(stopCalls(runId)).toBe(1);
       expect(await workerStops(page)).toBe(1);
       await nowhereBut(page, site, values, seen, appSeen);
@@ -1277,9 +1321,11 @@ describe('the panel shell', () => {
       // The re-rendered form's own button: seen again, with its number.
       await armed(page);
       await site.click('#again-go');
-      await page
-        .getByRole('heading', { name: 'Submitted' })
-        .waitFor({ timeout: 10_000 });
+      await prompt.waitFor({ timeout: 10_000 });
+      await prompt.getByText('AB-1234', { exact: true }).waitFor();
+      expect(stopCalls(runId)).toBe(0);
+      await prompt.getByRole('button', { name: 'Yes, I did' }).click();
+      await page.getByRole('heading', { name: 'Submitted' }).waitFor();
       await page.getByText('AB-1234', { exact: true }).waitFor();
       expect(stopCalls(runId)).toBe(1);
       expect(await workerStops(page)).toBe(1);

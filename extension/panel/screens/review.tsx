@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import type { RunProgress } from '../../../lib/relay/progress';
-import { SUBMIT_COPY, UNFILLED_COPY, unfilledStatusText } from '../lib/copy';
+import {
+  CONFIRMED_COPY,
+  SUBMIT_COPY,
+  UNFILLED_COPY,
+  unfilledStatusText,
+} from '../lib/copy';
 import type { SubmissionView } from '../lib/run-session';
+import type { Confirmation } from '../lib/worker-api';
 import { createUnfilledField, type UnfilledView } from '../lib/unfilled-field';
 import { createWorkerApi, type WorkerApi } from '../lib/worker-api';
 import {
@@ -133,7 +139,7 @@ export const ReviewPanel = ({
         )}
       </details>
       <p className="text-sm">{SUBMIT_COPY.reviewHint}</p>
-      {/* Always mounted and empty unless checking: screen readers announce
+      {/* Always mounted and empty unless looking: screen readers announce
           a change to a live region, not one inserted already filled. */}
       <p
         role="status"
@@ -141,11 +147,11 @@ export const ReviewPanel = ({
         aria-label={SUBMIT_COPY.statusLabel}
         className="text-sm"
       >
-        {submission?.stage === 'checking' ? SUBMIT_COPY.checking : null}
+        {submission?.looking ? SUBMIT_COPY.looking : null}
       </p>
-      {submission?.stage === 'ask' ? (
+      {submission ? (
         <SubmitPrompt
-          token={submission.confirmation?.token}
+          confirmation={submission.confirmation}
           stopping={stopping}
           onYes={onConfirmSubmission}
           onNo={onDismissSubmission}
@@ -190,16 +196,22 @@ export const ReviewPanel = ({
 };
 
 type SubmitPromptProps = {
-  /** A number after a label other than "confirmation": shown, not trusted. */
-  token?: string;
+  /** The number the page showed, once read: shown as text, never acted on. */
+  confirmation?: Confirmation;
   stopping: boolean;
   onYes?: () => void;
   onNo?: () => void;
 };
 
-// The page moved on after a form was sent, with no confirmation number: the
-// caseworker says whether it was the submission. The token is React text.
-const SubmitPrompt = ({ token, stopping, onYes, onNo }: SubmitPromptProps) => {
+// The page moved on after a form was sent: the caseworker says whether it was
+// the submission (a Next step looks the same). Nothing stops the run until
+// they do. The token is React text, labelled by the kind of its label.
+const SubmitPrompt = ({
+  confirmation,
+  stopping,
+  onYes,
+  onNo,
+}: SubmitPromptProps) => {
   const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     headingRef.current?.focus();
@@ -215,11 +227,17 @@ const SubmitPrompt = ({ token, stopping, onYes, onNo }: SubmitPromptProps) => {
         {SUBMIT_COPY.askTitle}
       </h4>
       <p className="text-sm">{SUBMIT_COPY.askBody}</p>
-      {token ? (
-        <p className="text-sm">
-          {SUBMIT_COPY.numberOnPage}{' '}
-          <span className="break-all font-ibm-plex-mono">{token}</span>
-        </p>
+      {confirmation ? (
+        <div className="flex flex-col gap-1">
+          <p className="text-sm font-medium">
+            {confirmation.kind === 'confirmation'
+              ? CONFIRMED_COPY.confirmationLabel
+              : CONFIRMED_COPY.otherLabel}
+          </p>
+          <p className="break-all font-ibm-plex-mono text-sm">
+            {confirmation.token}
+          </p>
+        </div>
       ) : null}
       <div className="flex gap-2">
         <Button

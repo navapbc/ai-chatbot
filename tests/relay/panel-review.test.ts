@@ -135,44 +135,39 @@ describe('ConfirmedScreen', () => {
         ...extra,
       }),
     );
-  it('detected with a confirmation number: says the form was submitted and shows the number as text', () => {
+  it('says the caseworker confirmed it and shows a confirmation number as text', () => {
     const out = html(false, {
-      how: 'detected',
       confirmation: { token: 'AB-1234', kind: 'confirmation' },
     });
-    expect(out).toContain('The form was submitted on example.gov.');
-    expect(out).toContain('The page moved on after the form was sent.');
+    expect(out).toContain(
+      'You confirmed the form was submitted on example.gov.',
+    );
     expect(out).toContain('Confirmation number');
     expect(out).toContain('>AB-1234<');
-    expect(out).not.toContain('You said');
   });
   it('a number after another label is not called a confirmation number', () => {
     const out = html(false, {
-      how: 'detected',
       confirmation: { token: '20240017', kind: 'other' },
     });
     expect(out).toContain('Number shown on the page');
     expect(out).not.toContain('Confirmation number');
     expect(out).toContain('>20240017<');
   });
-  it('detected with no number shows no number line; manual says what the caseworker said', () => {
-    const detected = html(false, { how: 'detected' });
-    expect(detected).toContain('The form was submitted on example.gov.');
-    expect(detected).not.toMatch(/Confirmation number|Number shown/);
-    const manual = html(false, { how: 'manual' });
-    expect(manual).toContain('You said you submitted the form on example.gov.');
-    expect(manual).not.toContain('The form was submitted');
+  it('no number: the same sentence and no number line', () => {
+    const out = html(false);
+    expect(out).toContain(
+      'You confirmed the form was submitted on example.gov.',
+    );
+    expect(out).not.toMatch(/Confirmation number|Number shown/);
   });
   it('escapes a hostile token (React text only)', () => {
     const out = html(false, {
-      how: 'detected',
       confirmation: { token: '<img src=x>', kind: 'confirmation' },
     });
     expect(out).not.toContain('<img');
   });
-  it('says what the caseworker said, with no stop notice when the stop worked', () => {
+  it('shows no stop notice when the stop worked', () => {
     const out = html(false);
-    expect(out).toContain('You said you submitted the form on example.gov.');
     expect(out).not.toContain('could not reach');
     expect(out).not.toContain('>Stop<');
   });
@@ -321,48 +316,59 @@ describe('Review: a detected submission', () => {
       }),
     );
 
-  it('no longer says submitting is only by hand, and keeps I submitted it', () => {
+  it('no submission: an empty named status line, no prompt, I submitted it', () => {
     const out = render();
     expect(out).toContain(SUBMIT_COPY.reviewHint);
     expect(out).toContain('I submitted it');
-    expect(out).not.toContain(SUBMIT_COPY.checking);
     expect(out).not.toContain(SUBMIT_COPY.askTitle);
-    // The submission line is mounted, named and empty.
     expect(out.match(/role="status"/g)).toHaveLength(2);
     expect(out).toMatch(
       /<p role="status" aria-live="polite" aria-label="Submission check" class="text-sm"><\/p>/,
     );
   });
 
-  it('checking: the same status line gets the text, no prompt', () => {
-    const out = render({ stage: 'checking' });
-    expect(out).toContain(
-      `aria-label="Submission check" class="text-sm">${SUBMIT_COPY.checking}</p>`,
-    );
-    expect(out).not.toContain(SUBMIT_COPY.askTitle);
-    expect(out.match(/role="status"/g)).toHaveLength(2);
-  });
-
-  it('ask: the question with Yes and No, I submitted it still there', () => {
-    const out = render({ stage: 'ask' });
+  it('a submission asks at once; while looking the status line says so', () => {
+    const out = render({ looking: true });
     expect(out).toContain(SUBMIT_COPY.askTitle);
     expect(out).toContain(SUBMIT_COPY.askBody);
-    expect(out).toContain(SUBMIT_COPY.yes);
-    expect(out).toContain(SUBMIT_COPY.no);
+    expect(out).toContain(
+      `aria-label="Submission check" class="text-sm">${SUBMIT_COPY.looking}</p>`,
+    );
+    expect(out).not.toMatch(/>Confirmation number<|>Number shown on the page</);
+    // Yes is the primary button, before No; I submitted it stays.
+    const yes = out.indexOf(SUBMIT_COPY.yes);
+    const no = out.indexOf(SUBMIT_COPY.no);
+    expect(yes).toBeGreaterThan(-1);
+    expect(no).toBeGreaterThan(yes);
+    expect(out.slice(out.lastIndexOf('<button', yes), yes)).not.toContain(
+      'border-input',
+    );
     expect(out).toContain('I submitted it');
-    expect(out).not.toContain(SUBMIT_COPY.numberOnPage);
-    expect(out).not.toContain(SUBMIT_COPY.checking);
   });
 
-  it('ask with a number after another label shows it as text', () => {
-    const out = render({
-      stage: 'ask',
+  it('the read is over with no number: the prompt stays, the looking line clears', () => {
+    const out = render({ looking: false });
+    expect(out).toContain(SUBMIT_COPY.askTitle);
+    expect(out).not.toContain(SUBMIT_COPY.looking);
+  });
+
+  it('labels the number by its kind, as text', () => {
+    const conf = render({
+      looking: false,
+      confirmation: { token: 'AB-1234', kind: 'confirmation' },
+    });
+    expect(conf).toContain('>Confirmation number<');
+    expect(conf).toContain('>AB-1234<');
+    expect(conf).not.toContain(SUBMIT_COPY.looking);
+    const other = render({
+      looking: false,
       confirmation: { token: '20240017', kind: 'other' },
     });
-    expect(out).toContain(SUBMIT_COPY.numberOnPage);
-    expect(out).toContain('>20240017<');
+    expect(other).toContain('>Number shown on the page<');
+    expect(other).not.toContain('Confirmation number');
+    expect(other).toContain('>20240017<');
     const hostile = render({
-      stage: 'ask',
+      looking: false,
       confirmation: { token: '<b>x</b>', kind: 'other' },
     });
     expect(hostile).not.toContain('<b>x');
@@ -372,28 +378,10 @@ describe('Review: a detected submission', () => {
     expect(ENDED_TEXT.submitted).toBe('The run ended as submitted.');
   });
 
-  it('a manual confirmation keeps a number from another label, labelled as a number on the page', () => {
-    const out = renderToStaticMarkup(
-      createElement(ConfirmedScreen, {
-        siteName: 'example.gov',
-        stopFailed: false,
-        how: 'manual',
-        confirmation: { token: '20240017', kind: 'other' },
-        onStartAnother: () => {},
-        onHome: () => {},
-      }),
-    );
-    expect(out).toContain('You said you submitted the form on example.gov.');
-    expect(out).toContain(CONFIRMED_COPY.otherLabel);
-    expect(out).toContain('>20240017<');
-    expect(out).not.toContain('Confirmation number');
-  });
-
   it('copy never claims the form is complete or accepted', () => {
     const all = [
       ...Object.values(SUBMIT_COPY),
-      CONFIRMED_COPY.detected('x'),
-      CONFIRMED_COPY.detectedDetail,
+      CONFIRMED_COPY.confirmed('x'),
     ].join(' ');
     expect(all).not.toMatch(/complete|accepted|approved|success/i);
   });

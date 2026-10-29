@@ -217,7 +217,6 @@ export const App = ({ onStart }: { onStart?: OnStart }) => {
         <ConfirmedScreen
           siteName={state.target.siteName}
           stopFailed={state.confirmed?.stopFailed === true}
-          how={state.confirmed?.how}
           confirmation={state.confirmed?.confirmation}
           onStartAnother={() => dispatch({ type: 'startAnother' })}
           onHome={handleHome}

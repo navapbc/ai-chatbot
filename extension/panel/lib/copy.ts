@@ -397,23 +397,24 @@ export const ALLOW_SITE_COPY = {
 export const SUBMIT_COPY = {
   reviewHint:
     'Check the form on the page, then submit it there yourself. The panel watches for the page to move on after you submit.',
-  checking:
-    'The page moved on after a form was sent. Checking it for a confirmation number...',
+  looking: 'Looking for a confirmation number...',
   /** The name of Review's submission status line. */
   statusLabel: 'Submission check',
   askTitle: 'Did you submit the form?',
   askBody:
     'The page moved on after a form was sent. Going to the next step of a form looks the same.',
-  numberOnPage: 'The page shows this number:',
   yes: 'Yes, I did',
   no: 'No, not yet',
 } as const;
 
-/** The Confirmed screen's copy, by how the submission was confirmed. */
+/**
+ * The Confirmed screen's copy (the number labels are the prompt's too). The
+ * caseworker always confirms, so it says what they confirmed, never that the
+ * site accepted the form or that it is complete.
+ */
 export const CONFIRMED_COPY = {
-  detected: (site: string) => `The form was submitted on ${site}.`,
-  detectedDetail: 'The page moved on after the form was sent.',
-  manual: (site: string) => `You said you submitted the form on ${site}.`,
+  confirmed: (site: string) =>
+    `You confirmed the form was submitted on ${site}.`,
   confirmationLabel: 'Confirmation number',
   otherLabel: 'Number shown on the page',
   keepIt: 'Write it down if you need it: the panel does not keep it.',
