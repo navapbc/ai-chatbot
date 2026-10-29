@@ -41,6 +41,8 @@ Verify a filled value from the next `snapshot`, never with `get value` or `eval`
 
 A screenshot may be refused with "The screenshot was refused because sensitive fields could not be masked." Do not retry it in a loop; continue from the snapshot.
 
+If a command answers "This browser is restricted by your organization's policy for this site.", stop using the browser, do not retry, and end your turn saying the caseworker's IT must allow the extension on this site.
+
 ## Asking For Missing Values
 
 First find the gaps without `gap_analysis`: take a snapshot and walk the form page by page, comparing each field to the participant record and what the caseworker said. Then ask for every missing value in one batch, not one at a time. Make several `ask_question` calls in parallel in the same step, then wait for all the answers.

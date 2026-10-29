@@ -294,17 +294,17 @@ export const NEEDS_YOU_COPY = {
 } as const;
 
 /**
+ * Shown when Chrome blocks part of what the extension needs by the
+ * organization's policy (a refused attach, command or screenshot). Fixed
+ * text: Chrome's own message is never shown.
+ */
+export const POLICY_RESTRICTED_COPY =
+  "Chrome is blocking part of what this extension needs here because of your organization's policy. Ask IT to allow the extension.";
+
+/**
  * Fixed copy for each way "Fill it in" can fail, chosen by code. The worker's
  * text and the value are never part of it.
  */
-/**
- * Shown when Chrome blocks the extension on a site by the organization's
- * policy (a refused attach, command or screenshot). Fixed text: Chrome's own
- * message is never shown.
- */
-export const POLICY_RESTRICTED_COPY =
-  "Chrome is blocking this extension on this site because of your organization's policy. Ask IT to allow the extension to access the site.";
-
 export const TYPE_SENSITIVE_COPY: Record<TypeSensitiveCode, string> = {
   not_attached:
     'The extension is not connected to this tab right now. Type it in the page yourself, then choose "I typed it in the page".',

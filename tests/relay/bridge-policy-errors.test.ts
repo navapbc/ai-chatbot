@@ -100,6 +100,8 @@ interface Fake {
 }
 
 let fake: Fake;
+/** Set once the mask's world creation has failed (the restore phase). */
+let worldFailed = false;
 
 const freshFake = (): Fake => ({
   tabFrames: [],
@@ -133,7 +135,11 @@ const sendCommand = vi.fn(
     method: string,
     params: Record<string, unknown> = {},
   ): Promise<unknown> => {
-    if (fake.methodError?.methods.includes(method)) {
+    if (
+      fake.methodError &&
+      (fake.methodError.methods.includes(method) ||
+        (fake.methodError.methods.includes('*') && worldFailed))
+    ) {
       throw new Error(fake.methodError.message);
     }
     switch (method) {
@@ -156,6 +162,7 @@ const sendCommand = vi.fn(
         }
         fake.maskStarted?.();
         if (fake.maskGate) await fake.maskGate;
+        worldFailed = true;
         throw new Error('no mask world here');
       case 'Runtime.evaluate':
         if (params.contextId === FOCUS_CONTEXT) {
@@ -287,6 +294,7 @@ function stubChrome() {
 beforeEach(async () => {
   vi.resetModules();
   fake = freshFake();
+  worldFailed = false;
   sendCommand.mockClear();
   attach.mockClear();
   detach.mockClear();
@@ -460,6 +468,18 @@ describe.each([HOST, SHOT])('Chrome says: %s', (phrase) => {
     expect(
       await bridge.handleMessage({ type: 'armSubmitWatch', runId: 'run-1' }),
     ).toEqual({ ok: false, error: 'restricted by policy' });
+  });
+});
+
+describe('a failing restore', () => {
+  it('with the policy phrase never turns a non-policy refusal into the policy message', async () => {
+    const socket = await attachedRun();
+    // Apply fails (no mask world); every restore step then fails with the phrase.
+    fake.methodError = { methods: ['*'], message: HOST };
+    const reply = await ask(socket, tabCommand('s2', 'Page.captureScreenshot'));
+    expect(reply.error).toBeDefined();
+    expect(reply.error).not.toBe(bridge.POLICY_AGENT_MESSAGE);
+    expect(reply.result).toBeUndefined();
   });
 });
 

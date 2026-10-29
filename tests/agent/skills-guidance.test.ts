@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { POLICY_AGENT_MESSAGE } from '@/extension/src/bridge';
 import {
   COMMAND_REFUSED,
   relayCommandRefusal,
@@ -47,9 +48,14 @@ describe('extension-run skill', () => {
     'never type `skip`',
     'never a free-text question',
     'A text answer of exactly `provided` means the caseworker entered the value in the page themselves: do not ask again and do not try to read it.',
+    'If a command answers "This browser is restricted by your organization\'s policy for this site.", stop using the browser, do not retry, and end your turn saying the caseworker\'s IT must allow the extension on this site.',
     'During that origin hold the `browser` tool waits and then tells you what to do: do not end your turn on the refusal. If the hold ends the run, you will be told.',
   ])('contains %s', (needle) => {
     expect(skill).toContain(needle);
+  });
+
+  it('quotes the fixed policy message exactly', () => {
+    expect(skill).toContain(`"${POLICY_AGENT_MESSAGE}"`);
   });
 
   it('never tells the agent to use a selector frame', () => {

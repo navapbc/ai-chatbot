@@ -2589,6 +2589,10 @@ async function captureMasked(
     frames.flatMap(([, child]) => (child.targetId ? [child.targetId] : [])),
   );
   const isCoveredFrame = (frameId: string) => covered.has(frameId);
+  // Restores go through maskSend too; a restore failing with the policy
+  // phrase must not mark the capture, so only apply, settle, verify and the
+  // capture itself can (the refusal stays fail closed either way).
+  let restoring = false;
   const maskSend =
     (debuggee: chrome.debugger.DebuggerSession, child?: Child) =>
     (method: string, params?: Record<string, unknown>) =>
@@ -2599,7 +2603,9 @@ async function captureMasked(
         MASK_STEP_MS,
         'screenshot mask',
       ).catch((error: unknown) => {
-        if (isPolicyRestriction(error)) maskPolicyHits.add(current);
+        if (!restoring && isPolicyRestriction(error)) {
+          maskPolicyHits.add(current);
+        }
         throw error;
       });
   // A field is masked by its value too: a value-shaped number, or a value
@@ -2645,7 +2651,10 @@ async function captureMasked(
         'masking',
       );
     },
-    restore: () => mask.restore(),
+    restore: () => {
+      restoring = true;
+      return mask.restore();
+    },
   }));
   const known = new Set(current.children.keys());
   return withScreenshotMask(sessions, async () => {
