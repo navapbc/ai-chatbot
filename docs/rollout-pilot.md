@@ -250,14 +250,30 @@ gets a preview deploy.
   `jev_features` documents). Both Terraform jobs have `environment:`, so the
   values can come from GitHub environment-level variables (`dev`, `prod`);
   their names are to be chosen in that PR (none exist yet).
+- **Pass a variable only when it is set.** An unset `vars.X` expands to the
+  empty string, so a bare `-var=name=${{ vars.X }}` or `TF_VAR_name` entry
+  would (a) turn `relay_allowed_host_suffixes` into `""` in the same apply as
+  `relay_allowed_hosts`, skipping the comparison step of the two-apply switch
+  (section 4.4; a wrong host then answers 421 for everything, `/healthz`
+  included), and (b) fail the plan for the number and bool variables. In BOTH
+  workflows, add the argument only when the variable is set, or use
+  `${{ vars.X || '<default>' }}` with the Terraform default: `relay_min_instances`
+  `0`, `relay_runs_enabled` `false`, `relay_token_endpoint_enabled` `false`,
+  `relay_extension_origin` `""`, `relay_allowed_models` `""`,
+  `relay_allowed_hosts` `""`, `relay_allowed_host_suffixes` `.run.app`,
+  `relay_command_duration_metric_enabled` `false`. The suffix variable must
+  keep `.run.app` until the second apply of the switch in 4.4.
 
 ### 4.2 Before setting `RELAY_ENABLED`
 
 Platform. Check its current value (Settings, Secrets and variables, Actions,
 Variables; or `gh variable list`, read-only). If it is already `'true'` and a
 preview environment already has a relay from before the dev/prod allowlist,
-that preview's next push plans a destroy of its relay (deletion protection is
-off for previews). That is expected; merge knowing it.
+that preview's next push plans a destroy of its relay. Deletion protection is
+off only for `preview-*` environments (`terraform/relay.tf`); the plain
+`preview` environment (feature-branch pushes, the `workflow_dispatch` default)
+keeps it on, so there the destroy FAILS and blocks every `preview` deploy
+until the relay is dealt with. Check the variable value first.
 
 Prerequisites: sections 2 and 3 done for dev and prod; the migration check
 (section 5) done for the dev and prod databases before the wiring PR merges
@@ -530,15 +546,21 @@ version (`chrome://version`) with every result.
    extension needs here because of your organization's policy. Ask IT to allow
    the extension." The agent is told "This browser is restricted by your
    organization's policy for this site." and ends its turn.
-6. **Screenshot policy on Chrome 155+.** Same, for `DisableScreenshots` or a
-   screenshot DLP rule ("Screenshot capture is restricted by policy."). Any
-   screenshot the agent takes during item 5's run must work.
+6. **Screenshot policy on Chrome 155+.** For `DisableScreenshots` or a
+   screenshot DLP rule ("Screenshot capture is restricted by policy."), any
+   screenshot the agent takes during item 5's run must work. If one is
+   refused, the expected outcome is that the AGENT tells the caseworker IT must
+   allow the extension (it is given the fixed message and ends its turn); the
+   panel shows NO notice, because the panel notice is set only for a refused
+   attach. IT should look for `DisableScreenshots`, a screenshot DLP rule or
+   `runtime_blocked_hosts` covering the site in `chrome://policy`.
 7. **`DeveloperToolsAvailability`.** Record the value IT sets (or that it is
    unset) and run item 5 under exactly that value; its effect on
    `chrome.debugger` is untested.
 8. **Optional negative test.** On a test profile only, apply
    `runtime_blocked_hosts` for the extension and confirm item 5's policy copy
-   appears. Known gap: a policy error raised inside the attach's inner
+   appears (a refused attach). Known gaps: a refused CDP command or screenshot
+   sets no panel notice (the agent's text only), and a policy error raised inside the attach's inner
    `Page.enable` or `Page.getFrameTree` steps shows the generic error instead
    of the policy copy, and the screenshot-time mapping has been code-reviewed
    only.

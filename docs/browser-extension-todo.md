@@ -21,7 +21,7 @@ Nothing here has been applied. The relay stays off until `RELAY_ENABLED` is `tru
 - [ ] Create Secret Manager secrets: `relay-token-secret-{dev,prod}` (32+ characters) and `eve-internal-secret-{dev,prod}` (`deploy.yml` deploys the relay to dev and prod only).
 - [ ] Grant `roles/logging.configWriter` to the deploy service account, or set `relay_exclude_request_logs = false` knowingly (that leaves token-bearing request URLs in Cloud Logging).
 - [ ] Set the GitHub repository variable `RELAY_ENABLED=true` only after the two items above. Turning it off later plans a destroy; on dev and prod deletion protection makes that apply fail.
-- [ ] Do not set `RELAY_TOKEN_ENDPOINT_ENABLED` anywhere until the panel exists (plan 4c); the auth path is done in plan 4b (runs are user-bound).
+- [ ] Set `RELAY_TOKEN_ENDPOINT_ENABLED` only in the order `docs/rollout-pilot.md` gives (the panel and the user-bound auth path exist; the flag turns on after the relay is verified).
 - [ ] Before deploying plan 4a: migrations 0008 (Participant) and 0009 (partial unique index on `EveRun.chatId`) are applied by `scripts/start-container.sh` (`pnpm tsx lib/db/migrate`, `set -euo pipefail`) on the first deploy that carries this merge, and a failure crash-loops the new revision. BEFORE that deploy, `SELECT "chatId", count(*) FROM "EveRun" WHERE "relayOrigin" IS NOT NULL GROUP BY 1 HAVING count(*) > 1;` must return no rows (in practice none exist: `RELAY_RUNS_ENABLED` is set nowhere in deployment). No down migrations; rolling back the code is safe (old code ignores `Participant`; the index only touches relay rows). Run `scripts/seed-participants.ts` manually (the container does not), and make sure `EVE_INTERNAL_SECRET` and `RELAY_TOKEN_SECRET` are each at least 32 characters (a short `RELAY_TOKEN_SECRET` makes both token routes return 500).
 - [ ] Only if running more than one relay instance: create `relay-redis-url-<env>` and first close the multi-instance gaps listed under plan 5.
 - [ ] Run the manual cloud check (plan task 11) after the first apply: e2e against the deployed relay, compare round trip, snapshot and fill times with the spike (56 ms, about 600 ms, about 240 ms), and search the Eve Postgres world for relay token strings.
@@ -324,7 +324,7 @@ Minors by area:
 
 Plan 5 (`docs/plans/2026-11-04-pilot-rollout.md`, change doc `docs/changes/2026-11-04-add-pilot-rollout.md`) closed the items ticked below. Nothing was applied or deployed.
 
-- [x] Debugging banner and Chrome policy copy: the Ready screen explains the debugger bar; a policy refusal maps to `restricted by policy` and fixed panel copy.
+- [x] Debugging banner and Chrome policy copy: the Ready screen explains the debugger bar; a refused attach sets `RunStatus.policyRestricted` and shows fixed panel copy; a refused CDP command or screenshot gives the agent a fixed message only.
 - [x] `minimum_chrome_version` (120) is in the manifest; the owner still confirms it against the managed fleet.
 - [x] Token exposure on the extension leg: the token travels as the subprotocol `relay.v1, <token>`; the query fallback on `/extension` remains for the transition (see follow-ups). The agent leg keeps its query token (agent-browser cannot send a header); shorter or single-use tokens are deferred.
 - [x] `promote.yml` fails, not warns, when the relay image for the promoted SHA is missing while the relay is enabled; a plan-time data source checks `eve-internal-secret-<env>` (`terraform/relay.tf`).
@@ -349,7 +349,11 @@ Plan 5 (`docs/plans/2026-11-04-pilot-rollout.md`, change doc `docs/changes/2026-
 - [ ] `RELAY_ENABLED` must be a repository variable (an environment-level one would plan a relay destroy on develop pushes) and turns on both the dev and prod relays; if a preview already has a relay, its next push plans a destroy.
 - [ ] Open question: whether the deploy identity has `logging.logMetrics.create` (and the exclusion permission), the same `roles/logging.configWriter` question as the request-log exclusion.
 - [ ] The CRX3 is verified only by a test-written parser with a throwaway key; Chrome has not accepted one, and the real `.pem` match is untested (fallback: `chrome --pack-extension`). The Web Store note that the manifest `key` may need removing is unverified.
-- [ ] Policy error mapping covers `attach()`, the CDP send and the screenshot path; a policy error in attach's inner `Page.enable` or `getFrameTree` is not mapped, the capture-time mapping is code-reviewed only, the Eve skill has no line on the fixed policy message, and nothing has run on a managed Chrome 155.
+- [ ] Policy error mapping covers `attach()`, the CDP send and the screenshot path; a policy error in attach's inner `Page.enable` or `getFrameTree` is not mapped, the capture-time mapping is code-reviewed only, and nothing has run on a managed Chrome 155.
+- [ ] Panel notice only for a refused attach; consider setting `policyRestricted` on CDP/screenshot policy hits (needs a clearing rule on a successful capture).
+- [ ] `maskPolicyHits` is cleared once per capture, not per attempt: a policy hit in a retried attempt followed by a non-policy failure reports the policy message (still fails closed).
+- [ ] The backpressure check is `buffered > MAX` before each send, so queued bytes can reach about 64 MiB plus one 32 MiB frame (about 96 MiB) before a close, on a 512Mi instance.
+- [ ] The `relay_extension_origin` precondition reads `extension/EXTENSION_ID` with `file()` whenever the relay exists, because `||` does not short-circuit in Terraform 1.9.0 (harmless: `relay.tf` already needs the file for `RELAY_EXTENSION_ID`).
 - [ ] Migration timing: `origin/develop` is at migration 0006 and `origin/main` has none of 0007 to 0011 (refs may be stale). 0007 creates `EveRun`, so it ships with the first deploy of this work.
 - [ ] Runbook command forms marked "confirm" (the `jq` path for `gcloud run services describe` and the quoted-string log read) need checking against a real project.
 
