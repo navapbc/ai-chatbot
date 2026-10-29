@@ -7,6 +7,7 @@ import type {
   RunSessionState,
   SessionRun,
 } from '../lib/run-session';
+import { POLICY_RESTRICTED_COPY } from '../lib/copy';
 import type { Confirmation } from '../lib/worker-api';
 import { showAllowSite } from '../lib/allow-site';
 import { createAnswerSender } from '../lib/answer-client';
@@ -211,6 +212,11 @@ export const RunningScreen = ({
             </p>
           ) : null}
         </div>
+      ) : null}
+      {!ended && state?.policyRestricted ? (
+        <p role="alert" className="text-sm font-semibold">
+          {POLICY_RESTRICTED_COPY}
+        </p>
       ) : null}
       {heldOn && state ? (
         // Above the questions and the progress: the agent is paused until

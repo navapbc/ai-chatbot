@@ -1,6 +1,6 @@
 import { useId, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import type { ErrorMessage } from '../lib/copy';
+import { DEBUGGER_BAR_COPY, type ErrorMessage } from '../lib/copy';
 import {
   buildStartRequest,
   type ReadyModel,
@@ -137,6 +137,7 @@ export const ReadyScreen = ({ state, dispatch, onStart }: Props) => {
           <li key={line}>{line}</li>
         ))}
       </ul>
+      <p className="text-sm text-muted-foreground">{DEBUGGER_BAR_COPY}</p>
       {error ? (
         <div role="alert" className="flex flex-col gap-1 text-sm">
           <p className="font-semibold">{error.title}</p>
