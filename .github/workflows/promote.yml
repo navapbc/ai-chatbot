@@ -63,12 +63,21 @@ jobs:
           echo "chatbot_image=${ARTIFACT_REGISTRY}/ai-chatbot:${TAG}" >> $GITHUB_OUTPUT
           echo "relay_image=${ARTIFACT_REGISTRY}/labs-asp-relay:${TAG}" >> $GITHUB_OUTPUT
 
+      # With the relay enabled, a missing relay image fails here rather than
+      # planning a relay revision that cannot start. Do not unset RELAY_ENABLED
+      # to get past it: that plans a destroy of the deployed relay. Promote a
+      # version whose commit deploy.yml built with the relay instead.
       - name: Verify images exist
         run: |
           echo "Verifying images exist in Artifact Registry..."
           gcloud artifacts docker images describe ${{ steps.images.outputs.chatbot_image }} || echo "Warning: chatbot image not found"
           if [[ "${{ vars.RELAY_ENABLED }}" == "true" ]]; then
-            gcloud artifacts docker images describe ${{ steps.images.outputs.relay_image }} || echo "Warning: relay image not found (expected for tags that predate the relay)"
+            if ! gcloud artifacts docker images describe ${{ steps.images.outputs.relay_image }}; then
+              echo "::error::Relay image labs-asp-relay:${{ steps.sha.outputs.short_sha }} not found, and the relay is enabled for this environment. Promote a version built with the relay (do not unset RELAY_ENABLED: that plans a destroy of the relay)."
+              exit 1
+            fi
+          else
+            echo "Relay not enabled for this environment; relay image not checked."
           fi
 
       - name: Setup Terraform

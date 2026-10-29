@@ -25,8 +25,10 @@ locals {
   # share one signing key, so a run token minted by one preview's app is also
   # accepted by every other preview's relay (dev and prod keys stay separate).
   # The owner creates these (Terraform never holds the values):
-  # relay-token-secret-{dev,preview,prod} (>= 32 chars) and
-  # eve-internal-secret-{dev,preview,prod}.
+  # relay-token-secret-{dev,prod} (>= 32 chars) and
+  # eve-internal-secret-{dev,prod}. deploy.yml deploys the relay to dev and
+  # prod only; the -preview pair is needed only if a preview relay is ever
+  # deployed some other way.
   relay_token_secret_name  = "relay-token-secret-${local.base_environment}"
   eve_internal_secret_name = "eve-internal-secret-${local.base_environment}"
 
@@ -54,6 +56,17 @@ data "google_secret_manager_secret" "relay_token" {
 
   project   = local.project_id
   secret_id = local.relay_token_secret_name
+}
+
+# Same early check for the app's EVE_INTERNAL_SECRET (cloud_run.tf): without
+# it a missing secret fails the app's Cloud Run revision at apply time, after
+# the relay already exists. The app account reads it through its project-level
+# secretAccessor role, so no per-secret grant is needed.
+data "google_secret_manager_secret" "eve_internal" {
+  count = local.relay_enabled ? 1 : 0
+
+  project   = local.project_id
+  secret_id = local.eve_internal_secret_name
 }
 
 resource "google_secret_manager_secret_iam_member" "relay_token_access" {
@@ -103,9 +116,24 @@ resource "google_cloud_run_v2_service" "relay" {
         }
       }
 
-      env {
-        name  = "RELAY_ALLOWED_HOST_SUFFIXES"
-        value = ".run.app"
+      # Host allowlist (relay/server.ts): a request passes when its Host is in
+      # RELAY_ALLOWED_HOSTS or ends with a RELAY_ALLOWED_HOST_SUFFIXES entry.
+      # Defaults keep today's ".run.app" suffix only; see relay_allowed_hosts
+      # in variables.tf for the two-apply switch to the exact host.
+      dynamic "env" {
+        for_each = var.relay_allowed_host_suffixes != "" ? [1] : []
+        content {
+          name  = "RELAY_ALLOWED_HOST_SUFFIXES"
+          value = var.relay_allowed_host_suffixes
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.relay_allowed_hosts != "" ? [1] : []
+        content {
+          name  = "RELAY_ALLOWED_HOSTS"
+          value = var.relay_allowed_hosts
+        }
       }
 
       env {
@@ -125,8 +153,10 @@ resource "google_cloud_run_v2_service" "relay" {
     # Request concurrency stays at Cloud Run's default (80 per instance). Each
     # run holds about two WebSockets (extension and agent), so one instance
     # carries roughly 40 concurrent runs.
+    # Minimum 0 by default (scale to zero, as before); the pilot sets 1 so a
+    # cold start does not drop live runs.
     scaling {
-      min_instance_count = 0
+      min_instance_count = var.relay_min_instances
       max_instance_count = var.relay_max_instances
     }
 
@@ -148,6 +178,14 @@ resource "google_cloud_run_v2_service" "relay" {
     environment = var.environment
     component   = "browser-relay"
   })
+
+  lifecycle {
+    # With neither list set the relay answers 421 to every request.
+    precondition {
+      condition     = var.relay_allowed_hosts != "" || var.relay_allowed_host_suffixes != ""
+      error_message = "Set relay_allowed_hosts or relay_allowed_host_suffixes: with neither, the relay refuses every request (421)."
+    }
+  }
 
   depends_on = [
     google_project_service.required_apis,
@@ -195,4 +233,36 @@ resource "google_logging_project_exclusion" "relay_request_logs" {
   name        = "relay-request-logs-${var.environment}"
   description = "Drops Cloud Run request logs for ${local.env_config.relay_service_name}: the URL carries a relay run token"
   filter      = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"${local.env_config.relay_service_name}\" AND logName:\"run.googleapis.com%2Frequests\""
+}
+
+# Command round-trip time as seen by the relay (P5-h), from the hub's flat
+# `{event: "command", durationMs}` log line. Off by default. Exact match on
+# event (`=`, not `:`) so command-failed and command-denied lines are not
+# counted. No label extractors: the line also carries runId, which must not
+# become a metric label. Creating it needs logging.logMetrics.create on the
+# deploy identity (roles/logging.configWriter, as for the exclusion above).
+resource "google_logging_metric" "relay_command_duration" {
+  count = local.relay_enabled && var.relay_command_duration_metric_enabled ? 1 : 0
+
+  project     = local.project_id
+  name        = "relay-command-duration-${var.environment}"
+  description = "Relay command round trip (ms) for ${local.env_config.relay_service_name}"
+  filter      = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"${local.env_config.relay_service_name}\" AND jsonPayload.event=\"command\""
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "DISTRIBUTION"
+    unit        = "ms"
+  }
+
+  value_extractor = "EXTRACT(jsonPayload.durationMs)"
+
+  # 1 ms to about 17 min in powers of two.
+  bucket_options {
+    exponential_buckets {
+      num_finite_buckets = 20
+      growth_factor      = 2
+      scale              = 1
+    }
+  }
 }

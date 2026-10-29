@@ -173,3 +173,86 @@ variable "relay_exclude_request_logs" {
   type        = bool
   default     = true
 }
+
+# Pilot settings (plan 5). Every default below is today's behavior: nothing
+# set, relay runs off. Neither deploy.yml nor promote.yml passes these yet, so
+# whatever sets them for an environment must be wired into BOTH workflows
+# (promote.yml through TF_VAR_, since older tags do not declare them), or the
+# next run of the other workflow plans them back to these defaults.
+
+variable "relay_min_instances" {
+  description = "Minimum instances for the browser relay service. 0 (default) scales to zero; the pilot sets 1, since a cold start or recycle drops every live run's sockets and in-memory run state."
+  type        = number
+  default     = 0
+  validation {
+    condition     = var.relay_min_instances >= 0 && var.relay_min_instances <= 1
+    error_message = "relay_min_instances must be 0 or 1 (the relay runs as a single instance)."
+  }
+}
+
+variable "relay_runs_enabled" {
+  description = "Set RELAY_RUNS_ENABLED=1 on the app (extension relay runs). Takes effect only where the relay is deployed (relay_image_url set)."
+  type        = bool
+  default     = false
+}
+
+variable "relay_token_endpoint_enabled" {
+  description = "Set RELAY_TOKEN_ENDPOINT_ENABLED=1 on the app, enabling /api/relay/token for the side panel. Takes effect only where the relay is deployed."
+  type        = bool
+  default     = false
+}
+
+variable "relay_extension_origin" {
+  description = "RELAY_EXTENSION_ORIGIN on the app, the full chrome-extension://<id> origin the relay routes accept. Empty (default) leaves it unset, which means no Origin check. Takes effect only where the relay is deployed."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.relay_extension_origin == "" || can(regex("^chrome-extension://[a-p]{32}$", var.relay_extension_origin))
+    error_message = "relay_extension_origin must be empty or chrome-extension://<32 characters a-p>."
+  }
+}
+
+variable "relay_allowed_models" {
+  description = "RELAY_ALLOWED_MODELS on the app (comma-separated picker ids a relay run may request). Empty (default) leaves it unset, so the app's built-in default applies. Takes effect only where the relay is deployed."
+  type        = string
+  default     = ""
+}
+
+variable "relay_allowed_hosts" {
+  description = <<-EOT
+    RELAY_ALLOWED_HOSTS on the relay: comma-separated exact Host values (bare
+    host names, no scheme or path; the service uri output starts with https://,
+    so strip it). Empty (default) leaves it unset. A wrong host makes EVERY
+    relay request answer 421, so switch in two applies: first set this while
+    relay_allowed_host_suffixes still holds ".run.app" and verify the relay
+    answers on the exact host; then, in a second apply, set
+    relay_allowed_host_suffixes = "" to drop the suffix.
+  EOT
+  type        = string
+  default     = ""
+  validation {
+    condition = var.relay_allowed_hosts == "" || alltrue([
+      for host in split(",", var.relay_allowed_hosts) :
+      trimspace(host) != "" && !can(regex("[/:]", host))
+    ])
+    error_message = "relay_allowed_hosts must be empty or comma-separated bare host names with no empty entry, scheme, port or path."
+  }
+}
+
+variable "relay_allowed_host_suffixes" {
+  description = "RELAY_ALLOWED_HOST_SUFFIXES on the relay. Default \".run.app\" is today's value; set \"\" (second apply of the exact-host switch, see relay_allowed_hosts) to leave it unset."
+  type        = string
+  default     = ".run.app"
+  validation {
+    condition = var.relay_allowed_host_suffixes == "" || alltrue([
+      for suffix in split(",", var.relay_allowed_host_suffixes) : trimspace(suffix) != ""
+    ])
+    error_message = "relay_allowed_host_suffixes must not contain an empty entry."
+  }
+}
+
+variable "relay_command_duration_metric_enabled" {
+  description = "Create the log-based distribution metric on the relay's command durationMs (relay.tf). Needs logging.logMetrics.create on the deploy identity (roles/logging.configWriter)."
+  type        = bool
+  default     = false
+}

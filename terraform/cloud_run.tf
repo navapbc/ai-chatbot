@@ -371,8 +371,11 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
       # pre-relay tag) neither references the relay service nor needs the
       # owner-created secrets below to exist.
       #
-      # RELAY_TOKEN_ENDPOINT_ENABLED is deliberately NOT set (ruling R25): the
-      # /api/relay/token route stays disabled until plan 4 turns it on.
+      # RELAY_RUNS_ENABLED and RELAY_TOKEN_ENDPOINT_ENABLED (ruling R25) stay
+      # unset unless relay_runs_enabled / relay_token_endpoint_enabled are
+      # true (both default false). The side panel that calls /api/relay/token
+      # exists now; the owner turns both on per environment following the
+      # pilot runbook, in an apply after the relay itself is verified.
       dynamic "env" {
         for_each = local.relay_enabled ? [1] : []
         content {
@@ -407,6 +410,40 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
               version = "latest"
             }
           }
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.relay_enabled && var.relay_runs_enabled ? [1] : []
+        content {
+          name  = "RELAY_RUNS_ENABLED"
+          value = "1"
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.relay_enabled && var.relay_token_endpoint_enabled ? [1] : []
+        content {
+          name  = "RELAY_TOKEN_ENDPOINT_ENABLED"
+          value = "1"
+        }
+      }
+
+      # Unset (no Origin check) while relay_extension_origin is empty.
+      dynamic "env" {
+        for_each = local.relay_enabled && var.relay_extension_origin != "" ? [1] : []
+        content {
+          name  = "RELAY_EXTENSION_ORIGIN"
+          value = var.relay_extension_origin
+        }
+      }
+
+      # Unset while relay_allowed_models is empty: the app's default applies.
+      dynamic "env" {
+        for_each = local.relay_enabled && var.relay_allowed_models != "" ? [1] : []
+        content {
+          name  = "RELAY_ALLOWED_MODELS"
+          value = var.relay_allowed_models
         }
       }
 
