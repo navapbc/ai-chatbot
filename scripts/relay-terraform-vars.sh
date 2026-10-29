@@ -70,7 +70,10 @@ list() {
     if [[ "$lower" == "lower" ]]; then
       entry="$(printf '%s' "$entry" | tr 'A-Z' 'a-z')"
     fi
-    [[ -n "$entry" && "$entry" =~ $pattern ]] || invalid "$name"
+    # "none" is the suffix sentinel only on its own; as an entry it is
+    # neither a plausible host nor a suffix to allow.
+    [[ -n "$entry" && "$entry" =~ $pattern && "$entry" != "none" ]] ||
+      invalid "$name"
     joined="${joined:+${joined},}${entry}"
   done
   R="$joined"

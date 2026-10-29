@@ -259,6 +259,14 @@ gets a preview deploy.
   | `RELAY_COMMAND_DURATION_METRIC_ENABLED` | `relay_command_duration_metric_enabled` | `true` or `false` |
 
   `relay_exclude_request_logs` is not wired; it keeps its default `true`.
+  The GitHub variables `RELAY_RUNS_ENABLED` and
+  `RELAY_TOKEN_ENDPOINT_ENABLED` take `true` or `false` (Terraform bools),
+  while the app environment variables of the same names take `1`, which
+  Terraform sets when the bool is true. Typing `1` into the GitHub variable
+  fails the workflow step with the fixed message.
+- **Changing a GitHub variable triggers nothing by itself.** It takes effect
+  at the next plan and apply: a push to `develop` (dev) or `main` (prod), a
+  "Deploy Infrastructure" dispatch from that branch, or a prod promote (4.3).
 - **Both workflows pass them the same way.** The `terraform` job in
   `deploy.yml` and the `promote` job in `promote.yml` each have a "Relay
   Terraform variables" step, just before "Terraform Plan", that maps the eight
@@ -365,8 +373,9 @@ caseworker's run, and the suffix can be restored with another apply.
 
 1. Platform: set the environment variable `RELAY_ALLOWED_HOSTS=<relay-host>`
    (from 4.3 step 5) and leave `RELAY_ALLOWED_HOST_SUFFIXES` unset, so
-   `relay_allowed_host_suffixes` stays `".run.app"`. Apply (for dev, push to
-   `develop`). The workflow step and the Terraform validation reject a
+   `relay_allowed_host_suffixes` stays `".run.app"`. Then apply: setting the
+   variable triggers nothing by itself (for dev, push to `develop` or
+   dispatch "Deploy Infrastructure" from it, as in 4.3). The workflow step and the Terraform validation reject a
    scheme, port, path or space.
 2. Check, before going on: the relay revision's `RELAY_ALLOWED_HOSTS` contains
    exactly the host part of the app's `RELAY_PUBLIC_URL`. Read both values
@@ -376,10 +385,12 @@ caseworker's run, and the suffix can be restored with another apply.
    and apply again; do not drop the suffix.
 3. Platform: set the environment variable `RELAY_ALLOWED_HOST_SUFFIXES=none`
    (passes `relay_allowed_host_suffixes = ""`; deleting the variable would
-   not, see 4.1). Apply.
+   not, see 4.1). Apply: setting the variable alone does nothing; push to
+   `develop` for dev, or dispatch "Deploy Infrastructure" as in 4.3.
 4. Check: `/healthz` answers 200 on `<relay-host>` (8.1), and a wrong Host
    answers 421 (8.2). If `/healthz` answers 421, delete
-   `RELAY_ALLOWED_HOST_SUFFIXES` (back to `".run.app"`) and apply to recover.
+   `RELAY_ALLOWED_HOST_SUFFIXES` (back to `".run.app"`) and apply again (a push or dispatch, as in 4.3)
+   to recover.
 
 The `lifecycle` precondition in `terraform/relay.tf` refuses a plan with both
 lists empty.
@@ -745,7 +756,9 @@ Then run 8.4 to 8.7.
 1. **Flags off first** (Platform): set `relay_runs_enabled = false` and
    `relay_token_endpoint_enabled = false` (set the environment variables
    `RELAY_RUNS_ENABLED` and `RELAY_TOKEN_ENDPOINT_ENABLED` to `false`, or
-   delete them) and apply. The relay routes answer
+   delete them), then apply: changing the variables triggers nothing, so
+   push or dispatch "Deploy Infrastructure" (or promote, for prod) as in
+   4.3. The relay routes answer
    404. A relay run row left from before continues as a relay run, but the
    agent-token route answers 404, so its browser calls fail closed. The panel's
    config probe then answers 404 and shows the `not_found` screen with no
