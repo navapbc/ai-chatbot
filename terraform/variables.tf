@@ -175,10 +175,11 @@ variable "relay_exclude_request_logs" {
 }
 
 # Pilot settings (plan 5). Every default below is today's behavior: nothing
-# set, relay runs off. Neither deploy.yml nor promote.yml passes these yet, so
-# whatever sets them for an environment must be wired into BOTH workflows
-# (promote.yml through TF_VAR_, since older tags do not declare them), or the
-# next run of the other workflow plans them back to these defaults.
+# set, relay runs off. deploy.yml and promote.yml both set them through
+# scripts/relay-terraform-vars.sh, which turns the GitHub environment-level
+# variables RELAY_RUNS_ENABLED and the rest into TF_VAR_ entries (TF_VAR_, since
+# older tags do not declare them). A new pilot variable needs that script, not
+# a -var= in one workflow, or the other workflow plans it back to its default.
 
 variable "relay_min_instances" {
   description = "Minimum instances for the browser relay service. 0 (default) scales to zero; the pilot sets 1, since a cold start or recycle drops every live run's sockets and in-memory run state."
@@ -226,7 +227,7 @@ variable "relay_allowed_hosts" {
     relay request answer 421, so switch in two applies, while relay runs are
     still off: first set this while relay_allowed_host_suffixes still holds
     ".run.app"; then, in a second apply, set relay_allowed_host_suffixes = ""
-    to drop the suffix. A request check made while the suffix is set proves
+    to drop the suffix (in the workflows: RELAY_ALLOWED_HOST_SUFFIXES=none). A request check made while the suffix is set proves
     nothing (a host passes on the list OR the suffix). Before the second
     apply, confirm the relay's RELAY_ALLOWED_HOSTS contains exactly the host
     in the app's RELAY_PUBLIC_URL (the relay service uri, output
