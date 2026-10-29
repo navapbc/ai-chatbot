@@ -60,7 +60,13 @@ notice.
 - **Overlay painting into agent screenshots, and the infobar while the submit
   watch holds its attach, are unverified.**
 - **No OpenTelemetry spans in the relay.** Observability is structured logs
-  plus one optional log-based metric (section 4).
+  plus one optional log-based metric (section 4). Relay log lines carry a
+  `severity` (`WARNING` for refusals such as `upgrade-rejected`), and the
+  `accepted` line carries the run's `origin`.
+- **Outbound backpressure cap.** The relay accepts inbound messages up to
+  32 MiB and closes a peer whose outbound buffer passes 64 MiB
+  (`MAX_BUFFERED_BYTES` in `relay/hub.ts`, logged as `backpressure-closed`),
+  which ends that run. The relay has 512Mi of memory.
 
 ## 1. Decisions To Confirm
 
