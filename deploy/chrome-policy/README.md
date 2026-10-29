@@ -74,6 +74,9 @@ sed -e "s|__EXTENSION_ID__|$(cat extension/EXTENSION_ID)|g" \
     deploy/chrome-policy/extension-policy.template.json > extension-policy.json
 ```
 
+In a sed replacement `&` stands for the matched text, so this command is only
+correct for an update URL with no `&` (escape it as `\&` otherwise).
+
 ## Building The Package
 
 ```sh
@@ -119,7 +122,7 @@ From the spec, lines 407-423:
 - Or when (lines 414-416) "The `DisableScreenshots` policy is on, or a Data Loss
   Prevention rule disables screenshot capture. Error: 'Screenshot capture is
   restricted by policy.'"
-- Lines 419-421: launching Chrome with
+- Lines 419-422: launching Chrome with
   `--disable-features=ExtensionDebuggerStrictPolicyRestrictions` restores the
   old behavior but "is reported to be removed in Chrome 160, so it is not a
   plan." Unmanaged profiles are unaffected.
@@ -131,24 +134,25 @@ the organization can still set them.
 ## The Debugging Banner
 
 Chrome shows "Labs ASP Browser Bridge started debugging this browser" while
-the extension is attached to a tab. From the spec, lines 425-443:
+the extension is attached to a tab. From the spec, lines 425-444:
 
 - Line 429: "Reported by third parties (UiPath documentation and a user issue
   on a similar extension)": force-install with `ExtensionInstallForcelist`
   "does not show the banner", and launching Chrome with
   `--silent-debugger-extension-api` "silences it".
-- Line 433: Chrome's own `chrome.debugger` reference mentions
+- Lines 433-435: Chrome's own `chrome.debugger` reference mentions
   `--silent-debugger-extension-api` only for attaching to extension background
   pages, "and does not describe it as hiding the banner for tabs."
-- Line 436: a 2017 Chromium review discussed a policy preference for
+- Lines 436-437: a 2017 Chromium review discussed a policy preference for
   policy-installed extensions; "Whether it shipped, and its name, is
   unconfirmed."
 - Line 438: "No documented, supported policy that hides the banner for a named
   extension was found."
-- Lines 441-443: the panel explains the banner on the Ready screen, so the
+- Lines 441-444: the panel explains the banner on the Ready screen, so the
   design does not depend on suppression. The flag "needs IT to control how
   Chrome is started, which may not be possible for every caseworker's browser"
-  (Open Item 9, lines 498-499).
+  (lines 443-444). Whether IT can set a launch flag is spec Open Item 9
+  (lines 498-499).
 
 `--silent-debugger-extension-api` is a command-line flag, not a policy. It has
 to be added to how Chrome is launched (shortcut, launcher or managed start
@@ -156,14 +160,15 @@ script), which IT controls.
 
 ## DeveloperToolsAvailability
 
-The spec does not mention `DeveloperToolsAvailability`. Whether a value of `2`
-(developer tools disallowed) or `1` also blocks `chrome.debugger` for a
-force-installed extension is not known; treat any non-default value as a risk
-until it is tested. Ask IT what the pilot machines set.
+The spec does not mention `DeveloperToolsAvailability`, and this project has
+not checked how any of its values interacts with `chrome.debugger` for a
+force-installed extension. Ask IT which value the pilot machines set
+(including whether it is left at its default) and test the extension under
+that exact setting before the pilot.
 
 ## Untested: Check On A Managed Machine
 
-None of the following has been tested in this project (spec lines 398-403:
+None of the following has been tested in this project (spec lines 401-402:
 "None of the banner suppression below has been tested"). Check each on a pilot
 machine before telling caseworkers what to expect:
 
