@@ -28,7 +28,28 @@ const EXTENSION_ORIGIN_PREFIX = 'chrome-extension://';
 // Hub events that carry a method the agent sent on to the extension.
 const FORWARDED_METHOD_EVENTS = new Set(['command', 'command-failed']);
 
-const ignore = () => {};
+// Socket errors are logged by `code` only, at most this many per window; the
+// rest are counted and reported on the next line that is logged.
+const SOCKET_ERROR_LOG_LIMIT = 10;
+const SOCKET_ERROR_WINDOW_MS = 60_000;
+
+type Severity = 'INFO' | 'WARNING' | 'ERROR';
+
+// Events that are refusals or failures; everything else is INFO unless the
+// line names its own severity.
+const WARNING_EVENTS = new Set([
+  'upgrade-rejected',
+  'attach-refused',
+  'register-refused',
+  'register-timeout',
+  'unregistered-message',
+  'malformed',
+  'origin-mismatch',
+  'sub-mismatch',
+  'command-failed',
+  'socket-error',
+  'run-expired',
+]);
 
 const HOST_PATTERN = /^([a-z0-9.-]+|\[[0-9a-f:.]+\])(:\d+)?$/;
 
@@ -85,6 +106,9 @@ const rawToString = (data: RawData): string => {
 /** Adapts a `ws` socket to the hub's PeerSocket; binary frames are dropped. */
 function toPeer(ws: WebSocket): PeerSocket {
   return {
+    get bufferedAmount() {
+      return ws.bufferedAmount;
+    },
     send: (data) => ws.send(data),
     close: (code, reason) => ws.close(code, reason),
     on(event: 'message' | 'close', cb: (data: string) => void) {
@@ -106,13 +130,49 @@ export function createRelayServer(opts: RelayServerOptions): Server {
   );
   const hosts = new Set(opts.allowedHosts.map((h) => h.toLowerCase()));
 
-  // Nothing here may be handed a URL, header or token value.
+  // Nothing here may be handed a URL, header or token value. Every line gets
+  // a `severity`, which Cloud Logging reads as the entry severity.
   const log = (line: Record<string, unknown>) => {
     try {
-      opts.log(line);
+      const severity: Severity =
+        line.severity === 'WARNING' || line.severity === 'ERROR'
+          ? line.severity
+          : typeof line.event === 'string' && WARNING_EVENTS.has(line.event)
+            ? 'WARNING'
+            : 'INFO';
+      opts.log({ ...line, severity });
     } catch {
       // A failing logger must not break the relay.
     }
+  };
+  let errorWindowStart = 0;
+  let errorsInWindow = 0;
+  let errorsDropped = 0;
+  // One WARNING line with the error code only: never the message, stack or
+  // address. Bounded so a flood of errors cannot flood the logs.
+  const logSocketError = (error: unknown) => {
+    const now = Date.now();
+    if (now - errorWindowStart >= SOCKET_ERROR_WINDOW_MS) {
+      errorWindowStart = now;
+      errorsInWindow = 0;
+    }
+    if (errorsInWindow >= SOCKET_ERROR_LOG_LIMIT) {
+      errorsDropped += 1;
+      return;
+    }
+    errorsInWindow += 1;
+    const raw = (error as { code?: unknown } | null)?.code;
+    const code =
+      typeof raw === 'string' && /^[A-Z0-9_]{1,40}$/.test(raw)
+        ? raw
+        : 'UNKNOWN';
+    const dropped = errorsDropped;
+    errorsDropped = 0;
+    log({
+      event: 'socket-error',
+      code,
+      ...(dropped > 0 ? { dropped } : {}),
+    });
   };
   const seenMethods = new Set<string>();
   const hubLog = (line: Record<string, unknown>) => {
@@ -177,7 +237,7 @@ export function createRelayServer(opts: RelayServerOptions): Server {
   };
 
   server.on('upgrade', (req, socket, head) => {
-    socket.on('error', ignore);
+    socket.on('error', logSocketError);
     const started = Date.now();
     let path = '';
     let token = '';
@@ -207,12 +267,14 @@ export function createRelayServer(opts: RelayServerOptions): Server {
     }
 
     wss.handleUpgrade(req, socket, head, (ws) => {
-      ws.on('error', ignore);
+      ws.on('error', logSocketError);
       const peer = toPeer(ws);
       log({
         event: 'accepted',
         runId: claims.runId,
         role: claims.role,
+        // The run's allowed origin from the token claims, never a URL.
+        origin: claims.origin,
         durationMs: Date.now() - started,
       });
       // The token's sub binds the run to one user: the hub refuses a socket

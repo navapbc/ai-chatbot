@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type Bus, createLocalBus } from '../../relay/bus';
-import { type PeerSocket, RunHub } from '../../relay/hub';
+import { MAX_BUFFERED_BYTES, type PeerSocket, RunHub } from '../../relay/hub';
 
 const ORIGIN = 'https://benefits.example.gov';
 const RUN = 'run-1';
@@ -8,6 +8,7 @@ const SUB = 'user-a';
 
 class FakeSocket implements PeerSocket {
   sent: string[] = [];
+  bufferedAmount?: number;
   closed: { code?: number; reason?: string } | null = null;
   private messageListeners: Array<(data: string) => void> = [];
   private closeListeners: Array<() => void> = [];
@@ -1207,6 +1208,47 @@ describe('RunHub', () => {
       expect(next.closed).toBeNull();
       expect(rebuilt.closed).toBeNull();
       hub.closeRun(RUN, 'test over');
+    });
+  });
+
+  describe('outbound backpressure', () => {
+    const setup = async (buffered?: number) => {
+      const { hub, logs } = makeHub();
+      const ext = new FakeSocket();
+      const agent = new FakeSocket();
+      attachExt(hub, ext);
+      hub.attachAgent(RUN, ORIGIN, SUB, agent);
+      agent.bufferedAmount = buffered;
+      return { hub, logs, ext, agent };
+    };
+    const sendEvent = (ext: FakeSocket) =>
+      ext.receive({ type: 'event', method: 'Page.x', params: {} });
+
+    it('closes the run with a fixed reason and one warning over the cap', async () => {
+      const { logs, ext, agent } = await setup(MAX_BUFFERED_BYTES + 1);
+      sendEvent(ext);
+      sendEvent(ext);
+      expect(agent.sent).toHaveLength(0);
+      expect(agent.closed).toEqual({ code: 1000, reason: 'send buffer full' });
+      expect(ext.closed).toEqual({ code: 1000, reason: 'send buffer full' });
+      expect(logs.filter((l) => l.event === 'backpressure-closed')).toEqual([
+        { event: 'backpressure-closed', severity: 'WARNING', runId: RUN },
+      ]);
+    });
+
+    it('does not touch a peer at or under the cap', async () => {
+      const { logs, ext, agent } = await setup(MAX_BUFFERED_BYTES);
+      sendEvent(ext);
+      expect(agent.sent).toHaveLength(1);
+      expect(agent.closed).toBeNull();
+      expect(logs.some((l) => l.event === 'backpressure-closed')).toBe(false);
+    });
+
+    it('treats a peer with no bufferedAmount as under the cap', async () => {
+      const { ext, agent } = await setup(undefined);
+      sendEvent(ext);
+      expect(agent.sent).toHaveLength(1);
+      expect(agent.closed).toBeNull();
     });
   });
 });

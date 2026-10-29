@@ -21,7 +21,13 @@ export interface PeerSocket {
   close(code?: number, reason?: string): void;
   on(event: 'message', cb: (data: string) => void): void;
   on(event: 'close', cb: () => void): void;
+  /** Bytes queued for sending; a peer without it counts as under the cap. */
+  readonly bufferedAmount?: number;
 }
+
+/** Outbound bytes a peer may have queued before its run is closed. */
+export const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+const BACKPRESSURE_REASON = 'send buffer full';
 
 export interface RunHubOptions {
   bus: Bus;
@@ -260,7 +266,7 @@ export class RunHub {
 
     agent.unsubscribes = [
       this.bus.subscribe(channelFor(runId, 'from-ext'), (raw) =>
-        this.onFromExt(agent, raw),
+        this.onFromExt(runId, agent, raw),
       ),
       this.bus.subscribe(channelFor(runId, 'to-agent'), (raw) =>
         this.onToAgent(runId, agent, raw),
@@ -395,7 +401,7 @@ export class RunHub {
     if (!frame || side.closed) return;
     if (frame.t === 'cmd') {
       if (!isObject(frame.cmd) || typeof frame.cmd.id !== 'string') return;
-      this.sendTo(side.socket, frame.cmd);
+      this.sendTo(runId, side.socket, frame.cmd);
     } else if (frame.t === 'ext-attached') {
       // A newer extension socket for this run attached on another hub.
       if (frame.by === this.instanceId) return;
@@ -540,6 +546,7 @@ export class RunHub {
       typeof msg.sessionId === 'string' ? msg.sessionId : undefined;
     const reply = (body: Record<string, unknown>) =>
       this.sendTo(
+        runId,
         agent.socket,
         { id, ...(sessionId !== undefined ? { sessionId } : {}), ...body },
         agent,
@@ -610,7 +617,7 @@ export class RunHub {
           params,
           this.extensionCall(runId, agent),
           {
-            emit: (event) => this.sendTo(agent.socket, event, agent),
+            emit: (event) => this.sendTo(runId, agent.socket, event, agent),
             onUnknown: (name) =>
               this.log({
                 event: 'browser-method-stubbed',
@@ -622,6 +629,8 @@ export class RunHub {
         );
       }
       reply({ result: result ?? {} });
+      // `durationMs` on this line feeds the relay's log-based metric on
+      // command duration: do not rename the field or the event.
       this.log({
         event: 'command',
         runId,
@@ -687,7 +696,7 @@ export class RunHub {
       });
   }
 
-  private onFromExt(agent: AgentSide, raw: string) {
+  private onFromExt(runId: string, agent: AgentSide, raw: string) {
     if (agent.closed) return;
     const msg = parseObject(raw);
     if (!msg) return;
@@ -701,6 +710,7 @@ export class RunHub {
       else pending.resolve(msg.result);
     } else if (msg.type === 'event' && typeof msg.method === 'string') {
       this.sendTo(
+        runId,
         agent.socket,
         {
           ...(typeof msg.sessionId === 'string'
@@ -882,8 +892,27 @@ export class RunHub {
     }
   }
 
-  private sendTo(socket: PeerSocket, message: unknown, agent?: AgentSide) {
+  private sendTo(
+    runId: string,
+    socket: PeerSocket,
+    message: unknown,
+    agent?: AgentSide,
+  ) {
     if (agent?.closed) return;
+    const buffered = socket.bufferedAmount;
+    if (typeof buffered === 'number' && buffered > MAX_BUFFERED_BYTES) {
+      // The peer is not draining: drop the send and end the run, which both
+      // sides see as a normal close with a fixed reason.
+      if (this.runs.has(runId)) {
+        this.log({
+          event: 'backpressure-closed',
+          severity: 'WARNING',
+          runId,
+        });
+        this.closeRun(runId, BACKPRESSURE_REASON);
+      }
+      return;
+    }
     try {
       socket.send(JSON.stringify(message));
     } catch {

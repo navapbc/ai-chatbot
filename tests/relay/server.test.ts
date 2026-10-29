@@ -174,8 +174,18 @@ describe('relay server', () => {
       });
       await new Promise((r) => setTimeout(r, 20));
       expect(logs.filter((l) => l.event === 'upgrade-rejected')).toEqual([
-        { event: 'upgrade-rejected', path: '/cdp', reason: 'token' },
-        { event: 'upgrade-rejected', path: '/extension', reason: 'token' },
+        {
+          event: 'upgrade-rejected',
+          severity: 'WARNING',
+          path: '/cdp',
+          reason: 'token',
+        },
+        {
+          event: 'upgrade-rejected',
+          severity: 'WARNING',
+          path: '/extension',
+          reason: 'token',
+        },
       ]);
     });
     it('with an expired token', async () => {
@@ -322,7 +332,9 @@ describe('relay server', () => {
     await askAndAnswer(1);
     await askAndAnswer(2);
     const recorded = logs.filter((l) => l.event === 'method');
-    expect(recorded).toEqual([{ event: 'method', method: 'Runtime.evaluate' }]);
+    expect(recorded).toEqual([
+      { event: 'method', method: 'Runtime.evaluate', severity: 'INFO' },
+    ]);
   });
 
   it('does not emit method lines when recordMethods is off', async () => {
@@ -367,6 +379,7 @@ describe('relay server', () => {
       const output = JSON.stringify(logs);
       expect(logs).toContainEqual({
         event: 'upgrade-rejected',
+        severity: 'WARNING',
         path: 'other',
         reason: 'path',
       });
@@ -457,7 +470,12 @@ describe('relay server', () => {
       ]);
       await rejected(url('/extension'), ext, ['relay.v1', 'garbage']);
       await rejected(url('/extension'), ext, ['relay.v1', token('agent')]);
-      expect(await reasonsLogged()).toEqual(['token', 'token', 'token', 'role']);
+      expect(await reasonsLogged()).toEqual([
+        'token',
+        'token',
+        'token',
+        'role',
+      ]);
       noTokenLogged();
     });
 
@@ -548,6 +566,73 @@ describe('relay server', () => {
       await start({ allowedHostSuffixes: ['run.app'], allowedHosts: [] });
       // Node answers 400 itself for HTTP/1.1 without Host; never 200.
       expect([400, 421]).toContain(await hostStatus(undefined));
+    });
+  });
+
+  describe('log severity, origin and socket errors', () => {
+    const SEVERITIES = ['INFO', 'WARNING', 'ERROR'];
+
+    it('gives every line a valid severity and the accepted line the run origin', async () => {
+      await start();
+      await connect(url('/extension', token('extension')), {
+        origin: EXT_ORIGIN,
+      });
+      await connect(url('/cdp', token('agent')));
+      await rejected(url('/cdp', 'garbage'));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(logs.length).toBeGreaterThan(0);
+      for (const line of logs) {
+        expect(JSON.parse(JSON.stringify(line)).severity).toSatisfy((v) =>
+          SEVERITIES.includes(v),
+        );
+      }
+      const accepted = logs.filter((l) => l.event === 'accepted');
+      expect(accepted).toHaveLength(2);
+      for (const line of accepted) {
+        expect(line).toMatchObject({ origin: ORIGIN, severity: 'INFO' });
+        const text = JSON.stringify(line);
+        expect(text).not.toMatch(/token|\?|127\.0\.0\.1|\/cdp|\/extension/);
+        for (const t of tokens) expect(text).not.toContain(t);
+      }
+      expect(logs.find((l) => l.event === 'upgrade-rejected')?.severity).toBe(
+        'WARNING',
+      );
+    });
+
+    const injectErrors = async (count: number) => {
+      await start();
+      server.on('upgrade', (_req, socket) => {
+        for (let i = 0; i < count; i++) {
+          socket.emit(
+            'error',
+            Object.assign(new Error('boom token=SECRET-MARKER 10.0.0.9'), {
+              code: 'ECONNRESET',
+            }),
+          );
+        }
+      });
+      await connect(url('/extension', token('extension')), {
+        origin: EXT_ORIGIN,
+      });
+      await new Promise((r) => setTimeout(r, 20));
+    };
+
+    it('logs a socket error by code only', async () => {
+      await injectErrors(1);
+      const errors = logs.filter((l) => l.event === 'socket-error');
+      expect(errors).toEqual([
+        { event: 'socket-error', code: 'ECONNRESET', severity: 'WARNING' },
+      ]);
+      const output = JSON.stringify(logs);
+      expect(output).not.toContain('SECRET-MARKER');
+      expect(output).not.toContain('10.0.0.9');
+    });
+
+    it('bounds the socket error log under a flood', async () => {
+      await injectErrors(500);
+      const errors = logs.filter((l) => l.event === 'socket-error');
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors.length).toBeLessThanOrEqual(10);
     });
   });
 });
