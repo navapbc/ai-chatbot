@@ -34,11 +34,23 @@ notice.
   `terraform/variables.tf`). Redis and the multi-instance gaps are out of
   scope.
 - **Run state and tombstones live in the relay's memory.** A relay restart,
-  redeploy or Cloud Run recycle ends every live run. The tombstone that refuses
-  a re-dial with a closed run's token is lost on restart too.
+  redeploy or Cloud Run recycle drops every live run's sockets and loses the
+  relay's state for them. The tombstone that refuses a re-dial with a closed
+  run's token is lost on restart too, so a closed run's token can dial a
+  restarted relay until it expires.
 - **The one-hour socket limit.** The relay's request timeout is Cloud Run's
-  maximum, `3600s` (`terraform/relay.tf`). A WebSocket is a request, so no run
-  connection lasts longer than one hour. The panel shows this as a normal end.
+  maximum, `3600s` (`terraform/relay.tf`). A WebSocket is a request, so no
+  single connection lasts longer than one hour.
+- **What a dropped socket does to a run is not verified end to end.** From the
+  code: the extension worker reconnects with the same token (backoff from 1 s
+  to 30 s) unless the relay closed with 1000 or 1008 (`FINAL_CLOSE_CODES` in
+  `extension/src/bridge.ts`); the Eve `browser` tool treats a lost connection
+  by rotating its agent-browser session and retrying a retry-safe command
+  (`lib/relay/eve-relay-browser.ts`); an in-flight command fails. The panel
+  shows no reconnecting state: it stays on Running while the worker still
+  holds the run. Whether a run recovers or ends after a restart or the
+  one-hour close is checked in 8.7 (**confirm**). Plan decision P5-c assumed
+  these end live runs.
 - **The agent token still travels in a URL query** on the agent leg
   (`/cdp?token=`). agent-browser takes a plain `ws://` URL and cannot send a
   header. The request-log exclusion (section 3) is the only mitigation. The
@@ -188,6 +200,9 @@ store the request URL. Check one relay trace after the first run (section 8).
 
 ## 4. Repository And Terraform Variables
 
+Run section 5's migration check before any PR from this section merges or
+gets a preview deploy.
+
 ### 4.1 How the switches work today
 
 - `RELAY_ENABLED` is a **repository-level** GitHub Actions variable. It must
@@ -201,9 +216,13 @@ store the request URL. Check one relay trace after the first run (section 8).
   `develop` **and the prod relay on the next push to `main` or the next prod
   promote**. It cannot be scoped to one environment. That is why section 2
   creates the prod secrets too: without them every prod plan fails at the
-  secret data source, which blocks all prod deploys, not just the relay. If
-  prod must not get a relay yet, change the allowlist in `deploy.yml`'s
-  "Determine environment" step first (Claude-reviewable).
+  secret data source, which blocks all prod deploys, not just the relay.
+  **Setting `RELAY_ENABLED` requires the prod secrets (and the section 3
+  permission) first.** There is no supported way to keep prod without a relay
+  while it is `'true'`: narrowing the allowlist in `deploy.yml` alone is not
+  enough, because `promote.yml` keys only on `vars.RELAY_ENABLED` (its "Verify
+  images exist" step and `TF_VAR_relay_image_url`), so prod promotes would
+  still plan the relay.
 - **"One environment" applies to the run flags**, not to the relay service:
   relay runs are turned on per environment with the Terraform variables below.
 - The pilot Terraform variables (in `terraform/variables.tf`, all defaulting to
@@ -240,48 +259,83 @@ preview environment already has a relay from before the dev/prod allowlist,
 that preview's next push plans a destroy of its relay (deletion protection is
 off for previews). That is expected; merge knowing it.
 
-Prerequisites: sections 2 and 3 done for dev and prod; migration check
-(section 5) done; the variable-wiring PR from 4.1 merged.
+Prerequisites: sections 2 and 3 done for dev and prod; the migration check
+(section 5) done for the dev and prod databases before the wiring PR merges
+or previews; the variable-wiring PR from 4.1 merged.
 
 ### 4.3 First apply: the relay, runs off
 
-Platform.
+Platform. Written for `<env>`; do dev first. Prod gets the relay on its next
+deploy too (4.1), so repeat 4.3 step 4 and section 4.4 for prod after that
+deploy, and run 8.1 to 8.3 there as well (section 8).
 
-1. Set the environment variables for dev through the wiring from 4.1:
+How applies happen: dev applies on a push to `develop`, prod on a push to
+`main` or a prod promote. If you use `workflow_dispatch` on "Deploy
+Infrastructure" instead, run it from `develop` (for dev) or `main` (for prod):
+dispatching with `environment` `dev` from any other branch deploys that
+branch's code to dev.
+
+1. Set the environment variables for `<env>` through the wiring from 4.1:
    `relay_min_instances = 1` and, optionally,
    `relay_command_duration_metric_enabled = true` (needs
    `logging.logMetrics.create`). Leave the run flags off.
 2. Set the repository variable `RELAY_ENABLED=true`.
-3. Push to `develop` (or merge the next PR into it). The "Deploy Infrastructure"
-   workflow builds `labs-asp-relay:<short sha>` and applies.
-4. Check: the apply succeeded; the service `labs-asp-relay-dev` exists with
-   min instances 1; the exclusion `relay-request-logs-dev` exists; then run
-   the smoke checks in 8.1 and 8.2.
-5. Read the relay host:
+3. Push to `develop` (or merge the next PR into it) for dev. The "Deploy
+   Infrastructure" workflow builds `labs-asp-relay:<short sha>` and applies.
+4. Check: the apply succeeded; the service `labs-asp-relay-<env>` exists with
+   min instances 1; the exclusion `relay-request-logs-<env>` exists; then run
+   the smoke checks in 8.1 to 8.3.
+5. Read the relay host **from the value the app uses**: the app's
+   `RELAY_PUBLIC_URL`, which Terraform sets from the relay service's `uri`
+   (`google_cloud_run_v2_service.relay[*].uri`, also the Terraform output
+   `relay_service_url`). It is a plain, non-secret value. Either:
 
-   ```sh
-   gcloud run services describe labs-asp-relay-dev --region=<region> \
-     --project=<project-id> --format='value(status.url)'
-   ```
+   - the Terraform output (read-only; from `terraform/` after
+     `terraform init -backend-config="prefix=terraform/state/<env>"`):
+     `terraform output -raw relay_service_url`; or
+   - the app revision's environment, printing only that one variable (the
+     app's environment may hold other values that should not be printed):
 
-   This is the service `uri` that the app gets as `RELAY_PUBLIC_URL` (and the
-   Terraform output `relay_service_url`). Strip `https://` to get
-   `<relay-host>`. Cloud Run can serve a service on two URL forms
-   (`<service>-<project-number>.<region>.run.app` and an older hashed form);
-   **confirm** which one `status.url` returns in this project, since that is
-   the one the app and extension use.
+     ```sh
+     gcloud run services describe ai-chatbot-<env> --region=<region> \
+       --project=<project-id> --format=json \
+       | jq -r '.spec.template.spec.containers[0].env[] | select(.name=="RELAY_PUBLIC_URL") | .value'
+     ```
+
+     (**confirm** the JSON path against your gcloud version.)
+
+   Strip `https://` to get `<relay-host>`. Do not take it from
+   `gcloud run services describe labs-asp-relay-<env> --format='value(status.url)'`:
+   Cloud Run can serve a service on two URL forms
+   (`<service>-<project-number>.<region>.run.app` and an older hashed form),
+   and only the host in `RELAY_PUBLIC_URL` is the one the app hands to the
+   extension and the agent. Listing both forms in `relay_allowed_hosts`
+   (comma-separated) is allowed.
 
 ### 4.4 Second apply: the exact host (two applies to avoid a 421 lockout)
 
 A wrong host makes every relay request answer 421, including `/healthz`.
+While the `.run.app` suffix is still set, the relay accepts a host that is in
+`RELAY_ALLOWED_HOSTS` **or** ends with the suffix (`hostOk` in
+`relay/server.ts`), so any check made with the suffix still set passes even
+with a typo or the wrong URL form: **it proves nothing**. The safety check is
+a comparison of values, done before dropping the suffix. This switch is safe
+to do now only because the run flags are still off: a lockout breaks no
+caseworker's run, and the suffix can be restored with another apply.
 
-1. Platform: set `relay_allowed_hosts = "<relay-host>"` and keep
-   `relay_allowed_host_suffixes` at `".run.app"`. Apply (push to `develop`).
-   The validation rejects a scheme, port, path or space.
-2. Check: `/healthz` answers 200 on `<relay-host>` (8.1).
+1. Platform: set `relay_allowed_hosts = "<relay-host>"` (from 4.3 step 5) and
+   keep `relay_allowed_host_suffixes` at `".run.app"`. Apply (for dev, push
+   to `develop`). The validation rejects a scheme, port, path or space.
+2. Check, before going on: the relay revision's `RELAY_ALLOWED_HOSTS` contains
+   exactly the host part of the app's `RELAY_PUBLIC_URL`. Read both values
+   one variable at a time (same `jq` filter as 4.3 step 5, with
+   `labs-asp-relay-<env>` and `RELAY_ALLOWED_HOSTS` for the relay) and compare
+   them character for character. If they differ, fix `relay_allowed_hosts`
+   and apply again; do not drop the suffix.
 3. Platform: set `relay_allowed_host_suffixes = ""`. Apply.
-4. Check: `/healthz` still answers 200 on `<relay-host>`. If it answers 421,
-   set the suffix back to `".run.app"` and apply to recover.
+4. Check: `/healthz` answers 200 on `<relay-host>` (8.1), and a wrong Host
+   answers 421 (8.2). If `/healthz` answers 421, set the suffix back to
+   `".run.app"` and apply to recover.
 
 The `lifecycle` precondition in `terraform/relay.tf` refuses a plan with both
 lists empty.
@@ -311,25 +365,41 @@ check still only warns). Consequences:
 
 ## 5. Migrations
 
-Platform, before the first deploy that carries migrations 0008 to 0011
-(`lib/db/migrations/`).
+Platform. **Do this before anything in section 4 merges or deploys.** The
+migrations ship with the code, not with `RELAY_ENABLED`: the first deploy of
+any commit that carries them applies them, whatever the relay variables say.
+That can be a preview deploy of a PR from this work (every preview uses the
+dev Cloud SQL instance, `terraform/main.tf`), the merge of
+the section 4.1 wiring PR, or any merge to `develop` or `main` after this
+branch lands.
+
+Which migrations are pending: when this runbook was written, the local copy
+of `origin/develop` (`6cca9703`) ended at `0006` and `origin/main`
+(`5bb797f7`) had none of `0007` to `0011`; `origin/browser-extension` had
+them. Those refs may be stale: run `git fetch` and
+`git ls-tree --name-only origin/develop lib/db/migrations/` (and the same for
+`origin/main`) to see what is actually deployed before relying on this.
 
 - `scripts/start-container.sh` applies migrations at container start
   (`pnpm tsx lib/db/migrate`, `set -euo pipefail`). A failed migration
   crash-loops the new revision. There are no down migrations; rolling the code
   back is safe (old code ignores `Participant`; the index only touches relay
   rows).
-- 0008 adds `Participant`; 0009 adds the partial unique index on
+- 0007 creates `EveRun` (with `relayOrigin`); 0008 adds `Participant`; 0009 adds the partial unique index on
   `EveRun.chatId` for relay rows; 0010 adds `EveRun.endedAt`; 0011 adds
   `EveRun.turnIdle`.
-- **Before** that deploy, run this against the target database and expect no
-  rows:
+- **Before** the first merge or preview deploy that carries them, run this
+  against **each** database the code will reach and expect no rows: the dev
+  database (dev and every preview), and the prod database (before the merge
+  to `main` or the prod promote that carries them):
 
   ```sql
   SELECT "chatId", count(*) FROM "EveRun" WHERE "relayOrigin" IS NOT NULL GROUP BY 1 HAVING count(*) > 1;
   ```
 
-  If it returns rows, stop: 0009 will fail. In practice none exist, since
+  If it returns rows, stop: 0009 will fail. If it fails because `EveRun` does
+  not exist, that database predates 0007, no relay rows can exist, and 0007
+  and 0009 apply together. In practice no duplicates exist, since
   `RELAY_RUNS_ENABLED` has been set nowhere.
 - After the migrations, seed participants manually; the container does not:
 
@@ -380,8 +450,10 @@ pnpm exec tsx scripts/package-extension.ts \
 - `--update-url` and `--package-url` go together, and `--update-url` must end
   with `updates.xml`. With them, the packaged manifest carries `update_url`.
 - Outputs in `./release`: `extension.zip`, `updates.xml`, `extension.crx`.
-- Check the last line: `packaged extension <id> version <x.y.z> for <app-origin>`.
-  `<id>` must equal `extension/EXTENSION_ID`.
+- Check the last line: `packaged extension <id> version <x.y.z> for <app-origin>: <files written>`.
+  `<id>` must equal `extension/EXTENSION_ID`, and the list of files written
+  must include `extension.crx`. An unset or empty `EXTENSION_PEM_PATH` is not
+  an error: the script then writes only `extension.zip` and `updates.xml`.
 - Raise `--version` for every release; Chrome updates only when the version in
   `updates.xml` increases.
 - **The CRX3 output is untested in real Chrome** (it is verified only by a
@@ -476,9 +548,12 @@ flag is reported removed in Chrome 160; it is not a plan.
 
 ## 8. Smoke Checklist
 
-Platform runs 8.1 to 8.3 after the first apply (4.3) and again after the
-exact-host applies (4.4). The Owner runs 8.4 onward after the run flags are on
-(section 9) in the pilot environment.
+Platform runs 8.1 to 8.3 in **every environment that has a relay**, dev and
+prod: after its first apply (4.3) and again after its exact-host applies
+(4.4). Prod gets its relay on its first deploy after `RELAY_ENABLED` is set
+(4.1), so schedule the prod checks for right after that deploy, even if the
+pilot runs on dev. The Owner runs 8.4 onward after the run flags are on
+(section 9), in the pilot environment.
 
 ### 8.1 Health
 
@@ -517,9 +592,22 @@ An empty result proves only the `_Default` sink; repeat the sink review from
 3.2.
 
 Also search all project logs for the relay token's fixed prefix,
-`eyJydW5JZCI6` (base64url of `{"runId":"`), and for `/cdp?token=`. Expect no
-entries. If something matches, do not copy it anywhere; restrict access and
-report it.
+`eyJydW5JZCI6` (the base64url of `{"runId":`, 12 characters, which every
+relay token starts with), and for `/cdp?token=`. Do not open
+matching entries in Logs Explorer: a match would display the token. Count
+timestamps only:
+
+```sh
+gcloud logging read '"eyJydW5JZCI6"' --project=<project-id> --freshness=1d \
+  --format='value(timestamp)' | wc -l
+gcloud logging read '"/cdp?token="' --project=<project-id> --freshness=1d \
+  --format='value(timestamp)' | wc -l
+```
+
+Expect `0` for both. If either is not zero, do not copy the entries anywhere;
+restrict log access and report it with the timestamps only. (**confirm** that
+a quoted string in the filter is the global text search in your gcloud
+version.)
 
 ### 8.4 One run end to end
 
@@ -563,15 +651,23 @@ so use the specific prefix.
 Owner and Platform together, on dev. Start a run, then make the relay start a
 new revision while the run is live (the simplest Terraform-neutral way: merge
 any commit to `develop`, which builds a new relay image tag and deploys it).
-Expected result, by design: **the run ends cleanly**. The panel shows the run
-as ended, the server row is ended (by the panel's session, or by the orphan
-sweep on the next panel open), and a new run starts normally afterwards. The
-run is not expected to recover: run state is in memory. Anything else (a
-panel stuck on Running, an agent still minting tokens for the old run) is a
-finding.
+What to expect is **not verified** (see Known Limits). From the code, the
+worker reconnects with the same token and the agent's `browser` tool rotates
+and retries, so the run may continue on the new revision with its in-flight
+command failed; plan decision P5-c assumed it ends. Record which happens:
 
-Also note when a run passes one hour: the socket closes at Cloud Run's
-`3600s` limit and the run ends.
+- **It continues:** the panel stays on Running, the next agent command
+  succeeds, and Stop still ends the run normally (server row ended, Recents
+  marked).
+- **It ends:** the panel shows the run as ended, the server row is ended (by
+  the panel's session, or by the orphan sweep on the next panel open), and a
+  new run starts normally afterwards.
+
+Either is acceptable. A panel stuck on Running while the agent keeps failing,
+or the agent still minting tokens for an ended run, is a finding.
+
+Also run one session past one hour and record the same for the socket close
+at Cloud Run's `3600s` limit.
 
 ## 9. Turning Relay Runs On, And Rollback
 
@@ -603,8 +699,15 @@ Then run 8.4 to 8.7.
    plans a destroy of the relay in dev and prod. Deletion protection on the
    dev and prod relay services makes that apply fail. To remove it, first set
    `deletion_protection` false on the relay service (Claude-reviewable change
-   in `terraform/relay.tf`, applied), or `terraform state rm` it, then unset
-   `RELAY_ENABLED`. Unsetting it also changes what promote does (4.5).
+   in `terraform/relay.tf`, applied), then unset `RELAY_ENABLED` so the next
+   apply destroys the relay service together with its exclusion, account and
+   invoker grant, in the order `depends_on` in `terraform/relay.tf` sets (the
+   service goes first, the request-log exclusion after it). Do not use
+   `terraform state rm` on the service: the relay would keep running,
+   unmanaged, and the next apply would delete the exclusion, the service
+   account and the public invoker grant while it is still live, so its
+   token-bearing request URLs would reach the logs again. Unsetting
+   `RELAY_ENABLED` also changes what promote does (4.5).
 4. **Code rollback**: see 4.5; only versions built through `develop` or `main`
    with the relay on can be promoted while `RELAY_ENABLED` is `'true'`.
 

@@ -223,10 +223,14 @@ variable "relay_allowed_hosts" {
     RELAY_ALLOWED_HOSTS on the relay: comma-separated exact Host values (bare
     host names, no scheme or path; the service uri output starts with https://,
     so strip it). Empty (default) leaves it unset. A wrong host makes EVERY
-    relay request answer 421, so switch in two applies: first set this while
-    relay_allowed_host_suffixes still holds ".run.app" and verify the relay
-    answers on the exact host; then, in a second apply, set
-    relay_allowed_host_suffixes = "" to drop the suffix.
+    relay request answer 421, so switch in two applies, while relay runs are
+    still off: first set this while relay_allowed_host_suffixes still holds
+    ".run.app"; then, in a second apply, set relay_allowed_host_suffixes = ""
+    to drop the suffix. A request check made while the suffix is set proves
+    nothing (a host passes on the list OR the suffix). Before the second
+    apply, confirm the relay's RELAY_ALLOWED_HOSTS contains exactly the host
+    in the app's RELAY_PUBLIC_URL (the relay service uri, output
+    relay_service_url). See docs/rollout-pilot.md.
   EOT
   type        = string
   default     = ""
