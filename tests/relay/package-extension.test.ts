@@ -11,6 +11,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -411,6 +412,34 @@ describe('the signing key checks', () => {
     );
   });
 
+  it('refuses a file named ..key.pem inside the repository', () => {
+    // Only the path is checked; nothing is written into the repository.
+    expect(() =>
+      resolvePemPath(path.join(ROOT, 'extension', '..key.pem'), ROOT),
+    ).toThrow(/outside the repository/);
+    expect(() => resolvePemPath(path.join(ROOT, '..key.pem'), ROOT)).toThrow(
+      /outside the repository/,
+    );
+  });
+
+  it('refuses a symlink outside the repository that points into it', () => {
+    const link = path.join(tempDir(), 'k.pem');
+    symlinkSync(path.join(ROOT, 'extension/manifest.json'), link);
+    expect(() => resolvePemPath(link, ROOT)).toThrow(/outside the repository/);
+  });
+
+  it('refuses a case-variant path of a file inside the repository', (ctx) => {
+    const variant = path.join(ROOT.toUpperCase(), 'EXTENSION', 'MANIFEST.JSON');
+    if (!existsSync(variant)) {
+      ctx.skip(
+        'the file system is case-sensitive, so a case-variant path names no file',
+      );
+    }
+    expect(() => resolvePemPath(variant, ROOT)).toThrow(
+      /outside the repository/,
+    );
+  });
+
   it('accepts a path outside the repository', () => {
     const file = path.join(tempDir(), 'k.pem');
     writeFileSync(file, 'not read');
@@ -506,6 +535,30 @@ describe('the package script refuses', () => {
     );
     expect(output).not.toContain('PRIVATE KEY');
     expect(output).not.toContain(pemBody(pem).slice(0, 40));
+    expect(readdirSync(out)).toEqual([]);
+  });
+
+  it('a passphrase-protected key, with a fixed message', () => {
+    const pem = rsaKey()
+      .export({
+        type: 'pkcs8',
+        format: 'pem',
+        cipher: 'aes-256-cbc',
+        passphrase: 'throwaway',
+      })
+      .toString();
+    const keyFile = path.join(tempDir(), 'encrypted.pem');
+    writeFileSync(keyFile, pem);
+    const out = tempDir();
+    const { status, output } = runScript(
+      ['--app-origin', ORIGIN, '--out', out],
+      { EXTENSION_PEM_PATH: keyFile },
+    );
+    expect(status).toBe(1);
+    expect(output).toContain(
+      'EXTENSION_PEM_PATH is not a readable unencrypted private key',
+    );
+    expect(output).not.toMatch(/PRIVATE KEY|throwaway/);
     expect(readdirSync(out)).toEqual([]);
   });
 });

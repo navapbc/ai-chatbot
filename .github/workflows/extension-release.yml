@@ -1,9 +1,11 @@
 name: Extension Release
 
 # Builds the browser bridge extension release package by hand and uploads it
-# as workflow artifacts. It publishes nothing, uses no secrets and holds no
-# signing key, so it never produces a CRX: the owner signs the zip with the
-# private key on a machine that holds it (see deploy/chrome-policy/README.md).
+# as workflow artifacts, for inspecting and verifying the release build. It
+# publishes nothing, uses no secrets and holds no signing key, so it never
+# produces a CRX: to get one, the owner re-runs scripts/package-extension.ts
+# locally with EXTENSION_PEM_PATH and the same flags (see
+# deploy/chrome-policy/README.md). Nothing signs an existing zip.
 on:
   workflow_dispatch:
     inputs:

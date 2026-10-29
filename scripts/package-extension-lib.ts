@@ -323,15 +323,23 @@ export function buildCrx3(zip: Buffer, privateKey: KeyObject): Buffer {
   return Buffer.concat([prefix, header, zip]);
 }
 
+/**
+ * Whether `child` is `parent` or below it. A relative path that climbs out
+ * starts with a `..` segment; a file merely named `..x` does not. An absolute
+ * relative path (another drive on Windows) is outside.
+ */
 function isInside(child: string, parent: string): boolean {
   const rel = path.relative(parent, child);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  if (path.isAbsolute(rel)) return false;
+  return !(rel === '..' || rel.startsWith(`..${path.sep}`));
 }
 
 /**
  * The real path of the signing key file, refused when it lies inside the
  * repository `root` (checked on the given path and on both real paths, so a
- * symlink cannot hide a key in the repo) or cannot be resolved. Reads
+ * symlink cannot hide a key in the repo) or cannot be resolved. The real
+ * paths come from `realpathSync.native`, which returns the on-disk case, so a
+ * case-variant path on a case-insensitive file system is still caught. Reads
  * nothing from the file.
  */
 export function resolvePemPath(pemPath: string, root: string): string {
@@ -342,11 +350,11 @@ export function resolvePemPath(pemPath: string, root: string): string {
   }
   let real: string;
   try {
-    real = realpathSync(pemPath);
+    real = realpathSync.native(pemPath);
   } catch {
     throw new PackageError('EXTENSION_PEM_PATH does not name a readable file');
   }
-  if (isInside(real, realpathSync(root))) throw new PackageError(inside);
+  if (isInside(real, realpathSync.native(root))) throw new PackageError(inside);
   return real;
 }
 

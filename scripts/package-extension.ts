@@ -41,8 +41,11 @@ import {
 // - updates.xml: Chrome's update manifest, only with --update-url and
 //   --package-url (the built manifest then also carries update_url).
 // - extension.crx: a CRX3 package, only when EXTENSION_PEM_PATH names the
-//   extension's private key in a file outside the repository. The key is
-//   read only then, never written, and never printed.
+//   extension's private key, an unencrypted PEM, in a file outside the
+//   repository (a passphrase-protected key is refused). The key is read only
+//   then, never written, and never printed. To produce the CRX for a release,
+//   re-run this script locally with EXTENSION_PEM_PATH and the same flags;
+//   nothing signs an existing zip.
 
 const ROOT = path.resolve(__dirname, '..');
 const OUTPUTS = ['extension.zip', 'updates.xml', 'extension.crx'];
@@ -58,7 +61,9 @@ function loadSigningKey(
   try {
     key = createPrivateKey(readFileSync(real));
   } catch {
-    throw new PackageError('EXTENSION_PEM_PATH is not a readable private key');
+    throw new PackageError(
+      'EXTENSION_PEM_PATH is not a readable unencrypted private key',
+    );
   }
   const source = JSON.parse(
     readFileSync(path.join(ROOT, 'extension/manifest.json'), 'utf8'),
@@ -140,6 +145,17 @@ function main() {
   }
 }
 
+/** ` (CODE)` for a short Node error code, else ''. Never the message. */
+function errorCodeSuffix(error: unknown): string {
+  const code =
+    typeof error === 'object' && error !== null
+      ? (error as { code?: unknown }).code
+      : undefined;
+  return typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code)
+    ? ` (${code})`
+    : '';
+}
+
 try {
   main();
 } catch (error) {
@@ -148,7 +164,10 @@ try {
     process.exit(1);
   }
   // Anything else gets a fixed line: an unexpected error must not echo a
-  // key or a path into the log.
-  console.error('extension package failed: unexpected error');
+  // key or a path into the log. A short Node error code (e.g. EACCES) is
+  // safe to print; the message never is.
+  console.error(
+    `extension package failed: unexpected error${errorCodeSuffix(error)}`,
+  );
   process.exit(1);
 }

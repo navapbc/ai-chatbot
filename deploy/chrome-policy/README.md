@@ -97,9 +97,18 @@ pnpm exec tsx scripts/package-extension.ts \
   zip meant for a Chrome Web Store upload: the store rejects `update_url`.
 - Writes `extension.crx` only when `EXTENSION_PEM_PATH` names the extension's
   private key in a file outside the repository and that key matches the
-  manifest `key`. Self-hosted force-install needs the CRX; the zip alone is not
-  installable from an update URL. The key is never in the repository, in CI or
-  in the release workflow; the owner signs on a machine that holds it.
+  manifest `key`. The key must be an unencrypted PEM: a passphrase-protected
+  key is refused with a fixed message. Self-hosted force-install needs the
+  CRX; the zip alone is not installable from an update URL. The key is never
+  in the repository, in CI or in the release workflow. Nothing signs an
+  existing zip: to produce the CRX, the owner re-runs the script on a machine
+  that holds the key, with `EXTENSION_PEM_PATH` set and the same flags.
+- The zip always carries the manifest `key` (it fixes the extension id for the
+  self-hosted install). A Chrome Web Store upload may need the `key` field
+  removed first; this is unverified. The pilot uses self-hosted force-install,
+  so it does not need this. A store-assigned id would differ from
+  `extension/EXTENSION_ID` (decision P5-g), and the id-dependent values listed
+  under "Filling The Placeholders" would all have to follow it.
 - The hosted CRX and `updates.xml` hold no secret: the app origin is the only
   value built in, and there are no tokens. They must be reachable over https by
   Chrome's updater on the caseworkers' machines (a private bucket behind
@@ -107,8 +116,9 @@ pnpm exec tsx scripts/package-extension.ts \
 
 `.github/workflows/extension-release.yml` runs the same script by hand
 (`workflow_dispatch`) and uploads the zip (and `updates.xml` when both URLs
-are given) as workflow artifacts. It publishes nothing and has no signing key,
-so it never produces a CRX.
+are given) as workflow artifacts, for inspecting and verifying the release
+build. It publishes nothing and has no signing key, so it never produces a
+CRX; the CRX comes from the local re-run above.
 
 ## Chrome 155 Restrictions
 
