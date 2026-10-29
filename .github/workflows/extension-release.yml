@@ -1,0 +1,81 @@
+name: Extension Release
+
+# Builds the browser bridge extension release package by hand and uploads it
+# as workflow artifacts. It publishes nothing, uses no secrets and holds no
+# signing key, so it never produces a CRX: the owner signs the zip with the
+# private key on a machine that holds it (see deploy/chrome-policy/README.md).
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment the package is for (names the artifact only)'
+        type: choice
+        options:
+          - dev
+          - prod
+        required: true
+        default: dev
+      app_origin:
+        description: 'Exact https app origin, e.g. https://app.example.org'
+        type: string
+        required: true
+      version:
+        description: 'Extension version (x.y.z or x.y.z.w)'
+        type: string
+        required: true
+      update_url:
+        description: 'Optional https URL of updates.xml (with package_url)'
+        type: string
+        required: false
+        default: ''
+      package_url:
+        description: 'Optional https URL of the hosted .crx (with update_url)'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install
+      - name: Package the extension
+        # Inputs reach the shell only as environment variables, never
+        # interpolated into the script text.
+        env:
+          APP_ORIGIN_INPUT: ${{ inputs.app_origin }}
+          VERSION_INPUT: ${{ inputs.version }}
+          UPDATE_URL_INPUT: ${{ inputs.update_url }}
+          PACKAGE_URL_INPUT: ${{ inputs.package_url }}
+        run: |
+          set -euo pipefail
+          args=(--app-origin "$APP_ORIGIN_INPUT" --out release --version "$VERSION_INPUT")
+          if [ -n "$UPDATE_URL_INPUT" ] || [ -n "$PACKAGE_URL_INPUT" ]; then
+            args+=(--update-url "$UPDATE_URL_INPUT" --package-url "$PACKAGE_URL_INPUT")
+          fi
+          pnpm exec tsx scripts/package-extension.ts "${args[@]}"
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-${{ inputs.environment }}-${{ inputs.version }}
+          # updates.xml is present only when both URLs were given.
+          path: |
+            release/extension.zip
+            release/updates.xml
+          if-no-files-found: error
+          retention-days: 30

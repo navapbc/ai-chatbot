@@ -1,0 +1,9 @@
+{
+  "ExtensionInstallForcelist": ["__EXTENSION_ID__;__UPDATE_URL__"],
+  "ExtensionSettings": {
+    "__EXTENSION_ID__": {
+      "installation_mode": "force_installed",
+      "update_url": "__UPDATE_URL__"
+    }
+  }
+}
