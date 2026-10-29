@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type Bus, createLocalBus } from '../../relay/bus';
-import { MAX_BUFFERED_BYTES, type PeerSocket, RunHub } from '../../relay/hub';
+import {
+  MAX_BUFFERED_BYTES,
+  MAX_INBOUND_PAYLOAD_BYTES,
+  type PeerSocket,
+  RunHub,
+} from '../../relay/hub';
 
 const ORIGIN = 'https://benefits.example.gov';
 const RUN = 'run-1';
@@ -1234,6 +1239,25 @@ describe('RunHub', () => {
       expect(logs.filter((l) => l.event === 'backpressure-closed')).toEqual([
         { event: 'backpressure-closed', severity: 'WARNING', runId: RUN },
       ]);
+    });
+
+    it('keeps the cap at least twice the inbound payload ceiling', () => {
+      expect(MAX_BUFFERED_BYTES).toBeGreaterThanOrEqual(
+        2 * MAX_INBOUND_PAYLOAD_BYTES,
+      );
+    });
+
+    it('delivers a single 20 MB frame to an empty buffer and keeps the run', async () => {
+      const { logs, ext, agent } = await setup(0);
+      ext.receive({
+        type: 'event',
+        method: 'Page.x',
+        params: { data: 'a'.repeat(20 * 1024 * 1024) },
+      });
+      expect(agent.sent).toHaveLength(1);
+      expect(agent.closed).toBeNull();
+      expect(ext.closed).toBeNull();
+      expect(logs.some((l) => l.event === 'backpressure-closed')).toBe(false);
     });
 
     it('does not touch a peer at or under the cap', async () => {

@@ -3,7 +3,7 @@ import type { Duplex } from 'node:stream';
 import { type RawData, type WebSocket, WebSocketServer } from 'ws';
 import { type RelayClaims, verifyRelayToken } from '../lib/relay/token';
 import type { Bus } from './bus';
-import { type PeerSocket, RunHub } from './hub';
+import { MAX_INBOUND_PAYLOAD_BYTES, type PeerSocket, RunHub } from './hub';
 
 export interface RelayServerOptions {
   secret: string;
@@ -18,7 +18,7 @@ export interface RelayServerOptions {
   recordMethods?: boolean;
 }
 
-const DEFAULT_MAX_PAYLOAD = 32 * 1024 * 1024;
+const DEFAULT_MAX_PAYLOAD = MAX_INBOUND_PAYLOAD_BYTES;
 const POLICY_CLOSE = 1008;
 // The extension leg offers `relay.v1, <token>` as Sec-WebSocket-Protocol.
 // The relay always selects this fixed value (Chrome fails a handshake whose
@@ -47,6 +47,7 @@ const WARNING_EVENTS = new Set([
   'origin-mismatch',
   'sub-mismatch',
   'command-failed',
+  'command-denied',
   'socket-error',
   'run-expired',
 ]);

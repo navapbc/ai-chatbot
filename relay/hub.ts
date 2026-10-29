@@ -25,8 +25,14 @@ export interface PeerSocket {
   readonly bufferedAmount?: number;
 }
 
-/** Outbound bytes a peer may have queued before its run is closed. */
-export const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+/** Largest inbound message the relay accepts (the server's maxPayload). */
+export const MAX_INBOUND_PAYLOAD_BYTES = 32 * 1024 * 1024;
+/**
+ * Outbound bytes a peer may have queued before its run is closed. One reply
+ * can be as large as the inbound ceiling (a screenshot) and stays buffered
+ * until it drains, so the cap must sit above that: twice the ceiling.
+ */
+export const MAX_BUFFERED_BYTES = 2 * MAX_INBOUND_PAYLOAD_BYTES;
 const BACKPRESSURE_REASON = 'send buffer full';
 
 export interface RunHubOptions {
@@ -629,8 +635,9 @@ export class RunHub {
         );
       }
       reply({ result: result ?? {} });
-      // `durationMs` on this line feeds the relay's log-based metric on
-      // command duration: do not rename the field or the event.
+      // This line feeds the relay's log-based metric on command duration:
+      // filter `jsonPayload.event="command"`, value extractor
+      // `EXTRACT(jsonPayload.durationMs)`. Do not rename either field.
       this.log({
         event: 'command',
         runId,
