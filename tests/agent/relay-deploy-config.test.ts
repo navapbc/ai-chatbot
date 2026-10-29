@@ -57,6 +57,26 @@ describe('terraform/variables.tf relay defaults', () => {
       '^chrome-extension://[a-p]{32}$',
     );
   });
+
+  it('allows only 0 or 1 minimum relay instances', () => {
+    expect(blocks.get('relay_min_instances')).toContain(
+      'condition     = contains([0, 1], var.relay_min_instances)',
+    );
+  });
+
+  it('accepts only bare host names in relay_allowed_hosts', () => {
+    const block = blocks.get('relay_allowed_hosts') ?? '';
+    expect(block).toContain('trimspace(host) != ""');
+    expect(block).toContain(
+      'can(regex("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", lower(trimspace(host))))',
+    );
+  });
+
+  it('refuses an empty entry in relay_allowed_host_suffixes', () => {
+    expect(blocks.get('relay_allowed_host_suffixes')).toContain(
+      'trimspace(suffix) != ""',
+    );
+  });
 });
 
 describe('terraform relay wiring', () => {
@@ -81,6 +101,48 @@ describe('terraform relay wiring', () => {
         ),
       );
     }
+  });
+
+  it('sets the origin and model allowlist only with the relay and a value', () => {
+    for (const [variable, envName] of [
+      ['relay_extension_origin', 'RELAY_EXTENSION_ORIGIN'],
+      ['relay_allowed_models', 'RELAY_ALLOWED_MODELS'],
+    ]) {
+      expect(cloudRun).toMatch(
+        new RegExp(
+          `for_each = local\\.relay_enabled && var\\.${variable} != "" \\? \\[1\\] : \\[\\]\\s*content \\{\\s*name\\s*=\\s*"${envName}"\\s*value\\s*=\\s*var\\.${variable}`,
+        ),
+      );
+    }
+  });
+
+  it('sets the relay host lists only when their variable is non-empty', () => {
+    for (const [variable, envName] of [
+      ['relay_allowed_host_suffixes', 'RELAY_ALLOWED_HOST_SUFFIXES'],
+      ['relay_allowed_hosts', 'RELAY_ALLOWED_HOSTS'],
+    ]) {
+      expect(relay).toMatch(
+        new RegExp(
+          `for_each = var\\.${variable} != "" \\? \\[1\\] : \\[\\]\\s*content \\{\\s*name\\s*=\\s*"${envName}"\\s*value\\s*=\\s*var\\.${variable}`,
+        ),
+      );
+    }
+    expect(relay).not.toMatch(/value\s*=\s*"\.run\.app"/);
+  });
+
+  it('refuses a relay with no host list at all', () => {
+    expect(relay).toContain(
+      'condition     = var.relay_allowed_hosts != "" || var.relay_allowed_host_suffixes != ""',
+    );
+  });
+
+  it('ties the extension origin to extension/EXTENSION_ID', () => {
+    expect(relay).toContain(
+      'condition     = var.relay_extension_origin == "" || var.relay_extension_origin == "chrome-extension://${trimspace(file("${path.module}/../extension/EXTENSION_ID"))}"',
+    );
+    expect(relay).toMatch(
+      /P5-g[^\n]*RELAY_EXTENSION_ID[^\n]*relay_extension_origin/,
+    );
   });
 
   it('no longer says the token route waits for plan 4', () => {
@@ -108,15 +170,24 @@ describe('promote.yml relay image check', () => {
     promote.indexOf('- name: Verify images exist'),
     promote.indexOf('- name: Setup Terraform'),
   );
-  const enabledStart = verify.indexOf(
-    'if [[ "${{ vars.RELAY_ENABLED }}" == "true" ]]',
+  // Split the step at the `if` that tests the relay flag and at the `else`
+  // and `fi` lines with that same indentation, so nested ifs and words that
+  // contain "else" or "fi" do not move the branch boundaries.
+  const lines = verify.split('\n');
+  const ifLine = lines.findIndex(
+    (line) =>
+      line.trim() === 'if [[ "${{ vars.RELAY_ENABLED }}" == "true" ]]; then',
   );
-  const elseStart = verify.indexOf('else', enabledStart);
-  const fiStart = verify.indexOf('fi\n', elseStart);
+  const indent = ifLine === -1 ? '' : lines[ifLine].replace(/\S.*$/, '');
+  const atIndent = (keyword: string) =>
+    lines.findIndex((line, i) => i > ifLine && line === `${indent}${keyword}`);
+  const elseLine = atIndent('else');
+  const fiLine = atIndent('fi');
 
   it('fails the promotion when the relay is enabled and its image is missing', () => {
-    expect(enabledStart).toBeGreaterThan(-1);
-    const enabled = verify.slice(enabledStart, elseStart);
+    expect(ifLine).toBeGreaterThan(-1);
+    expect(elseLine).toBeGreaterThan(ifLine);
+    const enabled = lines.slice(ifLine + 1, elseLine).join('\n');
     expect(enabled).toContain('relay_image');
     expect(enabled).toContain('::error::');
     expect(enabled).toContain('exit 1');
@@ -124,8 +195,8 @@ describe('promote.yml relay image check', () => {
   });
 
   it('only notes the relay when it is not enabled', () => {
-    expect(elseStart).toBeGreaterThan(enabledStart);
-    const disabled = verify.slice(elseStart, fiStart);
+    expect(fiLine).toBeGreaterThan(elseLine);
+    const disabled = lines.slice(elseLine + 1, fiLine).join('\n');
     expect(disabled).toContain('echo');
     expect(disabled).not.toContain('exit 1');
   });

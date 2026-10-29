@@ -185,6 +185,13 @@ resource "google_cloud_run_v2_service" "relay" {
       condition     = var.relay_allowed_hosts != "" || var.relay_allowed_host_suffixes != ""
       error_message = "Set relay_allowed_hosts or relay_allowed_host_suffixes: with neither, the relay refuses every request (421)."
     }
+
+    # The app's RELAY_EXTENSION_ORIGIN and the relay's RELAY_EXTENSION_ID must
+    # name the same extension, or every panel request is refused.
+    precondition {
+      condition     = var.relay_extension_origin == "" || var.relay_extension_origin == "chrome-extension://${trimspace(file("${path.module}/../extension/EXTENSION_ID"))}"
+      error_message = "relay_extension_origin must be chrome-extension://<the id in extension/EXTENSION_ID>. If the extension id changed (P5-g, e.g. a Chrome Web Store listing assigned another id), re-derive it, update extension/EXTENSION_ID (which sets RELAY_EXTENSION_ID) and relay_extension_origin together."
+    }
   }
 
   depends_on = [

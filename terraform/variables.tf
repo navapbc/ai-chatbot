@@ -185,7 +185,7 @@ variable "relay_min_instances" {
   type        = number
   default     = 0
   validation {
-    condition     = var.relay_min_instances >= 0 && var.relay_min_instances <= 1
+    condition     = contains([0, 1], var.relay_min_instances)
     error_message = "relay_min_instances must be 0 or 1 (the relay runs as a single instance)."
   }
 }
@@ -203,7 +203,7 @@ variable "relay_token_endpoint_enabled" {
 }
 
 variable "relay_extension_origin" {
-  description = "RELAY_EXTENSION_ORIGIN on the app, the full chrome-extension://<id> origin the relay routes accept. Empty (default) leaves it unset, which means no Origin check. Takes effect only where the relay is deployed."
+  description = "RELAY_EXTENSION_ORIGIN on the app, the full chrome-extension://<id> origin the relay routes accept. Empty (default) leaves it unset, which means no Origin check. Takes effect only where the relay is deployed, and must match extension/EXTENSION_ID (precondition in relay.tf)."
   type        = string
   default     = ""
   validation {
@@ -233,9 +233,9 @@ variable "relay_allowed_hosts" {
   validation {
     condition = var.relay_allowed_hosts == "" || alltrue([
       for host in split(",", var.relay_allowed_hosts) :
-      trimspace(host) != "" && !can(regex("[/:]", host))
+      trimspace(host) != "" && can(regex("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", lower(trimspace(host))))
     ])
-    error_message = "relay_allowed_hosts must be empty or comma-separated bare host names with no empty entry, scheme, port or path."
+    error_message = "relay_allowed_hosts must be empty or comma-separated bare host names (letters, digits, dots and hyphens) with no empty entry, scheme, port, path or space."
   }
 }
 
