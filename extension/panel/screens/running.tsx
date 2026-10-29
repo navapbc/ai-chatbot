@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import type {
+  ConfirmedHow,
   EndedReason,
   RunSession,
   RunSessionState,
   SessionRun,
 } from '../lib/run-session';
+import type { Confirmation } from '../lib/worker-api';
 import { showAllowSite } from '../lib/allow-site';
 import { createAnswerSender } from '../lib/answer-client';
 import { buildProgressView } from '../lib/progress-view';
@@ -31,8 +33,15 @@ type Props = {
   createSession: (run: SessionRun) => RunSession;
   /** Leaves the ended run's screen (dispatches runEnded). */
   onHome: () => void;
-  /** "I submitted it": the run was stopped; show Confirmed. */
-  onConfirmed: (stopFailed: boolean) => void;
+  /**
+   * The run ended as submitted ("I submitted it", "Yes", or a confirmation
+   * number on the page): show Confirmed. Called once.
+   */
+  onConfirmed: (result: {
+    stopFailed: boolean;
+    how: ConfirmedHow;
+    confirmation?: Confirmation;
+  }) => void;
   /** The build's app origin, for the default answer sender. */
   appOrigin?: string;
   /** Sends answers to the agent's questions; defaults to the real client. */
@@ -41,9 +50,9 @@ type Props = {
   allowSiteDeps?: AllowSiteCardDeps;
 };
 
-const ENDED_TEXT: Record<EndedReason, string> = {
+export const ENDED_TEXT: Record<EndedReason, string> = {
   user: 'You stopped this run.',
-  submitted: 'You said you submitted the form.',
+  submitted: 'The run ended as submitted.',
   stopped: 'This run was stopped.',
   'worker-ended':
     'The run ended in the browser. The tab may have closed or moved to another site, or the time ran out.',
@@ -91,15 +100,14 @@ export const RunningScreen = ({
   const session = useRef<RunSession | null>(null);
   const startedAt = useRef(Date.now());
   const [now, setNow] = useState(() => Date.now());
-  const latest = useRef<RunSessionState | null>(null);
   const homeButton = useRef<HTMLButtonElement>(null);
+  const confirmedSent = useRef(false);
 
   useEffect(() => {
     const lifecycle = createControllerLifecycle(() => createSession(run));
     const current = lifecycle.mount();
     session.current = current;
     current.subscribe((next) => {
-      latest.current = next;
       setState(next);
     });
     return () => {
@@ -120,14 +128,31 @@ export const RunningScreen = ({
     if (ended) homeButton.current?.focus();
   }, [ended]);
 
+  // Confirmed follows a submitted end whether or not either stop worked (the
+  // form was submitted); a failed stop shows a notice there. One place for
+  // every way in: "I submitted it", "Yes", and a number on the page.
+  useEffect(() => {
+    if (state?.status !== 'ended' || state.endedReason !== 'submitted') return;
+    if (confirmedSent.current) return;
+    confirmedSent.current = true;
+    onConfirmed({
+      stopFailed: state.stopFailed === true,
+      how: state.confirmedHow ?? 'manual',
+      ...(state.confirmation ? { confirmation: state.confirmation } : {}),
+    });
+  }, [state, onConfirmed]);
+
   const handleStop = () => {
     void session.current?.stop();
   };
-  const handleSubmitted = async () => {
-    // Confirmed follows whether or not either stop worked: the caseworker
-    // did submit. A failed stop shows a notice only while this screen lives.
-    await session.current?.stop('submitted');
-    onConfirmed(latest.current?.stopFailed === true);
+  const handleSubmitted = () => {
+    void session.current?.stop('submitted');
+  };
+  const handleConfirmSubmission = () => {
+    void session.current?.confirmSubmission();
+  };
+  const handleDismissSubmission = () => {
+    session.current?.dismissSubmission();
   };
   const handleHome = () => onHome();
   // The card goes away on its own; a refresh keeps an allowed origin.
@@ -224,12 +249,16 @@ export const RunningScreen = ({
       ) : null}
       {showReview ? (
         <ReviewPanel
+          runId={run.runId}
           progress={state?.progress ?? null}
           actions={state?.actions ?? []}
           stopping={stopping}
           openedMidRun={run.expiresAtEstimated === true}
+          submission={state?.submission}
           onSubmitted={handleSubmitted}
           onStop={handleStop}
+          onConfirmSubmission={handleConfirmSubmission}
+          onDismissSubmission={handleDismissSubmission}
         />
       ) : null}
       {!ended ? (

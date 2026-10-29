@@ -51,11 +51,21 @@ import {
   redactEventParams,
   redactReply,
 } from './redaction';
+import { isSensitiveField } from '../../lib/relay/sensitive-fields';
 import {
+  CONFIRMATION_LABEL_KINDS,
+  CONFIRMATION_READ,
+  CONFIRMATION_TOKEN,
+  CONFIRMATION_TOKEN_MAX,
+  CONFIRMATION_TOKEN_MIN,
   DEEP_ACTIVE,
   FIELD_KIND,
+  FOCUS_FIELD,
   FRAME_OWNER_TAGS,
+  SCAN_UNFILLED,
   TYPE_INTO,
+  UNFILLED_AT,
+  UNFILLED_SUMMARY,
 } from './typing-scripts';
 
 // Forwards CDP between the relay and chrome.debugger for exactly one tab.
@@ -90,7 +100,37 @@ export type BridgeMessage =
    * the run's tab if the redactor masks that field (see typeSensitive).
    * Answers `{ ok: true }` or a fixed refusal, never the value.
    */
-  | { type: 'typeSensitive'; runId: string; value: string };
+  | { type: 'typeSensitive'; runId: string; value: string }
+  /**
+   * Finds the required fields still empty in the run's tab and highlights
+   * the first (see showUnfilledField). Answers counts and flags only
+   * (UnfilledFieldResult) or a fixed refusal, never a value, name, label or
+   * page text.
+   */
+  | { type: 'showUnfilledField'; runId: string }
+  /**
+   * Watches the run's tab for a form submission while the panel is in
+   * Review (see armSubmitWatch); `getRunStatus` reports it as `submitted`.
+   * Idempotent. With `reset`, first forgets what the watch saw (keeping its
+   * attach). Answers `{ ok: true }` or a fixed refusal.
+   */
+  | { type: 'armSubmitWatch'; runId: string; reset?: boolean }
+  /** Stops the watch and forgets what it saw (see disarmSubmitWatch). */
+  | { type: 'disarmSubmitWatch'; runId: string };
+
+/**
+ * showUnfilledField's answer: whether a field was highlighted, how many
+ * required fields are still empty (`remaining`, every one the scan found),
+ * whether the highlighted one is sensitive (any doubt counts as sensitive),
+ * and whether more than UNFILLED_SCAN_CAP were found.
+ */
+export interface UnfilledFieldResult {
+  ok: true;
+  found: boolean;
+  remaining: number;
+  sensitive?: boolean;
+  capped?: boolean;
+}
 
 /**
  * The bridge's run state for the panel. Ids and counts only: never the
@@ -134,12 +174,44 @@ export interface RunStatus {
    * is just momentarily empty. `runId` is set for a same-run startRun.
    */
   restarting?: boolean;
+  /**
+   * Set only while the submit watch is armed, once it saw a form submission
+   * request followed by a main-frame navigation in scope (see
+   * watchForSubmission): when, in epoch ms. Never a URL, a query or page
+   * text. A "Next" in a multi-step form looks the same.
+   *
+   * `confirmation` is the one piece of page text the worker ever reports:
+   * the token after a fixed label on the page the submission landed on, and
+   * the kind of that label (see readConfirmation), once it passed every
+   * check. It arrives up to CONFIRMATION_READ_MS after `at`; absent means
+   * none was found or it was dropped. For the panel only: never logged,
+   * stored, or sent to the relay, the agent or the server.
+   */
+  submitted?: { at: number; confirmation?: Confirmation };
+  /**
+   * True while the submit watch is armed and the tab is held for it (the
+   * agent's attach or the watch's own). False once a detach, a failed agent
+   * attach or a token refresh lost it, so the panel knows to arm again.
+   */
+  armed?: boolean;
+}
+
+/** A vetted confirmation number and the kind of label it followed. */
+export interface Confirmation {
+  token: string;
+  /**
+   * `confirmation` for a confirmation number, # or code; `other` for a
+   * reference, application or tracking number (benefit portals show an
+   * application number on every step, so it does not prove a submission).
+   */
+  kind: 'confirmation' | 'other';
 }
 
 export type BridgeResponse =
   | { ok: true }
   | { ok: false; error: string }
-  | RunStatus;
+  | RunStatus
+  | UnfilledFieldResult;
 
 interface RunConfig {
   relayUrl: string;
@@ -170,6 +242,34 @@ interface Child {
   frameScope?: FrameScope;
 }
 
+/** The submit watch's state (see watchForSubmission). */
+interface SubmitWatch {
+  /**
+   * A main-frame form submission the page requested, not yet committed:
+   * when, whether it was a POST, the main frame's URL at the request (memory
+   * only, never reported) and the scope epoch then.
+   */
+  pending?: { at: number; post: boolean; fromUrl?: string; epoch: number };
+  /** The first submission seen while armed. */
+  submitted?: Submission;
+}
+
+/**
+ * A submission the watch saw, and its confirmation read (readConfirmation):
+ * a reset, a disarm, a detach or the end of the run replaces or drops this
+ * object, which ends the read (it checks identity).
+ */
+interface Submission {
+  at: number;
+  confirmation?: Confirmation;
+  /** The main frame finished loading the page the submission landed on. */
+  loaded: boolean;
+  /** Another main-frame document committed since: the read stops. */
+  moved: boolean;
+  /** Wakes the read waiting for the load. */
+  wake?: () => void;
+}
+
 interface Run extends RunConfig {
   runId: string;
   origin: string;
@@ -193,12 +293,45 @@ interface Run extends RunConfig {
    */
   typingAttached: boolean;
   /**
+   * True while the submit watch holds chrome.debugger on the tab for itself
+   * (armed in Review with the agent not attached, say after a token
+   * refresh). Like `typingAttached` it never sets `attached`, forwards no
+   * event and tracks no child session. Typing and the unfilled-field scan
+   * use it as an existing attach (no attach of their own, no let-go). The
+   * agent's `attach` takes it over (attachTab clears it); a debugger detach,
+   * disarming and the end of the run clear it. At most one of `attached`,
+   * `typingAttached` and `reviewAttached` is set.
+   */
+  reviewAttached: boolean;
+  /**
+   * The submit watch, while armed (see armSubmitWatch); undefined when not.
+   * Memory only. A token refresh is an endRun plus begin, so the watch is
+   * lost with the old run and the panel arms it again.
+   */
+  submitWatch?: SubmitWatch;
+  /** Bumped by every disarm, so an arm queued before it does not land. */
+  watchGeneration: number;
+  /**
+   * The arm attach in flight and the watch generation it started in, so
+   * concurrent arms (the panel re-arms on every poll) share one queued
+   * attach step instead of each queueing their own.
+   */
+  armInFlight?: { generation: number; done: Promise<void> };
+  /**
    * This run's attach chain (see queuedAttach): created in begin, so a run
    * never inherits a stuck chain from an earlier one.
    */
   attachChain: Promise<unknown>;
   /** Set while a typeSensitive call is between its checks and its reply. */
   typingNow: boolean;
+  /** Set while a showUnfilledField call is between its checks and reply. */
+  scanNow: boolean;
+  /**
+   * Hides showUnfilledField's Overlay highlight when it runs out; cleared
+   * (and the highlight hidden or gone) on a main-frame navigation, a detach,
+   * an attach, stop and the next call.
+   */
+  highlightTimer?: ReturnType<typeof setTimeout>;
   /**
    * Set synchronously the moment the tab leaves scope, before any await, so
    * no command or event gets through while the run is held (see
@@ -758,6 +891,8 @@ async function endRun(
     clearTimeout(current.expiryTimer);
     clearTimeout(current.detachTimer);
     clearTimeout(current.holdTimer);
+    // The detach below takes the highlight with it.
+    clearHighlight(current, false);
     // Allowed origins are for this run only.
     current.extraOrigins = [];
     current.pendingOrigin = null;
@@ -792,6 +927,8 @@ async function endRun(
     if (run === undefined) maskContexts.clear();
     current.attached = false;
     current.typingAttached = false;
+    current.reviewAttached = false;
+    current.submitWatch = undefined;
     // Always let go: a blocked run has already cleared `attached`.
     try {
       await chrome.debugger.detach({ tabId: current.tabId });
@@ -939,8 +1076,11 @@ function begin(
     stopped: false,
     attached: false,
     typingAttached: false,
+    reviewAttached: false,
+    watchGeneration: 0,
     attachChain: Promise.resolve(),
     typingNow: false,
+    scanNow: false,
     blocked: false,
     scopeEpoch: 0,
     extraOrigins: [],
@@ -1306,7 +1446,8 @@ const detachTab = (tabId: number, ms = ATTACH_STEP_MS) =>
  * typing) and clears what it left, attaches, enables the bridge-owned Page
  * domain and seeds the frame scope from the frame tree, then checks the
  * scope again. Fails closed, detaching again on every failure after the
- * attach. Sets neither `attached` nor `typingAttached`: the caller does.
+ * attach. Sets none of `attached`, `typingAttached` and `reviewAttached`
+ * (it clears all three): the caller sets its own.
  */
 async function attachTab(
   current: Run,
@@ -1323,6 +1464,13 @@ async function attachTab(
   live();
   current.attached = false;
   current.typingAttached = false;
+  // The agent's attach takes over a review attach: the watch, if armed,
+  // goes on under the new attach. A submission requested under the old
+  // session is forgotten (its frame ids and URL are re-read below).
+  current.reviewAttached = false;
+  if (current.submitWatch) current.submitWatch.pending = undefined;
+  // The detach below takes the highlight with it.
+  clearHighlight(current, false);
   dropChildren(current);
   current.frameScope = createFrameScope();
   current.focusWorld = undefined;
@@ -2667,6 +2815,108 @@ function mainFrameNavigationUrl(
   return url;
 }
 
+/** A form submission counts only if it commits within this (P4c4-d). */
+const SUBMIT_WINDOW_MS = 30_000;
+const FORM_SUBMISSION_REASONS: ReadonlySet<unknown> = new Set([
+  'formSubmissionGet',
+  'formSubmissionPost',
+]);
+
+/**
+ * The submit watch (P4c4-d), from raw events of the tab's own session while
+ * armed. A main-frame `Page.frameRequestedNavigation` whose reason is a form
+ * submission, for the current tab, not `javascript:`, with the run not held,
+ * records a pending submission (any other main-frame request clears it).
+ * The next main-frame `Page.frameNavigated` consumes it, and sets
+ * `submitted` only when: within SUBMIT_WINDOW_MS, an ordinary navigation
+ * (not a back/forward-cache restore, not an error page), the run never held
+ * since the request (same scope epoch, not blocked), the URL in the run's
+ * origins, and the URL differs from the one at the request, or the request
+ * was a POST (a POST may answer on the same URL). A main-frame
+ * `Page.frameStoppedLoading` before any commit (a 204, a cancelled load)
+ * clears it. Same-document navigations, iframes and child sessions never
+ * count. Out of scope, the existing hold and leave-origin rules apply
+ * (elsewhere in onDebuggerEvent) and nothing is set. Reads event params
+ * only; keeps no URL beyond the pending request; never throws.
+ */
+function watchForSubmission(
+  current: Run,
+  source: chrome.debugger.DebuggerSession,
+  method: string,
+  params: unknown,
+) {
+  const watch = current.submitWatch;
+  if (!watch || source.sessionId !== undefined || !isObject(params)) return;
+  const mainFrameId = current.mainFrameId;
+  if (mainFrameId === undefined) return;
+  if (method === 'Page.frameRequestedNavigation') {
+    if (params.frameId !== mainFrameId) return;
+    const url = typeof params.url === 'string' ? params.url : '';
+    watch.pending =
+      FORM_SUBMISSION_REASONS.has(params.reason) &&
+      params.disposition === 'currentTab' &&
+      !isJavascriptUrl(url) &&
+      !current.blocked
+        ? {
+            at: Date.now(),
+            post: params.reason === 'formSubmissionPost',
+            fromUrl: current.frameScope.frames.get(mainFrameId)?.url,
+            epoch: current.scopeEpoch,
+          }
+        : undefined;
+    return;
+  }
+  if (method === 'Page.frameStoppedLoading') {
+    if (params.frameId !== mainFrameId) return;
+    watch.pending = undefined;
+    submissionLoaded(watch.submitted);
+    return;
+  }
+  // The tab session's load event is the main frame's.
+  if (method === 'Page.loadEventFired') {
+    submissionLoaded(watch.submitted);
+    return;
+  }
+  if (method !== 'Page.frameNavigated') return;
+  const frame = isObject(params.frame) ? params.frame : undefined;
+  if (!frame || frame.parentId !== undefined || frame.id !== mainFrameId) {
+    return;
+  }
+  // Any later main-frame document ends a confirmation read in flight.
+  if (watch.submitted) watch.submitted.moved = true;
+  const pending = watch.pending;
+  watch.pending = undefined;
+  if (!pending || watch.submitted) return;
+  const url = typeof frame.url === 'string' ? frame.url : '';
+  if (
+    Date.now() - pending.at > SUBMIT_WINDOW_MS ||
+    (params.type !== undefined && params.type !== 'Navigation') ||
+    frame.unreachableUrl !== undefined ||
+    current.blocked ||
+    current.pendingOrigin !== null ||
+    current.scopeEpoch !== pending.epoch ||
+    !inRunScope(current, url) ||
+    (!pending.post &&
+      (pending.fromUrl === undefined || url === pending.fromUrl))
+  ) {
+    return;
+  }
+  const submission: Submission = {
+    at: Date.now(),
+    loaded: false,
+    moved: false,
+  };
+  watch.submitted = submission;
+  void readConfirmation(current, watch, submission, current.scopeEpoch);
+}
+
+/** The submission's page finished loading: wake its confirmation read. */
+function submissionLoaded(submission: Submission | undefined) {
+  if (!submission || submission.moved) return;
+  submission.loaded = true;
+  submission.wake?.();
+}
+
 /** The child session a lifecycle event is about, if any. */
 function lifecycleSubject(current: Run, params: unknown): Child | undefined {
   if (!isObject(params)) return undefined;
@@ -2721,13 +2971,32 @@ export function onDebuggerEvent(
   // Dialogs are tracked (and an out-of-scope one answered) from raw events
   // too, attached or not, so a dialog opened during an attach is known.
   const dialogForwarded = dialogEventForwarded(current, source, method, params);
+  // A highlight is for the page it was drawn on: any main-frame navigation
+  // ends it, attached or not.
+  if (
+    current.highlightTimer !== undefined &&
+    source.sessionId === undefined &&
+    (method === 'Page.frameNavigated' ||
+      method === 'Page.navigatedWithinDocument') &&
+    mainFrameNavigationUrl(current, method, params) !== undefined
+  ) {
+    clearHighlight(current, true);
+  }
+  // The submit watch reads raw tab events, attached or not (it reads only
+  // event params and sends nothing on). A submission it sees starts the
+  // confirmation read (readConfirmation), the worker's own page read.
+  watchForSubmission(current, source, method, params);
   if (!dialogForwarded) return;
   // Nothing leaves the browser unless the agent attached and the tab is in
-  // scope. A typing attach (see typeSensitive) forwards nothing and tracks
-  // no child session; it only holds (or ends) the run the moment the main
-  // frame heads out of scope, as below. Its hold is released by onTabUpdated.
+  // scope. A typing or review attach (see typeSensitive, armSubmitWatch)
+  // forwards nothing and tracks no child session; it only holds (or ends)
+  // the run the moment the main frame heads out of scope, as below. Its hold
+  // is released by onTabUpdated.
   if (!current.attached) {
-    if (current.typingAttached && source.sessionId === undefined) {
+    if (
+      (current.typingAttached || current.reviewAttached) &&
+      source.sessionId === undefined
+    ) {
       const navUrl = mainFrameNavigationUrl(current, method, params);
       if (
         navUrl !== undefined &&
@@ -2829,7 +3098,15 @@ export function onDebuggerDetach(
   // flight fails, and the grace below applies as to any detach (the agent
   // must attach within it, or the run ends).
   current.typingAttached = false;
+  // The watch's attach is gone and so is the watch: nothing is watched
+  // until the panel arms it again (which attaches again, unless the detach
+  // grace below is running).
+  current.reviewAttached = false;
+  current.submitWatch = undefined;
+  current.watchGeneration += 1;
   current.focusWorld = undefined;
+  // The highlight died with the session.
+  clearHighlight(current, false);
   dropChildren(current);
   // P4b-d: the tab must be attached again (the agent re-attaches through the
   // relay) within the grace period, or the run ends.
@@ -2944,8 +3221,9 @@ async function typeSensitive(
   if (runId !== current.runId) return refuse('wrong run');
   if (current.blocked) return refuse('run is held');
   // One at a time: a second call while one is typing is refused (nothing
-  // registered, nothing typed); the panel sends one per press.
-  if (current.typingNow) return refuse('type failed');
+  // registered, nothing typed); the panel sends one per press. Nor while a
+  // showUnfilledField scan holds the tab (it may let go of its attach).
+  if (current.typingNow || current.scanNow) return refuse('type failed');
   // Registered before any await, in the same turn as the checks above, so a
   // token refresh either carries it or refuses it (see startRunNow).
   if (
@@ -2962,7 +3240,7 @@ async function typeSensitive(
   current.typingNow = true;
   try {
     // Not attached (a fresh run, or a refresh): attach for this typing only.
-    if (!current.attached && !current.typingAttached) {
+    if (!holdsTab(current)) {
       attachedHere = await attachForTyping(current, epoch);
     }
     refusal = await typeIntoFocused(current, value, epoch);
@@ -2972,7 +3250,7 @@ async function typeSensitive(
     else if (current.blocked) refusal = 'run is held';
     else if (error instanceof Error && error.message === FRAME_OUT_OF_SCOPE) {
       refusal = 'field out of scope';
-    } else if (!current.attached && !current.typingAttached) {
+    } else if (!holdsTab(current)) {
       refusal = 'not attached';
     } else refusal = 'type failed';
   } finally {
@@ -3000,7 +3278,9 @@ async function attachForTyping(current: Run, epoch: number): Promise<boolean> {
   if (!target) throw new Error('not attached');
   return queuedAttach(current, async () => {
     if (run !== current || current.stopped) throw new Error('run replaced');
-    if (current.attached) return false;
+    // The agent's attach, or the submit watch's, is used as is (and never
+    // let go of here).
+    if (current.attached || current.reviewAttached) return false;
     await attachTab(current, epoch, target.id, ATTACH_STEP_MS);
     current.typingAttached = true;
     return true;
@@ -3008,9 +3288,18 @@ async function attachForTyping(current: Run, epoch: number): Promise<boolean> {
 }
 
 /**
+ * True while the bridge holds chrome.debugger on the tab for anyone: the
+ * agent, a typing or scan, or the submit watch. Worker-initiated page work
+ * (typeSensitive, showUnfilledField) may run under any of them.
+ */
+const holdsTab = (current: Run) =>
+  current.attached || current.typingAttached || current.reviewAttached;
+
+/**
  * Lets go of the typing attach (queued with every attach), unless the run
  * was replaced or ended (endRun detaches) or the agent attached meanwhile
- * (which took it over and cleared `typingAttached`). Chrome sends no
+ * (which took it over and cleared `typingAttached`), or the submit watch
+ * took it over (armSubmitWatch, likewise). Chrome sends no
  * onDetach for the extension's own detach, so no detach grace starts.
  */
 function releaseTypingAttach(current: Run): Promise<void> {
@@ -3043,10 +3332,7 @@ async function typeIntoFocused(
   const live = () => {
     requireSameScope(current, epoch);
     if (run !== current) throw new Error('run replaced');
-    if (
-      (!current.attached && !current.typingAttached) ||
-      tab.scope !== current.frameScope
-    ) {
+    if (!holdsTab(current) || tab.scope !== current.frameScope) {
       throw new Error('not attached');
     }
   };
@@ -3149,6 +3435,811 @@ async function typeIntoFocused(
   }
 }
 
+// --- show the next unfilled field (plan 4c-4) -------------------------------
+
+/**
+ * showUnfilledField's refusals: fixed strings, as typeSensitive's, never a
+ * value, a field's name or label, or page text.
+ */
+type ScanRefusal =
+  | 'no active run'
+  | 'wrong run'
+  | 'not attached'
+  | 'run is held'
+  | 'field out of scope'
+  | 'registration pending'
+  | 'scan failed';
+
+/** More candidates than this sets `capped` (P4c4-a). */
+const UNFILLED_SCAN_CAP = 12;
+/** One deadline for a whole call's page work after the attach. */
+const SCAN_MS = 8_000;
+/** Kept for the highlight: classification stops this long before it. */
+const CLASSIFY_RESERVE_MS = 3_000;
+/** How long the Overlay highlight stays (P4c4-c). */
+const HIGHLIGHT_MS = 6_000;
+// The highlight: a box and its padding, no info tooltip (it would paint the
+// element's tag, id and classes), no rulers.
+const HIGHLIGHT_CONFIG = {
+  showInfo: false,
+  showRulers: false,
+  showExtensionLines: false,
+  contentColor: { r: 255, g: 176, b: 0, a: 0.2 },
+  paddingColor: { r: 255, g: 176, b: 0, a: 0.2 },
+  borderColor: { r: 214, g: 92, b: 0, a: 1 },
+};
+
+/**
+ * Ends showUnfilledField's highlight: clears its timer and, with `hide`,
+ * asks the page to drop it (best effort, only on the agent's or the submit
+ * watch's live attach: a detach takes the highlight with it). Sends nothing
+ * but Overlay calls, which carry no page content.
+ */
+function clearHighlight(current: Run, hide: boolean) {
+  if (current.highlightTimer === undefined) return;
+  clearTimeout(current.highlightTimer);
+  current.highlightTimer = undefined;
+  if (hide) void hideHighlight(current);
+}
+
+// Not under the tab lock or the scope checks of a page read: it sends only
+// Overlay calls, which read nothing from the page and change no DOM, so a
+// screenshot's mask window or a held tab has nothing to fear from them.
+async function hideHighlight(current: Run) {
+  if (run !== current || current.stopped) return;
+  if (!current.attached && !current.reviewAttached) return;
+  const debuggee = { tabId: current.tabId };
+  try {
+    await withTimeout(
+      chrome.debugger.sendCommand(debuggee, 'Overlay.hideHighlight'),
+      FRAME_STEP_MS,
+      'highlight',
+    );
+    await withTimeout(
+      chrome.debugger.sendCommand(debuggee, 'Overlay.disable'),
+      FRAME_STEP_MS,
+      'highlight',
+    );
+  } catch {
+    // Detached or gone: nothing is drawn.
+  }
+}
+
+/**
+ * Finds the required fields still empty in the run's tab and shows the
+ * caseworker the first one (plan 4c-4, P4c4-a..c). Read-only: types
+ * nothing, registers nothing, changes no attribute.
+ *
+ * Refused, with no CDP call, when there is no run, it is another run, the
+ * run needs re-registration (`registration pending`: after a worker restart
+ * the scrubbing state is incomplete), the run is held, or a scan or a
+ * typing is in flight (`scan failed`). Then, as typeSensitive: attach for
+ * itself when the agent is not attached (attachForTyping, never setting
+ * `attached`), wait out a screenshot and keep the shared tab hold for its
+ * sends, re-check the run and scope after every await (requireSameScope),
+ * one deadline (SCAN_MS).
+ *
+ * One SCAN_UNFILLED evaluation in the bridge's `relay-focus` isolated world
+ * (page script cannot change what it reads) answers
+ * nothing but a count. The first candidate is checked to be in a frame in
+ * scope and is classified: sensitive when its attributes or accessible name
+ * are flagged by isSensitiveField or the redactor masks it once filled
+ * (masksFilledField), and on any failure or timeout. Only that field is
+ * classified: its verdict is the reply's `sensitive`, and classifying the
+ * others would add page reads and Jev requests that change nothing.
+ *
+ * The highlight: on the agent's attach or the submit watch's (both outlive
+ * the call), DOM.scrollIntoViewIfNeeded and Overlay.highlightNode (no DOM
+ * footprint, so the agent's views and the
+ * screenshot mask are unchanged; Overlay events are never forwarded) for
+ * HIGHLIGHT_MS. On its own attach, which is let go before answering (and a
+ * detach takes an Overlay highlight with it), or when Overlay fails: the
+ * field is scrolled into view and focused instead (FOCUS_FIELD).
+ *
+ * Never throws, never logs; the reply is an UnfilledFieldResult or one
+ * fixed ScanRefusal.
+ */
+async function showUnfilledField(runId: unknown): Promise<BridgeResponse> {
+  const refuse = (error: ScanRefusal): BridgeResponse => ({ ok: false, error });
+  const current = run;
+  if (!current || current.stopped) return refuse('no active run');
+  if (runId !== current.runId) return refuse('wrong run');
+  if (current.needsRegistration) return refuse('registration pending');
+  if (current.blocked) return refuse('run is held');
+  if (current.scanNow || current.typingNow) return refuse('scan failed');
+  const epoch = current.scopeEpoch;
+  let reply: BridgeResponse;
+  let attachedHere = false;
+  current.scanNow = true;
+  try {
+    // A new call replaces the last highlight.
+    if (current.highlightTimer !== undefined) {
+      clearHighlight(current, false);
+      await hideHighlight(current);
+    }
+    if (!holdsTab(current)) {
+      attachedHere = await attachForTyping(current, epoch);
+    }
+    reply = await scanAndShow(current, epoch, Date.now() + SCAN_MS);
+  } catch (error) {
+    // The error's own text is never passed on: it may name page state.
+    if (run !== current || current.stopped) reply = refuse('scan failed');
+    else if (current.blocked) reply = refuse('run is held');
+    else if (error instanceof Error && error.message === FRAME_OUT_OF_SCOPE) {
+      reply = refuse('field out of scope');
+    } else if (!holdsTab(current)) {
+      reply = refuse('not attached');
+    } else reply = refuse('scan failed');
+  } finally {
+    if (attachedHere) await releaseTypingAttach(current);
+    current.scanNow = false;
+  }
+  return reply;
+}
+
+/** See showUnfilledField: the page work, under the tab lock. */
+async function scanAndShow(
+  current: Run,
+  epoch: number,
+  deadline: number,
+): Promise<UnfilledFieldResult> {
+  const lock = lockFor(current.tabId);
+  const tab: FrameSession = {
+    scope: current.frameScope,
+    debuggee: { tabId: current.tabId },
+    rootFrameId: current.mainFrameId,
+  };
+  // After every await: the same run and session, never out of scope since
+  // the call, within the deadline (throws).
+  const live = () => {
+    requireSameScope(current, epoch);
+    if (run !== current) throw new Error('run replaced');
+    if (!holdsTab(current) || tab.scope !== current.frameScope) {
+      throw new Error('not attached');
+    }
+    if (Date.now() > deadline) throw new Error('scan timed out');
+  };
+  const send = (method: string, params?: object) =>
+    sessionSend(tab, method, params, deadline);
+  for (;;) {
+    await untilNoScreenshot(lock);
+    await requireTabInScope(current);
+    live();
+    if (!lock.writer) break;
+  }
+  const release = holdShared(lock);
+  const objectGroup = checkGroup();
+  try {
+    const found = await scanUnfilled(current, tab, objectGroup, deadline);
+    live();
+    if (found === undefined) throw new Error('scan failed');
+    const { listId, count } = found;
+    const capped = count > UNFILLED_SCAN_CAP;
+    if (count === 0) return { ok: true, found: false, remaining: 0 };
+    const objectId = objectIdOf(
+      await send('Runtime.callFunctionOn', {
+        objectId: listId,
+        functionDeclaration: UNFILLED_AT,
+        arguments: [{ value: 0 }],
+        objectGroup,
+      }),
+      'result',
+    );
+    live();
+    if (objectId === undefined) throw new Error('scan failed');
+    const node = describedNode(await send('DOM.describeNode', { objectId }));
+    live();
+    const backendNodeId = node?.backendNodeId;
+    if (typeof backendNodeId !== 'number') throw new Error('scan failed');
+    // The field's frame, judged like a command's node handle.
+    const { contextIds } = await resolveFrames(
+      current,
+      tab,
+      commandAddresses({ backendNodeId }),
+    );
+    live();
+    if (
+      contextIds.length !== 1 ||
+      !contextAllowedIn(current, tab.scope, contextIds[0])
+    ) {
+      throw new Error(FRAME_OUT_OF_SCOPE);
+    }
+    // Classification ends CLASSIFY_RESERVE_MS before the deadline, so a slow
+    // verdict degrades to sensitive and the highlight still has time.
+    const classifyBy = deadline - CLASSIFY_RESERVE_MS;
+    const sensitive = await fieldSensitive(
+      current,
+      tab,
+      backendNodeId,
+      node?.attributes,
+      classifyBy,
+    );
+    live();
+    let highlighted = false;
+    if (current.attached || current.reviewAttached) {
+      try {
+        // Overlay needs the DOM domain on; enabling it again is harmless.
+        // DOM is never disabled here: the agent relies on it.
+        await send('DOM.enable');
+        live();
+        await send('Overlay.enable');
+        live();
+        try {
+          await send('DOM.scrollIntoViewIfNeeded', { backendNodeId });
+          live();
+          await send('Overlay.highlightNode', {
+            backendNodeId,
+            highlightConfig: HIGHLIGHT_CONFIG,
+          });
+        } catch (error) {
+          // Turn Overlay off again before the fallback (best effort).
+          await send('Overlay.disable').catch(() => {});
+          throw error;
+        }
+        highlighted = true;
+        // Armed before anything else can throw, so a drawn highlight always
+        // ends.
+        clearHighlight(current, false);
+        current.highlightTimer = setTimeout(() => {
+          current.highlightTimer = undefined;
+          void hideHighlight(current);
+        }, HIGHLIGHT_MS);
+      } catch {
+        // Overlay unavailable: the fallback below. Ended, replaced or held
+        // meanwhile: live() answers that instead.
+      }
+    }
+    live();
+    if (!highlighted) {
+      await send('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: FOCUS_FIELD,
+        returnByValue: true,
+        silent: true,
+      });
+      live();
+    }
+    const result: UnfilledFieldResult = {
+      ok: true,
+      found: true,
+      remaining: count,
+      sensitive,
+    };
+    if (capped) result.capped = true;
+    return result;
+  } finally {
+    await releaseGroup(tab, objectGroup);
+    release();
+  }
+}
+
+/**
+ * Runs SCAN_UNFILLED in the bridge's `relay-focus` world of the main frame
+ * (made as focusedElement makes it) and reads back only the candidate count:
+ * the candidates stay in the page, by reference (`listId`, in
+ * `objectGroup`). Undefined when the world cannot be made or the answer is
+ * malformed. Throws when a lookup fails.
+ */
+async function scanUnfilled(
+  current: Run,
+  tab: FrameSession,
+  objectGroup: string,
+  deadline: number,
+): Promise<{ listId: string; count: number } | undefined> {
+  const send = (method: string, params?: object) =>
+    sessionSend(tab, method, params, deadline);
+  const evaluate = (contextId: number) =>
+    send('Runtime.evaluate', {
+      expression: `(${SCAN_UNFILLED})(document)`,
+      contextId,
+      objectGroup,
+      silent: true,
+    });
+  let evaluated: unknown;
+  try {
+    if (current.focusWorld === undefined) throw new Error('no world');
+    evaluated = await evaluate(current.focusWorld);
+    if (objectIdOf(evaluated, 'result') === undefined) {
+      throw new Error('no answer');
+    }
+  } catch {
+    // No world yet, or its document is gone: make one (its context events
+    // are dropped like the mask's, see isBridgeWorldCreated).
+    const world = await send('Page.createIsolatedWorld', {
+      frameId: current.mainFrameId,
+      worldName: FOCUS_WORLD,
+    });
+    const contextId = isObject(world) ? world.executionContextId : undefined;
+    if (typeof contextId !== 'number') return undefined;
+    current.focusWorld = contextId;
+    evaluated = await evaluate(contextId);
+  }
+  const listId = objectIdOf(evaluated, 'result');
+  if (listId === undefined) return undefined;
+  const summary = returnedValue(
+    await send('Runtime.callFunctionOn', {
+      objectId: listId,
+      functionDeclaration: UNFILLED_SUMMARY,
+      returnByValue: true,
+    }),
+  );
+  const count = isObject(summary) ? summary.count : undefined;
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
+    return undefined;
+  }
+  return { listId, count };
+}
+
+/**
+ * Whether a field is sensitive, for the reply's `sensitive` flag: its own
+ * attributes (isSensitiveField), its accessible name and role
+ * (isSensitiveField; masksFilledField alone answers false for a checkbox,
+ * radio or native select by role), or the redactor's verdict once filled
+ * (masksFilledField, Jev included). Unlike masksFilledField, every failure
+ * (no attributes, no accessibility node, a lookup error, the deadline)
+ * answers true. Never throws.
+ */
+async function fieldSensitive(
+  current: Run,
+  tab: FrameSession,
+  backendNodeId: number,
+  attributes: unknown,
+  deadline: number,
+): Promise<boolean> {
+  try {
+    if (!Array.isArray(attributes)) return true;
+    const fromAttributes = descriptorFromAttributes(attributes);
+    if (isSensitiveField(fromAttributes)) return true;
+    const tree = await sessionSend(
+      tab,
+      'Accessibility.getPartialAXTree',
+      { backendNodeId, fetchRelatives: false },
+      deadline,
+    );
+    const axNode = (
+      isObject(tree) && Array.isArray(tree.nodes) ? tree.nodes : []
+    ).find((n) => isObject(n) && n.backendDOMNodeId === backendNodeId);
+    if (!isObject(axNode)) return true;
+    const axText = (value: unknown) =>
+      isObject(value) && typeof value.value === 'string'
+        ? value.value
+        : undefined;
+    const label = axText(axNode.name);
+    const role = axText(axNode.role);
+    if (
+      isSensitiveField({
+        ...fromAttributes,
+        ...(label === undefined ? {} : { label }),
+        ...(role === undefined ? {} : { role }),
+      })
+    ) {
+      return true;
+    }
+    const left = deadline - Date.now();
+    if (left <= 0) return true;
+    return await withTimeout(
+      current.redactor.masksFilledField(axNode, describeVia(tab.debuggee)),
+      left,
+      'classify',
+    );
+  } catch {
+    return true;
+  }
+}
+
+// --- the submit watch (plan 4c-4) ---------------------------------------------
+
+/** armSubmitWatch's refusals: fixed strings, as typeSensitive's. */
+type WatchRefusal =
+  | 'no active run'
+  | 'wrong run'
+  | 'not attached'
+  | 'run is held';
+
+/**
+ * Arms the submit watch (P4c4-d, P4c4-e): from now until disarmed, a form
+ * submission in the run's tab followed by a main-frame navigation in scope
+ * sets `submitted` in the run status (see watchForSubmission). The panel
+ * arms it only in Review, so the agent's own Next clicks cannot count.
+ *
+ * Reads no page text (only navigation event params), so a run that needs
+ * registration may arm. Refused with no CDP call when there is no run, it
+ * is another run, or the run is held. Under the agent's attach it only
+ * marks the watch armed. Otherwise it attaches for itself (attachForReview:
+ * the attach core with the relay `attach`'s scope checks, bounded steps,
+ * queued with every attach) as `reviewAttached`, never `attached`, so agent
+ * commands still get `not attached`; a typing or scan attach in flight is
+ * taken over rather than replaced. A failed attach answers `not attached`
+ * (or `run is held` when the tab left scope) and leaves the watch unarmed,
+ * so `{ ok: true }` always means the tab is watched.
+ *
+ * Idempotent: arming again keeps what the watch saw, and re-attaches if
+ * the attach was lost (a debugger detach disarms the watch; the status's
+ * `armed` then reads false). Arms that arrive while an arm attach of the
+ * same watch generation is in flight wait for it rather than queueing
+ * another attach step, so a panel re-arming on every poll cannot grow the
+ * attach queue behind a hung attach. A token refresh is an endRun plus
+ * begin: the watch is lost with the old run and the panel arms it again.
+ *
+ * With `reset`, the seen submission and any pending request are forgotten
+ * first (before the held check: forgetting is always safe), with no CDP
+ * call and the attach kept; then it arms as above. Never throws, never logs.
+ */
+async function armSubmitWatch(
+  runId: unknown,
+  reset = false,
+): Promise<BridgeResponse> {
+  const refuse = (error: WatchRefusal): BridgeResponse => ({
+    ok: false,
+    error,
+  });
+  const current = run;
+  if (!current || current.stopped) return refuse('no active run');
+  if (runId !== current.runId) return refuse('wrong run');
+  if (reset && current.submitWatch) {
+    current.submitWatch.pending = undefined;
+    current.submitWatch.submitted = undefined;
+  }
+  if (current.blocked) return refuse('run is held');
+  if (current.attached || current.reviewAttached) {
+    current.submitWatch ??= {};
+    return { ok: true };
+  }
+  const generation = current.watchGeneration;
+  let flight = current.armInFlight;
+  if (flight === undefined || flight.generation !== generation) {
+    const done = attachForReview(current, current.scopeEpoch, generation);
+    const started = { generation, done };
+    flight = started;
+    current.armInFlight = started;
+    // Cleared once it settles (either way), unless a newer arm replaced it.
+    void done
+      .catch(() => {})
+      .finally(() => {
+        if (current.armInFlight === started) current.armInFlight = undefined;
+      });
+  }
+  try {
+    await flight.done;
+  } catch {
+    if (run !== current || current.stopped) return refuse('no active run');
+    if (current.blocked) return refuse('run is held');
+    return refuse('not attached');
+  }
+  return { ok: true };
+}
+
+/**
+ * armSubmitWatch's attach, run through queuedAttach. Arms the watch in the
+ * same step as the flag it rests on, unless a disarm came first (its
+ * let-go, queued behind this step, then lets go of an attach made here).
+ * Throws when the watch is not armed. Refused while a detach grace is
+ * running: the run is waiting for the agent.
+ */
+async function attachForReview(
+  current: Run,
+  epoch: number,
+  generation: number,
+): Promise<void> {
+  if (current.detachTimer !== undefined) throw new Error('not attached');
+  const target = await bounded(tabTarget(current.tabId), 'targets');
+  if (!target) throw new Error('not attached');
+  await queuedAttach(current, async () => {
+    if (run !== current || current.stopped) throw new Error('run replaced');
+    if (current.watchGeneration !== generation) throw new Error('disarmed');
+    if (current.detachTimer !== undefined) throw new Error('not attached');
+    requireSameScope(current, epoch);
+    if (current.typingAttached) {
+      // A typing or scan holds the tab for itself: the watch takes that
+      // attach over (no detach, so the call in flight goes on under it, and
+      // its let-go then finds nothing to let go of).
+      current.typingAttached = false;
+      current.reviewAttached = true;
+    } else if (!current.attached && !current.reviewAttached) {
+      await attachTab(current, epoch, target.id, ATTACH_STEP_MS);
+      current.reviewAttached = true;
+    }
+    if (current.watchGeneration !== generation) throw new Error('disarmed');
+    current.submitWatch ??= {};
+  });
+}
+
+/**
+ * Disarms the submit watch: forgets a pending or seen submission (so
+ * `submitted` is no longer reported) and lets go of the watch's own attach
+ * (releaseReviewAttach), never the agent's. Answers `{ ok: true }` for the
+ * run even when nothing was armed; `no active run` or `wrong run`
+ * otherwise. Never throws, never logs.
+ */
+async function disarmSubmitWatch(runId: unknown): Promise<BridgeResponse> {
+  const current = run;
+  if (!current || current.stopped) return { ok: false, error: 'no active run' };
+  if (runId !== current.runId) return { ok: false, error: 'wrong run' };
+  current.submitWatch = undefined;
+  current.watchGeneration += 1;
+  await releaseReviewAttach(current);
+  return { ok: true };
+}
+
+/**
+ * Lets go of the watch's own attach (queued with every attach, so an arm's
+ * attach still in flight is let go of after it lands), unless the run
+ * ended or was replaced (endRun detaches), the agent took it over, or the
+ * watch was armed again meanwhile. A typing or scan running under it then
+ * fails closed (`not attached`). Chrome sends no onDetach for the
+ * extension's own detach, so no detach grace starts.
+ */
+function releaseReviewAttach(current: Run): Promise<void> {
+  return queuedAttach(current, async () => {
+    if (run !== current || current.stopped) return;
+    if (current.attached || !current.reviewAttached) return;
+    if (current.submitWatch !== undefined) return;
+    current.reviewAttached = false;
+    // The detach below takes the highlight with it.
+    clearHighlight(current, false);
+    current.focusWorld = undefined;
+    current.dialog = undefined;
+    current.frameScope = createFrameScope();
+    await detachTab(current.tabId);
+  });
+}
+
+// --- the confirmation number (plan 4c-4) --------------------------------------
+
+/** How long the read waits for the submission's page to load. */
+const CONFIRMATION_LOAD_MS = 5_000;
+/** Reads of the page, CONFIRMATION_GAP_MS apart (client-rendered numbers). */
+const CONFIRMATION_TRIES = 3;
+const CONFIRMATION_GAP_MS = 1_000;
+/**
+ * The whole read, from the commit: `submitted.confirmation` is set within
+ * this of `submitted.at`, or not at all.
+ */
+export const CONFIRMATION_READ_MS = 12_000;
+
+/**
+ * Reads the confirmation number off the page a submission landed on (P4c4-f)
+ * so the panel can show it: the first time the worker reads page text and
+ * returns a piece of it. Started by watchForSubmission on the commit; waits
+ * for the page to load (CONFIRMATION_LOAD_MS at most), then reads up to
+ * CONFIRMATION_TRIES times, CONFIRMATION_GAP_MS apart, until the page shows
+ * a token after a `confirmation` label (confirmationAttempt), which ends
+ * the read whether or not it passes vetConfirmation. A token after another
+ * label (application, reference, tracking number) does not: the first one
+ * is kept until the tries run out and is vetted then. Only a vetted token
+ * is kept, as `submission.confirmation` (set once), which getRunStatus
+ * copies for the panel.
+ *
+ * Worker-initiated page reading outside the agent's command policy, so
+ * before every step and after every await: the same run, not stopped, never
+ * held or out of scope since the commit (requireSameScope), no
+ * re-registration pending (the known values are incomplete, so a typed SSN
+ * echoed as the token could not be recognized), the tab held (the agent's,
+ * the watch's or a typing attach), this submission still the watch's (a
+ * reset, disarm, detach or stop ends the read), no other main-frame document
+ * since, within CONFIRMATION_READ_MS. Any failure ends the read with nothing
+ * set. The token is never registered as a known value, logged, stored, or
+ * sent to the relay, the agent or the server. Never throws.
+ */
+async function readConfirmation(
+  current: Run,
+  watch: SubmitWatch,
+  submission: Submission,
+  epoch: number,
+): Promise<void> {
+  const deadline = Date.now() + CONFIRMATION_READ_MS;
+  const live = () => {
+    requireSameScope(current, epoch);
+    if (run !== current) throw new Error('run replaced');
+    if (current.submitWatch !== watch || watch.submitted !== submission) {
+      throw new Error('read ended');
+    }
+    if (submission.moved) throw new Error('read ended');
+    if (current.needsRegistration) throw new Error('registration pending');
+    if (!holdsTab(current)) throw new Error('not attached');
+    if (Date.now() > deadline) throw new Error('read timed out');
+  };
+  try {
+    live();
+    if (!submission.loaded) {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          clearTimeout(timer);
+          submission.wake = undefined;
+          resolve();
+        };
+        const timer = setTimeout(done, CONFIRMATION_LOAD_MS);
+        submission.wake = done;
+      });
+    }
+    // The first `other` answer, kept while later tries look for a
+    // confirmation label (a portal's application number shows on every
+    // page, the confirmation number may be rendered after it).
+    let other: Record<string, unknown> | undefined;
+    for (let attempt = 0; attempt < CONFIRMATION_TRIES; attempt += 1) {
+      if (attempt > 0) await sleep(CONFIRMATION_GAP_MS);
+      live();
+      const found = await confirmationAttempt(current, live, deadline);
+      live();
+      if (found === undefined) continue;
+      const label = found.label;
+      if (
+        typeof label !== 'string' ||
+        !Object.hasOwn(CONFIRMATION_LABEL_KINDS, label) ||
+        CONFIRMATION_LABEL_KINDS[label] !== 'confirmation'
+      ) {
+        other ??= found;
+        continue;
+      }
+      // No await from the last check to the store.
+      const vetted = vetConfirmation(current, found);
+      if (vetted) submission.confirmation = vetted;
+      return;
+    }
+    if (other === undefined) return;
+    // Vetted now (registered values, hold and registration as they are
+    // now), with no await from the check to the store.
+    live();
+    const vetted = vetConfirmation(current, other);
+    if (vetted) submission.confirmation = vetted;
+  } catch {
+    // Ended, replaced, held, refused or failed: nothing is set.
+  } finally {
+    submission.wake = undefined;
+  }
+}
+
+/**
+ * One read of the page for readConfirmation: CONFIRMATION_READ in the
+ * bridge's `relay-focus` isolated world of the main frame (page script
+ * cannot change what it reads there), made again when the last one died
+ * with its document, under the tab lock as typeIntoFocused (screenshots
+ * waited out, tab in scope, shared hold kept to the end), each step bounded.
+ * The script's answer object (token, canonical label, nearSensitive), or
+ * undefined when it found nothing or the read failed. Throws when `live`
+ * does.
+ */
+async function confirmationAttempt(
+  current: Run,
+  live: () => void,
+  deadline: number,
+): Promise<Record<string, unknown> | undefined> {
+  const lock = lockFor(current.tabId);
+  const tab: FrameSession = {
+    scope: current.frameScope,
+    debuggee: { tabId: current.tabId },
+    rootFrameId: current.mainFrameId,
+  };
+  const liveHere = () => {
+    live();
+    if (tab.scope !== current.frameScope) throw new Error('not attached');
+  };
+  const send = (method: string, params?: object) =>
+    sessionSend(tab, method, params, deadline);
+  for (;;) {
+    await untilNoScreenshot(lock);
+    await requireTabInScope(current);
+    liveHere();
+    if (!lock.writer) break;
+  }
+  const release = holdShared(lock);
+  try {
+    const evaluate = async (contextId: number) => {
+      const reply = await send('Runtime.evaluate', {
+        expression: `(${CONFIRMATION_READ})(document)`,
+        contextId,
+        returnByValue: true,
+        silent: true,
+      });
+      // null: the script ran and found nothing. undefined: no answer.
+      if (!isObject(reply) || reply.exceptionDetails !== undefined) {
+        return undefined;
+      }
+      const result = isObject(reply.result) ? reply.result : undefined;
+      if (result?.subtype === 'null') return null;
+      return isObject(result?.value) ? result.value : undefined;
+    };
+    let answer: Record<string, unknown> | null | undefined;
+    try {
+      if (current.focusWorld === undefined) throw new Error('no world');
+      answer = await evaluate(current.focusWorld);
+      if (answer === undefined) throw new Error('no answer');
+    } catch {
+      // No world yet, or its document is gone: make one in the main frame's
+      // current document (its context events are dropped like the mask's).
+      liveHere();
+      const world = await send('Page.createIsolatedWorld', {
+        frameId: current.mainFrameId,
+        worldName: FOCUS_WORLD,
+      });
+      liveHere();
+      const contextId = isObject(world) ? world.executionContextId : undefined;
+      if (typeof contextId !== 'number') return undefined;
+      current.focusWorld = contextId;
+      answer = await evaluate(contextId);
+    }
+    liveHere();
+    return answer ?? undefined;
+  } finally {
+    release();
+  }
+}
+
+/** Dates, year first or last, with '-', '/' or '.' between the parts. */
+const DATE_SHAPED = [
+  /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/,
+  /^\d{1,2}[-/.]\d{1,2}[-/.](?:\d{2}|\d{4})$/,
+];
+
+/** Lower case, letters and digits only: how values are compared. */
+const comparable = (value: string) =>
+  value.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * True when `token` (4 or more letters and digits) is inside a value the
+ * run registered (current.knownValues, which the redactor mirrors), in
+ * either as-typed or letters-and-digits-only form.
+ */
+function partOfKnownValue(current: Run, token: string): boolean {
+  const lower = token.toLowerCase();
+  const bare = comparable(token);
+  if (bare.length < CONFIRMATION_TOKEN_MIN) return false;
+  return current.knownValues.some(
+    (value) =>
+      value.toLowerCase().includes(lower) || comparable(value).includes(bare),
+  );
+}
+
+/**
+ * The confirmation readConfirmation may keep, built fresh from the script's
+ * answer, or undefined. Dropped (never trimmed or partly kept) unless: the
+ * label is one of CONFIRMATION_LABEL_KINDS and not a sensitive label
+ * (isSensitiveField: belt and braces); the token is a string of
+ * CONFIRMATION_TOKEN_MIN..MAX token characters with a digit; it has no
+ * sensitive shape (hasSensitiveShape: an SSN, or 9 or more digits, so a
+ * long numeric confirmation number is dropped too) and no 9 digits however
+ * separated; it is not a date; it holds no registered value (hasKnownValue)
+ * and is not part of one (partOfKnownValue); the page showed no SSN-shaped value near it
+ * (`nearSensitive` exactly false); and the run is still live, unheld and
+ * registered. Any doubt, or a throw, drops it.
+ */
+function vetConfirmation(
+  current: Run,
+  found: Record<string, unknown>,
+): Confirmation | undefined {
+  try {
+    const { token, label, nearSensitive } = found;
+    if (typeof token !== 'string' || typeof label !== 'string') return;
+    if (nearSensitive !== false) return;
+    if (!Object.hasOwn(CONFIRMATION_LABEL_KINDS, label)) return;
+    const kind = CONFIRMATION_LABEL_KINDS[label];
+    if (kind !== 'confirmation' && kind !== 'other') return;
+    if (isSensitiveField({ label })) return;
+    if (
+      token.length < CONFIRMATION_TOKEN_MIN ||
+      token.length > CONFIRMATION_TOKEN_MAX ||
+      !CONFIRMATION_TOKEN.test(token) ||
+      !/\d/.test(token)
+    ) {
+      return;
+    }
+    if (hasSensitiveShape(token)) return;
+    // Nine or more digits however separated (123/45/6789, 123_45_6789).
+    if (token.replace(/\D/g, '').length >= 9) return;
+    // A date after a label is not a confirmation number.
+    if (DATE_SHAPED.some((shape) => shape.test(token))) return;
+    if (current.redactor.hasKnownValue(token)) return;
+    // Part of a registered value (the last 4 digits of a typed SSN, say).
+    if (partOfKnownValue(current, token)) return;
+    if (current.stopped || current.blocked || current.needsRegistration) {
+      return;
+    }
+    return { token, kind };
+  } catch {
+    return;
+  }
+}
+
 /**
  * Lets the run go on at the origin it is held on (plan 4c's panel asks the
  * caseworker). Only an exact https origin equal to `pendingOrigin`, with the
@@ -3214,6 +4305,9 @@ function getRunStatus(): RunStatus {
     attached: current.attached,
     needsRegistration: current.needsRegistration,
     exp: current.exp,
+    armed:
+      current.submitWatch !== undefined &&
+      (current.attached || current.reviewAttached),
   };
   if (current.jev) {
     status.jevFailures = current.jev.failures();
@@ -3221,6 +4315,19 @@ function getRunStatus(): RunStatus {
   }
   if (current.pendingOrigin !== null) {
     status.pendingOrigin = current.pendingOrigin;
+  }
+  // Only while armed (the watch is undefined otherwise): a time and, once
+  // vetted, the confirmation token and its kind (copied, nothing else).
+  const submitted = current.submitWatch?.submitted;
+  if (submitted) {
+    status.submitted = { at: submitted.at };
+    const confirmation = submitted.confirmation;
+    if (confirmation) {
+      status.submitted.confirmation = {
+        token: confirmation.token,
+        kind: confirmation.kind,
+      };
+    }
   }
   return status;
 }
@@ -3262,6 +4369,15 @@ export async function handleMessage(message: unknown): Promise<BridgeResponse> {
   if (message.type === 'allowOrigin') return allowOrigin(message.origin);
   if (message.type === 'typeSensitive') {
     return typeSensitive(message.runId, message.value);
+  }
+  if (message.type === 'showUnfilledField') {
+    return showUnfilledField(message.runId);
+  }
+  if (message.type === 'armSubmitWatch') {
+    return armSubmitWatch(message.runId, message.reset === true);
+  }
+  if (message.type === 'disarmSubmitWatch') {
+    return disarmSubmitWatch(message.runId);
   }
   return { ok: false, error: 'unknown message type' };
 }

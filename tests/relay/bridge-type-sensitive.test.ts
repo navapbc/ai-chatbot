@@ -1113,3 +1113,139 @@ describe('typeSensitive timing', () => {
     expect(inserts()).toHaveLength(0);
   });
 });
+
+describe("typeSensitive under the submit watch's attach (Review)", () => {
+  const arm = () =>
+    bridge.handleMessage({ type: 'armSubmitWatch', runId: 'run-1' });
+  const disarm = () =>
+    bridge.handleMessage({ type: 'disarmSubmitWatch', runId: 'run-1' });
+  const status = async () =>
+    (await bridge.handleMessage({ type: 'getRunStatus' })) as {
+      attached?: boolean;
+    };
+
+  it('types under the review attach without attaching or letting go', async () => {
+    const socket = await startedRun();
+    expect(await arm()).toEqual({ ok: true });
+    expect(attach).toHaveBeenCalledTimes(1);
+    const detaches = detach.mock.calls.length;
+    expect(await type()).toEqual({ ok: true });
+    expect(inserts()).toHaveLength(1);
+    // No attach of its own and no let-go: the watch keeps the tab.
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(detach.mock.calls.length).toBe(detaches);
+    expect((await status()).attached).toBe(false);
+    expect(
+      (
+        await ask(
+          socket,
+          tabCommand('c1', 'Runtime.evaluate', { expression: 'x' }),
+        )
+      ).error,
+    ).toBe('not attached');
+    // Disarming lets go of it.
+    expect(await disarm()).toEqual({ ok: true });
+    expect(detach.mock.calls.length).toBe(detaches + 1);
+  });
+
+  it('arming during a typing attach takes it over: the typing finishes, the tab stays held', async () => {
+    await startedRun();
+    const gate = deferred();
+    const axStarted = deferred<void>();
+    fake.axGate = gate.promise;
+    fake.axStarted = () => axStarted.resolve();
+    const typing = type();
+    await axStarted.promise;
+    expect(attach).toHaveBeenCalledTimes(1);
+    const detaches = detach.mock.calls.length;
+    expect(await arm()).toEqual({ ok: true });
+    // Taken over, not replaced: no detach, no second attach.
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(detach.mock.calls.length).toBe(detaches);
+    gate.resolve(undefined);
+    expect(await typing).toEqual({ ok: true });
+    expect(inserts()).toHaveLength(1);
+    // The typing's let-go found nothing of its own to let go of.
+    expect(detach.mock.calls.length).toBe(detaches);
+    expect((await status()).attached).toBe(false);
+    expect(await disarm()).toEqual({ ok: true });
+    expect(detach.mock.calls.length).toBe(detaches + 1);
+  });
+
+  it('typing queued behind the arm attach uses it: one attach, no let-go', async () => {
+    await startedRun();
+    const gate = deferred();
+    fake.attachGate = gate.promise;
+    const arming = arm();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(attach).toHaveBeenCalledTimes(1);
+    // Nothing holds the tab yet, so the typing asks for its own attach,
+    // queued behind the watch's.
+    const typing = type();
+    const detaches = detach.mock.calls.length;
+    gate.resolve(undefined);
+    expect(await arming).toEqual({ ok: true });
+    expect(await typing).toEqual({ ok: true });
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(detach.mock.calls.length).toBe(detaches);
+    expect(await disarm()).toEqual({ ok: true });
+    expect(detach.mock.calls.length).toBe(detaches + 1);
+  });
+
+  it('a later agent attach takes the review attach over; typing then uses the agent attach', async () => {
+    const socket = await startedRun();
+    await arm();
+    expect(
+      (await ask(socket, { id: 'a', type: 'attach', targetId: 'T' })).error,
+    ).toBeUndefined();
+    expect((await status()).attached).toBe(true);
+    const attaches = attach.mock.calls.length;
+    const detaches = detach.mock.calls.length;
+    expect(await type()).toEqual({ ok: true });
+    expect(await disarm()).toEqual({ ok: true });
+    expect(attach.mock.calls.length).toBe(attaches);
+    expect(detach.mock.calls.length).toBe(detaches);
+  });
+
+  it('a debugger detach clears the review attach: typing is refused during the grace', async () => {
+    await startedRun();
+    await arm();
+    bridge.onDebuggerDetach({ tabId: 1 }, 'target_closed');
+    const attaches = attach.mock.calls.length;
+    expect(await type()).toEqual({ ok: false, error: 'not attached' });
+    expect(attach.mock.calls.length).toBe(attaches);
+    expect(inserts()).toHaveLength(0);
+  });
+});
+
+describe('typeSensitive when the watch is disarmed under it', () => {
+  it('fails closed with not attached; the value stays registered', async () => {
+    const socket = await startedRun();
+    expect(
+      await bridge.handleMessage({ type: 'armSubmitWatch', runId: 'run-1' }),
+    ).toEqual({ ok: true });
+    const gate = deferred();
+    const axStarted = deferred<void>();
+    fake.axGate = gate.promise;
+    fake.axStarted = () => axStarted.resolve();
+    const typing = type();
+    await axStarted.promise;
+    expect(
+      await bridge.handleMessage({ type: 'disarmSubmitWatch', runId: 'run-1' }),
+    ).toEqual({ ok: true });
+    gate.resolve(undefined);
+    expect(await typing).toEqual({ ok: false, error: 'not attached' });
+    expect(inserts()).toHaveLength(0);
+    // Still registered: the agent attaches later and an echo is scrubbed.
+    expect(
+      (await ask(socket, { id: 'a', type: 'attach', targetId: 'T' })).error,
+    ).toBeUndefined();
+    fake.pageText = `You entered ${VALUE}`;
+    const echoed = await ask(
+      socket,
+      tabCommand('e1', 'Runtime.evaluate', { expression: 'x' }),
+    );
+    expect(echoed.error).toBeUndefined();
+    expect(JSON.stringify(echoed)).not.toContain(VALUE);
+  });
+});

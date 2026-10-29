@@ -1,10 +1,20 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  CONFIRMED_COPY,
+  SUBMIT_COPY,
+  unfilledStatusText,
+} from '../../extension/panel/lib/copy';
+import type { SubmissionView } from '../../extension/panel/lib/run-session';
+import { createUnfilledField } from '../../extension/panel/lib/unfilled-field';
+import type { UnfilledFieldResult } from '../../extension/panel/lib/worker-api';
 import {
   ConfirmedScreen,
   STOP_FAILED_TEXT,
 } from '../../extension/panel/screens/confirmed';
+import { ReviewPanel } from '../../extension/panel/screens/review';
+import { ENDED_TEXT } from '../../extension/panel/screens/running';
 import {
   buildReviewModel,
   isConfirming,
@@ -112,18 +122,52 @@ describe('isConfirming', () => {
 });
 
 describe('ConfirmedScreen', () => {
-  const html = (stopFailed: boolean) =>
+  const html = (
+    stopFailed: boolean,
+    extra: Partial<Parameters<typeof ConfirmedScreen>[0]> = {},
+  ) =>
     renderToStaticMarkup(
       createElement(ConfirmedScreen, {
         siteName: 'example.gov',
         stopFailed,
         onStartAnother: () => {},
         onHome: () => {},
+        ...extra,
       }),
     );
-  it('says what the caseworker said, with no stop notice when the stop worked', () => {
+  it('says the caseworker confirmed it and shows a confirmation number as text', () => {
+    const out = html(false, {
+      confirmation: { token: 'AB-1234', kind: 'confirmation' },
+    });
+    expect(out).toContain(
+      'You confirmed the form was submitted on example.gov.',
+    );
+    expect(out).toContain('Confirmation number');
+    expect(out).toContain('>AB-1234<');
+  });
+  it('a number after another label is not called a confirmation number', () => {
+    const out = html(false, {
+      confirmation: { token: '20240017', kind: 'other' },
+    });
+    expect(out).toContain('Number shown on the page');
+    expect(out).not.toContain('Confirmation number');
+    expect(out).toContain('>20240017<');
+  });
+  it('no number: the same sentence and no number line', () => {
     const out = html(false);
-    expect(out).toContain('You said you submitted the form on example.gov.');
+    expect(out).toContain(
+      'You confirmed the form was submitted on example.gov.',
+    );
+    expect(out).not.toMatch(/Confirmation number|Number shown/);
+  });
+  it('escapes a hostile token (React text only)', () => {
+    const out = html(false, {
+      confirmation: { token: '<img src=x>', kind: 'confirmation' },
+    });
+    expect(out).not.toContain('<img');
+  });
+  it('shows no stop notice when the stop worked', () => {
+    const out = html(false);
     expect(out).not.toContain('could not reach');
     expect(out).not.toContain('>Stop<');
   });
@@ -140,5 +184,205 @@ describe('reviewLogNote', () => {
     expect(reviewLogNote(true)).toBe(
       'The panel was opened while the run was under way, so steps before then are not shown.',
     );
+  });
+});
+
+describe('Review: Show me the unfilled field', () => {
+  const html = renderToStaticMarkup(
+    createElement(ReviewPanel, {
+      runId: 'run-1',
+      progress: null,
+      actions: [],
+      stopping: false,
+      onSubmitted: () => {},
+      onStop: () => {},
+    }),
+  );
+
+  it('renders the button above I submitted it, enabled, with an empty status line', () => {
+    const show = html.indexOf('Show me the unfilled field');
+    const submitted = html.indexOf('I submitted it');
+    expect(show).toBeGreaterThan(-1);
+    expect(show).toBeLessThan(submitted);
+    expect(html).toMatch(/role="status"[^>]*aria-live="polite"[^>]*><\/p>/);
+    expect(html).toMatch(/aria-disabled="false"/);
+  });
+
+  const text = (r: UnfilledFieldResult) => unfilledStatusText(r);
+
+  it('found: count and the look-for sentence, no promise of a box', () => {
+    const t = text({ ok: true, found: true, remaining: 3 });
+    expect(t).toContain('Showing the next field that is still empty. 3 left.');
+    expect(t).toContain('highlighted or focused');
+    expect(t).not.toMatch(/sensitive|many/);
+    expect(text({ ok: true, found: true, remaining: 1 })).toContain('1 left.');
+  });
+
+  it('found and sensitive, and capped, add their sentences', () => {
+    const t = text({
+      ok: true,
+      found: true,
+      remaining: 12,
+      sensitive: true,
+      capped: true,
+    });
+    expect(t).toContain('sensitive field');
+    expect(t).toContain('fill it in yourself in the page');
+    expect(t).not.toContain('Fill it in');
+    expect(t).toContain('There are many; showing the first.');
+  });
+
+  it('not found', () => {
+    expect(text({ ok: true, found: false, remaining: 0 })).toBe(
+      'No empty required fields found. Check the page before you submit.',
+    );
+  });
+
+  it.each([
+    ['run_held', /paused while the tab is on another site/],
+    ['not_attached', /not connected to this tab/],
+    ['registration_pending', /Wait a moment and try again/],
+    ['scan_failed', /Could not check the page/],
+    ['worker_error', /Could not check the page/],
+    ['field_out_of_scope', /outside the page/],
+  ] as const)('refusal %s has its own sentence', (code, re) => {
+    expect(text({ ok: false, code })).toMatch(re);
+  });
+
+  it('a double press makes one call with the run id', async () => {
+    let release!: (r: UnfilledFieldResult) => void;
+    const show = vi
+      .fn(async (runId: string): Promise<UnfilledFieldResult> => {
+        void runId;
+        return { ok: true, found: false, remaining: 0 };
+      })
+      .mockImplementationOnce(
+        (runId: string) =>
+          new Promise<UnfilledFieldResult>((resolve) => {
+            void runId;
+            release = resolve;
+          }),
+      );
+    const c = createUnfilledField({ runId: 'run-7', showUnfilledField: show });
+    const first = c.press();
+    const second = c.press();
+    expect(c.view().busy).toBe(true);
+    release({ ok: true, found: false, remaining: 0 });
+    await Promise.all([first, second]);
+    expect(show).toHaveBeenCalledTimes(1);
+    expect(show).toHaveBeenCalledWith('run-7');
+    expect(c.view()).toEqual({
+      busy: false,
+      result: { ok: true, found: false, remaining: 0 },
+    });
+    await c.press();
+    expect(show).toHaveBeenCalledTimes(2);
+  });
+
+  it('a throwing call ends as worker_error and is not busy; dispose silences', async () => {
+    const c = createUnfilledField({
+      runId: 'r',
+      showUnfilledField: async () => {
+        throw new Error('x');
+      },
+    });
+    await c.press();
+    expect(c.view()).toEqual({
+      busy: false,
+      result: { ok: false, code: 'worker_error' },
+    });
+    const seen = vi.fn();
+    c.subscribe(seen);
+    const p = c.press();
+    c.dispose();
+    await p;
+    expect(seen).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Review: a detected submission', () => {
+  const render = (submission?: SubmissionView, stopping = false) =>
+    renderToStaticMarkup(
+      createElement(ReviewPanel, {
+        runId: 'run-1',
+        progress: null,
+        actions: [],
+        stopping,
+        submission,
+        onSubmitted: () => {},
+        onStop: () => {},
+        onConfirmSubmission: () => {},
+        onDismissSubmission: () => {},
+      }),
+    );
+
+  it('no submission: an empty named status line, no prompt, I submitted it', () => {
+    const out = render();
+    expect(out).toContain(SUBMIT_COPY.reviewHint);
+    expect(out).toContain('I submitted it');
+    expect(out).not.toContain(SUBMIT_COPY.askTitle);
+    expect(out.match(/role="status"/g)).toHaveLength(2);
+    expect(out).toMatch(
+      /<p role="status" aria-live="polite" aria-label="Submission check" class="text-sm"><\/p>/,
+    );
+  });
+
+  it('a submission asks at once; while looking the status line says so', () => {
+    const out = render({ looking: true });
+    expect(out).toContain(SUBMIT_COPY.askTitle);
+    expect(out).toContain(SUBMIT_COPY.askBody);
+    expect(out).toContain(
+      `aria-label="Submission check" class="text-sm">${SUBMIT_COPY.looking}</p>`,
+    );
+    expect(out).not.toMatch(/>Confirmation number<|>Number shown on the page</);
+    // Yes is the primary button, before No; I submitted it stays.
+    const yes = out.indexOf(SUBMIT_COPY.yes);
+    const no = out.indexOf(SUBMIT_COPY.no);
+    expect(yes).toBeGreaterThan(-1);
+    expect(no).toBeGreaterThan(yes);
+    expect(out.slice(out.lastIndexOf('<button', yes), yes)).not.toContain(
+      'border-input',
+    );
+    expect(out).toContain('I submitted it');
+  });
+
+  it('the read is over with no number: the prompt stays, the looking line clears', () => {
+    const out = render({ looking: false });
+    expect(out).toContain(SUBMIT_COPY.askTitle);
+    expect(out).not.toContain(SUBMIT_COPY.looking);
+  });
+
+  it('labels the number by its kind, as text', () => {
+    const conf = render({
+      looking: false,
+      confirmation: { token: 'AB-1234', kind: 'confirmation' },
+    });
+    expect(conf).toContain('>Confirmation number<');
+    expect(conf).toContain('>AB-1234<');
+    expect(conf).not.toContain(SUBMIT_COPY.looking);
+    const other = render({
+      looking: false,
+      confirmation: { token: '20240017', kind: 'other' },
+    });
+    expect(other).toContain('>Number shown on the page<');
+    expect(other).not.toContain('Confirmation number');
+    expect(other).toContain('>20240017<');
+    const hostile = render({
+      looking: false,
+      confirmation: { token: '<b>x</b>', kind: 'other' },
+    });
+    expect(hostile).not.toContain('<b>x');
+  });
+
+  it('the ended text does not claim a submission happened', () => {
+    expect(ENDED_TEXT.submitted).toBe('The run ended as submitted.');
+  });
+
+  it('copy never claims the form is complete or accepted', () => {
+    const all = [
+      ...Object.values(SUBMIT_COPY),
+      CONFIRMED_COPY.confirmed('x'),
+    ].join(' ');
+    expect(all).not.toMatch(/complete|accepted|approved|success/i);
   });
 });

@@ -14,9 +14,11 @@ import {
   EXTENSION_ID,
   type ExtensionBrowser,
   type Fixtures,
+  idOfNode as idOfNodeOn,
   launchExtensionBrowser,
   mintRunTokens,
   type Relay,
+  recordOverlay as recordOverlayOn,
   serveFixtures,
   startRelay,
 } from '../helpers/harness';
@@ -2331,6 +2333,536 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
     }
   });
 
+  // Required fields of every kind, below the page's tall spacer so showing
+  // one has to scroll. Not counted: a hidden one, a type=hidden one, a
+  // disabled one, a filled one, an optional blank, a readonly one.
+  const UNFILLED_HTML =
+    '<div id="unfilled">' +
+    '<input id="u-hidden" required hidden>' +
+    '<input type="hidden" name="u-h" required>' +
+    '<label for="u-dis">Disabled</label><input id="u-dis" required disabled>' +
+    '<label for="u-filled">Filled</label>' +
+    '<input id="u-filled" required value="Wren">' +
+    '<label for="u-opt">Optional</label><input id="u-opt">' +
+    '<label for="u-ro">Read only</label><input id="u-ro" required readonly>' +
+    '<label for="u-text">Nickname</label><input id="u-text" required>' +
+    '<label for="u-sel">County</label><select id="u-sel" required>' +
+    '<option value="">--</option><option>Alameda</option></select>' +
+    '<fieldset><legend>Housing</legend>' +
+    '<label><input type="radio" id="u-r1" name="u-r" required> Own</label>' +
+    '<label><input type="radio" id="u-r2" name="u-r"> Rent</label>' +
+    '</fieldset>' +
+    '<label><input type="checkbox" id="u-chk" required> I confirm</label>' +
+    '<label for="u-31">Social Security Number</label>' +
+    '<input id="u-31" name="field_31" required>' +
+    '<label for="u-aria">Phone</label><input id="u-aria" aria-required="true">' +
+    '</div>';
+
+  const recordOverlay = () => recordOverlayOn(browser.sw);
+  const idOfNode = (backendNodeId: number) =>
+    idOfNodeOn(browser.sw, tabId, backendNodeId);
+
+  it('showUnfilledField counts the empty required fields and highlights the first', async () => {
+    const { cdp, runId } = await startRun();
+    expect(
+      (await agentBrowser(['snapshot', '-i'], cdp, 'unfilled')).success,
+    ).toBe(true);
+    await page.evaluate((html) => {
+      window.scrollTo(0, 0);
+      document.body.insertAdjacentHTML('beforeend', html);
+    }, UNFILLED_HTML);
+    // A required field in the cross-origin frame is never counted.
+    await crossFrame(page).evaluate(() => {
+      (document.querySelector('#x') as HTMLInputElement).required = true;
+    });
+    const recorder = await recordOverlay();
+    const showIt = () =>
+      bridgeMessage(browser.sw, { type: 'showUnfilledField', runId });
+    try {
+      const before = await page.evaluate(
+        () => document.getElementById('unfilled')?.outerHTML,
+      );
+      const reply = await showIt();
+      expect(reply).toEqual({
+        ok: true,
+        found: true,
+        remaining: 6,
+        sensitive: false,
+      });
+      // Counts and flags only: no label, name, value or page text.
+      for (const leak of ['Nickname', 'u-text', 'Wren', 'County', 'Social']) {
+        expect(JSON.stringify(reply)).not.toContain(leak);
+      }
+      // Highlighted with Overlay, on the first visible empty field, after
+      // scrolling to it; nothing focused, nothing in the DOM changed.
+      await until(async () =>
+        (await recorder.calls()).some(
+          (c) => c.method === 'Overlay.highlightNode' && c.ok,
+        ),
+      );
+      const calls = await recorder.calls();
+      expect(calls.filter((c) => c.error !== undefined)).toEqual([]);
+      const highlight = calls.find((c) => c.method === 'Overlay.highlightNode');
+      expect(await idOfNode(highlight?.backendNodeId as number)).toBe('u-text');
+      expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(1_000);
+      expect(await page.evaluate(() => document.activeElement?.id)).not.toBe(
+        'u-text',
+      );
+      expect(
+        await page.evaluate(
+          () => document.getElementById('unfilled')?.outerHTML,
+        ),
+      ).toBe(before);
+      // Hidden again after about 6 s.
+      await until(
+        async () =>
+          (await recorder.calls()).some(
+            (c) => c.method === 'Overlay.hideHighlight' && c.ok,
+          ),
+        9_000,
+      );
+      // Filling fields one by one moves the highlight down the form.
+      await page.fill('#u-text', 'Ash');
+      await page.selectOption('#u-sel', 'Alameda');
+      expect(await showIt()).toEqual({
+        ok: true,
+        found: true,
+        remaining: 4,
+        sensitive: false,
+      });
+      await page.check('#u-r2');
+      await page.check('#u-chk');
+      // The sensitive field is first now: highlighted, and flagged through
+      // the real accessibility path (its attributes say nothing).
+      expect(await showIt()).toEqual({
+        ok: true,
+        found: true,
+        remaining: 2,
+        sensitive: true,
+      });
+      const last = (await recorder.calls())
+        .filter((c) => c.method === 'Overlay.highlightNode')
+        .at(-1);
+      expect(await idOfNode(last?.backendNodeId as number)).toBe('u-31');
+      // A navigation ends the highlight at once.
+      const hides = (await recorder.calls()).filter(
+        (c) => c.method === 'Overlay.hideHighlight',
+      ).length;
+      await page.evaluate(() => history.pushState({}, '', '#step2'));
+      await until(
+        async () =>
+          (await recorder.calls()).filter(
+            (c) => c.method === 'Overlay.hideHighlight',
+          ).length > hides,
+        3_000,
+      );
+      await page.fill('#u-31', '123');
+      await page.fill('#u-aria', '555');
+      expect(await showIt()).toEqual({ ok: true, found: false, remaining: 0 });
+    } finally {
+      await recorder.stop();
+      await page.evaluate(() => {
+        document.getElementById('unfilled')?.remove();
+        history.replaceState({}, '', location.pathname);
+        window.scrollTo(0, 0);
+      });
+      await crossFrame(page)
+        .evaluate(() => {
+          (document.querySelector('#x') as HTMLInputElement).required = false;
+        })
+        .catch(() => {});
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await closeAgentSessions();
+    }
+  });
+
+  it('showUnfilledField without the agent attached scrolls and focuses, then lets go', async () => {
+    const { runId } = await startRun();
+    expect(await extensionAttached(tabId)).toBe(false);
+    await page.evaluate((html) => {
+      window.scrollTo(0, 0);
+      document.body.insertAdjacentHTML('beforeend', html);
+    }, UNFILLED_HTML);
+    try {
+      expect(
+        await bridgeMessage(browser.sw, { type: 'showUnfilledField', runId }),
+      ).toEqual({ ok: true, found: true, remaining: 6, sensitive: false });
+      expect(await page.evaluate(() => document.activeElement?.id)).toBe(
+        'u-text',
+      );
+      expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(1_000);
+      expect(await extensionAttached(tabId)).toBe(false);
+      expect(
+        await bridgeMessage(browser.sw, { type: 'getRunStatus' }),
+      ).toMatchObject({ active: true, runId, attached: false });
+    } finally {
+      await page.evaluate(() => {
+        document.getElementById('unfilled')?.remove();
+        window.scrollTo(0, 0);
+      });
+      await bridgeMessage(browser.sw, { type: 'stopRun' });
+      await closeAgentSessions();
+    }
+  });
+
+  describe('the submit watch', () => {
+    type WatchStatus = {
+      active?: boolean;
+      runId?: string;
+      attached?: boolean;
+      pendingOrigin?: string;
+      submitted?: { at: number };
+      armed?: boolean;
+    };
+    const watchStatus = () =>
+      bridgeMessage(browser.sw, {
+        type: 'getRunStatus',
+      }) as Promise<WatchStatus>;
+    const arm = (runId: string) =>
+      bridgeMessage(browser.sw, { type: 'armSubmitWatch', runId });
+    const disarm = (runId: string) =>
+      bridgeMessage(browser.sw, { type: 'disarmSubmitWatch', runId });
+    const becomesSubmitted = () =>
+      until(async () => (await watchStatus()).submitted !== undefined, 5_000);
+    /** Gives the worker time to see the events, then checks nothing was set. */
+    const staysUnsubmitted = async () => {
+      await new Promise((r) => setTimeout(r, 700));
+      expect((await watchStatus()).submitted).toBeUndefined();
+    };
+    const addForm = (html: string) =>
+      page.evaluate((h) => {
+        document.getElementById('watch-forms')?.remove();
+        const box = document.createElement('div');
+        box.id = 'watch-forms';
+        box.innerHTML = h;
+        document.body.prepend(box);
+      }, html);
+
+    it('armed without the agent: a form POST and a GET form set submitted; arming never sets attached', async () => {
+      const { cdp, runId } = await startRun();
+      expect(await extensionAttached(tabId)).toBe(false);
+      const agent = await rawAgent(cdp);
+      try {
+        expect(await arm(runId)).toEqual({ ok: true });
+        // Idempotent.
+        expect(await arm(runId)).toEqual({ ok: true });
+        // The worker holds the tab for the watch; the agent does not.
+        expect(await extensionAttached(tabId)).toBe(true);
+        const armed = await watchStatus();
+        expect(armed).toMatchObject({ active: true, runId, attached: false });
+        expect(armed.submitted).toBeUndefined();
+        const refused = await agent.call(
+          'Runtime.evaluate',
+          { expression: '1' },
+          `tab-${tabId}`,
+        );
+        expect(refused.error?.message).toContain('not attached');
+
+        // A form POST to a same-origin confirmation page.
+        const before = Date.now();
+        await page.evaluate(() =>
+          (document.getElementById('post') as HTMLFormElement).requestSubmit(),
+        );
+        await page.waitForURL(`${fixtures.origin}/submitted`);
+        await becomesSubmitted();
+        const seen = await watchStatus();
+        // A time only: no URL, no query, no page text.
+        expect(Object.keys(seen.submitted ?? {})).toEqual(['at']);
+        expect(seen.submitted?.at).toBeGreaterThanOrEqual(before);
+        expect(JSON.stringify(seen)).not.toContain('/submitted');
+        expect(JSON.stringify(seen)).not.toContain('Done');
+        expect(seen.attached).toBe(false);
+        expect(seen.armed).toBe(true);
+        // A reset forgets it and keeps the attach.
+        expect(
+          await bridgeMessage(browser.sw, {
+            type: 'armSubmitWatch',
+            runId,
+            reset: true,
+          }),
+        ).toEqual({ ok: true });
+        expect(await watchStatus()).toMatchObject({ armed: true });
+        expect((await watchStatus()).submitted).toBeUndefined();
+        expect(await extensionAttached(tabId)).toBe(true);
+        await page.goto(fixtures.formUrl);
+        await page.evaluate(() =>
+          (document.getElementById('post') as HTMLFormElement).requestSubmit(),
+        );
+        await page.waitForURL(`${fixtures.origin}/submitted`);
+        await becomesSubmitted();
+        // Disarm clears it and lets go of the watch's attach.
+        expect(await disarm(runId)).toEqual({ ok: true });
+        expect((await watchStatus()).submitted).toBeUndefined();
+        expect(await extensionAttached(tabId)).toBe(false);
+
+        // A GET form to another URL of the origin.
+        await page.goto(`${fixtures.origin}/get-submit.html`);
+        expect(await arm(runId)).toEqual({ ok: true });
+        await page.fill('#note', 'hello');
+        await page.click('button[type="submit"]');
+        await page.waitForURL(/\/get-submit\.html\?/);
+        await becomesSubmitted();
+        expect(await disarm(runId)).toEqual({ ok: true });
+        expect(await extensionAttached(tabId)).toBe(false);
+
+        // A POST answered with a 303 (Post/Redirect/Get) to a page in scope.
+        await page.goto(fixtures.formUrl);
+        expect(await arm(runId)).toEqual({ ok: true });
+        await addForm(
+          '<form id="wr" method="post" action="/submit-redirect"></form>',
+        );
+        await page.evaluate(() =>
+          (document.getElementById('wr') as HTMLFormElement).requestSubmit(),
+        );
+        await page.waitForURL(`${fixtures.origin}/page2.html`);
+        await becomesSubmitted();
+        expect(await disarm(runId)).toEqual({ ok: true });
+      } finally {
+        await agent.close();
+        await bridgeMessage(browser.sw, { type: 'stopRun' });
+        await closeAgentSessions();
+        await page.goto(fixtures.formUrl);
+      }
+    });
+
+    it('a link, a reload, a same-document move, a blocked or fetch submit, an iframe POST or a 204 do not set submitted', async () => {
+      const { runId } = await startRun();
+      try {
+        expect(await arm(runId)).toEqual({ ok: true });
+        // A link click (anchorClick) and a browser-initiated navigation.
+        await page.click('#next');
+        await page.waitForURL(`${fixtures.origin}/page2.html`);
+        await staysUnsubmitted();
+        await page.goto(fixtures.formUrl);
+        await staysUnsubmitted();
+        await page.reload();
+        await staysUnsubmitted();
+        // A same-document navigation.
+        await page.evaluate(() => history.pushState({}, '', '#step2'));
+        await staysUnsubmitted();
+        // Client-side validation blocks the submit: no navigation.
+        await addForm(
+          '<form id="wv" method="post" action="/submitted">' +
+            '<label for="wv-q">Required thing</label>' +
+            '<input id="wv-q" name="q" required>' +
+            '<button id="wv-go">Send</button></form>',
+        );
+        await page.click('#wv-go');
+        await staysUnsubmitted();
+        expect(page.url()).toBe(`${fixtures.formUrl}#step2`);
+        // A form that prevents the submit and sends it with fetch.
+        await addForm(
+          '<form id="wf" method="post" action="/submitted"' +
+            ' onsubmit="event.preventDefault(); fetch(\'/api\')">' +
+            '<button id="wf-go">Send</button></form>',
+        );
+        await page.click('#wf-go');
+        await staysUnsubmitted();
+        expect(page.url()).toBe(`${fixtures.formUrl}#step2`);
+        // A form POST inside the same-origin (srcdoc) iframe.
+        const inner = await (await page.$('#child'))?.contentFrame();
+        if (!inner) throw new Error('srcdoc frame not found');
+        await inner.evaluate((origin) => {
+          document.body.insertAdjacentHTML(
+            'beforeend',
+            `<form id="cf" method="post" action="${origin}/submitted"></form>`,
+          );
+          (document.getElementById('cf') as HTMLFormElement).requestSubmit();
+        }, fixtures.origin);
+        await until(() =>
+          page.frames().some((f) => f.url() === `${fixtures.origin}/submitted`),
+        );
+        await staysUnsubmitted();
+        // A POST answered with 204 commits nothing; a reload after it is not
+        // the submission's navigation.
+        await addForm(
+          '<form id="wn" method="post" action="/no-content"></form>',
+        );
+        await page.evaluate(() =>
+          (document.getElementById('wn') as HTMLFormElement).requestSubmit(),
+        );
+        await new Promise((r) => setTimeout(r, 700));
+        await page.reload();
+        await staysUnsubmitted();
+      } finally {
+        await bridgeMessage(browser.sw, { type: 'stopRun' });
+        await closeAgentSessions();
+        await page.goto(fixtures.formUrl);
+      }
+    });
+
+    it.each([
+      ['posted there', 'direct'],
+      ['redirected there by a 303', 'redirect'],
+    ])(
+      'a form POST %s, to an origin not allowed, holds the run as before and sets nothing',
+      async (_how, how) => {
+        const { runId } = await startRun();
+        try {
+          expect(await arm(runId)).toEqual({ ok: true });
+          await addForm(
+            how === 'direct'
+              ? `<form id="wa" method="post" action="${fixtures.frameOrigin}/away.html"></form>`
+              : '<form id="wa" method="post" action="/submit-redirect?to=away"></form>',
+          );
+          await page.evaluate(() =>
+            (document.getElementById('wa') as HTMLFormElement).requestSubmit(),
+          );
+          await until(
+            async () =>
+              (await watchStatus()).pendingOrigin === fixtures.frameOrigin,
+          );
+          await staysUnsubmitted();
+          expect(await watchStatus()).toMatchObject({ active: true, runId });
+        } finally {
+          await bridgeMessage(browser.sw, { type: 'stopRun' });
+          await closeAgentSessions();
+          await page.goto(fixtures.formUrl);
+        }
+      },
+    );
+
+    it('under the agent attach: a form POST sets submitted; disarm leaves the agent attached', async () => {
+      const { cdp, runId } = await startRun();
+      expect(
+        (await agentBrowser(['snapshot', '-i'], cdp, 'watch')).success,
+      ).toBe(true);
+      try {
+        expect(await arm(runId)).toEqual({ ok: true });
+        await page.evaluate(() =>
+          (document.getElementById('post') as HTMLFormElement).requestSubmit(),
+        );
+        await page.waitForURL(`${fixtures.origin}/submitted`);
+        await becomesSubmitted();
+        expect(await disarm(runId)).toEqual({ ok: true });
+        expect(await watchStatus()).toMatchObject({ attached: true });
+        expect((await watchStatus()).submitted).toBeUndefined();
+        expect(await extensionAttached(tabId)).toBe(true);
+        expect(
+          (await agentBrowser(['get', 'title'], cdp, 'watch')).success,
+        ).toBe(true);
+      } finally {
+        await bridgeMessage(browser.sw, { type: 'stopRun' });
+        await closeAgentSessions();
+        await page.goto(fixtures.formUrl);
+      }
+    });
+
+    describe('the confirmation number', () => {
+      type Confirmed = WatchStatus & {
+        submitted?: {
+          at: number;
+          confirmation?: { token: string; kind: string };
+        };
+      };
+      const confirmedStatus = () => watchStatus() as Promise<Confirmed>;
+      /** Arms afresh, submits a POST answered by the `v` page, waits. */
+      const submitTo = async (runId: string, v: string) => {
+        await page.goto(fixtures.formUrl);
+        expect(
+          await bridgeMessage(browser.sw, {
+            type: 'armSubmitWatch',
+            runId,
+            reset: true,
+          }),
+        ).toEqual({ ok: true });
+        await addForm(
+          `<form id="wc" method="post" action="/submitted?v=${v}"></form>`,
+        );
+        await page.evaluate(() =>
+          (document.getElementById('wc') as HTMLFormElement).requestSubmit(),
+        );
+        await page.waitForURL(`${fixtures.origin}/submitted?v=${v}`);
+        await becomesSubmitted();
+      };
+      const confirmationOf = async (
+        runId: string,
+        v: string,
+      ): Promise<Confirmed> => {
+        await submitTo(runId, v);
+        try {
+          await until(
+            async () =>
+              (await confirmedStatus()).submitted?.confirmation !== undefined,
+            4_500,
+          );
+        } catch {
+          // None within the read's tries: the status says so below.
+        }
+        return confirmedStatus();
+      };
+
+      it('read from the real page: kept when labelled and clean, dropped otherwise; no other page text', async () => {
+        const { runId } = await startRun();
+        try {
+          const alnum = await confirmationOf(runId, 'alnum');
+          // The hidden "HID-999" before it is not visible text.
+          expect(alnum.submitted?.confirmation).toEqual({
+            token: 'AB-1234',
+            kind: 'confirmation',
+          });
+          const json = JSON.stringify(alnum);
+          expect(json).not.toContain('Jane');
+          expect(json).not.toContain('HID-999');
+          expect(json).not.toContain('Confirmation number');
+
+          expect(
+            (await confirmationOf(runId, 'other')).submitted?.confirmation,
+          ).toEqual({ token: '20240017', kind: 'other' });
+          // Rendered by page script 1.5 s after load: a later try finds it.
+          expect(
+            (await confirmationOf(runId, 'late')).submitted?.confirmation,
+          ).toEqual({ token: 'LATE-77', kind: 'confirmation' });
+
+          for (const v of ['nine', 'ten', 'ssn', 'sentence']) {
+            const seen = await confirmationOf(runId, v);
+            expect(seen.submitted, v).toEqual({ at: expect.any(Number) });
+            expect(JSON.stringify(seen)).not.toContain('123-45-6789');
+          }
+        } finally {
+          await bridgeMessage(browser.sw, { type: 'stopRun' });
+          await closeAgentSessions();
+          await page.goto(fixtures.formUrl);
+        }
+      }, 60_000);
+
+      it('under the agent attach: the read sends the agent nothing, and the token is not masked for it', async () => {
+        const { cdp, runId } = await startRun();
+        const agent = await rawAgent(cdp);
+        try {
+          const session = await agent.attach();
+          await agent.call('Runtime.enable', {}, session);
+          await agent.call('Page.enable', {}, session);
+          const confirmed = await confirmationOf(runId, 'alnum');
+          expect(confirmed.submitted?.confirmation?.token).toBe('AB-1234');
+          const echoed = await confirmationOf(runId, 'ssn');
+          expect(echoed.submitted).toEqual({ at: expect.any(Number) });
+          // Nothing the read saw reached the agent's socket.
+          const frames = agent.frames.join('\n');
+          expect(frames).not.toContain('AB-1234');
+          expect(frames).not.toContain('123-45-6789');
+          // The token is not a registered value: on a page with no other
+          // sensitive text the agent reads it as before.
+          await confirmationOf(runId, 'other');
+          await page.evaluate(() => {
+            document.body.textContent = 'Confirmation number: AB-1234';
+          });
+          const read = await agent.call(
+            'Runtime.evaluate',
+            { expression: 'document.body.innerText', returnByValue: true },
+            session,
+          );
+          expect(JSON.stringify(read.result)).toContain('AB-1234');
+        } finally {
+          await agent.close();
+          await bridgeMessage(browser.sw, { type: 'stopRun' });
+          await closeAgentSessions();
+          await page.goto(fixtures.formUrl);
+        }
+      }, 60_000);
+    });
+  });
+
   it('stopRun closes the agent at once and detaches', async () => {
     const { cdp } = await startRun();
     expect((await agentBrowser(['snapshot', '-i'], cdp, 'stop')).success).toBe(
@@ -2399,6 +2931,7 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
       attached: true,
       needsRegistration: false,
       exp: expect.any(Number),
+      armed: false,
     });
     expect(JSON.stringify(status)).not.toContain(relay.url);
     expect(

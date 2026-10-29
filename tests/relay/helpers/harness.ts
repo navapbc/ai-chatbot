@@ -106,6 +106,35 @@ export function makeLocalhostCert(): { key: Buffer; cert: Buffer } {
   }
 }
 
+/**
+ * Confirmation pages the `/submitted` POST answers with, by `?v=`, for the
+ * worker's confirmation read (bridge readConfirmation).
+ */
+export const CONFIRMATION_PAGES: Record<string, string> = {
+  // A hidden number first: innerText leaves it out.
+  alnum:
+    '<p style="display:none">Confirmation code: HID-999</p>' +
+    '<p>Thank you, Jane Doe.</p><p>Confirmation number: AB-1234</p>',
+  other: '<p>Application number: 20240017</p>',
+  nine: '<p>Confirmation number: 123456789</p>',
+  ten: '<p>Confirmation number: 1234567890</p>',
+  ssn: '<p>Applicant SSN: 123-45-6789</p><p>Confirmation number: AB-1234</p>',
+  // The page echoes an SSN beside a labelled nine-digit number.
+  ssnecho:
+    '<p>SSN 123-45-6789 on file</p><p>Confirmation number: 123456789</p>',
+  // A "Next" step: the same form again, a labelled number, no confirmation.
+  step:
+    '<p>Application number: 20240017</p>' +
+    '<form id="again" method="post" action="/submitted?v=alnum">' +
+    '<button type="submit" id="again-go">Submit</button></form>',
+  sentence:
+    '<p>Confirmation numbers are emailed within 2 days (ref 12345).</p>',
+  late:
+    '<p id="late">Loading...</p><script>setTimeout(() => {' +
+    "document.getElementById('late').textContent = " +
+    "'Confirmation number: LATE-77'; }, 1500);</script>",
+};
+
 /** Serves the fixtures over HTTPS from a certificate generated for this run. */
 export async function serveFixtures(): Promise<Fixtures> {
   const tls = makeLocalhostCert();
@@ -158,13 +187,31 @@ export async function serveFixtures(): Promise<Fixtures> {
         '<!doctype html><html lang="en"><title>Second Page</title><p>Second</p></html>',
       );
     } else if (url.pathname === '/submitted' && req.method === 'POST') {
+      // `?v=` picks a confirmation page (readConfirmation); none: "Done".
+      const body = CONFIRMATION_PAGES[url.searchParams.get('v') ?? ''];
       req.resume();
       req.on('end', () =>
         sendHtml(
           res,
-          '<!doctype html><html lang="en"><title>Submitted</title><p>Done</p></html>',
+          `<!doctype html><html lang="en"><title>Submitted</title>${body ?? '<p>Done</p>'}</html>`,
         ),
       );
+    } else if (url.pathname === '/submit-redirect' && req.method === 'POST') {
+      // Post/Redirect/Get: 303 to the page `to` names (this origin's
+      // page2.html by default, or the frame origin's away page).
+      const away = url.searchParams.get('to') === 'away';
+      req.resume();
+      req.on('end', () =>
+        res
+          .writeHead(303, {
+            location: away ? `${frameOrigin}/away.html` : '/page2.html',
+          })
+          .end(),
+      );
+    } else if (url.pathname === '/no-content' && req.method === 'POST') {
+      // A form POST the server answers with nothing: no navigation commits.
+      req.resume();
+      req.on('end', () => res.writeHead(204).end());
     } else if (url.pathname === '/api') {
       res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
     } else {
@@ -474,3 +521,94 @@ export function closeAgentSessions(): Promise<void> {
     );
   });
 }
+
+// --- the worker's own highlight calls ---------------------------------------
+
+/**
+ * Records the worker's own Overlay and scroll calls (method, node, whether
+ * it succeeded) by wrapping chrome.debugger.sendCommand in the service
+ * worker; `stop` restores it.
+ */
+export async function recordOverlay(sw: Worker) {
+  await sw.evaluate(() => {
+    const g = globalThis as unknown as {
+      __overlayCalls: Array<Record<string, unknown>>;
+      __origSend?: typeof chrome.debugger.sendCommand;
+    };
+    g.__overlayCalls = [];
+    if (g.__origSend) return;
+    const orig = chrome.debugger.sendCommand.bind(chrome.debugger);
+    g.__origSend = orig;
+    (chrome.debugger as { sendCommand: unknown }).sendCommand = (
+      target: chrome.debugger.Debuggee,
+      method: string,
+      params?: Record<string, unknown>,
+    ) => {
+      const result = orig(target, method, params);
+      if (
+        method.startsWith('Overlay.') ||
+        method === 'DOM.scrollIntoViewIfNeeded'
+      ) {
+        const call: Record<string, unknown> = {
+          method,
+          backendNodeId: params?.backendNodeId,
+        };
+        g.__overlayCalls.push(call);
+        result.then(
+          () => {
+            call.ok = true;
+          },
+          (e: Error) => {
+            call.error = String(e?.message);
+          },
+        );
+      }
+      return result;
+    };
+  });
+  return {
+    calls: () =>
+      sw.evaluate(
+        () =>
+          (
+            globalThis as unknown as {
+              __overlayCalls: Array<Record<string, unknown>>;
+            }
+          ).__overlayCalls,
+      ),
+    stop: () =>
+      sw.evaluate(() => {
+        const g = globalThis as unknown as {
+          __origSend?: typeof chrome.debugger.sendCommand;
+        };
+        if (g.__origSend) {
+          (chrome.debugger as { sendCommand: unknown }).sendCommand =
+            g.__origSend;
+          g.__origSend = undefined;
+        }
+      }),
+  };
+}
+
+/** The id of the element a backend node id names, read by the worker. */
+export const idOfNode = (sw: Worker, tabId: number, backendNodeId: number) =>
+  sw.evaluate(
+    async ({ tab, node }) => {
+      const resolved = (await chrome.debugger.sendCommand(
+        { tabId: tab },
+        'DOM.resolveNode',
+        { backendNodeId: node },
+      )) as { object: { objectId: string } };
+      const read = (await chrome.debugger.sendCommand(
+        { tabId: tab },
+        'Runtime.callFunctionOn',
+        {
+          objectId: resolved.object.objectId,
+          functionDeclaration: 'function () { return this.id; }',
+          returnByValue: true,
+        },
+      )) as { result: { value: string } };
+      return read.result.value;
+    },
+    { tab: tabId, node: backendNodeId },
+  );

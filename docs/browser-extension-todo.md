@@ -104,7 +104,7 @@ Landed on `feat/sensitive-redaction-impl`; see `docs/changes/2026-10-26-add-sens
 - [x] A Stop issued while the socket is reconnecting drops the `stop` frame; send it on reopen (plan 4b: queued for 30 s or token expiry, memory only, so a worker restart loses it).
 - [x] Decide whether a detach for reasons other than `canceled_by_user` should end the run (plan 4b: ends it with `debugger-detached` after 5 s without a re-attach).
 
-- [ ] Plan 4c-1 is done (see `docs/changes/2026-10-29-add-side-panel-start-flow.md`); plan 4c-2 is done (see `docs/changes/2026-10-30-add-side-panel-running-view.md`); plan 4c-3 is done (see `docs/changes/2026-10-31-add-sensitive-value-typing.md`); plan 4c-4 remains. Plan 4c: the panel; saved details; typing sensitive values; the "Allow this site?" prompt. `startRun` serialization, hook gating, Stop while reconnecting and the detach decision landed in plan 4b (above). See "Plan 4c carry-forward".
+- [x] Plan 4c-1 is done (see `docs/changes/2026-10-29-add-side-panel-start-flow.md`); plan 4c-2 is done (see `docs/changes/2026-10-30-add-side-panel-running-view.md`); plan 4c-3 is done (see `docs/changes/2026-10-31-add-sensitive-value-typing.md`); plan 4c-4 is done (see `docs/changes/2026-11-03-add-review-and-submit.md`). Plan 4c: the panel; saved details; typing sensitive values; the "Allow this site?" prompt. `startRun` serialization, hook gating, Stop while reconnecting and the detach decision landed in plan 4b (above). See "Plan 4c carry-forward".
 - [x] 4b: how the extension authenticates to the app: CORS, cookies, SameSite. Settled by a spike (Chromium 145): a Lax cookie reaches the app from the worker and extension pages once `host_permissions` covers `APP_ORIGIN`; `auth.ts` is unchanged. Third-party-cookie blocking is untested.
 - [x] 4b: a read route for run state (`GET /api/relay/runs/[runId]`: origin, progress, `pending`, `ended`, `endedAt`). Still open: there is no stream-resume GET on `eve-chat`.
 - [x] 4b: a server-side Stop (`POST /api/relay/runs/[runId]/stop`: ends the row, cancels the Eve turn). Nothing calls it yet; the 4c panel must call it as well as the worker `stopRun`. Tokens minted before Stop stay valid up to 1800 s and the hub does not know `endedAt`.
@@ -244,13 +244,13 @@ Minors by area:
 - [x] Token refresh is refused while the tab is on an origin added by `allowOrigin` (only the token origin is checked), so the run then dies at `exp`; fix the refresh or re-allow the origin before the run can outlive its token. Closed in plan 4d (Task 2): a same-run refresh accepts a tab on a carried allowed origin.
 - [x] Typing sensitive values into the page (plan 4c-3: `typeSensitive`; the worker carries values across a refresh).
 - [x] The allow-this-site prompt shows the tab's actual URL as well as `pendingOrigin` and is never auto-approved (plan 4c-2).
-- [x] Review and Confirmed screens (plan 4c-2; 'I submitted it' is manual).
-- [ ] "Show me the unfilled field" (plan 4c-4), automatic submit detection and the confirmation number (plan 4c-4).
+- [x] Review and Confirmed screens (plan 4c-2; 'I submitted it' stays as a manual fallback after plan 4c-4's detection).
+- [x] "Show me the unfilled field" (`showUnfilledField`), automatic submit detection (`armSubmitWatch`) and the confirmation number (plan 4c-4; XHR and single-page submits are not detected, see "Plan 4c-4 Follow-ups").
 - [x] The Eve tool waits and retries during an origin hold instead of returning the out-of-scope refusal. Panel consequence: if the agent ends its turn on the refusal, the hold clearing shows Review ("The agent has stopped") and nothing in the panel can resume it, so Allow achieves nothing. Closed in plan 4d (Task 7), except that the agent can still end its turn first (a bare refusal after 125 s).
 
 ## Plan 4c-2 Follow-ups
 
-- [ ] The panel-shell e2e now takes about 237 s (plan 4d; was 177 s in plan 4c-3); check it against the relay-e2e CI job's 20 minute limit, and consider splitting the Needs You scenario (about 55 s of its 90 s budget) and the new sweep scenarios.
+- [ ] The panel-shell e2e now takes about 237 s (plan 4d; was 177 s in plan 4c-3; about 252 s after plan 4c-4); check it against the relay-e2e CI job's 20 minute limit, and consider splitting the Needs You scenario (about 55 s of its 90 s budget) and the new sweep scenarios.
 - [ ] A stale `review` phase can show after a replayed turn: a follow-up arriving between turn A's final swap and its `session.waiting` replays A's waiting and leaves `turnIdle` true while B runs, and "I submitted it" then cancels B. Root fix: hold the claim until `session.waiting` (see the claim item above). The panel offers no follow-up input while `working`. The variant a panel answer can reach instead ends on a re-asked, already-answered Needs You card; a cheap guard is to show `needs_you` only when `turnIdle` too, with idle written after `advance` (optional: the review judged the current ordering acceptable).
 - [ ] The Confirmed stop-failed copy mentions a Stop control that is not on that screen.
 - [ ] `turnIdle` is written before the cursor `advance`, so `review` can show a moment before the cursor moves; write it after, in a `finally`. The rollback branch where the row was not idle has no test.
@@ -274,6 +274,25 @@ Minors by area:
 - [ ] A timed-out typing call can still land, so a retry could type twice (a selection-less input may append).
 - [ ] The carry-failure `needsRegistration` flag is cleared by the panel's `registrationComplete(runId, 0)`, so it is unreachable as a gate today.
 - [ ] Copy: `value_not_accepted` could say the value was empty or too long; the copy test checks only length.
+
+## Plan 4c-4 Follow-ups
+
+- [ ] Unfilled-field scan limits: custom radios hidden with `display:none`, same-origin iframes, closed shadow roots and an `aria-required` wrapper element are not found; the 20k-node cap stops the scan silently; an off-screen input can be highlighted without being visible.
+- [ ] The "Stop clears the highlight" unit test is weak (it does not fail if the clear is removed from stop).
+- [ ] Overlay painting into agent screenshots is unverified (the e2e only asserts that the screenshot mask still holds); the focus fallback can fire the page's own focus and blur handlers.
+- [ ] Submit detection false positives: 'Next' and 'Save' buttons and ASP.NET postbacks look like a submission (the 'Did you submit the form?' prompt covers them); a POST answered on the same URL (server validation re-render) or redirected to an in-scope error page counts as submitted; a hung form request plus a user-started navigation within 30 s counts. Unverified: the infobar while the watch attach is held, a cross-site process swap changing the main frame id, prerender and bfcache, `Page.frameStoppedLoading` ordering when submit is pressed while the old page is still loading, and behavior on real benefit sites (plan 5).
+- [ ] Confirmation read drops conservatively: 'Confirmation No.' is not matched, 8-digit compact dates are kept (DATE_SHAPED needs separators, so a token like 20240117 can be shown), labels past 20k characters of page text are not seen, and a JS redirect ends the read.
+- [ ] Dispose-disarm never runs on a real panel close (React cleanup does not run on unload), so the worker's `reviewAttached` watch, and its attach and infobar when the agent is not attached, last until the run ends (about 30 minutes, token expiry). Consider a worker-side cap.
+- [ ] A Next, Save or Back form POST during Review raises the 'Did you submit the form?' prompt (noise on real portals). The panel never stops the run by itself; only 'Yes, I did' or 'I submitted it' does.
+- [ ] Only the first submission per arm is kept (`if (!pending || watch.submitted) return`): a stale Next-page number can be shown as 'Number shown on the page' if the caseworker ignores the prompt and then submits for real (No, which re-arms with reset, clears it).
+- [ ] The review attach (when the agent is not attached, for example after a token refresh) holds the debugger infobar for the whole Review, and dismissing it ends the run (`debugger-canceled`): a caseworker who submits and then dismisses it gets 'The run ended in the browser' instead of Confirmed.
+- [ ] Two panel windows: one window's reset clears the worker's `submitted` while the other keeps its local copy of the prompt (benign).
+- [ ] A stale review phase (see the plan 4c-2 follow-up) can arm the watch during an agent turn, and the agent's own Next or submit can then open the prompt. Suggestion: the worker ignores a form submission request within about 1 s of an agent `Input.*` command.
+- [ ] The read window (12 s) against the 2 s poll: a token can arrive late; it appears in the prompt that is already open.
+- [ ] Reopening the panel in Review, or going Review to working to Review, arms with reset, so a detection seen while it was closed is lost. A submission reported while a hold is active is ignored.
+- [ ] The agent-facing accessibility snapshot of a confirmation page shows an echoed SSN or 9-digit number as unmasked StaticText: the shape guard covers `Runtime.*` results and URLs only (the spec's accepted residual; the agent is idle after submit and the run ends). The e2e "nowhere" check covers worker-produced frames, not the agent's own snapshot.
+- [ ] The echoed-SSN e2e waits out the worker's 12 s read per prompt (the 'Looking for a confirmation number...' line) before asserting no number is shown; add a test-hooks define for the read window to shorten it.
+- [ ] The panel-shell e2e now takes about 252 s (plan 4c-4; was about 237 s in plan 4d); see the relay-e2e CI limit item under "Plan 4c-2 Follow-ups".
 
 ## Plan 4d Follow-ups
 

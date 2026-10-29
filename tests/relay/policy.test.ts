@@ -197,6 +197,34 @@ describe('command policy regressions', () => {
     expect(checkCommand({ method: 'Page.disable' }, ctx).ok).toBe(false);
     expect(isMethodAllowed('Page.enable')).toBe(true);
   });
+
+  it('refuses Overlay and partial accessibility trees: worker-only (showUnfilledField, typeSensitive)', () => {
+    for (const method of [
+      'Overlay.enable',
+      'Overlay.disable',
+      'Overlay.highlightNode',
+      'Overlay.hideHighlight',
+      'Overlay.setInspectMode',
+      'Accessibility.getPartialAXTree',
+    ]) {
+      expect(isMethodAllowed(method), method).toBe(false);
+      expect(checkCommand({ method, params: {} }, ctx).ok, method).toBe(false);
+    }
+  });
+
+  it('drops every Overlay event', () => {
+    for (const method of ALLOWED_EVENT_METHODS) {
+      expect(method.startsWith('Overlay.'), method).toBe(false);
+    }
+    for (const method of [
+      'Overlay.nodeHighlightRequested',
+      'Overlay.inspectNodeRequested',
+      'Overlay.screenshotRequested',
+      'Overlay.inspectModeCanceled',
+    ]) {
+      expect(filterEvent(method, { backendNodeId: 1 }), method).toBeNull();
+    }
+  });
 });
 
 // Events the agent receives while driving every documented browser command,

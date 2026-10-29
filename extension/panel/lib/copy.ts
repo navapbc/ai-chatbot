@@ -1,5 +1,10 @@
 import { AppApiError } from '../../src/app-api';
-import { type TypeSensitiveCode, WorkerError } from './worker-api';
+import {
+  type TypeSensitiveCode,
+  type UnfilledFieldCode,
+  type UnfilledFieldResult,
+  WorkerError,
+} from './worker-api';
 
 // Every message the panel shows for a failure comes from this table, chosen by
 // the error's class and code. Nothing from an error's message, body or cause
@@ -310,6 +315,47 @@ export const TYPE_SENSITIVE_COPY: Record<TypeSensitiveCode, string> = {
     'The extension could not type that. Type it in the page yourself.',
 };
 
+/**
+ * Review's "Show me the unfilled field" result. Fixed text and one integer;
+ * the worker's text, and any field's name, label or value, are never part of
+ * it. The highlight may be only a scroll and a focus ring.
+ */
+export const UNFILLED_COPY = {
+  button: 'Show me the unfilled field',
+  look: 'Look for the field in your page that is highlighted or focused.',
+  sensitive: 'It is a sensitive field: fill it in yourself in the page.',
+  capped: 'There are many; showing the first.',
+  none: 'No empty required fields found. Check the page before you submit.',
+} as const;
+
+export const UNFILLED_REFUSAL_COPY: Record<UnfilledFieldCode, string> = {
+  run_held:
+    'The run is paused while the tab is on another site. Go back to the form page and try again.',
+  not_attached:
+    'The extension is not connected to this tab right now. Look at the page yourself.',
+  field_out_of_scope:
+    'The field is outside the page the agent is working on. Look at the form page yourself.',
+  registration_pending:
+    'The extension is still getting ready. Wait a moment and try again.',
+  scan_failed:
+    'Could not check the page. Look at it yourself before you submit.',
+  worker_error:
+    'Could not check the page. Look at it yourself before you submit.',
+};
+
+/** The status line for a result: fixed copy and the integer only. */
+export const unfilledStatusText = (result: UnfilledFieldResult): string => {
+  if (!result.ok) return UNFILLED_REFUSAL_COPY[result.code];
+  if (!result.found) return UNFILLED_COPY.none;
+  const parts = [
+    `Showing the next field that is still empty. ${result.remaining} left.`,
+    UNFILLED_COPY.look,
+  ];
+  if (result.sensitive) parts.push(UNFILLED_COPY.sensitive);
+  if (result.capped) parts.push(UNFILLED_COPY.capped);
+  return parts.join(' ');
+};
+
 /** Fixed messages for the Home screen's tab choices. */
 export const HOME_COPY = {
   httpsOnly:
@@ -341,4 +387,35 @@ export const ALLOW_SITE_COPY = {
   allow: 'Allow this site for this run',
   allowing: 'Allowing...',
   stop: 'Stop the run',
+} as const;
+
+/**
+ * Review's submission copy (plan 4c-4). The worker sees only that the page
+ * moved on after a form was sent, which a multi-step form's Next also does,
+ * so nothing here says the application is complete or was accepted.
+ */
+export const SUBMIT_COPY = {
+  reviewHint:
+    'Check the form on the page, then submit it there yourself. The panel watches for the page to move on after you submit.',
+  looking: 'Looking for a confirmation number...',
+  /** The name of Review's submission status line. */
+  statusLabel: 'Submission check',
+  askTitle: 'Did you submit the form?',
+  askBody:
+    'The page moved on after a form was sent. Going to the next step of a form looks the same.',
+  yes: 'Yes, I did',
+  no: 'No, not yet',
+} as const;
+
+/**
+ * The Confirmed screen's copy (the number labels are the prompt's too). The
+ * caseworker always confirms, so it says what they confirmed, never that the
+ * site accepted the form or that it is complete.
+ */
+export const CONFIRMED_COPY = {
+  confirmed: (site: string) =>
+    `You confirmed the form was submitted on ${site}.`,
+  confirmationLabel: 'Confirmation number',
+  otherLabel: 'Number shown on the page',
+  keepIt: 'Write it down if you need it: the panel does not keep it.',
 } as const;

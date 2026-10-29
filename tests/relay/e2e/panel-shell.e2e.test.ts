@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -14,7 +14,9 @@ import {
   type ExtensionBrowser,
   agentBrowser,
   type Fixtures,
+  idOfNode,
   launchExtensionBrowser,
+  recordOverlay,
   type Relay,
   serveFixtures,
   startRelay,
@@ -37,6 +39,12 @@ import {
 // agent-browser through the relay. Fill it in goes to the real worker; the
 // secret must appear nowhere the fake app, the console, storage, the panel or
 // any relay frame can show it, including after a same-run token refresh.
+//
+// Review and submit (plan 4c-4): the same way, panel as a tab. The agent
+// is agent-browser through the relay, the page is real and its own submit
+// button posts to the fixture's confirmation pages; the three scenarios are
+// the unfilled-field highlight with a real submit, an echoed SSN, and a Next
+// step answered No.
 //
 // Reliability (plan 4d): one scenario drives the same way (panel as a tab,
 // real worker, real relay, real page, fake app) through a panel closed during
@@ -630,6 +638,30 @@ describe('the panel shell', () => {
   const stopCalls = (runId: string) =>
     appCalls.filter((c) => c === `POST /api/relay/runs/${runId}/stop`).length;
 
+  /** Posts a form in the site tab to the `v` confirmation page. */
+  const submitIn = async (site: import('playwright').Page, v: string) => {
+    await site.evaluate((page) => {
+      const form = document.createElement('form');
+      form.method = 'post';
+      form.action = `/submitted?v=${page}`;
+      document.body.append(form);
+      form.requestSubmit();
+    }, v);
+    await site.waitForURL(`${fixtures.origin}/submitted?v=${v}`);
+  };
+  const armed = (page: import('playwright').Page) =>
+    expect
+      .poll(
+        async () =>
+          ((await runStatus(page)) as Status & { armed?: boolean }).armed,
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+  const workerStops = (page: import('playwright').Page) =>
+    page.evaluate(
+      () => (window as unknown as { __workerStops: number }).__workerStops,
+    );
+
   it('Running shows the site, a timer and Stop; Stop ends the run on the server and the worker', async () => {
     const { site, page, runId } = await startOnRealTab();
     try {
@@ -729,21 +761,54 @@ describe('the panel shell', () => {
       await page
         .getByText('Check the form on the page, then submit it there yourself.')
         .waitFor();
-      expect(await page.getByText(/unfilled field/i).count()).toBe(0);
-      expect(await page.getByRole('button', { name: 'Show me' }).count()).toBe(
-        0,
-      );
+      // Show me the unfilled field: one worker call per press, the answer is
+      // fixed copy in a status line. The test page has no required field.
+      await page.evaluate(() => {
+        const w = window as unknown as { __showCalls: number };
+        w.__showCalls = 0;
+        const original = chrome.runtime.sendMessage.bind(chrome.runtime);
+        // biome-ignore lint/suspicious/noExplicitAny: test spy
+        (chrome.runtime as any).sendMessage = (m: any, ...rest: any[]) => {
+          if (m?.type === 'showUnfilledField') w.__showCalls += 1;
+          // biome-ignore lint/suspicious/noExplicitAny: test spy
+          return (original as any)(m, ...rest);
+        };
+      });
+      const show = left.getByRole('button', {
+        name: 'Show me the unfilled field',
+      });
+      // The unfilled-field line (the submission line is named).
+      const status = left.locator('[role="status"]:not([aria-label])');
+      expect(await status.textContent()).toBe('');
+      await show.dblclick();
+      await expect
+        .poll(async () => (await status.textContent()) ?? '', {
+          timeout: 10_000,
+        })
+        .toMatch(
+          /^(No empty required fields found\. Check the page before you submit\.|Showing the next field|The extension|The run is paused|Could not check)/,
+        );
+      expect(
+        await page.evaluate(
+          () => (window as unknown as { __showCalls: number }).__showCalls,
+        ),
+      ).toBe(1);
+      expect(await show.isDisabled()).toBe(false);
 
       // Back to working: the panel goes away.
       row.phase = 'working';
       await expect.poll(() => heading.count(), { timeout: 8_000 }).toBe(0);
       row.phase = 'review';
       await heading.waitFor({ timeout: 8_000 });
+      // The status line did not survive leaving review.
+      expect(
+        await page.getByRole('status').filter({ hasText: /\S/ }).count(),
+      ).toBe(0);
 
       await page.getByRole('button', { name: 'I submitted it' }).click();
       await page.getByRole('heading', { name: 'Submitted' }).waitFor();
       await page
-        .getByText('You said you submitted the form on localhost.')
+        .getByText('You confirmed the form was submitted on localhost.')
         .waitFor();
       expect(stopCalls(runId)).toBe(1);
       expect(
@@ -812,6 +877,465 @@ describe('the panel shell', () => {
       await site.close();
     }
   }, 40_000);
+
+  it('Review: a form POST showing a confirmation number confirms with it; another label asks, No keeps the run, Yes confirms', async () => {
+    // A confirmation number: Confirmed at once, the number as text.
+    {
+      const { site, page, runId } = await startOnRealTab();
+      const row = runs.get(runId);
+      if (!row) throw new Error('no run row');
+      try {
+        row.phase = 'review';
+        await page
+          .getByRole('heading', { name: 'Ready for your review' })
+          .waitFor({ timeout: 8_000 });
+        await armed(page);
+        await submitIn(site, 'alnum');
+        // Asked at once, the number filled in when the worker read it; the
+        // run is not stopped until the caseworker says so.
+        const prompt = page.getByRole('region', {
+          name: 'Did you submit the form?',
+        });
+        await prompt.waitFor({ timeout: 10_000 });
+        await prompt.getByText('AB-1234', { exact: true }).waitFor();
+        await prompt
+          .getByText('Confirmation number', { exact: true })
+          .waitFor();
+        expect(stopCalls(runId)).toBe(0);
+        expect(await workerStops(page)).toBe(0);
+        expect((await runStatus(page)).active).toBe(true);
+        await prompt.getByRole('button', { name: 'Yes, I did' }).click();
+        await page.getByRole('heading', { name: 'Submitted' }).waitFor();
+        await page
+          .getByText('You confirmed the form was submitted on localhost.')
+          .waitFor();
+        await page.getByText('Confirmation number', { exact: true }).waitFor();
+        await page.getByText('AB-1234', { exact: true }).waitFor();
+        expect(stopCalls(runId)).toBe(1);
+        expect(await workerStops(page)).toBe(1);
+        expect(row.ended).toBe(true);
+        // The number went nowhere but the screen.
+        expect(JSON.stringify(appRequests)).not.toContain('AB-1234');
+        const stored = await page.evaluate(async () =>
+          JSON.stringify([
+            await chrome.storage.local.get(null),
+            await chrome.storage.session.get(null),
+          ]),
+        );
+        expect(stored).not.toContain('AB-1234');
+        expect(stored).toContain(runId);
+        await page
+          .getByRole('button', { name: 'Start another form for this person' })
+          .click();
+        await page.getByRole('heading', { name: 'Ready' }).waitFor();
+        expect(await page.getByText('AB-1234').count()).toBe(0);
+      } finally {
+        await stopWorkerRun(page);
+        await page.close();
+        await site.close();
+      }
+    }
+
+    // Another label: asked; No keeps the run going and the next submission
+    // is seen again; Yes confirms with the number shown on the page.
+    {
+      const { site, page, runId } = await startOnRealTab();
+      const row = runs.get(runId);
+      if (!row) throw new Error('no run row');
+      try {
+        row.phase = 'review';
+        const review = page.getByRole('region', {
+          name: 'Ready for your review',
+        });
+        await review.waitFor({ timeout: 8_000 });
+        await armed(page);
+        await submitIn(site, 'other');
+        const prompt = page.getByRole('region', {
+          name: 'Did you submit the form?',
+        });
+        await prompt.waitFor({ timeout: 10_000 });
+        await prompt.getByText('20240017').waitFor();
+        await prompt
+          .getByText('Number shown on the page', { exact: true })
+          .waitFor();
+        await prompt.getByRole('button', { name: 'No, not yet' }).click();
+        await expect.poll(() => prompt.count()).toBe(0);
+        // Still running, still in review.
+        await review.waitFor();
+        expect(stopCalls(runId)).toBe(0);
+        expect((await runStatus(page)).active).toBe(true);
+        await site.goto(fixtures.formUrl);
+        await submitIn(site, 'other');
+        // The prompt opens at once; the number fills in when the worker's
+        // read gives it (Yes carries what is shown at that moment).
+        await prompt.waitFor({ timeout: 10_000 });
+        await prompt.getByText('20240017', { exact: true }).waitFor();
+        await prompt.getByRole('button', { name: 'Yes, I did' }).click();
+        await page.getByRole('heading', { name: 'Submitted' }).waitFor();
+        await page
+          .getByText('You confirmed the form was submitted on localhost.')
+          .waitFor();
+        await page.getByText('Number shown on the page').waitFor();
+        await page.getByText('20240017', { exact: true }).waitFor();
+        expect(
+          await page.getByText('Confirmation number', { exact: true }).count(),
+        ).toBe(0);
+        expect(stopCalls(runId)).toBe(1);
+        expect(await workerStops(page)).toBe(1);
+        expect(JSON.stringify(appRequests)).not.toContain('20240017');
+      } finally {
+        await stopWorkerRun(page);
+        await page.close();
+        await site.close();
+      }
+    }
+  }, 90_000);
+
+  // --- review and submit, integrated (plan 4c-4 Task 6) -----------------------
+  // Driven as the rest of this file is: the panel is a tab, the worker, the
+  // relay and the page are real, the agent is agent-browser through the
+  // relay, and only the fake app's answers are canned.
+
+  /** Required fields of every kind, at the top of the page. */
+  const REQUIRED_FORM =
+    '<form id="app-form" method="post" action="/submitted?v=alnum">' +
+    '<label for="e-name">Nickname</label><input id="e-name" required>' +
+    '<label for="e-county">County</label><select id="e-county" required>' +
+    '<option value="">--</option><option>Alameda</option></select>' +
+    '<fieldset><legend>Housing</legend>' +
+    '<label><input type="radio" id="e-r1" name="e-r" required> Own</label>' +
+    '<label><input type="radio" id="e-r2" name="e-r"> Rent</label></fieldset>' +
+    '<label><input type="checkbox" id="e-chk" required> I confirm</label>' +
+    '<label for="e-ssn">Social Security Number</label>' +
+    '<input id="e-ssn" name="field_31" required>' +
+    '<label for="e-phone">Phone</label>' +
+    '<input id="e-phone" aria-required="true">' +
+    '<button type="submit" id="e-go">Submit</button></form>';
+
+  const SSN_ECHO = '123-45-6789';
+
+  /** The panel, the console and the fake app: where a value must not be. */
+  const nowhereBut = async (
+    page: import('playwright').Page,
+    site: import('playwright').Page,
+    values: string[],
+    seen: string[],
+    appSeen: number,
+  ) => {
+    const stored = await page.evaluate(async () =>
+      JSON.stringify([
+        await chrome.storage.local.get(null),
+        await chrome.storage.session.get(null),
+      ]),
+    );
+    const panelText = await page.evaluate(
+      () => `${document.body.innerHTML}${document.body.innerText}`,
+    );
+    const toApp = JSON.stringify(appRequests.slice(appSeen));
+    for (const v of values) {
+      expect(panelText).not.toContain(v);
+      expect(stored).not.toContain(v);
+      expect(toApp).not.toContain(v);
+      expect(await page.title()).not.toContain(v);
+      expect(page.url()).not.toContain(v);
+      expect(await site.title()).not.toContain(v);
+      expect(site.url()).not.toContain(v);
+      for (const line of seen) expect(line).not.toContain(v);
+    }
+  };
+
+  it('Review end to end: Show me the unfilled field counts and highlights, the agent and the screenshot see no highlight, a real submit confirms', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    const row = runs.get(runId);
+    if (!row) throw new Error('no run row');
+    const agentToken = mintRelayToken(
+      { runId, role: 'agent', origin: fixtures.origin, sub: 'e2e-user' },
+      relay.secret,
+      { now: Math.floor(Date.now() / 1000) },
+    );
+    const cdp = cdpUrl(relay, agentToken);
+    const frameStart = relay.frames.length;
+    const dir = mkdtempSync(path.join(tmpdir(), 'review-shot-'));
+    const recorder = await recordOverlay(browser.sw);
+    try {
+      await site.evaluate((html) => {
+        window.scrollTo(0, 0);
+        document.body.insertAdjacentHTML('afterbegin', html);
+      }, REQUIRED_FORM);
+      row.phase = 'review';
+      const review = page.getByRole('region', {
+        name: 'Ready for your review',
+      });
+      await review.waitFor({ timeout: 8_000 });
+      await armed(page);
+      const show = review.getByRole('button', {
+        name: 'Show me the unfilled field',
+      });
+      const status = review.locator('[role="status"]:not([aria-label])');
+      const statusIs = (text: string) =>
+        expect
+          .poll(async () => (await status.textContent()) ?? '', {
+            timeout: 10_000,
+          })
+          .toContain(text);
+      const activeId = () =>
+        site.evaluate(() => document.activeElement?.id ?? '');
+
+      // The worker highlights the first empty required field (an Overlay
+      // highlight: no DOM footprint, no focus change) and the status line
+      // counts all six.
+      const tabId = ((await runStatus(page)) as Status & { tabId: number })
+        .tabId;
+      const highlighted = async () =>
+        idOfNode(
+          browser.sw,
+          tabId,
+          (
+            (await recorder.calls())
+              .filter((c) => c.method === 'Overlay.highlightNode' && c.ok)
+              .at(-1) as { backendNodeId: number }
+          ).backendNodeId,
+        );
+      const highlights = async () =>
+        (await recorder.calls()).filter(
+          (c) => c.method === 'Overlay.highlightNode' && c.ok,
+        ).length;
+      const focusBefore = await activeId();
+      const formBefore = await site.evaluate(
+        () => document.getElementById('app-form')?.outerHTML,
+      );
+      await show.click();
+      await statusIs(
+        'Showing the next field that is still empty. 6 left. Look for the field in your page that is highlighted or focused.',
+      );
+      await expect.poll(highlights).toBe(1);
+      expect(await highlighted()).toBe('e-name');
+      expect(await activeId()).toBe(focusBefore);
+      expect(
+        await site.evaluate(
+          () => document.getElementById('app-form')?.outerHTML,
+        ),
+      ).toBe(formBefore);
+
+      // The agent attaches and reads the page: it sees nothing of the
+      // highlight, and the screenshot still works with the sensitive field
+      // masked and left as it was.
+      await site.fill('#e-name', 'Ash');
+      await site.selectOption('#e-county', 'Alameda');
+      await site.fill('#e-ssn', '900-11-2222');
+      expect(
+        (await agentBrowser(['snapshot', '-i'], cdp, 'review')).success,
+      ).toBe(true);
+      const shape = await site.evaluate(() => ({
+        style: document.getElementById('e-ssn')?.getAttribute('style'),
+        html: document.getElementById('app-form')?.outerHTML,
+        active: document.activeElement?.id ?? '',
+      }));
+      await show.click();
+      await statusIs('3 left');
+      await expect.poll(highlights).toBe(2);
+      expect(await highlighted()).toBe('e-r1');
+      expect(
+        await site.evaluate(() => ({
+          style: document.getElementById('e-ssn')?.getAttribute('style'),
+          html: document.getElementById('app-form')?.outerHTML,
+          active: document.activeElement?.id ?? '',
+        })),
+      ).toEqual(shape);
+      const seenByAgent = [
+        await agentBrowser(['snapshot'], cdp, 'review'),
+        await agentBrowser(['snapshot', '-i'], cdp, 'review'),
+      ];
+      expect(seenByAgent.map((r) => r.success)).toEqual([true, true]);
+      expect(JSON.stringify(seenByAgent)).not.toContain('900-11-2222');
+      expect(JSON.stringify(seenByAgent).toLowerCase()).not.toContain(
+        'highlight',
+      );
+      const file = path.join(dir, 'shot.png');
+      expect(
+        (await agentBrowser(['screenshot', file], cdp, 'review')).success,
+      ).toBe(true);
+      expect(statSync(file).size).toBeGreaterThan(1000);
+      const after = await site.evaluate(() => ({
+        style: document.getElementById('e-ssn')?.getAttribute('style'),
+        masks: document.querySelectorAll('[data-labs-mask]').length,
+        sheets: document.adoptedStyleSheets.length,
+      }));
+      expect(after).toEqual({ style: shape.style, masks: 0, sheets: 0 });
+      // No relay frame carried the sensitive value or an Overlay message.
+      expect(relay.frames.length).toBeGreaterThan(frameStart);
+      for (const frame of relay.frames.slice(frameStart)) {
+        expect(frame).not.toContain('900-11-2222');
+        expect(frame).not.toContain('Overlay.');
+      }
+
+      // The count follows the page: the sensitive field is next, flagged.
+      await site.fill('#e-ssn', '');
+      await site.check('#e-r2');
+      await site.check('#e-chk');
+      await show.click();
+      await statusIs('2 left');
+      await statusIs('It is a sensitive field');
+      await expect.poll(highlights).toBe(3);
+      expect(await highlighted()).toBe('e-ssn');
+      await site.fill('#e-ssn', '900-11-2222');
+      await site.fill('#e-phone', '5550100');
+      await show.click();
+      await statusIs(
+        'No empty required fields found. Check the page before you submit.',
+      );
+
+      // The caseworker presses the page's own submit button.
+      await site.click('#e-go');
+      const prompt = page.getByRole('region', {
+        name: 'Did you submit the form?',
+      });
+      await prompt.waitFor({ timeout: 10_000 });
+      await prompt.getByText('AB-1234', { exact: true }).waitFor();
+      expect(stopCalls(runId)).toBe(0);
+      await prompt.getByRole('button', { name: 'Yes, I did' }).click();
+      await page.getByRole('heading', { name: 'Submitted' }).waitFor();
+      await page.getByText('Confirmation number', { exact: true }).waitFor();
+      await page.getByText('AB-1234', { exact: true }).waitFor();
+      expect(stopCalls(runId)).toBe(1);
+      expect(await workerStops(page)).toBe(1);
+      expect(row.ended).toBe(true);
+      expect((await runStatus(page)).active).toBe(false);
+      expect(JSON.stringify(appRequests)).not.toContain('AB-1234');
+      expect(JSON.stringify(appRequests)).not.toContain('900-11-2222');
+    } finally {
+      await recorder.stop();
+      rmSync(dir, { recursive: true, force: true });
+      await closeAgentSessions();
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 120_000);
+
+  it('Review end to end: a page echoing an SSN beside a labelled number shows no number and the SSN reaches nobody; a ten-digit number the same', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    const row = runs.get(runId);
+    if (!row) throw new Error('no run row');
+    const seen: string[] = [];
+    const onConsole = (msg: import('playwright').ConsoleMessage) =>
+      seen.push(msg.text());
+    browser.context.on('console', onConsole);
+    const appSeen = appRequests.length;
+    const frameStart = relay.frames.length;
+    const values = [SSN_ECHO, '123456789', '1234567890'];
+    const readOver = () =>
+      expect
+        .poll(
+          async () =>
+            (await page
+              .getByRole('status', { name: 'Submission check' })
+              .textContent()) ?? 'x',
+          { timeout: 20_000 },
+        )
+        .toBe('');
+    const noNumber = async () => {
+      for (const label of ['Confirmation number', 'Number shown on the page']) {
+        expect(await page.getByText(label, { exact: true }).count()).toBe(0);
+      }
+    };
+    try {
+      row.phase = 'review';
+      const review = page.getByRole('region', {
+        name: 'Ready for your review',
+      });
+      await review.waitFor({ timeout: 8_000 });
+      await armed(page);
+      await submitIn(site, 'ssnecho');
+      const prompt = page.getByRole('region', {
+        name: 'Did you submit the form?',
+      });
+      // Asked at once; the looking line clears when the worker's read is
+      // over (12 s), and only then is "no number" an answer.
+      await prompt.waitFor({ timeout: 10_000 });
+      await readOver();
+      // No number is offered, and the run is still going.
+      await noNumber();
+      expect(stopCalls(runId)).toBe(0);
+      expect((await runStatus(page)).active).toBe(true);
+      await nowhereBut(page, site, values, seen, appSeen);
+
+      // No keeps the run; a ten-digit number is not offered either.
+      await prompt.getByRole('button', { name: 'No, not yet' }).click();
+      await expect.poll(() => prompt.count()).toBe(0);
+      await review.waitFor();
+      await site.goto(fixtures.formUrl);
+      await armed(page);
+      await submitIn(site, 'ten');
+      await prompt.waitFor({ timeout: 10_000 });
+      await readOver();
+      await noNumber();
+      await nowhereBut(page, site, values, seen, appSeen);
+      await prompt.getByRole('button', { name: 'Yes, I did' }).click();
+      await page.getByRole('heading', { name: 'Submitted' }).waitFor();
+      await noNumber();
+      expect(stopCalls(runId)).toBe(1);
+      expect(await workerStops(page)).toBe(1);
+      await nowhereBut(page, site, values, seen, appSeen);
+      for (const frame of relay.frames.slice(frameStart)) {
+        for (const v of values) expect(frame).not.toContain(v);
+      }
+    } finally {
+      browser.context.off('console', onConsole);
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 120_000);
+
+  it('Review end to end: a Next step asks, No keeps the run alive, and the real submission after it is detected', async () => {
+    const { site, page, runId } = await startOnRealTab();
+    const row = runs.get(runId);
+    if (!row) throw new Error('no run row');
+    try {
+      row.phase = 'review';
+      const review = page.getByRole('region', {
+        name: 'Ready for your review',
+      });
+      await review.waitFor({ timeout: 8_000 });
+      await armed(page);
+      await site.evaluate(() => {
+        document.body.insertAdjacentHTML(
+          'afterbegin',
+          '<form id="step1" method="post" action="/submitted?v=step">' +
+            '<button type="submit" id="next-step">Next</button></form>',
+        );
+      });
+      await site.click('#next-step');
+      const prompt = page.getByRole('region', {
+        name: 'Did you submit the form?',
+      });
+      await prompt.waitFor({ timeout: 10_000 });
+      await prompt.getByText('20240017').waitFor();
+      await prompt.getByRole('button', { name: 'No, not yet' }).click();
+      await expect.poll(() => prompt.count()).toBe(0);
+      await review.waitFor();
+      expect(stopCalls(runId)).toBe(0);
+      expect((await runStatus(page)).active).toBe(true);
+      expect(row.ended).toBe(false);
+      // The re-rendered form's own button: seen again, with its number.
+      await armed(page);
+      await site.click('#again-go');
+      await prompt.waitFor({ timeout: 10_000 });
+      await prompt.getByText('AB-1234', { exact: true }).waitFor();
+      expect(stopCalls(runId)).toBe(0);
+      await prompt.getByRole('button', { name: 'Yes, I did' }).click();
+      await page.getByRole('heading', { name: 'Submitted' }).waitFor();
+      await page.getByText('AB-1234', { exact: true }).waitFor();
+      expect(stopCalls(runId)).toBe(1);
+      expect(await workerStops(page)).toBe(1);
+      expect(row.ended).toBe(true);
+    } finally {
+      await stopWorkerRun(page);
+      await page.close();
+      await site.close();
+    }
+  }, 90_000);
 
   it('a run the worker ended by itself is stopped on the server once', async () => {
     const { site, page, runId } = await startOnRealTab();
