@@ -31,6 +31,28 @@ jobs:
       id-token: write
 
     steps:
+      # The guard runs first, from the commit this workflow file runs from
+      # (github.sha), before the tag checkout (which cleans the workspace).
+      - name: Checkout deploy ref guard from the workflow ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: guard-ref
+          persist-credentials: false
+          sparse-checkout: scripts/guard-deploy-ref.sh
+          sparse-checkout-cone-mode: false
+
+      # Refuses a dispatch from the extension branch, dev from any branch but
+      # develop, and prod from any branch but main. Values reach the script
+      # through env only. See docs/rollout-pilot.md section 4.7.
+      - name: Guard deploy ref
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GUARD_REF_NAME: ${{ github.ref_name }}
+          GUARD_HEAD_REF: ${{ github.head_ref }}
+          GUARD_ENVIRONMENT: ${{ github.event.inputs.environment }}
+        run: bash guard-ref/scripts/guard-deploy-ref.sh
+
       - name: Checkout code at specified version
         uses: actions/checkout@v4
         with:

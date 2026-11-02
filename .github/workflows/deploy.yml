@@ -45,6 +45,25 @@ jobs:
       relay_enabled: ${{ steps.env.outputs.relay_enabled }}
 
     steps:
+      # Only the guard script; read-only, no credentials kept.
+      - name: Checkout deploy ref guard
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/guard-deploy-ref.sh
+          sparse-checkout-cone-mode: false
+
+      # Refuses the extension branch (dispatch or pull request) and a dispatch
+      # of dev/prod from any branch but develop/main. Values reach the script
+      # through env only. See docs/rollout-pilot.md section 4.7.
+      - name: Guard deploy ref
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GUARD_REF_NAME: ${{ github.ref_name }}
+          GUARD_HEAD_REF: ${{ github.head_ref }}
+          GUARD_ENVIRONMENT: ${{ github.event.inputs.environment }}
+        run: bash scripts/guard-deploy-ref.sh
+
       - name: Determine environment
         id: env
         run: |

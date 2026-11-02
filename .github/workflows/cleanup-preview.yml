@@ -26,6 +26,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Refuses a pull request from the extension branch (and a dispatch from
+      # it) before any Google Cloud or Terraform step: that branch never gets a
+      # preview environment, so there is nothing of its to destroy. Values
+      # reach the script through env only. See docs/rollout-pilot.md 4.7.
+      - name: Guard deploy ref
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GUARD_REF_NAME: ${{ github.ref_name }}
+          GUARD_HEAD_REF: ${{ github.head_ref }}
+          GUARD_ENVIRONMENT: ''
+        run: bash scripts/guard-deploy-ref.sh
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:

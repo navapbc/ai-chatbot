@@ -320,7 +320,8 @@ How applies happen: dev applies on a push to `develop`, prod on a push to
 `main` or a prod promote. If you use `workflow_dispatch` on "Deploy
 Infrastructure" instead, run it from `develop` (for dev) or `main` (for prod):
 dispatching with `environment` `dev` from any other branch deploys that
-branch's code to dev.
+branch's code to dev. On branches that carry the deploy ref guard (4.7), that
+dispatch, and any dispatch from `browser-extension`, fails at its first step.
 
 1. Set the GitHub environment variables for `<env>` (4.1):
    `RELAY_MIN_INSTANCES=1` and, optionally,
@@ -417,6 +418,42 @@ check still only warns). Consequences:
 - The variable validations and the `relay_extension_origin` precondition have
   not been exercised with non-default values; the first plan with them is the
   first test. Read that plan before applying.
+
+### 4.7 Deploy ref guard
+
+The extension branch (`browser-extension`) is not merged into `develop` or
+`main` and must not deploy to the shared environments: `dev`, `preview` and
+every `preview-pr-N` share the dev Cloud SQL instance, so a deploy of this
+branch would apply its migrations to the database the develop site uses.
+`scripts/guard-deploy-ref.sh` runs as the first step of `deploy.yml`
+(`setup`), `promote.yml` (`promote`, before the tag checkout, taken from
+`github.sha`) and `cleanup-preview.yml` (`cleanup`, before any Google Cloud
+step). It refuses:
+
+- a `workflow_dispatch` run from `browser-extension`, for any environment;
+- a `pull_request` run whose source branch is `browser-extension` (no
+  `preview-pr-N` is created, and closing that pull request destroys nothing);
+- a `workflow_dispatch` of `dev` from any branch but `develop`, or of `prod`
+  from any branch but `main`. `preview` stays allowed from other branches.
+
+Push events are not checked (`deploy.yml` deploys on pushes to `develop` and
+`main` only). The guard works because GitHub runs the workflow file from the
+dispatched ref, or from the pull request's merge commit, which carry this
+branch's copy. It does not exist on `develop` or `main`, so their own deploys
+and promotes behave as before.
+
+The guard matches the branch name only. A branch cut from `browser-extension`
+carries its migrations but can still be dispatched to `preview` or opened as a
+pull request into `develop`/`main` (a `preview-pr-N`), and both use the dev
+Cloud SQL instance: do not do either from such a branch.
+
+A merge of `browser-extension` into `develop` or `main` cannot be blocked by a
+workflow: the push that follows deploys. The protection for that is a GitHub
+branch ruleset or required review on `develop` and `main`, which is the
+owner's setting. To deploy this branch to an environment of its own, a future
+change must add that environment (its own database) and relax the guard
+deliberately: the branch name is the `EXTENSION_BRANCH` constant at the top
+of the script.
 
 ## 5. Migrations
 
