@@ -375,9 +375,10 @@ describe('the panel shell', () => {
       }),
     );
     await retry.click();
-    await page.getByRole('heading', { name: 'Home' }).waitFor();
-    await page.getByRole('button', { name: 'Example Benefits' }).waitFor();
+    await page.getByRole('heading', { name: 'Start a form' }).waitFor();
+    await page.getByRole('button', { name: /Example Benefits/ }).waitFor();
     await page.getByRole('button', { name: 'Use this tab' }).waitFor();
+    await page.getByRole('button', { name: 'Recent runs' }).click();
     await page.getByText('Seeded Site, 5 minutes ago').waitFor();
     expect(await page.getByText('Planted Site').count()).toBe(0);
     expect(configCalls).toBe(2);
@@ -714,7 +715,7 @@ describe('the panel shell', () => {
       );
 
       await page.getByRole('button', { name: 'Back to Home' }).click();
-      await page.getByRole('heading', { name: 'Home' }).waitFor();
+      await page.getByRole('heading', { name: 'Start a form' }).waitFor();
     } finally {
       await stopWorkerRun(page);
       await page.close();
@@ -865,7 +866,7 @@ describe('the panel shell', () => {
         .waitFor();
       expect(await page.getByRole('button', { name: 'Stop' }).count()).toBe(0);
       await page.getByRole('button', { name: 'Back to Home' }).click();
-      await page.getByRole('heading', { name: 'Home' }).waitFor();
+      await page.getByRole('heading', { name: 'Start a form' }).waitFor();
       expect(await page.getByText('Alice', { exact: false }).count()).toBe(0);
       expect(
         await page.getByRole('button', { name: 'Use this tab' }).count(),
@@ -1352,7 +1353,7 @@ describe('the panel shell', () => {
       // Leaving the ended run (polling stopped with it; the unit tests pin
       // the single stop across later polls).
       await page.getByRole('button', { name: 'Back to Home' }).click();
-      await page.getByRole('heading', { name: 'Home' }).waitFor();
+      await page.getByRole('heading', { name: 'Start a form' }).waitFor();
       expect(stopCalls(runId)).toBe(1);
     } finally {
       await stopWorkerRun(page);
