@@ -3150,6 +3150,12 @@ export function onDebuggerDetach(
 ) {
   const current = run;
   if (!current || source.tabId !== current.tabId) return;
+  // Chrome's fixed detach reason (for example `target_closed` or
+  // `replaced_with_devtools`), shown in the service worker console only; a
+  // value outside that shape is not printed.
+  if (/^[a-z_]{1,40}$/.test(reason)) {
+    console.warn(`relay: debugger detached (${reason})`);
+  }
   // The caseworker dismissed Chrome's debugging infobar: the run is over.
   if (reason === 'canceled_by_user') {
     current.blocked = true;
