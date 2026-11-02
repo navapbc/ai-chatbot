@@ -220,15 +220,30 @@ describe('promote.yml guard', () => {
 });
 
 describe('cleanup-preview.yml guard', () => {
-  const steps = jobSteps(
-    read('.github/workflows/cleanup-preview.yml'),
-    'cleanup',
-  );
+  const cleanup = read('.github/workflows/cleanup-preview.yml');
+  const steps = jobSteps(cleanup, 'cleanup');
+
+  it('skips pull requests whose base is not develop or main', () => {
+    const job = cleanup.slice(
+      cleanup.indexOf('\n  cleanup:\n'),
+      cleanup.indexOf('\n    steps:\n'),
+    );
+    expect(job).toContain(
+      "\n    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.base.ref == 'develop' || github.event.pull_request.base.ref == 'main'\n",
+    );
+    expect(cleanup).toContain('  workflow_dispatch:\n');
+  });
 
   it('runs the guard right after checkout, before any cloud step', () => {
     expect(steps[0]).toContain('uses: actions/checkout@v4');
     expectGuardStep(steps[1], 'scripts/guard-deploy-ref.sh');
     expect(steps[1]).toContain("GUARD_ENVIRONMENT: ''");
     expect(steps[2]).toContain('name: Authenticate to Google Cloud');
+    const guardAt = steps.findIndex((s) => s.includes('Guard deploy ref'));
+    const cloudAt = steps.findIndex((s) =>
+      /google-github-actions|gcloud|gsutil|terraform/.test(s),
+    );
+    expect(guardAt).toBeGreaterThan(-1);
+    expect(guardAt).toBeLessThan(cloudAt);
   });
 });

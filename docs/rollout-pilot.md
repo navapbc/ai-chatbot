@@ -436,7 +436,10 @@ step). It refuses:
 - a `workflow_dispatch` of `dev` from any branch but `develop`, or of `prod`
   from any branch but `main`. `preview` stays allowed from other branches.
 
-Push events are not checked (`deploy.yml` deploys on pushes to `develop` and
+`cleanup-preview.yml` also skips its job for a pull request whose base is not
+`develop` or `main` (previews exist only for those bases), so closing a pull
+request into `browser-extension` runs nothing and shows the job as skipped. A
+manual dispatch of it still runs. Push events are not checked (`deploy.yml` deploys on pushes to `develop` and
 `main` only). The guard works because GitHub runs the workflow file from the
 dispatched ref, or from the pull request's merge commit, which carry this
 branch's copy. It does not exist on `develop` or `main`, so their own deploys

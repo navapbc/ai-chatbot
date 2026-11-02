@@ -16,6 +16,10 @@ env:
 
 jobs:
   cleanup:
+    # Previews exist only for pull requests into develop or main (deploy.yml),
+    # so a pull request into any other base has nothing to destroy: skip it.
+    # A manual dispatch still runs.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.base.ref == 'develop' || github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-latest
 
     permissions:
