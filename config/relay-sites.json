@@ -1,1 +1,13 @@
-[]
+[
+  {
+    "id": "calworks",
+    "name": "CalWORKs application",
+    "url": "https://benefitscal.com"
+  },
+  {
+    "id": "calfresh",
+    "name": "SNAP / CalFresh",
+    "url": "https://getcalfresh.org"
+  },
+  { "id": "ihss", "name": "IHSS", "url": "https://cdss.ca.gov" }
+]

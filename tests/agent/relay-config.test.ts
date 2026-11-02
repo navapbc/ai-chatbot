@@ -55,8 +55,9 @@ describe('getRelayConfig sites', () => {
     expect(sitesOf([{ ...site(), extra: 'x' }])).toEqual([site()]);
   });
 
-  it('defaults to the checked-in file (empty)', () => {
-    expect(getRelayConfig({}).sites).toEqual([]);
+  it('defaults to the checked-in file, every entry valid', () => {
+    const { sites } = getRelayConfig({});
+    expect(sites.map((s) => s.id)).toEqual(['calworks', 'calfresh', 'ihss']);
   });
 });
 

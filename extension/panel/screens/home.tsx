@@ -16,9 +16,13 @@ type Props = {
   onChoose: (target: Target) => void;
 };
 
+const initials = (name: string) =>
+  (name.match(/[A-Z]/g) ?? Array.from(name)).slice(0, 2).join('').toUpperCase();
+
 export const HomeScreen = ({ sites, onChoose }: Props) => {
   const [recents, setRecents] = useState<Recent[]>([]);
   const [message, setMessage] = useState<string | null>(null);
+  const [showRecents, setShowRecents] = useState(false);
   const [tabLabel, setTabLabel] = useState<string | null>(null);
 
   useEffect(() => {
@@ -98,16 +102,16 @@ export const HomeScreen = ({ sites, onChoose }: Props) => {
           Where should the agent work?
         </p>
       </div>
-      <div className="flex flex-col gap-3 rounded-xl bg-accent p-3">
-        <div className="flex flex-col gap-0.5 text-sm">
-          <span className="font-semibold">This site</span>
-          <span className="truncate text-muted-foreground">
-            {tabLabel ?? 'The tab you are on'}
-          </span>
+      <div className="flex flex-col gap-2 rounded-xl border border-primary/30 bg-accent p-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-sm font-semibold">This site</span>
+          <Button type="button" size="sm" onClick={handleUseThisTab}>
+            Use this tab
+          </Button>
         </div>
-        <Button type="button" onClick={handleUseThisTab}>
-          Use this tab
-        </Button>
+        <span className="truncate text-xs text-muted-foreground">
+          {tabLabel ?? 'Open the form page in this tab first'}
+        </span>
       </div>
       {message ? (
         <p role="alert" className="text-sm">
@@ -131,7 +135,7 @@ export const HomeScreen = ({ sites, onChoose }: Props) => {
                     aria-hidden="true"
                     className="flex size-7 shrink-0 items-center justify-center rounded-md bg-accent text-xs font-semibold text-primary"
                   >
-                    {site.name.slice(0, 2).toUpperCase()}
+                    {initials(site.name)}
                   </span>
                   <span className="flex min-w-0 flex-col">
                     <span className="font-semibold">{site.name}</span>
@@ -145,9 +149,16 @@ export const HomeScreen = ({ sites, onChoose }: Props) => {
           </ul>
         </div>
       ) : null}
-      {recents.length > 0 ? (
-        <div className="flex flex-col gap-2">
-          <h3 className="text-sm font-semibold">Recent runs</h3>
+      <Button
+        type="button"
+        variant="outline"
+        aria-expanded={showRecents}
+        onClick={() => setShowRecents((open) => !open)}
+      >
+        Recent runs
+      </Button>
+      {showRecents ? (
+        recents.length > 0 ? (
           <ul className="flex flex-col gap-1 text-sm" aria-label="Recent runs">
             {recents.map((r) => (
               <li
@@ -159,7 +170,9 @@ export const HomeScreen = ({ sites, onChoose }: Props) => {
               </li>
             ))}
           </ul>
-        </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">No recent runs.</p>
+        )
       ) : null}
     </section>
   );
