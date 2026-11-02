@@ -145,6 +145,9 @@ describe('gap_analysis and form_summary on relay sessions', () => {
         'ref 4111 1111 1111 1111',
         'id １２３４５６７８９',
         'id 123 / 45 // 6789',
+        'id ١٢٣٤٥٦٧٨٩',
+        'id 1 . . . 2 - - 3 _ _ 4 5 6 7 8 9',
+        'id 12\u200B345\u200B6789',
       ],
     }));
     const { default: tool } = await import(`@/agent/${path}`);

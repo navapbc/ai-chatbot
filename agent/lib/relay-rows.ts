@@ -32,9 +32,19 @@ export const summaryRowsForRelay = <T extends SummaryRow>(rows: T[]): T[] =>
     return row;
   });
 
-// Nine or more digits with up to five non-alphanumeric characters between
-// them (so a phone number counts too: such a turn is dropped).
-const LONG_DIGITS = /\d(?:[^A-Za-z0-9]{0,5}\d){8,}/;
+// Zero-width and bidi-control characters that could split a number.
+const INVISIBLE = /[\u200B-\u200F\u2060-\u2064\u202A-\u202E\uFEFF\u00AD]/gu;
+
+// A turn with nine or more digits in all (any script, however far apart) is
+// dropped whole: it may hold an SSN, a card or an ID, and the cost of a false
+// match is only less context for Jev.
+const MAX_DIGITS = 8;
+
+const digitCount = (text: string): number =>
+  (text.match(/\p{Nd}/gu) ?? []).length;
+
+const clean = (text: string): string =>
+  text.normalize('NFKC').replace(INVISIBLE, '');
 
 /** The participant record with its sensitive fields withheld, as the server
  * already sends it; stripped again here so Jev never depends on that. */
@@ -50,8 +60,10 @@ export const participantForRelay = (
  */
 export const messagesForRelay = (messages: string[]): string[] =>
   messages
-    .map((m) => stripSensitiveText(m).normalize('NFKC'))
+    .map((m) => clean(stripSensitiveText(m)))
     .filter(
       (m) =>
-        !mustRefuseRelayText(m) && !SSN_SHAPED.test(m) && !LONG_DIGITS.test(m),
+        !mustRefuseRelayText(m) &&
+        !SSN_SHAPED.test(m) &&
+        digitCount(m) <= MAX_DIGITS,
     );
