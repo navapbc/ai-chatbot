@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { annotateSummaryFields } from '@/lib/jev/enrich';
 import { relayCredentialState } from '@/lib/relay/eve-relay-browser';
 import { currentCaseworkerMessages, currentParticipant } from '../lib/jev';
+import { summaryRowsForRelay } from '../lib/relay-rows';
 
 // Returns validated structured data for the form-summary card. The interactive
 // card RENDER is wired to the chat UI in SP-B; standalone this tool's job is to
@@ -30,15 +31,8 @@ export default defineTool({
     ),
   }),
   async execute({ fields }, ctx) {
-    // Extension runs gather missing data with ask_question; refuse before any
-    // participant or Jev work.
-    if (relayCredentialState(ctx).kind !== 'none') {
-      return {
-        success: false,
-        error:
-          'Not available in extension runs: use ask_question for missing data and report_progress for status.',
-      };
-    }
+    // On an extension run, values from sensitive fields never go to Jev.
+    const onRelay = relayCredentialState(ctx).kind !== 'none';
     // `jev` checks each filled value against the participant record, and
     // checks the `source` label the agent attached to it. Annotate-only: the
     // agent's fields are never rewritten. The participant comes from session
@@ -46,7 +40,7 @@ export default defineTool({
     const annotated = await annotateSummaryFields({
       participant: currentParticipant(),
       caseworkerMessages: currentCaseworkerMessages(),
-      fields,
+      fields: onRelay ? summaryRowsForRelay(fields) : fields,
       signal: ctx?.abortSignal,
     });
     // Rows, not just a count: the annotation lands under `fields[].jev`,

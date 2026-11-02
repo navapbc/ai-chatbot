@@ -69,8 +69,6 @@ describe('report_progress tool', () => {
 });
 
 describe.each([
-  ['gap_analysis', 'tools/gap_analysis', { formName: 'F', missingFields: [{ field: 'a' }] }],
-  ['form_summary', 'tools/form_summary', { fields: [{ field: 'a', source: 'missing' }] }],
   [
     'form_review form_summary',
     'subagents/form_review/tools/form_summary',
@@ -119,5 +117,69 @@ describe.each([
     };
     expect(result.rendered).toBe(true);
     expect(annotate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('gap_analysis and form_summary on relay sessions', () => {
+  afterEach(() => {
+    vi.doUnmock('@/lib/jev/enrich');
+    vi.doUnmock('@/agent/lib/jev');
+    vi.resetModules();
+  });
+
+  const relay = { relayUrl: 'wss://r.example.gov', relayRunId: RUN };
+
+  const load = async (path: string) => {
+    vi.resetModules();
+    const annotate = vi.fn(async ({ fields }: { fields: unknown[] }) => fields);
+    vi.doMock('@/lib/jev/enrich', () => ({
+      annotateGapFields: annotate,
+      annotateSummaryFields: annotate,
+    }));
+    vi.doMock('@/agent/lib/jev', () => ({
+      currentParticipant: () => null,
+      currentCaseworkerMessages: () => [],
+    }));
+    const { default: tool } = await import(`@/agent/${path}`);
+    return { tool: tool as unknown as Tool, annotate };
+  };
+
+  it('gap_analysis runs, sends no note, and does not end the turn', async () => {
+    const { tool, annotate } = await load('tools/gap_analysis');
+    const result = (await tool.execute(
+      {
+        formName: 'F',
+        missingFields: [{ field: 'Phone', note: 'caseworker said 555-0100' }],
+      },
+      ctxWith(relay),
+    )) as { rendered?: boolean; next?: string };
+    expect(result.rendered).toBe(true);
+    expect(result.next).toContain('ask_question');
+    const sent = annotate.mock.calls[0][0] as { fields: object[] };
+    expect(JSON.stringify(sent.fields)).not.toContain('555-0100');
+  });
+
+  it('form_summary runs and removes values of sensitive fields', async () => {
+    const { tool, annotate } = await load('tools/form_summary');
+    const result = (await tool.execute(
+      {
+        fields: [
+          { field: 'Phone', value: '(951) 555-0100', source: 'record' },
+          {
+            field: 'Social Security Number',
+            value: '123-45-6789',
+            source: 'record',
+          },
+          { field: 'Notes', value: 'ref 123-45-6789', source: 'inferred' },
+        ],
+      },
+      ctxWith(relay),
+    )) as { rendered?: boolean };
+    expect(result.rendered).toBe(true);
+    const sent = JSON.stringify(
+      (annotate.mock.calls[0][0] as { fields: object[] }).fields,
+    );
+    expect(sent).toContain('(951) 555-0100');
+    expect(sent).not.toContain('123-45-6789');
   });
 });

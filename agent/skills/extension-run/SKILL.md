@@ -45,7 +45,7 @@ If a command answers "This browser is restricted by your organization's policy f
 
 ## Asking For Missing Values
 
-First find the gaps without `gap_analysis`: take a snapshot and walk the form page by page, comparing each field to the participant record and what the caseworker said. Then ask for every missing value in one batch, not one at a time. Make several `ask_question` calls in parallel in the same step, then wait for all the answers.
+First find the gaps: take a snapshot and walk the form page by page, comparing each field to the participant record and what the caseworker said. Then call `gap_analysis` once with the fields that have no traceable value (labels and choices only; leave out `note`, and never put a value in it). It does not end your turn here. It returns each row with a check of whether the participant record already answers it: drop any row the record answers, and fill that field from the record. Then ask for every remaining missing value in one batch, not one at a time. Make several `ask_question` calls in parallel in the same step, then wait for all the answers.
 
 Each option has the shape `{id, label}`: choice options need both an id and a label.
 
@@ -56,6 +56,10 @@ Each option has the shape `{id, label}`: choice options need both an id and a la
 When the caseworker's text answer is exactly `skip`, do not fill that field: leave whatever is already in it and move on (never type `skip`). A text answer of exactly `provided` means the caseworker entered the value in the page themselves: do not ask again and do not try to read it. Ask about a sensitive field with the `provided`/`skip` options, never a free-text question; if one arrives anyway, a text answer of exactly `provided` still means what it says above.
 
 Follow the data rules in `benefits-application`: a value that does not trace to the participant record or the caseworker is missing, not guessed.
+
+## End Review
+
+When the form is filled, call `form_summary` once with every field you filled or could not fill, each with its `source`. Leave out the value of any sensitive field (the tool also removes them before anything leaves). It returns each row checked against the participant record and what the caseworker said. Fix or flag any row it marks as not grounded, then stop at the final review page.
 
 ## Progress
 
@@ -71,7 +75,7 @@ Switch into an iframe with `frame @<ref>`, using the ref from the snapshot. Neve
 
 ## Tools You Must Not Use
 
-- Do not use `gap_analysis`, `form_summary`, or `check_submit_gate`. They are for web chats.
+- Do not use `check_submit_gate`. It is for web chats. Use `gap_analysis` as described above and `form_summary` at the end review.
 - Do not delegate to the `form_review` subagent. Its summary tool refuses on extension runs.
 - Do not hand browser work to the built-in `agent` tool or any other child session. A child runs in its own session, and its `browser` calls are refused on extension runs.
 - Never click Submit, Apply, Send, or any button that finalizes the application. Stop at the final review page and tell the caseworker to submit on the site themselves.
