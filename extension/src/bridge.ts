@@ -445,6 +445,10 @@ const MAX_RECONNECT_MS = 30_000;
 const PENDING_STOP_MS = 30_000;
 // A non-user detach ends the run unless the tab is re-attached in time.
 const DETACH_GRACE_MS = 5_000;
+// Chrome closes the debugging target when a page swaps its process during a
+// navigation (`target_closed`) while the tab itself stays open and loads: the
+// agent may need longer to attach again than after any other detach.
+const TARGET_CLOSED_GRACE_MS = 20_000;
 const REGISTRATION_REFUSED = 'registration required';
 const ORIGIN_NOT_PENDING = 'origin not pending';
 // esbuild defines this only in a test-hooks build given
@@ -1532,7 +1536,18 @@ async function attachTab(
   } catch (error) {
     // A timed-out attach may still land: let go (best effort).
     await detachTab(current.tabId, stepMs);
-    if (isPolicyRestriction(error)) current.policyRestricted = true;
+    if (isPolicyRestriction(error)) {
+      current.policyRestricted = true;
+    } else {
+      // Chrome's message with any address removed, console only.
+      console.warn(
+        `relay: attach failed: ${String(
+          error instanceof Error ? error.message : error,
+        )
+          .replace(/\S*:\/\/\S*/g, '[address]')
+          .slice(0, 100)}`,
+      );
+    }
     throw error;
   }
   current.policyRestricted = false;
@@ -3193,12 +3208,15 @@ export function onDebuggerDetach(
   // P4b-d: the tab must be attached again (the agent re-attaches through the
   // relay) within the grace period, or the run ends.
   clearTimeout(current.detachTimer);
-  current.detachTimer = setTimeout(() => {
-    current.detachTimer = undefined;
-    if (run === current && !current.attached) {
-      void endRun('debugger-detached');
-    }
-  }, DETACH_GRACE_MS);
+  current.detachTimer = setTimeout(
+    () => {
+      current.detachTimer = undefined;
+      if (run === current && !current.attached) {
+        void endRun('debugger-detached');
+      }
+    },
+    reason === 'target_closed' ? TARGET_CLOSED_GRACE_MS : DETACH_GRACE_MS,
+  );
   // The agent was never given this session (a failed attach): say nothing.
   if (!announced) return;
   send(current, {

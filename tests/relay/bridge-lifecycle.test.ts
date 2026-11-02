@@ -535,17 +535,27 @@ describe('stop while the socket is down', () => {
 });
 
 describe('debugger detach (P4b-d)', () => {
-  it('ends the run 5 s after a target_closed detach with no re-attach', async () => {
+  it('ends the run 20 s after a target_closed detach with no re-attach', async () => {
     vi.useFakeTimers();
     const socket = await attachedRun('run-1');
     bridge.onDebuggerDetach({ tabId: 1 }, 'target_closed');
-    await vi.advanceTimersByTimeAsync(4_999);
+    await vi.advanceTimersByTimeAsync(19_999);
     expect((await status()).active).toBe(true);
     await vi.advanceTimersByTimeAsync(1);
     expect((await status()).active).toBe(false);
     expect(socket.sent.filter((m) => m.type === 'stop')).toEqual([
       { type: 'stop', reason: 'debugger-detached' },
     ]);
+  });
+
+  it('ends the run 5 s after any other detach with no re-attach', async () => {
+    vi.useFakeTimers();
+    await attachedRun('run-1');
+    bridge.onDebuggerDetach({ tabId: 1 }, 'replaced_with_devtools');
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect((await status()).active).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await status()).active).toBe(false);
   });
 
   it('a re-attach inside 5 s keeps the run', async () => {
