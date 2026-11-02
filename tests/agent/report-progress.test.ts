@@ -139,16 +139,19 @@ describe('gap_analysis and form_summary on relay sessions', () => {
     vi.doMock('@/agent/lib/jev', () => ({
       currentParticipant: () => null,
       currentCaseworkerMessages: () => [
+        'she lives in Riverside',
         'her number is (951) 555-0100',
         'ssn 123-45-6789',
         'ref 4111 1111 1111 1111',
+        'id １２３４５６７８９',
+        'id 123 / 45 // 6789',
       ],
     }));
     const { default: tool } = await import(`@/agent/${path}`);
     return { tool: tool as unknown as Tool, annotate };
   };
 
-  it('form_summary sends no turn holding an SSN or a long number', async () => {
+  it('form_summary sends only turns with no SSN, long number or phone number', async () => {
     const { tool, annotate } = await load('tools/form_summary');
     await tool.execute(
       { fields: [{ field: 'Phone', value: 'x', source: 'caseworker' }] },
@@ -156,7 +159,7 @@ describe('gap_analysis and form_summary on relay sessions', () => {
     );
     const sent = (annotate.mock.calls[0][0] as { caseworkerMessages: string[] })
       .caseworkerMessages;
-    expect(sent).toEqual(['her number is (951) 555-0100']);
+    expect(sent).toEqual(['she lives in Riverside']);
   });
 
   it('gap_analysis runs, sends no note, and does not end the turn', async () => {

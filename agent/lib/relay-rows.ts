@@ -32,8 +32,9 @@ export const summaryRowsForRelay = <T extends SummaryRow>(rows: T[]): T[] =>
     return row;
   });
 
-// Nine or more digits however they are separated.
-const LONG_DIGITS = /\d(?:[\s.\-/]?\d){8,}/;
+// Nine or more digits with up to five non-alphanumeric characters between
+// them (so a phone number counts too: such a turn is dropped).
+const LONG_DIGITS = /\d(?:[^A-Za-z0-9]{0,5}\d){8,}/;
 
 /** The participant record with its sensitive fields withheld, as the server
  * already sends it; stripped again here so Jev never depends on that. */
@@ -49,7 +50,7 @@ export const participantForRelay = (
  */
 export const messagesForRelay = (messages: string[]): string[] =>
   messages
-    .map((m) => stripSensitiveText(m))
+    .map((m) => stripSensitiveText(m).normalize('NFKC'))
     .filter(
       (m) =>
         !mustRefuseRelayText(m) && !SSN_SHAPED.test(m) && !LONG_DIGITS.test(m),
