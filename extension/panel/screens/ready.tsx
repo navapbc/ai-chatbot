@@ -1,5 +1,6 @@
 import { useId, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { modelLabel } from '../lib/model-label';
 import { DEBUGGER_BAR_COPY, type ErrorMessage } from '../lib/copy';
 import {
   buildStartRequest,
@@ -104,31 +105,23 @@ export const ReadyScreen = ({ state, dispatch, onStart }: Props) => {
         </div>
         <div className="flex flex-col gap-1">
           <dt className="text-muted-foreground">
-            {config.models.length === 1 ? (
-              'Model'
-            ) : (
-              <label htmlFor={modelLabelId}>Model</label>
-            )}
+            <label htmlFor={modelLabelId}>Model</label>
           </dt>
           <dd>
-            {config.models.length === 1 ? (
-              <span className="font-medium">{config.models[0].id}</span>
-            ) : (
-              <select
-                id={modelLabelId}
-                value={modelId}
-                disabled={starting}
-                onChange={(event) => handleModelChange(event.target.value)}
-                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-              >
-                {config.models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.id}
-                    {m.id === config.defaultModel ? ' (default)' : ''}
-                  </option>
-                ))}
-              </select>
-            )}
+            <select
+              id={modelLabelId}
+              value={modelId}
+              disabled={starting || config.models.length === 1}
+              onChange={(event) => handleModelChange(event.target.value)}
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            >
+              {config.models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {modelLabel(m.id)}
+                  {m.id === config.defaultModel ? ' (default)' : ''}
+                </option>
+              ))}
+            </select>
           </dd>
         </div>
       </dl>
