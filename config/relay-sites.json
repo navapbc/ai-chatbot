@@ -1,13 +1,27 @@
 [
   {
-    "id": "calworks",
-    "name": "CalWORKs application",
-    "url": "https://benefitscal.com"
+    "id": "wic",
+    "name": "Apply 4 WIC Form",
+    "url": "https://www.ruhealth.org/appointments/apply-4-wic-form"
   },
   {
-    "id": "calfresh",
-    "name": "SNAP / CalFresh",
-    "url": "https://getcalfresh.org"
+    "id": "ihss",
+    "name": "In-Home Supportive Services (IHSS): Intake Application",
+    "url": "https://riversideihss.org/IntakeApp"
   },
-  { "id": "ihss", "name": "IHSS", "url": "https://cdss.ca.gov" }
+  {
+    "id": "benefits-cal",
+    "name": "BenefitsCal",
+    "url": "https://benefitscal.com/"
+  },
+  {
+    "id": "nurse-family-partnership",
+    "name": "Nurse-Family Partnership",
+    "url": "https://forms.office.com/Pages/ResponsePage.aspx?id=yqoVt4-WGUe7BO0xcOCKaQVow3g6-R9Mh0F8VizNQzhUQ1hCNENFTFBMOVg4SElRSldIWk5BRUkxUi4u"
+  },
+  {
+    "id": "pregnancy-planning",
+    "name": "RCOE Referrals System",
+    "url": "https://rrrcoe.nohosoftware.com/online_referrals/"
+  }
 ]

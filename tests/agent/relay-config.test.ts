@@ -57,7 +57,13 @@ describe('getRelayConfig sites', () => {
 
   it('defaults to the checked-in file, every entry valid', () => {
     const { sites } = getRelayConfig({});
-    expect(sites.map((s) => s.id)).toEqual(['calworks', 'calfresh', 'ihss']);
+    expect(sites.map((s) => s.id)).toEqual([
+      'wic',
+      'ihss',
+      'benefits-cal',
+      'nurse-family-partnership',
+      'pregnancy-planning',
+    ]);
   });
 });
 
