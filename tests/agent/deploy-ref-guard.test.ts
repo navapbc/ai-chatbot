@@ -30,15 +30,25 @@ const refusal = (reason: string) =>
 const EXTENSION = refusal(
   'the extension branch is never deployed to the shared environments',
 );
+const NOT_BRANCH = refusal('a deploy can only be dispatched from a branch');
+const ENVIRONMENT = refusal('the environment must be dev, preview or prod');
 const DEV = refusal('dev can only be dispatched from develop');
 const PROD = refusal('prod can only be dispatched from main');
 
 const dispatch = (ref: string, environment: string) =>
   run({
-    GITHUB_EVENT_NAME: 'workflow_dispatch',
-    GUARD_REF_NAME: ref,
+    GUARD_EVENT_NAME: 'workflow_dispatch',
+    GUARD_REF: ref,
     GUARD_HEAD_REF: '',
     GUARD_ENVIRONMENT: environment,
+  });
+
+const pull = (headRef: string) =>
+  run({
+    GUARD_EVENT_NAME: 'pull_request',
+    GUARD_REF: 'refs/pull/12/merge',
+    GUARD_HEAD_REF: headRef,
+    GUARD_ENVIRONMENT: '',
   });
 
 const pass = { status: 0, stdout: '', stderr: '' };
@@ -48,56 +58,60 @@ describe('guard-deploy-ref.sh', () => {
   it.each(['dev', 'preview', 'prod'])(
     'refuses a dispatch of %s from browser-extension',
     (environment) => {
-      expect(dispatch('browser-extension', environment)).toEqual(
+      expect(dispatch('refs/heads/browser-extension', environment)).toEqual(
         fail(EXTENSION),
       );
     },
   );
 
   it.each([
-    ['dev', 'develop', pass],
-    ['dev', 'feature/x', fail(DEV)],
-    ['dev', 'main', fail(DEV)],
-    ['prod', 'main', pass],
-    ['prod', 'develop', fail(PROD)],
-    ['prod', 'feature/x', fail(PROD)],
-    ['preview', 'feature/x', pass],
-    ['preview', 'develop', pass],
+    ['dev', 'refs/heads/develop', pass],
+    ['dev', 'refs/heads/feature/x', fail(DEV)],
+    ['dev', 'refs/heads/main', fail(DEV)],
+    ['prod', 'refs/heads/main', pass],
+    ['prod', 'refs/heads/develop', fail(PROD)],
+    ['prod', 'refs/heads/feature/x', fail(PROD)],
+    ['preview', 'refs/heads/feature/x', pass],
+    ['preview', 'refs/heads/develop', pass],
   ])('dispatch of %s from %s', (environment, ref, expected) => {
     expect(dispatch(ref, environment)).toEqual(expected);
   });
 
-  it('allows a dispatch with no environment from another branch', () => {
-    expect(dispatch('feature/x', '')).toEqual(pass);
+  it.each([
+    ['dev', 'refs/tags/develop'],
+    ['prod', 'refs/tags/main'],
+    ['preview', 'refs/tags/browser-extension'],
+    ['preview', 'refs/tags/v1.2.3'],
+    ['dev', 'develop'],
+    ['prod', 'main'],
+    ['preview', 'browser-extension'],
+    ['preview', ''],
+  ])('refuses a dispatch of %s from %s (not a branch ref)', (env, ref) => {
+    expect(dispatch(ref, env)).toEqual(fail(NOT_BRANCH));
   });
 
+  it.each(['', 'DEV', 'Prod', 'dev\n', ' dev', 'preview-pr-1', 'staging'])(
+    'refuses a dispatch with environment %j',
+    (environment) => {
+      expect(dispatch('refs/heads/develop', environment)).toEqual(
+        fail(ENVIRONMENT),
+      );
+    },
+  );
+
   it('refuses a pull request from browser-extension', () => {
-    expect(
-      run({
-        GITHUB_EVENT_NAME: 'pull_request',
-        GUARD_REF_NAME: '12/merge',
-        GUARD_HEAD_REF: 'browser-extension',
-        GUARD_ENVIRONMENT: '',
-      }),
-    ).toEqual(fail(EXTENSION));
+    expect(pull('browser-extension')).toEqual(fail(EXTENSION));
   });
 
   it('allows a pull request from another branch', () => {
-    expect(
-      run({
-        GITHUB_EVENT_NAME: 'pull_request',
-        GUARD_REF_NAME: '12/merge',
-        GUARD_HEAD_REF: 'feature/x',
-        GUARD_ENVIRONMENT: '',
-      }),
-    ).toEqual(pass);
+    expect(pull('feature/x')).toEqual(pass);
   });
 
   it('leaves push events alone', () => {
     expect(
       run({
-        GITHUB_EVENT_NAME: 'push',
-        GUARD_REF_NAME: 'browser-extension',
+        GUARD_EVENT_NAME: 'push',
+        GUARD_REF: 'refs/heads/browser-extension',
         GUARD_HEAD_REF: '',
         GUARD_ENVIRONMENT: '',
       }),
@@ -107,36 +121,48 @@ describe('guard-deploy-ref.sh', () => {
   it('passes an unknown event through', () => {
     expect(
       run({
-        GITHUB_EVENT_NAME: 'repository_dispatch',
-        GUARD_REF_NAME: 'browser-extension',
+        GUARD_EVENT_NAME: 'repository_dispatch',
+        GUARD_REF: 'refs/heads/browser-extension',
         GUARD_HEAD_REF: 'browser-extension',
         GUARD_ENVIRONMENT: 'prod',
       }),
     ).toEqual(pass);
   });
 
+  it('ignores the reserved GITHUB_EVENT_NAME', () => {
+    expect(
+      run({
+        GITHUB_EVENT_NAME: 'workflow_dispatch',
+        GUARD_REF: 'refs/heads/browser-extension',
+        GUARD_ENVIRONMENT: 'dev',
+      }),
+    ).toEqual(pass);
+  });
+
   it('treats missing variables as empty without crashing', () => {
     expect(run({})).toEqual(pass);
-    expect(run({ GITHUB_EVENT_NAME: 'workflow_dispatch' })).toEqual(pass);
-    expect(run({ GITHUB_EVENT_NAME: 'pull_request' })).toEqual(pass);
+    expect(run({ GUARD_EVENT_NAME: 'pull_request' })).toEqual(pass);
+    expect(run({ GUARD_EVENT_NAME: 'workflow_dispatch' })).toEqual(
+      fail(NOT_BRANCH),
+    );
     expect(
-      run({ GITHUB_EVENT_NAME: 'workflow_dispatch', GUARD_ENVIRONMENT: 'dev' }),
-    ).toEqual(fail(DEV));
+      run({
+        GUARD_EVENT_NAME: 'workflow_dispatch',
+        GUARD_REF: 'refs/heads/develop',
+      }),
+    ).toEqual(fail(ENVIRONMENT));
   });
 
   it('never echoes an input value', () => {
-    const marker = 'feature/MARKER-7f3a';
     const results = [
-      dispatch(marker, 'dev'),
-      dispatch(marker, 'prod'),
+      dispatch('refs/heads/feature/MARKER-7f3a', 'dev'),
+      dispatch('refs/heads/feature/MARKER-7f3a', 'prod'),
+      dispatch('refs/tags/MARKER-tag-4d2c', 'preview'),
+      dispatch('refs/heads/develop', 'MARKER-env-9c1d'),
+      dispatch('refs/heads/browser-extension', 'MARKER-env-9c1d'),
       run({
-        GITHUB_EVENT_NAME: 'workflow_dispatch',
-        GUARD_REF_NAME: 'browser-extension',
-        GUARD_ENVIRONMENT: 'MARKER-env-9c1d',
-      }),
-      run({
-        GITHUB_EVENT_NAME: 'pull_request',
-        GUARD_REF_NAME: 'MARKER-ref-2b8e',
+        GUARD_EVENT_NAME: 'pull_request',
+        GUARD_REF: 'refs/pull/MARKER-ref-2b8e/merge',
         GUARD_HEAD_REF: 'browser-extension',
       }),
     ];
@@ -170,14 +196,15 @@ const jobSteps = (workflow: string, job: string): string[] => {
 };
 
 const GUARD_ENV = [
-  'GITHUB_EVENT_NAME: ${{ github.event_name }}',
-  'GUARD_REF_NAME: ${{ github.ref_name }}',
+  'GUARD_EVENT_NAME: ${{ github.event_name }}',
+  'GUARD_REF: ${{ github.ref }}',
   'GUARD_HEAD_REF: ${{ github.head_ref }}',
 ];
 
 const expectGuardStep = (step: string, scriptPath: string) => {
   expect(step).toContain('name: Guard deploy ref');
   for (const line of GUARD_ENV) expect(step).toContain(line);
+  expect(step).not.toContain('GITHUB_EVENT_NAME');
   expect(step).toContain(`run: bash ${scriptPath}\n`);
   // The run line takes no expression: values come through env only.
   const runLine = step.split('\n').find((l) => l.trim().startsWith('run:'));
@@ -185,7 +212,26 @@ const expectGuardStep = (step: string, scriptPath: string) => {
 };
 
 describe('deploy.yml guard', () => {
-  const steps = jobSteps(read('.github/workflows/deploy.yml'), 'setup');
+  const deploy = read('.github/workflows/deploy.yml');
+  const steps = jobSteps(deploy, 'setup');
+
+  /** A job's header (everything before its steps). */
+  const jobHeader = (job: string) => {
+    const start = deploy.indexOf(`\n  ${job}:\n`);
+    expect(start, `job ${job} exists`).toBeGreaterThan(-1);
+    return deploy.slice(start, deploy.indexOf('\n    steps:\n', start));
+  };
+
+  it('gives setup read-only contents', () => {
+    expect(jobHeader('setup')).toContain(
+      '\n    permissions:\n      contents: read\n',
+    );
+  });
+
+  it('makes build and terraform wait on setup', () => {
+    expect(jobHeader('build')).toContain('\n    needs: setup\n');
+    expect(jobHeader('terraform')).toContain('\n    needs: [setup, build]\n');
+  });
 
   it('checks out only the guard script, then runs it first', () => {
     expect(steps[0]).toContain('uses: actions/checkout@v4');
@@ -237,7 +283,7 @@ describe('cleanup-preview.yml guard', () => {
   it('runs the guard right after checkout, before any cloud step', () => {
     expect(steps[0]).toContain('uses: actions/checkout@v4');
     expectGuardStep(steps[1], 'scripts/guard-deploy-ref.sh');
-    expect(steps[1]).toContain("GUARD_ENVIRONMENT: ''");
+    expect(steps[1]).toContain('GUARD_ENVIRONMENT: preview\n');
     expect(steps[2]).toContain('name: Authenticate to Google Cloud');
     const guardAt = steps.findIndex((s) => s.includes('Guard deploy ref'));
     const cloudAt = steps.findIndex((s) =>
@@ -246,4 +292,16 @@ describe('cleanup-preview.yml guard', () => {
     expect(guardAt).toBeGreaterThan(-1);
     expect(guardAt).toBeLessThan(cloudAt);
   });
+});
+
+describe('a failed guard stops every later step', () => {
+  it.each(['deploy.yml', 'promote.yml', 'cleanup-preview.yml'])(
+    '%s has no always(), !cancelled() or failure()',
+    (file) => {
+      const text = read(`.github/workflows/${file}`);
+      expect(text).not.toContain('always()');
+      expect(text).not.toContain('cancelled()');
+      expect(text).not.toContain('failure()');
+    },
+  );
 });

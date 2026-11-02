@@ -428,35 +428,56 @@ branch would apply its migrations to the database the develop site uses.
 `scripts/guard-deploy-ref.sh` runs as the first step of `deploy.yml`
 (`setup`), `promote.yml` (`promote`, before the tag checkout, taken from
 `github.sha`) and `cleanup-preview.yml` (`cleanup`, before any Google Cloud
-step). It refuses:
+step). It reads the full ref (`github.ref`) for a dispatch and the source
+branch name (`github.head_ref`) for a pull request. It refuses:
 
-- a `workflow_dispatch` run from `browser-extension`, for any environment;
-- a `pull_request` run whose source branch is `browser-extension` (no
-  `preview-pr-N` is created, and closing that pull request destroys nothing);
+- a `workflow_dispatch` from any ref that is not a branch (`refs/heads/...`):
+  a tag named `develop`, `main` or `browser-extension`, or any other tag, is
+  refused for every environment;
+- a `workflow_dispatch` from `browser-extension`, for any environment;
+- a `workflow_dispatch` whose environment is not exactly `dev`, `preview` or
+  `prod` (`cleanup-preview.yml` passes `preview`);
 - a `workflow_dispatch` of `dev` from any branch but `develop`, or of `prod`
-  from any branch but `main`. `preview` stays allowed from other branches.
+  from any branch but `main`. `preview` stays allowed from other branches;
+- a `pull_request` run whose source branch is `browser-extension` (no
+  `preview-pr-N` is created, and closing that pull request destroys nothing).
 
 `cleanup-preview.yml` also skips its job for a pull request whose base is not
 `develop` or `main` (previews exist only for those bases), so closing a pull
 request into `browser-extension` runs nothing and shows the job as skipped. A
-manual dispatch of it still runs. Push events are not checked (`deploy.yml` deploys on pushes to `develop` and
-`main` only). The guard works because GitHub runs the workflow file from the
-dispatched ref, or from the pull request's merge commit, which carry this
-branch's copy. It does not exist on `develop` or `main`, so their own deploys
-and promotes behave as before.
+manual dispatch of it still runs. Push events are not checked (`deploy.yml`
+deploys on pushes to `develop` and `main` only). The guard works because
+GitHub runs the workflow file from the dispatched ref, or from the pull
+request's merge commit, which carry this branch's copy. It does not exist on
+`develop` or `main`, so their own deploys and promotes behave as before. If
+the guard ever reached `main` or `develop`, a promote would have to be
+dispatched from `develop` for dev and from `main` for prod.
 
-The guard matches the branch name only. A branch cut from `browser-extension`
-carries its migrations but can still be dispatched to `preview` or opened as a
-pull request into `develop`/`main` (a `preview-pr-N`), and both use the dev
-Cloud SQL instance: do not do either from such a branch.
+Not covered:
 
-A merge of `browser-extension` into `develop` or `main` cannot be blocked by a
-workflow: the push that follows deploys. The protection for that is a GitHub
-branch ruleset or required review on `develop` and `main`, which is the
-owner's setting. To deploy this branch to an environment of its own, a future
-change must add that environment (its own database) and relax the guard
-deliberately: the branch name is the `EXTENSION_BRANCH` constant at the top
-of the script.
+- The guard matches the branch name only. A branch cut from
+  `browser-extension` carries its migrations but can still be dispatched to
+  `preview` or opened as a pull request into `develop`/`main` (a
+  `preview-pr-N`), and both use the dev Cloud SQL instance: do not do either
+  from such a branch.
+- Promote's `version` input is not checked. A promote dispatched from `main`
+  with `version` set to `browser-extension`, or to a tag in this branch's
+  history, checks out this branch's Terraform and applies it (the chatbot
+  image check only warns).
+- A merge of `browser-extension` into `develop` or `main` cannot be blocked by
+  a workflow: the push that follows deploys. The protection for that is a
+  GitHub branch ruleset or required review on `develop` and `main`, which is
+  the owner's setting.
+
+Owner option, not implemented: a tripwire. The guard could refuse every
+`pull_request`, `workflow_dispatch` and `push` run from a copy of the workflow
+that carries it. A merge into `develop` or `main` would then make the
+following deploy refuse (the merge itself still lands), at the cost of
+blocking every deploy of that branch until the merge is reverted.
+
+To deploy this branch to an environment of its own, a future change must add
+that environment (its own database) and relax the guard deliberately: the
+branch name is the `EXTENSION_BRANCH` constant at the top of the script.
 
 ## 5. Migrations
 

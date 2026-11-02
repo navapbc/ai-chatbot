@@ -5,16 +5,20 @@
 # Run as the first step of deploy.yml (setup), promote.yml (promote) and
 # cleanup-preview.yml (cleanup). Reads only these variables, mapped with `env:`
 # in the workflow (never interpolated into the script):
-#   GITHUB_EVENT_NAME  the triggering event
-#   GUARD_REF_NAME     github.ref_name (the branch a dispatch runs from)
-#   GUARD_HEAD_REF     github.head_ref (a pull request's source branch)
-#   GUARD_ENVIRONMENT  inputs.environment on a dispatch, empty otherwise
+#   GUARD_EVENT_NAME   github.event_name
+#   GUARD_REF          github.ref, the full ref a dispatch runs from
+#                      (refs/heads/<branch> or refs/tags/<tag>)
+#   GUARD_HEAD_REF     github.head_ref, a pull request's source branch (short)
+#   GUARD_ENVIRONMENT  inputs.environment on a dispatch ('preview' for cleanup)
 #
 # Rules:
-#   - workflow_dispatch from the extension branch: refused.
+#   - workflow_dispatch:
+#       - from any ref that is not a branch (a tag): refused;
+#       - from the extension branch: refused;
+#       - an environment other than exactly dev, preview or prod: refused;
+#       - dev only from develop, prod only from main; preview from any other
+#         branch.
 #   - pull_request from the extension branch: refused.
-#   - workflow_dispatch of dev: only from develop; of prod: only from main;
-#     any other environment (preview, or none): from any other branch.
 #   - push and any other event: allowed (deploy.yml pushes only on
 #     develop and main).
 # On refusal prints one fixed line (no input value) to stderr and exits 1;
@@ -24,8 +28,8 @@ set -euo pipefail
 
 EXTENSION_BRANCH=browser-extension
 
-event="${GITHUB_EVENT_NAME:-}"
-ref_name="${GUARD_REF_NAME:-}"
+event="${GUARD_EVENT_NAME:-}"
+ref="${GUARD_REF:-}"
 head_ref="${GUARD_HEAD_REF:-}"
 environment="${GUARD_ENVIRONMENT:-}"
 
@@ -36,13 +40,20 @@ refuse() {
 
 case "$event" in
   workflow_dispatch)
-    if [[ "$ref_name" == "$EXTENSION_BRANCH" ]]; then
+    if [[ "$ref" != refs/heads/* ]]; then
+      refuse "a deploy can only be dispatched from a branch"
+    fi
+    if [[ "$ref" == "refs/heads/$EXTENSION_BRANCH" ]]; then
       refuse "the extension branch is never deployed to the shared environments"
     fi
-    if [[ "$environment" == "dev" && "$ref_name" != "develop" ]]; then
+    case "$environment" in
+      dev | preview | prod) ;;
+      *) refuse "the environment must be dev, preview or prod" ;;
+    esac
+    if [[ "$environment" == "dev" && "$ref" != "refs/heads/develop" ]]; then
       refuse "dev can only be dispatched from develop"
     fi
-    if [[ "$environment" == "prod" && "$ref_name" != "main" ]]; then
+    if [[ "$environment" == "prod" && "$ref" != "refs/heads/main" ]]; then
       refuse "prod can only be dispatched from main"
     fi
     ;;
