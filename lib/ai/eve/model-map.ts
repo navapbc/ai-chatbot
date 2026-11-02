@@ -88,8 +88,14 @@ export function isVertexModelId(value: unknown): value is string {
   return typeof value === 'string' && ALLOWED_MODEL_IDS.has(value);
 }
 
-/** Model a relay run uses when `RELAY_ALLOWED_MODELS` names none we know. */
-const DEFAULT_RELAY_MODELS: readonly string[] = ['claude-opus-5'];
+/**
+ * Models a relay run may use when `RELAY_ALLOWED_MODELS` names none we know:
+ * every picker model, with `claude-opus-5` first (the default selection).
+ */
+const DEFAULT_RELAY_MODELS: readonly string[] = [
+  'claude-opus-5',
+  ...Object.keys(MODEL_MAP).filter((id) => id !== 'claude-opus-5'),
+];
 
 type Env = Record<string, string | undefined>;
 
