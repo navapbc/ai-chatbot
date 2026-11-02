@@ -3,7 +3,11 @@ import { z } from 'zod';
 import { annotateSummaryFields } from '@/lib/jev/enrich';
 import { relayCredentialState } from '@/lib/relay/eve-relay-browser';
 import { currentCaseworkerMessages, currentParticipant } from '../lib/jev';
-import { summaryRowsForRelay } from '../lib/relay-rows';
+import {
+  messagesForRelay,
+  participantForRelay,
+  summaryRowsForRelay,
+} from '../lib/relay-rows';
 
 // Returns validated structured data for the form-summary card. The interactive
 // card RENDER is wired to the chat UI in SP-B; standalone this tool's job is to
@@ -38,8 +42,12 @@ export default defineTool({
     // agent's fields are never rewritten. The participant comes from session
     // state (agent/hooks/participant.ts); absent it, nothing is annotated.
     const annotated = await annotateSummaryFields({
-      participant: currentParticipant(),
-      caseworkerMessages: currentCaseworkerMessages(),
+      participant: onRelay
+        ? participantForRelay(currentParticipant())
+        : currentParticipant(),
+      caseworkerMessages: onRelay
+        ? messagesForRelay(currentCaseworkerMessages())
+        : currentCaseworkerMessages(),
       fields: onRelay ? summaryRowsForRelay(fields) : fields,
       signal: ctx?.abortSignal,
     });

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { annotateGapFields } from '@/lib/jev/enrich';
 import { relayCredentialState } from '@/lib/relay/eve-relay-browser';
 import { currentParticipant } from '../lib/jev';
-import { gapRowsForRelay } from '../lib/relay-rows';
+import { gapRowsForRelay, participantForRelay } from '../lib/relay-rows';
 
 // Returns validated structured data for the gap-analysis card. The interactive
 // card RENDER is wired to the chat UI in SP-B; standalone this tool's job is to
@@ -40,7 +40,9 @@ export default defineTool({
     // inherits no state) the rows come back unannotated and this behaves
     // exactly as before.
     const annotated = await annotateGapFields({
-      participant: currentParticipant(),
+      participant: onRelay
+        ? participantForRelay(currentParticipant())
+        : currentParticipant(),
       fields: onRelay ? gapRowsForRelay(missingFields) : missingFields,
       signal: ctx?.abortSignal,
     });
