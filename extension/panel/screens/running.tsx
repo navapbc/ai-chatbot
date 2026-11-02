@@ -24,6 +24,7 @@ import {
   type SendAnswers,
 } from './needs-you';
 import { ProgressView } from './progress-view';
+import { ThinkingLine } from './thinking-line';
 import { isConfirming } from '../lib/review-model';
 import { ReviewPanel } from './review';
 
@@ -250,6 +251,9 @@ export const RunningScreen = ({
           pending={questions}
           sendAnswers={send}
         />
+      ) : null}
+      {!ended && (state?.phase ?? 'working') === 'working' ? (
+        <ThinkingLine latest={state?.actions?.at(-1)} />
       ) : null}
       {!ended ? (
         <ProgressView

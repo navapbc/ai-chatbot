@@ -413,7 +413,7 @@ describe('the panel shell', () => {
     });
     await page.goto(`chrome-extension://${EXTENSION_ID}/panel.html`);
     await page.getByRole('button', { name: 'Use this tab' }).click();
-    await page.getByText('Site: example.gov').waitFor();
+    await page.getByText('example.gov', { exact: true }).waitFor();
 
     const box = page.getByRole('searchbox', { name: 'Search participants' });
     await box.fill('al');
@@ -437,9 +437,10 @@ describe('the panel shell', () => {
     expect(searches.some(([, , , body]) => body.includes('alice'))).toBe(true);
 
     await page.getByRole('button', { name: /Alice/ }).click();
+    await page.getByRole('button', { name: 'Continue' }).click();
     await page.getByRole('heading', { name: 'Ready' }).waitFor();
     await page.getByText('Alice <b>x</b>').waitFor();
-    await page.getByText('https://example.gov').waitFor();
+    await page.getByText(/Alice.*example\.gov/).waitFor();
     await page.getByText('The agent works only on this site.').waitFor();
     await page.getByText('It asks you for anything that is missing.').waitFor();
     await page
@@ -459,6 +460,7 @@ describe('the panel shell', () => {
       .getByRole('searchbox', { name: 'Search participants' })
       .fill('alice');
     await page.getByRole('button', { name: /Alice/ }).click();
+    await page.getByRole('button', { name: 'Continue' }).click();
     await page.getByRole('heading', { name: 'Ready' }).waitFor();
 
     // The stubbed tab 7 does not exist: the starter refuses before any
@@ -512,6 +514,7 @@ describe('the panel shell', () => {
       .getByRole('searchbox', { name: 'Search participants' })
       .fill('alice');
     await page.getByRole('button', { name: /Alice/ }).click();
+    await page.getByRole('button', { name: 'Continue' }).click();
     await page.getByRole('heading', { name: 'Ready' }).waitFor();
     return { site, page };
   };
@@ -2498,8 +2501,10 @@ describe('the panel shell', () => {
     const toDetails = async (page: import('playwright').Page) => {
       await page.goto(`chrome-extension://${EXTENSION_ID}/panel.html`);
       await page.getByRole('button', { name: 'Use this tab' }).click();
-      await page.getByRole('button', { name: 'Enter details instead' }).click();
-      await page.getByRole('heading', { name: 'Enter details' }).waitFor();
+      await page.getByRole('tab', { name: 'Enter details' }).click();
+      await page
+        .getByRole('tab', { name: 'Enter details', selected: true })
+        .waitFor();
     };
 
     const page = await browser.context.newPage();

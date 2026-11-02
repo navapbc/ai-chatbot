@@ -88,48 +88,46 @@ export const ReadyScreen = ({ state, dispatch, onStart }: Props) => {
 
   return (
     <section className="flex flex-col gap-4" aria-label="Ready">
-      <h2 className="text-base font-semibold">Ready</h2>
-      <dl className="flex flex-col gap-2 text-sm">
-        <div>
-          <dt className="text-muted-foreground">Site</dt>
-          <dd className="font-medium">{target.siteName}</dd>
-          <dd className="text-muted-foreground">{target.origin}</dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">For</dt>
-          <dd className="font-medium">
-            {participant.kind === 'record'
-              ? participant.name
-              : 'Details you entered'}
-          </dd>
-        </div>
-        <div className="flex flex-col gap-1">
-          <dt className="text-muted-foreground">
-            <label htmlFor={modelLabelId}>Model</label>
-          </dt>
-          <dd>
-            <select
-              id={modelLabelId}
-              value={modelId}
-              disabled={starting || config.models.length === 1}
-              onChange={(event) => handleModelChange(event.target.value)}
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-            >
-              {config.models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {modelLabel(m.id)}
-                  {m.id === config.defaultModel ? ' (default)' : ''}
-                </option>
-              ))}
-            </select>
-          </dd>
-        </div>
-      </dl>
-      <ul className="flex list-disc flex-col gap-1 pl-5 text-sm">
-        {STATEMENTS.map((line) => (
-          <li key={line}>{line}</li>
-        ))}
-      </ul>
+      <div className="flex flex-col gap-1">
+        <h2 className="text-lg font-semibold">Ready to fill</h2>
+        <p className="truncate text-sm text-muted-foreground">
+          {participant.kind === 'record'
+            ? participant.name
+            : 'Details you entered'}
+          {' · '}
+          {target.siteName}
+        </p>
+      </div>
+      <div className="flex flex-col gap-2">
+        <label htmlFor={modelLabelId} className="text-sm font-medium">
+          Model
+        </label>
+        <select
+          id={modelLabelId}
+          value={modelId}
+          disabled={starting || config.models.length === 1}
+          onChange={(event) => handleModelChange(event.target.value)}
+          className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+        >
+          {config.models.map((m) => (
+            <option key={m.id} value={m.id}>
+              {modelLabel(m.id)}
+              {m.id === config.defaultModel ? ' (default)' : ''}
+            </option>
+          ))}
+        </select>
+        <p className="text-sm text-muted-foreground">
+          Faster models cost less; slower ones handle harder forms.
+        </p>
+      </div>
+      <div className="flex flex-col gap-2 rounded-xl border border-border p-3">
+        <h3 className="text-sm font-semibold">The agent will</h3>
+        <ul className="flex flex-col gap-1 text-sm">
+          {STATEMENTS.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      </div>
       <p className="text-sm text-muted-foreground">{DEBUGGER_BAR_COPY}</p>
       {error ? (
         <div role="alert" className="flex flex-col gap-1 text-sm">
@@ -139,11 +137,11 @@ export const ReadyScreen = ({ state, dispatch, onStart }: Props) => {
       ) : null}
       <div className="flex flex-col gap-2">
         <Button type="button" disabled={starting} onClick={handleStart}>
-          Start
+          Start filling
         </Button>
         <Button
           type="button"
-          variant="ghost"
+          variant="outline"
           disabled={starting}
           onClick={handleBack}
         >

@@ -32,3 +32,21 @@
     @apply bg-background text-foreground font-sans;
   }
 }
+
+/* The Running screen's status line fades in each time its text changes. */
+@keyframes thinking-fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .thinking-fade {
+    animation: thinking-fade 0.6s ease-out;
+  }
+}
