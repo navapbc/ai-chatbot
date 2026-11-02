@@ -3155,6 +3155,18 @@ export function onDebuggerDetach(
   // value outside that shape is not printed.
   if (/^[a-z_]{1,40}$/.test(reason)) {
     console.warn(`relay: debugger detached (${reason})`);
+    // What the tab is now, by scheme only (never the address): a tab that
+    // moved to another extension's page or an error page explains a failed
+    // re-attach.
+    void chrome.tabs
+      .get(current.tabId)
+      .then((tab) => {
+        const scheme = /^([a-z-]+):/.exec(tab.url ?? tab.pendingUrl ?? '');
+        console.warn(
+          `relay: tab after detach: ${scheme?.[1] ?? 'unknown'} (${tab.status ?? 'unknown'})`,
+        );
+      })
+      .catch(() => console.warn('relay: tab after detach: gone'));
   }
   // The caseworker dismissed Chrome's debugging infobar: the run is over.
   if (reason === 'canceled_by_user') {
