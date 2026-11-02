@@ -1,6 +1,7 @@
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { ParticipantTabs } from './participant-tabs';
 import type { AppApi } from '../../src/app-api';
 import {
   createControllerLifecycle,
@@ -42,6 +43,10 @@ export const ParticipantScreen = ({
 }: Props) => {
   const [value, setValue] = useState('');
   const [state, setState] = useState<SearchState>({ status: 'idle' });
+  const [chosen, setChosen] = useState<{
+    recordId: string;
+    name: string;
+  } | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const items = useRef<(HTMLButtonElement | null)[]>([]);
   const labelId = useId();
@@ -66,6 +71,7 @@ export const ParticipantScreen = ({
 
   const handleChange = (next: string) => {
     setValue(next);
+    setChosen(null);
     controller.current?.setQuery(next);
   };
 
@@ -95,12 +101,24 @@ export const ParticipantScreen = ({
 
   const error = state.status === 'error' ? state : null;
 
+  const handleContinue = () => {
+    if (!chosen) return;
+    onChoose({ kind: 'record', recordId: chosen.recordId, name: chosen.name });
+  };
+
   return (
     <section className="flex flex-col gap-4" aria-label="Participant">
-      <p className="text-sm text-muted-foreground">Site: {siteName}</p>
-      <h2 className="text-base font-semibold">Who is this for?</h2>
+      <div className="flex flex-col gap-1">
+        <h2 className="text-lg font-semibold">Participant</h2>
+        <p className="truncate text-sm text-muted-foreground">{siteName}</p>
+      </div>
+      <ParticipantTabs
+        active="system"
+        onSystem={() => {}}
+        onDetails={() => onDetails()}
+      />
       <div className="flex flex-col gap-2">
-        <label htmlFor={labelId} className="text-sm font-medium">
+        <label htmlFor={labelId} className="sr-only">
           Search participants
         </label>
         <Input
@@ -108,6 +126,7 @@ export const ParticipantScreen = ({
           ref={input}
           type="search"
           aria-label="Search participants"
+          placeholder="Search by name or record ID"
           autoComplete="off"
           value={value}
           onChange={(event) => handleChange(event.target.value)}
@@ -118,27 +137,31 @@ export const ParticipantScreen = ({
         {announce(state)}
       </p>
       {state.status === 'results' && state.results.length > 0 ? (
-        <ul className="flex flex-col gap-1" aria-label="Participants">
+        <ul className="flex flex-col gap-2" aria-label="Participants">
           {state.results.map((p, index) => (
             <li key={p.recordId}>
               <button
                 type="button"
+                aria-pressed={chosen?.recordId === p.recordId}
                 ref={(el) => {
                   items.current[index] = el;
                 }}
-                className="flex w-full flex-col rounded-md border border-input px-3 py-2 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() =>
-                  onChoose({
-                    kind: 'record',
-                    recordId: p.recordId,
-                    name: p.name,
-                  })
-                }
+                className={`flex w-full items-center justify-between gap-2 rounded-xl border p-3 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  chosen?.recordId === p.recordId
+                    ? 'border-primary/40 bg-accent'
+                    : 'border-border bg-secondary'
+                }`}
+                onClick={() => setChosen(p)}
                 onKeyDown={(event) => handleItemKeyDown(event, index)}
               >
-                <span className="font-medium">{p.name}</span>
-                <span className="text-muted-foreground">
-                  {p.county}, {p.recordId}
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate font-semibold">{p.name}</span>
+                  <span className="truncate text-muted-foreground">
+                    {p.county}
+                  </span>
+                </span>
+                <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
+                  {p.recordId}
                 </span>
               </button>
             </li>
@@ -162,8 +185,8 @@ export const ParticipantScreen = ({
         </div>
       ) : null}
       <div className="flex flex-col gap-2">
-        <Button type="button" variant="outline" onClick={() => onDetails()}>
-          Enter details instead
+        <Button type="button" disabled={!chosen} onClick={handleContinue}>
+          Continue
         </Button>
         <Button type="button" variant="ghost" onClick={() => onBack()}>
           Back

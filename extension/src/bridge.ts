@@ -445,6 +445,10 @@ const MAX_RECONNECT_MS = 30_000;
 const PENDING_STOP_MS = 30_000;
 // A non-user detach ends the run unless the tab is re-attached in time.
 const DETACH_GRACE_MS = 5_000;
+// Chrome closes the debugging target when a page swaps its process during a
+// navigation (`target_closed`) while the tab itself stays open and loads: the
+// agent may need longer to attach again than after any other detach.
+const TARGET_CLOSED_GRACE_MS = 20_000;
 const REGISTRATION_REFUSED = 'registration required';
 const ORIGIN_NOT_PENDING = 'origin not pending';
 // esbuild defines this only in a test-hooks build given
@@ -1532,7 +1536,18 @@ async function attachTab(
   } catch (error) {
     // A timed-out attach may still land: let go (best effort).
     await detachTab(current.tabId, stepMs);
-    if (isPolicyRestriction(error)) current.policyRestricted = true;
+    if (isPolicyRestriction(error)) {
+      current.policyRestricted = true;
+    } else {
+      // Chrome's message with any address removed, console only.
+      console.warn(
+        `relay: attach failed: ${String(
+          error instanceof Error ? error.message : error,
+        )
+          .replace(/\S*:\/\/\S*/g, '[address]')
+          .slice(0, 100)}`,
+      );
+    }
     throw error;
   }
   current.policyRestricted = false;
@@ -3150,6 +3165,24 @@ export function onDebuggerDetach(
 ) {
   const current = run;
   if (!current || source.tabId !== current.tabId) return;
+  // Chrome's fixed detach reason (for example `target_closed` or
+  // `replaced_with_devtools`), shown in the service worker console only; a
+  // value outside that shape is not printed.
+  if (/^[a-z_]{1,40}$/.test(reason)) {
+    console.warn(`relay: debugger detached (${reason})`);
+    // What the tab is now, by scheme only (never the address): a tab that
+    // moved to another extension's page or an error page explains a failed
+    // re-attach.
+    void chrome.tabs
+      .get(current.tabId)
+      .then((tab) => {
+        const scheme = /^([a-z-]+):/.exec(tab.url ?? tab.pendingUrl ?? '');
+        console.warn(
+          `relay: tab after detach: ${scheme?.[1] ?? 'unknown'} (${tab.status ?? 'unknown'})`,
+        );
+      })
+      .catch(() => console.warn('relay: tab after detach: gone'));
+  }
   // The caseworker dismissed Chrome's debugging infobar: the run is over.
   if (reason === 'canceled_by_user') {
     current.blocked = true;
@@ -3175,12 +3208,15 @@ export function onDebuggerDetach(
   // P4b-d: the tab must be attached again (the agent re-attaches through the
   // relay) within the grace period, or the run ends.
   clearTimeout(current.detachTimer);
-  current.detachTimer = setTimeout(() => {
-    current.detachTimer = undefined;
-    if (run === current && !current.attached) {
-      void endRun('debugger-detached');
-    }
-  }, DETACH_GRACE_MS);
+  current.detachTimer = setTimeout(
+    () => {
+      current.detachTimer = undefined;
+      if (run === current && !current.attached) {
+        void endRun('debugger-detached');
+      }
+    },
+    reason === 'target_closed' ? TARGET_CLOSED_GRACE_MS : DETACH_GRACE_MS,
+  );
   // The agent was never given this session (a failed attach): say nothing.
   if (!announced) return;
   send(current, {

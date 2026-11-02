@@ -180,6 +180,7 @@ export const App = ({ onStart }: { onStart?: OnStart }) => {
       ) : null}
       {state.screen === 'details' ? (
         <DetailsScreen
+          siteName={state.target?.siteName}
           onSubmit={(details, save) =>
             dispatch({ type: 'submitDetails', details, save })
           }

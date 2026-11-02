@@ -3117,7 +3117,7 @@ describe('bridge e2e', { timeout: 30_000 }, () => {
           globalThis as unknown as {
             bridgeOnDebuggerDetach: (s: { tabId: number }, r: string) => void;
           }
-        ).bridgeOnDebuggerDetach({ tabId: id }, 'target_closed'),
+        ).bridgeOnDebuggerDetach({ tabId: id }, 'replaced_with_devtools'),
       tabId,
     );
     await until(

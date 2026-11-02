@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { ParticipantTabs } from './participant-tabs';
 import {
   clearSavedDetails,
   DETAIL_FIELDS,
@@ -15,6 +16,7 @@ import {
 type Props = {
   onSubmit: (details: Record<string, string>, save: boolean) => void;
   onBack: () => void;
+  siteName?: string;
 };
 
 const INPUT_TYPES: Record<string, 'tel' | 'email' | 'text'> = {
@@ -26,7 +28,7 @@ const SAVE_REFUSED = 'These details could not be saved.';
 
 // Values live in component state until submit; nothing here logs or stores
 // them except the opt-in saveDetails call.
-export const DetailsScreen = ({ onSubmit, onBack }: Props) => {
+export const DetailsScreen = ({ onSubmit, onBack, siteName }: Props) => {
   const [values, setValues] = useState<Record<string, string>>({});
   const [saved, setSaved] = useState<Record<string, string> | null>(null);
   const [save, setSave] = useState(false);
@@ -81,7 +83,17 @@ export const DetailsScreen = ({ onSubmit, onBack }: Props) => {
 
   return (
     <section className="flex flex-col gap-4" aria-label="Details">
-      <h2 className="text-base font-semibold">Enter details</h2>
+      <div className="flex flex-col gap-1">
+        <h2 className="text-lg font-semibold">Participant</h2>
+        {siteName ? (
+          <p className="truncate text-sm text-muted-foreground">{siteName}</p>
+        ) : null}
+      </div>
+      <ParticipantTabs
+        active="details"
+        onSystem={handleBack}
+        onDetails={() => {}}
+      />
       {saved ? (
         <div className="flex flex-col gap-2">
           <Button type="button" variant="outline" onClick={handleReuse}>

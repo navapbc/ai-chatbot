@@ -683,9 +683,9 @@ describe('POST /api/eve-chat relay runs', () => {
       );
     });
 
-    it('refuses a model outside the default allowlist', async () => {
+    it('refuses a model the picker does not know', async () => {
       await expectCause(
-        await startRun(start({ model: 'gpt-5.4' })),
+        await startRun(start({ model: 'not-a-model' })),
         400,
         'model_not_allowed',
       );

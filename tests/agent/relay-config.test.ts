@@ -55,8 +55,15 @@ describe('getRelayConfig sites', () => {
     expect(sitesOf([{ ...site(), extra: 'x' }])).toEqual([site()]);
   });
 
-  it('defaults to the checked-in file (empty)', () => {
-    expect(getRelayConfig({}).sites).toEqual([]);
+  it('defaults to the checked-in file, every entry valid', () => {
+    const { sites } = getRelayConfig({});
+    expect(sites.map((s) => s.id)).toEqual([
+      'wic',
+      'ihss',
+      'benefits-cal',
+      'nurse-family-partnership',
+      'pregnancy-planning',
+    ]);
   });
 });
 
@@ -64,7 +71,8 @@ describe('getRelayConfig models', () => {
   it('uses the default for unset and empty env', () => {
     for (const env of [{}, { RELAY_ALLOWED_MODELS: '' }]) {
       const cfg = getRelayConfig(env);
-      expect(cfg.models).toEqual([{ id: 'claude-opus-5' }]);
+      expect(cfg.models.length).toBeGreaterThan(1);
+      expect(cfg.models[0]).toEqual({ id: 'claude-opus-5' });
       expect(cfg.defaultModel).toBe('claude-opus-5');
     }
   });
@@ -78,7 +86,7 @@ describe('getRelayConfig models', () => {
 
   it('falls back to the default when only unknown models are named', () => {
     const cfg = getRelayConfig({ RELAY_ALLOWED_MODELS: 'nope,nada' });
-    expect(cfg.models).toEqual([{ id: 'claude-opus-5' }]);
+    expect(cfg.models).toEqual(getRelayConfig({}).models);
     expect(cfg.defaultModel).toBe('claude-opus-5');
   });
 
