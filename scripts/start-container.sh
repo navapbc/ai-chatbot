@@ -44,6 +44,9 @@ fi
 # never directly from outside the container. PORT is set per-process so it does
 # not disturb the PORT Cloud Run hands to Next.
 echo "[start] starting Eve runtime on 127.0.0.1:${EVE_PORT}"
+# APP_INTERNAL_URL is where Eve reaches Next's internal /api/relay/agent-token
+# route; it carries Next's PORT, so it is set for the Eve process only.
+APP_INTERNAL_URL="http://127.0.0.1:${PORT:-3000}" \
 HOST=127.0.0.1 NITRO_HOST=127.0.0.1 NITRO_PORT="${EVE_PORT}" PORT="${EVE_PORT}" \
   node "${EVE_ENTRY}" &
 EVE_PID=$!

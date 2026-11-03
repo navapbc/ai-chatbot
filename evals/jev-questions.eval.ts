@@ -1,8 +1,16 @@
 import { Eval } from 'braintrust';
 import { askJev, isJevEnabled } from '@/lib/jev/client';
-import { gapFieldQuestions, summaryFieldQuestions } from '@/lib/jev/questions';
+import {
+  gapFieldQuestions,
+  NOUL_THRESHOLD,
+  sanitizeFieldText,
+  sensitiveFieldQuestions,
+  summaryFieldQuestions,
+} from '@/lib/jev/questions';
+import type { FieldDescriptor } from '@/lib/relay/sensitive-fields';
 import { getParticipantById } from '@/lib/data/participants';
 import cases from './datasets/jev-questions.json';
+import sensitiveRows from './datasets/sensitive-fields.json';
 import { evalExperimentName, logJevUsageAndCost } from './helpers';
 
 /**
@@ -30,9 +38,6 @@ import { evalExperimentName, logJevUsageAndCost } from './helpers';
 /** Repeats per case — Jev is probabilistic and its variance is itself unknown. */
 const REPEATS = Number.parseInt(process.env.JEV_EVAL_REPEATS ?? '3', 10);
 
-/** Where a `high`/`low` expectation sits. A noul is a probability in [0,1]. */
-const NOUL_THRESHOLD = 0.5;
-
 const participant = getParticipantById(cases.recordId);
 if (!participant) {
   throw new Error(
@@ -44,16 +49,39 @@ if (!participant) {
 // { ok: false }, which would score every row 0 and read as a total regression
 // rather than "this did not run". Detect it once here and return null scores
 // instead — the same non-applicable convention regression-scenarios uses.
-const ENABLED = isJevEnabled('summary-check') && isJevEnabled('gap-triage');
-if (!ENABLED) {
+const HAS_KEY = Boolean(process.env.TYPESAFE_API_KEY);
+const CLASSIC_ENABLED =
+  isJevEnabled('summary-check') && isJevEnabled('gap-triage');
+const SENSITIVE_ENABLED = isJevEnabled('sensitive-field');
+if (!HAS_KEY) {
   console.warn(
-    '::warning::jev-questions eval skipped — needs TYPESAFE_API_KEY and JEV_FEATURES to include summary-check and gap-triage. Scores will be null, NOT zero.',
+    '::warning::jev-questions eval skipped — needs TYPESAFE_API_KEY. Scores will be null, NOT zero.',
   );
+} else {
+  if (!CLASSIC_ENABLED) {
+    console.warn(
+      '::warning::jev-questions gap/summary rows skipped — JEV_FEATURES must include summary-check and gap-triage. Their scores will be null, NOT zero.',
+    );
+  }
+  if (!SENSITIVE_ENABLED) {
+    console.warn(
+      '::warning::jev-questions sensitive-field rows skipped — JEV_FEATURES must include sensitive-field. Their scores will be null, NOT zero.',
+    );
+  }
 }
 
 type SummaryCase = (typeof cases.summary)[number];
 type GapCase = (typeof cases.gap)[number];
-type AnyCase = (SummaryCase | GapCase) & { kind: 'summary' | 'gap' };
+type SensitiveCase = {
+  id: string;
+  field: FieldDescriptor;
+  sensitive: boolean;
+  why: string;
+};
+type AnyCase =
+  | (SummaryCase & { kind: 'summary' })
+  | (GapCase & { kind: 'gap' })
+  | (SensitiveCase & { kind: 'sensitive' });
 
 interface Outcome {
   ran: boolean;
@@ -66,10 +94,23 @@ interface Outcome {
 
 const isSummary = (c: AnyCase): c is SummaryCase & { kind: 'summary' } =>
   c.kind === 'summary';
+const isSensitive = (c: AnyCase): c is SensitiveCase & { kind: 'sensitive' } =>
+  c.kind === 'sensitive';
+
+/** Expected side of the noul midpoint for one row, if it has one. */
+const expectedNoul = (c: AnyCase): 'high' | 'low' | undefined => {
+  if (isSensitive(c)) return c.sensitive ? 'high' : 'low';
+  if (isSummary(c)) return c.expectSourceAccurate as 'high' | 'low';
+  return c.expectSensitive as 'high' | 'low';
+};
 
 const rows: AnyCase[] = [
   ...cases.summary.map((c) => ({ ...c, kind: 'summary' as const })),
   ...cases.gap.map((c) => ({ ...c, kind: 'gap' as const })),
+  ...(sensitiveRows as SensitiveCase[]).map((c) => ({
+    ...c,
+    kind: 'sensitive' as const,
+  })),
 ];
 
 Eval('labs-asp', {
@@ -82,7 +123,8 @@ Eval('labs-asp', {
     rows.flatMap((c) =>
       Array.from({ length: REPEATS }, (_, i) => ({
         input: { ...c, repeat: i },
-        expected: c.expectVerdict,
+        // Typed as string by the scorer args; sensitive rows have no verdict.
+        expected: isSensitive(c) ? '' : c.expectVerdict,
         metadata: { id: c.id, kind: c.kind, why: c.why, repeat: i },
       })),
     ),
@@ -91,7 +133,22 @@ Eval('labs-asp', {
     input: AnyCase & { repeat: number },
     { span },
   ): Promise<Outcome> => {
-    if (!ENABLED) return { ran: false };
+    if (isSensitive(input) ? !SENSITIVE_ENABLED : !CLASSIC_ENABLED) {
+      return { ran: false };
+    }
+
+    if (isSensitive(input)) {
+      const { state, questions } = sensitiveFieldQuestions(input.field);
+      const result = await askJev({
+        state,
+        questions,
+        feature: 'sensitive-field',
+        field: sanitizeFieldText(input.field.label ?? input.field.name ?? ''),
+      });
+      if (!result.ok) return { ran: false };
+      logJevUsageAndCost(span, result.model, result.usage);
+      return { ran: true, noul: result.answers.sensitive.noul };
+    }
 
     const { state, questions } = isSummary(input)
       ? summaryFieldQuestions(
@@ -130,7 +187,8 @@ Eval('labs-asp', {
   scores: [
     // Did Jev pick the adjudicated verdict?
     ({ output, expected }) => {
-      if (!output?.ran) return { name: 'verdict_correct', score: null };
+      if (!output?.ran || output.verdict === undefined)
+        return { name: 'verdict_correct', score: null };
       return {
         name: 'verdict_correct',
         score: output.verdict === expected ? 1 : 0,
@@ -142,11 +200,11 @@ Eval('labs-asp', {
     // 0.95/0.02 confident miss both score 0 there, and 0.40 vs 0.02 here.
     // This is the number to watch when judging whether a reword helped.
     ({ output }) => {
-      if (!output?.ran)
+      if (!output?.ran || output.expectedVerdictP === undefined)
         return { name: 'expected_verdict_probability', score: null };
       return {
         name: 'expected_verdict_probability',
-        score: output.expectedVerdictP ?? 0,
+        score: output.expectedVerdictP,
       };
     },
 
@@ -160,13 +218,15 @@ Eval('labs-asp', {
         return { name: 'noul_direction_correct', score: null };
       }
       const row = rows.find((r) => r.id === metadata?.id);
-      const want =
-        (row as SummaryCase | undefined)?.expectSourceAccurate ??
-        (row as GapCase | undefined)?.expectSensitive;
+      const want = row ? expectedNoul(row) : undefined;
       if (want !== 'high' && want !== 'low') {
         return { name: 'noul_direction_correct', score: null };
       }
-      const isHigh = output.noul > NOUL_THRESHOLD;
+      // Sensitive-field rows use the runtime rule (>=); the older rows keep >.
+      const isHigh =
+        row && isSensitive(row)
+          ? output.noul >= NOUL_THRESHOLD
+          : output.noul > NOUL_THRESHOLD;
       return {
         name: 'noul_direction_correct',
         score: (want === 'high') === isHigh ? 1 : 0,

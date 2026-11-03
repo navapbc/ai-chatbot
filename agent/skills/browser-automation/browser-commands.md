@@ -143,7 +143,7 @@ Load states: `load`, `domcontentloaded`, `networkidle`
 
 | Command | Description |
 |---------|-------------|
-| `frame <sel>` | Switch to iframe (e.g., `frame "#iframe"`) |
+| `frame @e<N>` | Switch to the iframe whose ref is `@e<N>` in the snapshot. A CSS selector does not resolve |
 | `frame main` | Return to main frame |
 
 ## Dialogs

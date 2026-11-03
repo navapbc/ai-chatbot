@@ -1,6 +1,8 @@
 import { BraintrustExporter } from '@braintrust/otel';
+import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { registerOTel } from '@vercel/otel';
 import { defineInstrumentation } from 'eve/instrumentation';
+import { ScrubbingSpanExporter } from '@/lib/observability/scrubbing-exporter';
 import { TRACER_NAME as BROWSER_TRACER } from '@/lib/observability/browser-telemetry';
 import { TRACER_NAME as JEV_TRACER } from '@/lib/jev/telemetry';
 
@@ -40,25 +42,53 @@ export default defineInstrumentation({
     // trace file either, since authoring this file uninstalls that writer.
     if (!process.env.BRAINTRUST_API_KEY) return;
 
+    if (
+      process.env.RELAY_RUNS_ENABLED === '1' &&
+      (process.env.OTEL_EXPORTER_OTLP_ENDPOINT ||
+        process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT)
+    ) {
+      console.warn(
+        '[instrumentation] OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set but ignored by this process: spans are exported only through the scrubbing Braintrust exporter.',
+      );
+    }
+
     registerOTel({
       serviceName: agentName,
-      // No `spanProcessors` here, so @vercel/otel takes its "auto" branch and
-      // adds a second, env-configured OTLP exporter whenever
-      // OTEL_EXPORTER_OTLP_ENDPOINT is set — every span would ship twice, to
-      // two different projects. Keep those vars out of .env.local.
-      traceExporter: new BraintrustExporter({
-        // Destination is BRAINTRUST_PARENT. Do not fall back to `agentName`:
-        // Eve resolves it from the package name (`ai-chatbot`), which is not a
-        // project anyone looks at. Unset, the exporter uses a project literally
-        // named "default-otel-project".
-        //
-        // Keep the AI spans, plus the scopes named in KEEP_SCOPES.
-        filterAISpans: true,
-        customFilter: (span) =>
-          KEEP_SCOPES.has(span.instrumentationScope?.name ?? '')
-            ? true
-            : undefined,
-      }),
+      // An explicit `spanProcessors` array with no `traceExporter` is the
+      // only wiring that guarantees the scrubbing exporter is the sole export
+      // path. With `traceExporter` alone, @vercel/otel 2.1.2 defaults
+      // `spanProcessors` to ["auto"], which also adds an UNSCRUBBED OTLP
+      // BatchSpanProcessor whenever OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT is set
+      // (plus a Vercel reporter). Checked in node_modules/@vercel/otel: a
+      // caller-supplied array without "auto" adds nothing, and an undefined
+      // `traceExporter` adds nothing.
+      spanProcessors: [
+        new BatchSpanProcessor(
+          new ScrubbingSpanExporter(
+            new BraintrustExporter({
+              // Destination is BRAINTRUST_PARENT. Do not fall back to `agentName`:
+              // Eve resolves it from the package name (`ai-chatbot`), which is not a
+              // project anyone looks at. Unset, the exporter uses a project literally
+              // named "default-otel-project".
+              //
+              // Keep the AI spans, plus the scopes named in KEEP_SCOPES.
+              filterAISpans: true,
+              customFilter: (span) =>
+                KEEP_SCOPES.has(span.instrumentationScope?.name ?? '')
+                  ? true
+                  : undefined,
+            }),
+            // RELAY_RUNS_ENABLED is read on every export, not at startup, so
+            // flipping it takes effect without a restart. It is process-wide:
+            // extension relay runs and web chats share this Eve process and spans
+            // carry no run marker (only opaque agent.session.id, which cannot be
+            // joined to a relay run here), so when the flag is on EVERY Eve span
+            // is reduced to the SAFE_SPAN_ATTRIBUTES allowlist. Per-run scoping is
+            // not attempted.
+            { enabled: () => process.env.RELAY_RUNS_ENABLED === '1' },
+          ),
+        ),
+      ],
     });
   },
 });

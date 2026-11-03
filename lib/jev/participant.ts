@@ -46,6 +46,121 @@ const looksLikeParticipant = (value: unknown): value is Participant => {
   return Boolean(name && typeof name === 'object');
 };
 
+/** Total characters scanned or parsed per message before the scan gives up. */
+export const JSON_SCAN_BUDGET_CHARS = 512 * 1024;
+
+export interface JsonBlock {
+  value: unknown;
+  start: number;
+  end: number;
+}
+export interface JsonScan {
+  /** Parsed objects in text order, none inside another. */
+  blocks: JsonBlock[];
+  /** Outermost brace blocks that did not parse, and an unclosed tail. */
+  unparsed: { start: number; end: number }[];
+  /** The work budget ran out: the result is incomplete and must be refused. */
+  overBudget: boolean;
+}
+
+/** Outermost balanced `{...}` ranges in [from, to), plus an unclosed tail. */
+const topLevelBlocks = (text: string, from: number, to: number) => {
+  const ranges: { start: number; end: number }[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = from; i < to; i++) {
+    const ch = text[i];
+    if (depth === 0) {
+      if (ch === '{') {
+        start = i;
+        depth = 1;
+        inString = false;
+        escaped = false;
+      }
+    } else if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) ranges.push({ start, end: i + 1 });
+    }
+  }
+  return { ranges, unclosedFrom: depth > 0 ? start : -1 };
+};
+
+/**
+ * Parse every JSON object in `text`, at any nesting depth.
+ *
+ * Outermost balanced blocks are parsed once each (disjoint slices). A block
+ * that does not parse is recorded in `unparsed` and its interior is scanned
+ * again for blocks that do, so a record wrapped in broken JSON is still
+ * found. Every character scanned or parsed is charged to one budget; when it
+ * runs out `overBudget` is set and the caller must refuse the message rather
+ * than treat the result as complete. Quote state is tracked only inside an
+ * open brace, so a stray `"` in prose before a record does not hide it.
+ */
+export const scanJsonBlocks = (text: string): JsonScan => {
+  const blocks: JsonBlock[] = [];
+  const unparsed: { start: number; end: number }[] = [];
+  let budget = JSON_SCAN_BUDGET_CHARS;
+  const queue: { from: number; to: number; top: boolean }[] = [
+    { from: 0, to: text.length, top: true },
+  ];
+  while (queue.length > 0) {
+    const { from, to, top } = queue.pop() as (typeof queue)[number];
+    budget -= to - from;
+    if (budget < 0)
+      return { blocks: sortBlocks(blocks), unparsed, overBudget: true };
+    const { ranges, unclosedFrom } = topLevelBlocks(text, from, to);
+    if (unclosedFrom >= 0) {
+      if (top) unparsed.push({ start: unclosedFrom, end: to });
+      queue.push({ from: unclosedFrom + 1, to, top: false });
+    }
+    for (const r of ranges) {
+      budget -= r.end - r.start;
+      if (budget < 0) {
+        return { blocks: sortBlocks(blocks), unparsed, overBudget: true };
+      }
+      try {
+        blocks.push({
+          value: JSON.parse(text.slice(r.start, r.end)),
+          start: r.start,
+          end: r.end,
+        });
+      } catch {
+        if (top) unparsed.push(r);
+        queue.push({ from: r.start + 1, to: r.end - 1, top: false });
+      }
+    }
+  }
+  return { blocks: sortBlocks(blocks), unparsed, overBudget: false };
+};
+
+const sortBlocks = (blocks: JsonBlock[]): JsonBlock[] =>
+  blocks.sort((x, y) => x.start - y.start);
+
+/** The parsed objects of `text` (outermost first, none nested). */
+export const scanJsonObjects = (text: string): JsonBlock[] =>
+  scanJsonBlocks(text).blocks;
+
+/** A participant-shaped object at or below `value`, found without recursion. */
+const findNestedParticipant = (value: unknown): Participant | null => {
+  const todo: unknown[] = [value];
+  for (let n = 0; todo.length > 0 && n < 10_000; n++) {
+    const v = todo.pop();
+    if (looksLikeParticipant(v)) return v;
+    if (v && typeof v === 'object') todo.push(...Object.values(v));
+  }
+  return null;
+};
+
 /**
  * Pull the first participant-shaped JSON object out of a message's text.
  *
@@ -68,38 +183,10 @@ export const extractParticipantFromText = (text: string): Participant | null =>
 export const findParticipantSpan = (
   text: string,
 ): { participant: Participant; start: number; end: number } | null => {
-  for (
-    let start = text.indexOf('{');
-    start !== -1;
-    start = text.indexOf('{', start + 1)
-  ) {
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < text.length; i++) {
-      const ch = text[i];
-      if (escaped) {
-        escaped = false;
-      } else if (ch === '\\') {
-        escaped = true;
-      } else if (ch === '"') {
-        inString = !inString;
-      } else if (!inString && ch === '{') {
-        depth++;
-      } else if (!inString && ch === '}') {
-        depth--;
-        if (depth === 0) {
-          try {
-            const parsed = JSON.parse(text.slice(start, i + 1));
-            if (looksLikeParticipant(parsed)) {
-              return { participant: parsed, start, end: i + 1 };
-            }
-          } catch {
-            // Not JSON, or not complete — try the next `{`.
-          }
-          break;
-        }
-      }
+  for (const block of scanJsonBlocks(text).blocks) {
+    const participant = findNestedParticipant(block.value);
+    if (participant) {
+      return { participant, start: block.start, end: block.end };
     }
   }
   return null;

@@ -10,6 +10,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
-    include: ['tests/agent/**/*.test.ts'],
+    // tests/relay/** includes the browser e2e suite (tests/relay/e2e); run
+    // tests/agent alone with `pnpm exec vitest run --config vitest.config.node.mjs tests/agent`.
+    include: ['tests/agent/**/*.test.ts', 'tests/relay/**/*.test.ts'],
   },
 });

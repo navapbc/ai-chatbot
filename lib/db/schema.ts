@@ -1,4 +1,4 @@
-import type { InferSelectModel } from 'drizzle-orm';
+import { type InferSelectModel, sql } from 'drizzle-orm';
 import {
   pgTable,
   varchar,
@@ -10,7 +10,13 @@ import {
   foreignKey,
   boolean,
   unique,
+  integer,
+  jsonb,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import type { PendingInputRequest } from '../ai/eve/input-requests';
+import type { RunProgress } from '../relay/progress';
+import type { Participant as ParticipantRecord } from '../data/participants';
 
 export const user = pgTable('User', {
   id: uuid('id').primaryKey().notNull().defaultRandom(),
@@ -210,3 +216,62 @@ export const sessionMapping = pgTable(
 );
 
 export type SessionMapping = InferSelectModel<typeof sessionMapping>;
+
+// One row per Eve-driven chat run, replacing the in-memory continuity map.
+// chatId deliberately has no foreign key: the eve-chat route does not create
+// Chat rows. The continuation token is an Eve session handle; no relay token
+// or credential is ever stored here.
+export const eveRun = pgTable(
+  'EveRun',
+  {
+    id: uuid('id').primaryKey().notNull().defaultRandom(),
+    chatId: uuid('chatId').notNull(),
+    userId: uuid('userId')
+      .notNull()
+      .references(() => user.id),
+    eveSessionId: text('eveSessionId').notNull(),
+    continuationToken: text('continuationToken').notNull(),
+    // Count of stream events already forwarded; the next read's startIndex.
+    streamIndex: integer('streamIndex').notNull().default(0),
+    // Exact https origin of the relay page; set only for extension runs.
+    relayOrigin: text('relayOrigin'),
+    pendingRequests: jsonb('pendingRequests')
+      .$type<PendingInputRequest[]>()
+      .notNull()
+      .default([]),
+    progress: jsonb('progress').$type<RunProgress>(),
+    // Set once when the run ends (Stop); an ended run never resumes.
+    endedAt: timestamp('endedAt'),
+    // Relay runs: true once the agent's turn reached session.waiting, false
+    // again when the next turn is claimed. Never written for web chats.
+    turnIdle: boolean('turnIdle').notNull().default(false),
+    createdAt: timestamp('createdAt').notNull(),
+    updatedAt: timestamp('updatedAt').notNull(),
+  },
+  (table) => ({
+    userChatUnique: unique('EveRun_userId_chatId_unique').on(
+      table.userId,
+      table.chatId,
+    ),
+    // One relay run per chat id across all users; web rows are unaffected.
+    relayChatUnique: uniqueIndex('EveRun_chatId_relay_unique')
+      .on(table.chatId)
+      .where(sql`${table.relayOrigin} IS NOT NULL`),
+  }),
+);
+
+export type EveRun = InferSelectModel<typeof eveRun>;
+
+// Participant records for the extension's participant picker. The full record
+// is read only on the server; the API exposes a summary. searchText is
+// lowercase "first middle last recordId" and is what prefix search matches.
+export const participant = pgTable('Participant', {
+  recordId: text('recordId').primaryKey().notNull(),
+  displayName: text('displayName').notNull(),
+  county: text('county').notNull(),
+  searchText: text('searchText').notNull(),
+  record: jsonb('record').$type<ParticipantRecord>().notNull(),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+});
+
+export type ParticipantRow = InferSelectModel<typeof participant>;

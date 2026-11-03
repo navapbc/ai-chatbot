@@ -1,0 +1,638 @@
+import { createHmac } from 'node:crypto';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import WebSocket from 'ws';
+import { mintRelayToken } from '../../lib/relay/token';
+import { createLocalBus } from '../../relay/bus';
+import { createRelayServer } from '../../relay/server';
+
+const SECRET = 'test-secret-that-is-at-least-32-characters-long';
+const ORIGIN = 'https://benefits.example.gov';
+const EXT_ID = 'abcdefghijklmnopabcdefghijklmnop';
+const EXT_ORIGIN = `chrome-extension://${EXT_ID}`;
+const RUN = 'run-1';
+const SUB = 'user-a';
+
+let server: Server;
+let port: number;
+let logs: Array<Record<string, unknown>>;
+let tokens: string[];
+const sockets: WebSocket[] = [];
+
+async function start(extra: Record<string, unknown> = {}) {
+  logs = [];
+  const bus = createLocalBus();
+  server = createRelayServer({
+    secret: SECRET,
+    allowedHostSuffixes: ['.relay.example.test'],
+    allowedHosts: ['127.0.0.1', 'localhost'],
+    extensionId: EXT_ID,
+    bus,
+    log: (line) => logs.push(line),
+    ...extra,
+  });
+  server.on('close', () => void bus.close());
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  port = (server.address() as AddressInfo).port;
+}
+
+const token = (
+  role: 'extension' | 'agent',
+  opts: { secret?: string; now?: number; sub?: string } = {},
+) => {
+  const t = mintRelayToken(
+    { runId: RUN, role, origin: ORIGIN, sub: opts.sub ?? SUB },
+    opts.secret ?? SECRET,
+    opts.now === undefined ? {} : { now: opts.now },
+  );
+  tokens.push(t);
+  return t;
+};
+
+// A validly signed token whose claims lack `sub` (mint refuses to make one).
+const tokenWithoutSub = (role: 'extension' | 'agent') => {
+  const payload = Buffer.from(
+    JSON.stringify({
+      runId: RUN,
+      role,
+      origin: ORIGIN,
+      exp: Math.floor(Date.now() / 1000) + 600,
+    }),
+  ).toString('base64url');
+  const sig = createHmac('sha256', SECRET).update(payload).digest('base64url');
+  const t = `${payload}.${sig}`;
+  tokens.push(t);
+  return t;
+};
+
+const url = (path: string, tok?: string) =>
+  `ws://127.0.0.1:${port}${path}${tok === undefined ? '' : `?token=${tok}`}`;
+
+function connect(
+  target: string,
+  headers: Record<string, string> = {},
+  protocols?: string[],
+): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(target, protocols, { headers });
+    sockets.push(ws);
+    ws.once('open', () => resolve(ws));
+    ws.once('error', reject);
+  });
+}
+
+const rejected = (
+  target: string,
+  headers: Record<string, string> = {},
+  protocols?: string[],
+) => expect(connect(target, headers, protocols)).rejects.toBeDefined();
+
+const nextMessage = (ws: WebSocket) =>
+  new Promise<Record<string, unknown>>((resolve) =>
+    ws.once('message', (d) => resolve(JSON.parse(d.toString()))),
+  );
+
+const closed = (ws: WebSocket) =>
+  new Promise<{ code: number; reason: string }>((resolve) =>
+    ws.once('close', (code, reason) =>
+      resolve({ code, reason: reason.toString() }),
+    ),
+  );
+
+async function pair() {
+  const ext = await connect(url('/extension', token('extension')), {
+    origin: EXT_ORIGIN,
+  });
+  ext.send(
+    JSON.stringify({ type: 'register', runId: RUN, tabId: 7, origin: ORIGIN }),
+  );
+  const agent = await connect(url('/cdp', token('agent')));
+  return { ext, agent };
+}
+
+beforeEach(() => {
+  tokens = [];
+});
+
+afterEach(async () => {
+  for (const ws of sockets.splice(0)) ws.terminate();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+});
+
+describe('relay server', () => {
+  it('answers /healthz without a token', async () => {
+    await start();
+    const res = await fetch(`http://127.0.0.1:${port}/healthz`);
+    expect(res.status).toBe(200);
+  });
+
+  it('answers 421 for a bad Host on HTTP, including /healthz', async () => {
+    await start();
+    const res = await new Promise<number>((resolve, reject) => {
+      import('node:http').then(({ request }) => {
+        const req = request(
+          {
+            host: '127.0.0.1',
+            port,
+            path: '/healthz',
+            headers: { host: 'evil.test' },
+          },
+          (r) => {
+            r.resume();
+            resolve(r.statusCode ?? 0);
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      });
+    });
+    expect(res).toBe(421);
+  });
+
+  it('accepts a Host that matches an allowed suffix', async () => {
+    await start();
+    const ws = await connect(url('/cdp', token('agent')), {
+      host: 'relay-1.relay.example.test',
+    });
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+  });
+
+  describe('rejects the upgrade', () => {
+    beforeEach(() => start());
+
+    it('without a token', async () => {
+      await rejected(url('/cdp'));
+    });
+    it('with a token signed by another secret', async () => {
+      await rejected(url('/cdp', token('agent', { secret: `${SECRET}-x` })));
+    });
+    it('with a validly signed token that has no sub', async () => {
+      await rejected(url('/cdp', tokenWithoutSub('agent')));
+      await rejected(url('/extension', tokenWithoutSub('extension')), {
+        origin: EXT_ORIGIN,
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(logs.filter((l) => l.event === 'upgrade-rejected')).toEqual([
+        {
+          event: 'upgrade-rejected',
+          severity: 'WARNING',
+          path: '/cdp',
+          reason: 'token',
+        },
+        {
+          event: 'upgrade-rejected',
+          severity: 'WARNING',
+          path: '/extension',
+          reason: 'token',
+        },
+      ]);
+    });
+    it('with an expired token', async () => {
+      await rejected(url('/cdp', token('agent', { now: 1000 })));
+    });
+    it('with the wrong role for /cdp', async () => {
+      await rejected(url('/cdp', token('extension')));
+    });
+    it('with the wrong role for /extension', async () => {
+      await rejected(url('/extension', token('agent')), { origin: EXT_ORIGIN });
+    });
+    it('for a web Origin on /cdp', async () => {
+      await rejected(url('/cdp', token('agent')), { origin: ORIGIN });
+    });
+    it('for /extension without an Origin', async () => {
+      await rejected(url('/extension', token('extension')));
+    });
+    it('for /extension with a web Origin', async () => {
+      await rejected(url('/extension', token('extension')), { origin: ORIGIN });
+    });
+    it('for a wrong extension id', async () => {
+      await rejected(url('/extension', token('extension')), {
+        origin: 'chrome-extension://otherotherotherotherotherother12',
+      });
+    });
+    it('for a bad Host', async () => {
+      await rejected(url('/cdp', token('agent')), { host: 'evil.test' });
+    });
+    it('for an unknown path', async () => {
+      await rejected(url('/other', token('agent')));
+    });
+  });
+
+  it('accepts any chrome-extension Origin when no extension id is set', async () => {
+    await start({ extensionId: undefined });
+    const ws = await connect(url('/extension', token('extension')), {
+      origin: 'chrome-extension://anything',
+    });
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it('pairs an extension and an agent into one run', async () => {
+    await start();
+    const { ext, agent } = await pair();
+    const eventAtAgent = nextMessage(agent);
+    ext.send(
+      JSON.stringify({
+        type: 'event',
+        sessionId: 's1',
+        method: 'Page.loadEventFired',
+        params: { ok: true },
+      }),
+    );
+    expect(await eventAtAgent).toMatchObject({
+      sessionId: 's1',
+      method: 'Page.loadEventFired',
+    });
+  });
+
+  it('closes a second agent with 1008 run busy', async () => {
+    await start();
+    await pair();
+    const second = await connect(url('/cdp', token('agent')));
+    expect(await closed(second)).toEqual({ code: 1008, reason: 'run busy' });
+  });
+
+  it("closes another user's agent with 1008 user mismatch and keeps the run", async () => {
+    await start();
+    const ext = await connect(url('/extension', token('extension')), {
+      origin: EXT_ORIGIN,
+    });
+    ext.send(
+      JSON.stringify({
+        type: 'register',
+        runId: RUN,
+        tabId: 7,
+        origin: ORIGIN,
+      }),
+    );
+    const intruder = await connect(
+      url('/cdp', token('agent', { sub: 'user-b' })),
+    );
+    expect(await closed(intruder)).toEqual({
+      code: 1008,
+      reason: 'user mismatch',
+    });
+    expect(ext.readyState).toBe(WebSocket.OPEN);
+
+    // The owner's agent still pairs with the extension.
+    const agent = await connect(url('/cdp', token('agent')));
+    const eventAtAgent = nextMessage(agent);
+    ext.send(JSON.stringify({ type: 'event', method: 'Page.x', params: {} }));
+    expect(await eventAtAgent).toMatchObject({ method: 'Page.x' });
+
+    const output = JSON.stringify(logs);
+    expect(output).not.toContain(SUB);
+    expect(output).not.toContain('user-b');
+  });
+
+  it('passes a 5 MB message from the extension to the agent intact', async () => {
+    await start();
+    const { ext, agent } = await pair();
+    const blob = 'x'.repeat(5 * 1024 * 1024);
+    const eventAtAgent = nextMessage(agent);
+    ext.send(
+      JSON.stringify({
+        type: 'event',
+        sessionId: 's1',
+        method: 'Page.screencastFrame',
+        params: { data: blob },
+      }),
+    );
+    const received = await eventAtAgent;
+    expect((received.params as { data: string }).data).toBe(blob);
+  });
+
+  it('ignores binary frames', async () => {
+    await start();
+    const { ext, agent } = await pair();
+    const eventAtAgent = nextMessage(agent);
+    ext.send(Buffer.from('{"type":"tabClosed"}'), { binary: true });
+    ext.send(JSON.stringify({ type: 'event', method: 'Page.x', params: {} }));
+    expect(await eventAtAgent).toMatchObject({ method: 'Page.x' });
+  });
+
+  it('logs each forwarded method once when recordMethods is on', async () => {
+    await start({ recordMethods: true });
+    const { ext, agent } = await pair();
+    const askAndAnswer = async (id: number) => {
+      const atExt = nextMessage(ext);
+      const atAgent = nextMessage(agent);
+      agent.send(
+        JSON.stringify({
+          id,
+          sessionId: 's1',
+          method: 'Runtime.evaluate',
+          params: { expression: '1' },
+        }),
+      );
+      const cmd = await atExt;
+      ext.send(JSON.stringify({ type: 'reply', id: cmd.id, result: {} }));
+      await atAgent;
+    };
+    await askAndAnswer(1);
+    await askAndAnswer(2);
+    const recorded = logs.filter((l) => l.event === 'method');
+    expect(recorded).toEqual([
+      { event: 'method', method: 'Runtime.evaluate', severity: 'INFO' },
+    ]);
+  });
+
+  it('does not emit method lines when recordMethods is off', async () => {
+    await start();
+    await pair();
+    expect(logs.some((l) => l.event === 'method')).toBe(false);
+  });
+
+  it('never logs a token or the URL, for accepted and rejected connections', async () => {
+    await start({ recordMethods: true });
+    const { ext } = await pair();
+    await rejected(url('/cdp', token('extension')));
+    await rejected(url('/cdp', token('agent', { secret: `${SECRET}-x` })));
+    await rejected(url('/cdp', token('agent')), { origin: ORIGIN });
+    await rejected(url('/cdp', token('agent')), { host: 'evil.test' });
+    await rejected(url('/nope', token('agent')));
+    ext.send('not json');
+    await connect(url('/cdp', token('agent'))).then((ws) => closed(ws));
+    await new Promise((r) => setTimeout(r, 50));
+
+    const output = JSON.stringify(logs);
+    expect(logs.length).toBeGreaterThan(0);
+    for (const t of tokens) {
+      expect(output).not.toContain(t);
+      expect(output).not.toContain(t.split('.')[0]);
+    }
+    expect(output).not.toContain('token=');
+  });
+
+  describe('token in the path', () => {
+    it.each([
+      (t: string) => `/cdp%3Ftoken=${t}`,
+      (t: string) => `/cdp&token=${t}`,
+      (t: string) => `/cdp;token=${t}`,
+      (t: string) => `/cdp/${t}`,
+      (t: string) => `/extension/${t}`,
+    ])('is rejected as path and never logged (%#)', async (make) => {
+      await start();
+      const t = token('agent');
+      await rejected(`ws://127.0.0.1:${port}${make(t)}`);
+      await new Promise((r) => setTimeout(r, 20));
+      const output = JSON.stringify(logs);
+      expect(logs).toContainEqual({
+        event: 'upgrade-rejected',
+        severity: 'WARNING',
+        path: 'other',
+        reason: 'path',
+      });
+      for (let i = 0; i + 8 <= t.length; i += 1) {
+        expect(output).not.toContain(t.slice(i, i + 8));
+      }
+    });
+  });
+
+  it('logs the reason for each kind of rejection', async () => {
+    await start();
+    const reasonOf = async (
+      target: string,
+      headers: Record<string, string> = {},
+    ) => {
+      logs.length = 0;
+      await rejected(target, headers);
+      await new Promise((r) => setTimeout(r, 20));
+      return logs.find((l) => l.event === 'upgrade-rejected')?.reason;
+    };
+    expect(await reasonOf(url('/cdp'))).toBe('no-token');
+    expect(await reasonOf(url('/cdp', 'garbage'))).toBe('token');
+    expect(await reasonOf(url('/cdp', token('extension')))).toBe('role');
+    expect(
+      await reasonOf(url('/cdp', token('agent')), { host: 'evil.test' }),
+    ).toBe('host');
+    expect(
+      await reasonOf(url('/cdp', token('agent')), { origin: ORIGIN }),
+    ).toBe('origin');
+    expect(await reasonOf(url('/nope', token('agent')))).toBe('path');
+  });
+
+  describe('extension token in the subprotocol', () => {
+    const ext = { origin: EXT_ORIGIN };
+    const reasonsLogged = async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      return logs
+        .filter((l) => l.event === 'upgrade-rejected')
+        .map((l) => l.reason);
+    };
+    const noTokenLogged = () => {
+      const output = JSON.stringify(logs);
+      for (const t of tokens) {
+        expect(output).not.toContain(t);
+        for (const part of t.split('.')) expect(output).not.toContain(part);
+      }
+      expect(output).not.toContain('relay.v1');
+    };
+
+    beforeEach(() => start());
+
+    it('accepts relay.v1 plus the token, selects relay.v1, and runs', async () => {
+      const t = token('extension');
+      const ws = await connect(url('/extension'), ext, ['relay.v1', t]);
+      expect(ws.protocol).toBe('relay.v1');
+      ws.send(
+        JSON.stringify({
+          type: 'register',
+          runId: RUN,
+          tabId: 7,
+          origin: ORIGIN,
+        }),
+      );
+      const agent = await connect(url('/cdp', token('agent')));
+      const eventAtAgent = nextMessage(agent);
+      ws.send(JSON.stringify({ type: 'event', method: 'Page.x', params: {} }));
+      expect(await eventAtAgent).toMatchObject({ method: 'Page.x' });
+      expect(logs).toContainEqual(
+        expect.objectContaining({ event: 'accepted', role: 'extension' }),
+      );
+      noTokenLogged();
+    });
+
+    it('still accepts a query token with no subprotocol (transition)', async () => {
+      const ws = await connect(url('/extension', token('extension')), ext);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      expect(ws.protocol).toBe('');
+    });
+
+    it('refuses a bad, expired or wrong-role subprotocol token with the fixed reason', async () => {
+      await rejected(url('/extension'), ext, [
+        'relay.v1',
+        token('extension', { secret: `${SECRET}-x` }),
+      ]);
+      await rejected(url('/extension'), ext, [
+        'relay.v1',
+        token('extension', { now: 1000 }),
+      ]);
+      await rejected(url('/extension'), ext, ['relay.v1', 'garbage']);
+      await rejected(url('/extension'), ext, ['relay.v1', token('agent')]);
+      expect(await reasonsLogged()).toEqual([
+        'token',
+        'token',
+        'token',
+        'role',
+      ]);
+      noTokenLogged();
+    });
+
+    it('refuses relay.v1 with no token, even when the query carries one', async () => {
+      await rejected(url('/extension'), ext, ['relay.v1']);
+      await rejected(url('/extension', token('extension')), ext, ['relay.v1']);
+      expect(await reasonsLogged()).toEqual(['no-token', 'no-token']);
+      noTokenLogged();
+    });
+
+    it('refuses a first protocol that is not relay.v1, or extra protocols', async () => {
+      const t = token('extension');
+      await rejected(url('/extension'), ext, [t, 'relay.v1']);
+      await rejected(url('/extension'), ext, ['relay.v2', t]);
+      await rejected(url('/extension'), ext, [t]);
+      await rejected(url('/extension'), ext, ['relay.v1', t, 'extra']);
+      // A subprotocol offer wins over the query: the query is not a fallback.
+      await rejected(url('/extension', t), ext, ['other']);
+      expect(await reasonsLogged()).toEqual([
+        'token',
+        'token',
+        'token',
+        'token',
+        'token',
+      ]);
+      noTokenLogged();
+    });
+
+    it('keeps the origin check on the subprotocol path', async () => {
+      const t = token('extension');
+      await rejected(url('/extension'), {}, ['relay.v1', t]);
+      await rejected(url('/extension'), { origin: ORIGIN }, ['relay.v1', t]);
+      expect(await reasonsLogged()).toEqual(['origin', 'origin']);
+    });
+
+    it('/cdp still needs the query token and ignores a subprotocol token', async () => {
+      await rejected(url('/cdp'), {}, ['relay.v1', token('agent')]);
+      expect(await reasonsLogged()).toEqual(['no-token']);
+      noTokenLogged();
+      const ws = await connect(url('/cdp', token('agent')));
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+    });
+  });
+
+  describe('Host allowlist', () => {
+    const hostStatus = async (host: string | undefined) => {
+      const { request } = await import('node:http');
+      return new Promise<number>((resolve, reject) => {
+        const req = request(
+          {
+            host: '127.0.0.1',
+            port,
+            path: '/healthz',
+            headers: host === undefined ? {} : { host },
+            setHost: false,
+          },
+          (r) => {
+            r.resume();
+            resolve(r.statusCode ?? 0);
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      });
+    };
+
+    it.each(['run.app', '.run.app'])(
+      'matches suffix %s on a label boundary',
+      async (suffix) => {
+        await start({ allowedHostSuffixes: [suffix], allowedHosts: [] });
+        for (const ok of ['x.run.app', 'run.app', 'X.Run.App:8080']) {
+          expect(await hostStatus(ok)).toBe(200);
+        }
+        for (const bad of [
+          'evilrun.app',
+          'x.run.app.evil.com',
+          'x.run.app@evil.com',
+          'x.run.app:80@evil.com',
+          'x.run.app evil',
+          'x.run.app.',
+        ]) {
+          expect(await hostStatus(bad)).toBe(421);
+        }
+      },
+    );
+
+    it('rejects a missing Host', async () => {
+      await start({ allowedHostSuffixes: ['run.app'], allowedHosts: [] });
+      // Node answers 400 itself for HTTP/1.1 without Host; never 200.
+      expect([400, 421]).toContain(await hostStatus(undefined));
+    });
+  });
+
+  describe('log severity, origin and socket errors', () => {
+    const SEVERITIES = ['INFO', 'WARNING', 'ERROR'];
+
+    it('gives every line a valid severity and the accepted line the run origin', async () => {
+      await start();
+      await connect(url('/extension', token('extension')), {
+        origin: EXT_ORIGIN,
+      });
+      await connect(url('/cdp', token('agent')));
+      await rejected(url('/cdp', 'garbage'));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(logs.length).toBeGreaterThan(0);
+      for (const line of logs) {
+        expect(JSON.parse(JSON.stringify(line)).severity).toSatisfy((v) =>
+          SEVERITIES.includes(v),
+        );
+      }
+      const accepted = logs.filter((l) => l.event === 'accepted');
+      expect(accepted).toHaveLength(2);
+      for (const line of accepted) {
+        expect(line).toMatchObject({ origin: ORIGIN, severity: 'INFO' });
+        const text = JSON.stringify(line);
+        expect(text).not.toMatch(/token|\?|127\.0\.0\.1|\/cdp|\/extension/);
+        for (const t of tokens) expect(text).not.toContain(t);
+      }
+      expect(logs.find((l) => l.event === 'upgrade-rejected')?.severity).toBe(
+        'WARNING',
+      );
+    });
+
+    const injectErrors = async (count: number) => {
+      await start();
+      server.on('upgrade', (_req, socket) => {
+        for (let i = 0; i < count; i++) {
+          socket.emit(
+            'error',
+            Object.assign(new Error('boom token=SECRET-MARKER 10.0.0.9'), {
+              code: 'ECONNRESET',
+            }),
+          );
+        }
+      });
+      await connect(url('/extension', token('extension')), {
+        origin: EXT_ORIGIN,
+      });
+      await new Promise((r) => setTimeout(r, 20));
+    };
+
+    it('logs a socket error by code only', async () => {
+      await injectErrors(1);
+      const errors = logs.filter((l) => l.event === 'socket-error');
+      expect(errors).toEqual([
+        { event: 'socket-error', code: 'ECONNRESET', severity: 'WARNING' },
+      ]);
+      const output = JSON.stringify(logs);
+      expect(output).not.toContain('SECRET-MARKER');
+      expect(output).not.toContain('10.0.0.9');
+    });
+
+    it('bounds the socket error log under a flood', async () => {
+      await injectErrors(500);
+      const errors = logs.filter((l) => l.event === 'socket-error');
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors.length).toBeLessThanOrEqual(10);
+    });
+  });
+});

@@ -1,16 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
-// `lib/kernel/eve-browser` constructs a Kernel client at module load, which
-// throws when KERNEL_API_KEY is unset (as it is in CI). browserIdentity is pure
-// and touches none of it, so stub the SDK rather than requiring a real key.
-vi.mock('@onkernel/sdk', () => ({
-  default: class {
-    profiles = { create: vi.fn() };
-    browsers = { create: vi.fn() };
-  },
-}));
-
-import { browserIdentity } from '@/lib/kernel/eve-browser';
+import { browserIdentity } from '@/lib/kernel/session-identity';
 import { cliSessionName } from '@/lib/kernel/session-store';
 
 type Principal = {

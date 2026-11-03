@@ -1,3 +1,7 @@
+import type { InputAnswer } from '@/lib/ai/eve/input-requests';
+import { internalSecret } from '@/lib/relay/internal-secret';
+import type { RelayRunRef } from '@/lib/relay/eve-relay-browser';
+
 // Eve is mounted on this app's own origin: next.config.ts wraps the config in
 // `withEve()`, which rewrites /eve/v1/** to the Eve runtime. So the default
 // target is our own loopback address, and the rewrite does the rest.
@@ -35,25 +39,114 @@ async function postJson(
   return { sessionId, continuationToken: json.continuationToken ?? '' };
 }
 
-export async function createEveSession(message: string, model?: string) {
+export async function createEveSession(
+  message: string,
+  model?: string,
+  relay?: RelayRunRef,
+) {
+  // The run reference travels in headers only (never the body or message
+  // text); the channel auth turns it into session attributes for the browser
+  // tool. It is not secret: no token is sent, the tool fetches one later.
+  const headers: Record<string, string> = {};
+  if (model) headers['x-eve-model'] = model;
+  if (relay) {
+    // Without the shared secret the channel would ignore the reference, so
+    // fail here rather than send it anyway.
+    const secret = internalSecret();
+    if (!secret) throw new Error('relay sessions require EVE_INTERNAL_SECRET');
+    headers['x-eve-internal-secret'] = secret;
+    headers['x-eve-relay-url'] = relay.url;
+    headers['x-eve-relay-run'] = relay.runId;
+  }
   const { sessionId, continuationToken } = await postJson(
     '/eve/v1/session',
     { message },
-    model ? { 'x-eve-model': model } : undefined,
+    Object.keys(headers).length > 0 ? headers : undefined,
   );
+  // Both are stored on the run row; an empty one would strand the chat.
+  if (!sessionId || !continuationToken) {
+    throw new Error('Eve create returned no session id or token');
+  }
   return { sessionId, continuationToken };
 }
 
+/**
+ * Continue a session with a plain message (string form) or with structured
+ * answers to pending `ask_question` requests. Only keys that are set are sent,
+ * so an answer turn carries no `message`.
+ *
+ * Returns the session the turn landed on (`x-eve-session-id`). When the old
+ * run has ended, Eve's send path starts a fresh session instead of failing,
+ * so callers must compare it with the session they meant to continue.
+ */
 export async function continueEveSession(
   sessionId: string,
   continuationToken: string,
-  message: string,
+  input: string | { message?: string; inputResponses?: InputAnswer[] },
 ) {
-  const { continuationToken: next } = await postJson(
+  const { message, inputResponses } =
+    typeof input === 'string'
+      ? { message: input, inputResponses: undefined }
+      : input;
+  const { continuationToken: next, sessionId: landedOn } = await postJson(
     `/eve/v1/session/${sessionId}`,
-    { continuationToken, message },
+    {
+      continuationToken,
+      ...(message !== undefined ? { message } : {}),
+      ...(inputResponses !== undefined ? { inputResponses } : {}),
+    },
   );
-  return { continuationToken: next };
+  if (!landedOn) throw new Error('Eve continue returned no session id');
+  return { continuationToken: next, sessionId: landedOn };
+}
+
+// Eve session ids are `wrun_` plus a ULID; this admits only a safe path
+// segment, so a stored id can never redirect the request.
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
+
+export type CancelTurnStatus = 'accepted' | 'no_active_turn';
+
+const CANCEL_TIMEOUT_MS = 5000;
+
+/**
+ * Cancel the session's in-flight turn. Both of Eve's statuses are success
+ * ("no_active_turn" covers a settled turn or a duplicate cancel). The session
+ * keeps its context; callers that must refuse further turns do so themselves.
+ *
+ * Same conventions as `continueEveSession`: no relay or internal-secret
+ * headers (those are a session-creation grant; Eve's cancel route runs the
+ * channel's route auth only). Errors carry no session id and no response
+ * text.
+ */
+export async function cancelEveTurn(
+  sessionId: string,
+): Promise<CancelTurnStatus> {
+  if (!SESSION_ID_PATTERN.test(sessionId)) {
+    throw new Error('Eve cancel: invalid session id');
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${EVE_URL}/eve/v1/session/${sessionId}/cancel`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      // A hung Eve must not hold a Stop or a turn open; callers treat a
+      // timeout as a failed (best-effort) cancel.
+      signal: AbortSignal.timeout(CANCEL_TIMEOUT_MS),
+    });
+  } catch {
+    // Fixed text: a network or abort error can carry the URL.
+    throw new Error('Eve cancel request failed');
+  }
+  if (!res.ok) throw new Error(`Eve cancel responded ${res.status}`);
+  const json = (await res.json().catch(() => null)) as {
+    status?: unknown;
+  } | null;
+  const status = json?.status;
+  if (status !== 'accepted' && status !== 'no_active_turn') {
+    throw new Error('Eve cancel returned an unknown status');
+  }
+  return status;
 }
 
 /**

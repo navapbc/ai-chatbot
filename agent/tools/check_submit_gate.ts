@@ -1,6 +1,7 @@
 import { defineTool } from 'eve/tools';
 import { z } from 'zod';
 import { runBrowserCommand } from '@/lib/kernel/eve-browser';
+import { relayCredentialState } from '@/lib/relay/eve-relay-browser';
 
 // PROBE_SCRIPT and FORCE_ENABLE_SCRIPT copied verbatim from
 // lib/ai/tools/check-submit-gate.ts — do not modify the DOM logic.
@@ -61,6 +62,11 @@ export default defineTool({
     forceEnable: z.boolean().default(true),
   }),
   async execute({ forceEnable }, ctx) {
+    // On a relay session the browser is the caseworker's own tab: never fall
+    // back to a Kernel browser, and the gate probe is not enabled there.
+    if (relayCredentialState(ctx).kind !== 'none') {
+      return { success: false, error: 'check_submit_gate is not available in extension runs', state: null, action: null };
+    }
     try {
       const probe = await runBrowserCommand(ctx, ['eval', PROBE_SCRIPT]);
       if (!probe.success) return { success: false, error: probe.error ?? 'probe failed', state: null, action: null };

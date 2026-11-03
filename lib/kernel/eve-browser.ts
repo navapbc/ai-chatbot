@@ -1,5 +1,6 @@
 import Kernel from '@onkernel/sdk';
 import type { ToolContext } from 'eve/tools';
+import { browserIdentity } from '@/lib/kernel/session-identity';
 import { runCommand } from '@/lib/kernel/cli';
 import { kernelTimelineCollector } from '@/lib/kernel/telemetry';
 import { KERNEL_TIMEOUT_SECONDS } from '@/lib/kernel/session-config';
@@ -68,6 +69,11 @@ import {
 // module-load path (e.g. behind a lazy accessor) so importing the module for
 // its browser-creation logic doesn't also drag in the replay/DB side path.
 // -----------------------------------------------------------------------------
+
+// Re-exported so existing imports of `browserIdentity` from this module keep
+// working; the implementation lives in a pure module the relay path can share
+// without constructing a Kernel client.
+export { browserIdentity };
 
 const kernel = new Kernel();
 
@@ -164,34 +170,6 @@ async function getOrCreateEveBrowser(
 
   pendingCreations.set(key, createPromise);
   return createPromise;
-}
-
-// Stable browser-session identity from Eve's session context. Re-resolved on
-// EVERY call (no module-held browser handle passed around), which is the
-// durable-safe pattern from the spike's browser sketch. getOrCreateEveBrowser's
-// own in-memory cache reuses the live Kernel browser within the eve-dev process.
-export function browserIdentity(ctx: ToolContext): {
-  sessionId: string;
-  userId: string;
-} {
-  const sessionId = ctx.session.id;
-  // Prefer `initiator` over `current`: eve pins `initiator` to whoever created
-  // the session, while `current` tracks the caller of the most recent request
-  // (see eve's SessionAuth in context/keys.d.ts). A browser belongs to the
-  // conversation, so it must be keyed on the session-stable principal — keying
-  // on `current` changed this id on the first follow-up turn, which renamed the
-  // agent-browser daemon and silently orphaned the browser and its `@eN` refs
-  // mid-form. `agent/agent.ts` resolves eveModel with the same precedence.
-  //
-  // Resolve one principal and read both fields off it, so we never mix
-  // initiator's subject with current's principalId. `subject` is optional on
-  // SessionAuthContext but `principalId` is required, so fall through to it
-  // rather than collapsing a real principal to the constant below.
-  // Standalone `eve dev` has no channel auth at all, and getOrCreateEveBrowser
-  // requires a non-empty userId for cache-key isolation — hence the constant.
-  const principal = ctx.session.auth.initiator ?? ctx.session.auth.current;
-  const userId = principal?.subject ?? principal?.principalId ?? 'eve-local';
-  return { sessionId, userId };
 }
 
 export async function runBrowserCommand(

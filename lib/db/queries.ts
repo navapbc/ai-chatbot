@@ -9,8 +9,12 @@ import {
   gt,
   gte,
   inArray,
+  isNotNull,
+  isNull,
   lt,
+  or,
   type SQL,
+  sql,
 } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
@@ -28,12 +32,18 @@ import {
   type Chat,
   stream,
   sessionMapping,
+  eveRun,
+  type EveRun,
+  participant,
+  type ParticipantRow,
 } from './schema';
 import type { ArtifactKind } from '@/components/artifact';
 import { generateUUID } from '../utils';
 import { generateHashedPassword } from './utils';
 import type { VisibilityType } from '@/components/visibility-selector';
 import { ChatSDKError } from '../errors';
+import type { PendingInputRequest } from '../ai/eve/input-requests';
+import type { RunProgress } from '../relay/progress';
 
 // Optionally, if not using email/pass login, you can
 // use the Drizzle adapter for Auth.js / NextAuth
@@ -679,5 +689,346 @@ export async function upsertSessionMapping({
       'bad_request:database',
       'Failed to upsert session mapping',
     );
+  }
+}
+
+// EveRun: per-(user, chat) Eve run state. Every query that takes a userId is
+// scoped by it. swapToken and advance are single conditional UPDATEs so
+// concurrent writers cannot interleave a read and a write.
+
+export async function getEveRun({
+  userId,
+  chatId,
+}: { userId: string; chatId: string }): Promise<EveRun | undefined> {
+  try {
+    const [row] = await db
+      .select()
+      .from(eveRun)
+      .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
+    return row;
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to get eve run');
+  }
+}
+
+/**
+ * Looks up the relay run with this chat id, for the token route. Web rows are
+ * ignored. A partial unique index allows one relay run per chat id; if more
+ * than one ever came back this fails closed and returns undefined.
+ */
+export async function getEveRunByChatId({
+  chatId,
+}: { chatId: string }): Promise<EveRun | undefined> {
+  try {
+    const rows = await db
+      .select()
+      .from(eveRun)
+      .where(and(eq(eveRun.chatId, chatId), isNotNull(eveRun.relayOrigin)))
+      .limit(2);
+    return rows.length === 1 ? rows[0] : undefined;
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to get eve run by chat id',
+    );
+  }
+}
+
+/** Relay runs a user created at or after `since`, for the hourly run limit. */
+export async function countRecentRelayRuns({
+  userId,
+  since,
+}: { userId: string; since: Date }): Promise<number> {
+  try {
+    const [row] = await db
+      .select({ count: count(eveRun.id) })
+      .from(eveRun)
+      .where(
+        and(
+          eq(eveRun.userId, userId),
+          isNotNull(eveRun.relayOrigin),
+          gte(eveRun.createdAt, since),
+        ),
+      );
+    return row?.count ?? 0;
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to count recent relay runs',
+    );
+  }
+}
+
+/**
+ * Inserts a new run. Errors propagate unwrapped (a duplicate surfaces as the
+ * driver's unique violation, code 23505) so callers can tell a duplicate
+ * apart from an FK violation or an outage.
+ */
+export async function createEveRun({
+  userId,
+  chatId,
+  eveSessionId,
+  continuationToken,
+  relayOrigin,
+}: {
+  userId: string;
+  chatId: string;
+  eveSessionId: string;
+  continuationToken: string;
+  relayOrigin?: string | null;
+}): Promise<EveRun> {
+  const now = new Date();
+  const [row] = await db
+    .insert(eveRun)
+    .values({
+      userId,
+      chatId,
+      eveSessionId,
+      continuationToken,
+      relayOrigin: relayOrigin ?? null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
+  return row;
+}
+
+/**
+ * Compare-and-set on continuationToken. Returns whether the swap happened.
+ * With `live`, the row must also be un-ended, in the same statement.
+ */
+export async function swapEveRunToken({
+  userId,
+  chatId,
+  expected,
+  next,
+  live = false,
+}: {
+  userId: string;
+  chatId: string;
+  expected: string;
+  next: string;
+  live?: boolean;
+}): Promise<boolean> {
+  try {
+    const rows = await db
+      .update(eveRun)
+      .set({ continuationToken: next, updatedAt: new Date() })
+      .where(
+        and(
+          eq(eveRun.userId, userId),
+          eq(eveRun.chatId, chatId),
+          eq(eveRun.continuationToken, expected),
+          live ? isNull(eveRun.endedAt) : undefined,
+        ),
+      )
+      .returning({ id: eveRun.id });
+    return rows.length === 1;
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to swap eve run token',
+    );
+  }
+}
+
+/**
+ * Moves the cursor forward (only when streamIndex is higher) and, with
+ * `heal`, replaces the token only while it is still that turn's claim. One
+ * conditional UPDATE, so it cannot interleave with a concurrent swap. Never
+ * writes any other token: see EveRunStore.advance.
+ */
+export async function advanceEveRun({
+  userId,
+  chatId,
+  streamIndex,
+  heal,
+}: {
+  userId: string;
+  chatId: string;
+  streamIndex: number;
+  heal?: { claim: string; token: string };
+}): Promise<void> {
+  try {
+    const scope = and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId));
+    const forward = lt(eveRun.streamIndex, streamIndex);
+    await db
+      .update(eveRun)
+      .set({
+        streamIndex: sql`GREATEST(${eveRun.streamIndex}, ${streamIndex})`,
+        ...(heal
+          ? {
+              continuationToken: sql`CASE WHEN ${eveRun.continuationToken} = ${heal.claim} THEN ${heal.token} ELSE ${eveRun.continuationToken} END`,
+            }
+          : {}),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          scope,
+          heal
+            ? or(forward, eq(eveRun.continuationToken, heal.claim))
+            : forward,
+        ),
+      );
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to advance eve run');
+  }
+}
+
+export async function setEveRunPending({
+  userId,
+  chatId,
+  pendingRequests,
+}: {
+  userId: string;
+  chatId: string;
+  pendingRequests: PendingInputRequest[];
+}): Promise<void> {
+  try {
+    await db
+      .update(eveRun)
+      .set({ pendingRequests, updatedAt: new Date() })
+      .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to set eve run pending requests',
+    );
+  }
+}
+
+export async function setEveRunProgress({
+  userId,
+  chatId,
+  progress,
+}: {
+  userId: string;
+  chatId: string;
+  progress: RunProgress;
+}): Promise<void> {
+  try {
+    await db
+      .update(eveRun)
+      .set({ progress, updatedAt: new Date() })
+      .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to set eve run progress',
+    );
+  }
+}
+
+export async function setEveRunTurnIdle({
+  userId,
+  chatId,
+  idle,
+}: {
+  userId: string;
+  chatId: string;
+  idle: boolean;
+}): Promise<void> {
+  try {
+    await db
+      .update(eveRun)
+      .set({ turnIdle: idle, updatedAt: new Date() })
+      .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to set eve run turn idle',
+    );
+  }
+}
+
+export async function deleteEveRun({
+  userId,
+  chatId,
+}: { userId: string; chatId: string }): Promise<void> {
+  try {
+    await db
+      .delete(eveRun)
+      .where(and(eq(eveRun.userId, userId), eq(eveRun.chatId, chatId)));
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to delete eve run');
+  }
+}
+
+/**
+ * Marks a run ended. The `endedAt IS NULL` guard makes it one atomic,
+ * idempotent statement: true only for the call that set the time, false when
+ * it was already ended or no run matches (never creates a row).
+ */
+export async function endEveRun({
+  userId,
+  chatId,
+}: { userId: string; chatId: string }): Promise<boolean> {
+  try {
+    const now = new Date();
+    const rows = await db
+      .update(eveRun)
+      .set({ endedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(eveRun.userId, userId),
+          eq(eveRun.chatId, chatId),
+          isNull(eveRun.endedAt),
+        ),
+      )
+      .returning({ id: eveRun.id });
+    return rows.length === 1;
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to end eve run');
+  }
+}
+
+// Participant: word-start search over searchText (lowercase "first middle
+// last recordId"). A row matches when the whole query is a prefix of
+// searchText, or every token starts some word of it. The caller passes
+// LIKE-escaped values; escapeLike lives in lib/data/participant-source.ts.
+export async function searchParticipantRows({
+  whole,
+  tokens,
+  limit,
+}: {
+  whole: string;
+  tokens: string[];
+  limit: number;
+}): Promise<ParticipantRow[]> {
+  try {
+    const everyToken = and(
+      ...tokens.map(
+        (t) =>
+          sql`(${participant.searchText} ILIKE ${`${t}%`} OR ${participant.searchText} ILIKE ${`% ${t}%`})`,
+      ),
+    );
+    return await db
+      .select()
+      .from(participant)
+      .where(
+        or(sql`${participant.searchText} ILIKE ${`${whole}%`}`, everyToken),
+      )
+      .orderBy(asc(participant.displayName))
+      .limit(limit);
+  } catch (error) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to search participants',
+    );
+  }
+}
+
+export async function getParticipantRow(
+  recordId: string,
+): Promise<ParticipantRow | undefined> {
+  try {
+    const [row] = await db
+      .select()
+      .from(participant)
+      .where(eq(participant.recordId, recordId));
+    return row;
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to get participant');
   }
 }

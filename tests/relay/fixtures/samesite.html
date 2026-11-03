@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Same Site Frames</title>
+<h1>Frames on one site</h1>
+<label for="top">Top field</label> <input id="top" name="top"><br>
+<iframe id="srcdoc" title="srcdoc frame" srcdoc="<label for=s>Srcdoc field</label><input id=s name=s>"></iframe>
+<iframe id="inner" title="inner frame" src="/inner.html"></iframe>
+<iframe id="ss" title="samesite frame" src="{{SAME_SITE_ORIGIN}}/samesite-frame.html"></iframe>
+</html>

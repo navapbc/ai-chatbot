@@ -19,12 +19,17 @@ import {
 import { withJevCallSpan } from './telemetry';
 
 /** Feature keys accepted in `JEV_FEATURES`. */
-export type JevFeature = 'gap-triage' | 'summary-check' | 'field-value';
+export type JevFeature =
+  | 'gap-triage'
+  | 'summary-check'
+  | 'field-value'
+  | 'sensitive-field';
 
 const ALL_FEATURES: readonly JevFeature[] = [
   'gap-triage',
   'summary-check',
   'field-value',
+  'sensitive-field',
 ];
 
 // One comma-separated env var rather than a boolean per feature, so enabling a

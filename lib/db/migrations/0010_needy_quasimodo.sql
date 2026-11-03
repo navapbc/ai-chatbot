@@ -1,0 +1,1 @@
+ALTER TABLE "EveRun" ADD COLUMN "endedAt" timestamp;
