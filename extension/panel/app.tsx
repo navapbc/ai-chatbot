@@ -174,6 +174,9 @@ export const App = ({ onStart }: { onStart?: OnStart }) => {
             dispatch({ type: 'chooseParticipant', participant })
           }
           onDetails={() => dispatch({ type: 'chooseDetails' })}
+          onSample={(details) =>
+            dispatch({ type: 'submitDetails', details, save: false })
+          }
           onBack={handleHome}
           onSignedOut={handleRetry}
         />
