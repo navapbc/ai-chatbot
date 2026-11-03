@@ -43,6 +43,11 @@ describe('relay-terraform-vars.sh', () => {
       'true',
       'TF_VAR_relay_command_duration_metric_enabled=true',
     ],
+    [
+      'RELAY_EXCLUDE_REQUEST_LOGS',
+      'false',
+      'TF_VAR_relay_exclude_request_logs=false',
+    ],
     ['RELAY_MIN_INSTANCES', '1', 'TF_VAR_relay_min_instances=1'],
     ['RELAY_MIN_INSTANCES', '0', 'TF_VAR_relay_min_instances=0'],
     [
@@ -109,6 +114,7 @@ describe('relay-terraform-vars.sh', () => {
     'RELAY_ALLOWED_HOST_SUFFIXES',
     'RELAY_MIN_INSTANCES',
     'RELAY_COMMAND_DURATION_METRIC_ENABLED',
+    'RELAY_EXCLUDE_REQUEST_LOGS',
   ])('%s empty or blank prints nothing', (name) => {
     for (const value of ['', ' ', '   ']) {
       expect(run({ [name]: value })).toEqual({
@@ -175,6 +181,7 @@ describe('relay-terraform-vars.sh', () => {
     ['RELAY_RUNS_ENABLED', 'True'],
     ['RELAY_TOKEN_ENDPOINT_ENABLED', 'on'],
     ['RELAY_COMMAND_DURATION_METRIC_ENABLED', 'truex'],
+    ['RELAY_EXCLUDE_REQUEST_LOGS', 'no'],
     ['RELAY_MIN_INSTANCES', '2'],
     ['RELAY_MIN_INSTANCES', '0.5'],
     ['RELAY_MIN_INSTANCES', '01'],

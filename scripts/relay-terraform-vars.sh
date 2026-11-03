@@ -88,6 +88,7 @@ R=''
 bool_var RELAY_RUNS_ENABLED relay_runs_enabled
 bool_var RELAY_TOKEN_ENDPOINT_ENABLED relay_token_endpoint_enabled
 bool_var RELAY_COMMAND_DURATION_METRIC_ENABLED relay_command_duration_metric_enabled
+bool_var RELAY_EXCLUDE_REQUEST_LOGS relay_exclude_request_logs
 
 read_var RELAY_MIN_INSTANCES
 if [[ -n "$R" ]]; then

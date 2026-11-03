@@ -257,8 +257,8 @@ gets a preview deploy.
   | `RELAY_ALLOWED_HOSTS` | `relay_allowed_hosts` | comma-separated bare host names |
   | `RELAY_ALLOWED_HOST_SUFFIXES` | `relay_allowed_host_suffixes` | comma-separated suffixes (leading dot allowed), or `none` |
   | `RELAY_COMMAND_DURATION_METRIC_ENABLED` | `relay_command_duration_metric_enabled` | `true` or `false` |
+  | `RELAY_EXCLUDE_REQUEST_LOGS` | `relay_exclude_request_logs` | `true` or `false` (default `true`; `false` keeps token-bearing request URLs in Cloud Logging, section 3.1) |
 
-  `relay_exclude_request_logs` is not wired; it keeps its default `true`.
   The GitHub variables `RELAY_RUNS_ENABLED` and
   `RELAY_TOKEN_ENDPOINT_ENABLED` take `true` or `false` (Terraform bools),
   while the app environment variables of the same names take `1`, which
@@ -269,7 +269,7 @@ gets a preview deploy.
   "Deploy Infrastructure" dispatch from that branch, or a prod promote (4.3).
 - **Both workflows pass them the same way.** The `terraform` job in
   `deploy.yml` and the `promote` job in `promote.yml` each have a "Relay
-  Terraform variables" step, just before "Terraform Plan", that maps the eight
+  Terraform variables" step, just before "Terraform Plan", that maps the nine
   `vars.*` above into its environment and runs
   `scripts/relay-terraform-vars.sh >> "$GITHUB_ENV"`. The script prints a
   `TF_VAR_<name>=<value>` line for each variable that is set, and the plan
