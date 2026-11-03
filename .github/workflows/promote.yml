@@ -122,6 +122,7 @@ jobs:
           RELAY_ALLOWED_HOST_SUFFIXES: ${{ vars.RELAY_ALLOWED_HOST_SUFFIXES }}
           RELAY_MIN_INSTANCES: ${{ vars.RELAY_MIN_INSTANCES }}
           RELAY_COMMAND_DURATION_METRIC_ENABLED: ${{ vars.RELAY_COMMAND_DURATION_METRIC_ENABLED }}
+          RELAY_EXCLUDE_REQUEST_LOGS: ${{ vars.RELAY_EXCLUDE_REQUEST_LOGS }}
         run: bash workflow-ref/scripts/relay-terraform-vars.sh >> "$GITHUB_ENV"
 
       # relay_image_url defaults to "" (no relay), so leaving it out would plan

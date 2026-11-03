@@ -252,6 +252,7 @@ describe('relay Terraform variables wiring', () => {
     'RELAY_ALLOWED_HOST_SUFFIXES',
     'RELAY_MIN_INSTANCES',
     'RELAY_COMMAND_DURATION_METRIC_ENABLED',
+    'RELAY_EXCLUDE_REQUEST_LOGS',
   ];
 
   /** The text of the step named `name`, up to the next step. */
@@ -315,7 +316,7 @@ describe('relay Terraform variables wiring', () => {
     expect(varsAt).toBeGreaterThan(refAt);
   });
 
-  it('emits exactly the eight pilot variables, all declared in variables.tf', () => {
+  it('emits exactly the nine pilot variables, all declared in variables.tf', () => {
     expect(emitted.sort()).toEqual(
       names.map((name) => name.toLowerCase()).sort(),
     );
