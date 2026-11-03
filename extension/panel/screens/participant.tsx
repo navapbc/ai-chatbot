@@ -8,6 +8,7 @@ import {
   createSearchController,
   type SearchState,
 } from '../lib/search-controller';
+import { SAMPLE_PARTICIPANTS } from '../lib/sample-participants';
 
 type Props = {
   api: Pick<AppApi, 'searchParticipants'>;
@@ -18,6 +19,7 @@ type Props = {
     name: string;
   }) => void;
   onDetails: () => void;
+  onSample: (details: Record<string, string>) => void;
   onBack: () => void;
   onSignedOut: () => void;
 };
@@ -38,6 +40,7 @@ export const ParticipantScreen = ({
   siteName,
   onChoose,
   onDetails,
+  onSample,
   onBack,
   onSignedOut,
 }: Props) => {
@@ -117,6 +120,31 @@ export const ParticipantScreen = ({
         onSystem={() => {}}
         onDetails={() => onDetails()}
       />
+      {SAMPLE_PARTICIPANTS.length > 0 ? (
+        <div
+          className="flex flex-col gap-2"
+          role="group"
+          aria-label="Sample participants"
+        >
+          <p className="text-sm font-semibold">Quick start with a sample</p>
+          <div className="flex flex-col gap-2">
+            {SAMPLE_PARTICIPANTS.map((sample) => (
+              <Button
+                key={sample.recordId}
+                type="button"
+                variant="outline"
+                className="justify-between"
+                onClick={() => onSample(sample.details)}
+              >
+                <span className="truncate">{sample.name}</span>
+                <span className="text-xs text-muted-foreground">
+                  {sample.recordId}
+                </span>
+              </Button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <div className="flex flex-col gap-2">
         <label htmlFor={labelId} className="sr-only">
           Search participants
