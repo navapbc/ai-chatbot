@@ -19,6 +19,7 @@ import { HomeScreen } from './screens/home';
 import { ParticipantScreen } from './screens/participant';
 import { type OnStart, ReadyScreen } from './screens/ready';
 import { RunningScreen } from './screens/running';
+import { buildRunSummary } from './lib/run-summary';
 import { SignedOutScreen } from './screens/signed-out';
 
 const probe = async () => {
@@ -208,6 +209,7 @@ export const App = ({ onStart }: { onStart?: OnStart }) => {
         // No Back to Home while the run is live: only Stop leaves it.
         <RunningScreen
           siteName={state.target.siteName}
+          summary={buildRunSummary(state.participant)}
           run={state.run}
           createSession={createSession}
           onHome={() => dispatch({ type: 'runEnded' })}

@@ -27,9 +27,13 @@ import { ProgressView } from './progress-view';
 import { ThinkingLine } from './thinking-line';
 import { isConfirming } from '../lib/review-model';
 import { ReviewPanel } from './review';
+import type { RunSummary } from '../lib/run-summary';
+import { RunSummaryCard } from './run-summary-card';
 
 type Props = {
   siteName: string;
+  /** The client, from what the caseworker chose; absent after a reopen. */
+  summary?: RunSummary;
   run: SessionRun;
   /** Builds the session for the run; stable for the screen's lifetime. */
   createSession: (run: SessionRun) => RunSession;
@@ -68,6 +72,15 @@ export const formatElapsed = (ms: number): string => {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 };
 
+export const BEFORE_PROGRESS_TEXT =
+  'The agent reads the form and the record first. Sections and fields appear here once it starts filling.';
+
+export const KEPT_PROGRESS_TEXT =
+  'What the agent filled before the run ended is kept below. Check the page and finish the rest by hand.';
+
+export const STALE_PROGRESS_TEXT =
+  'The agent did not report what it filled, so the counts above may be out of date. Check the page.';
+
 const endsInText = (secondsLeft: number): string => {
   const minutes = Math.max(1, Math.ceil(secondsLeft / 60));
   const unit = minutes === 1 ? 'minute' : 'minutes';
@@ -92,6 +105,7 @@ export const PolicyNotice = ({ state }: { state: RunSessionState | null }) => {
  */
 export const RunningScreen = ({
   siteName,
+  summary,
   run,
   createSession,
   onHome,
@@ -170,6 +184,14 @@ export const RunningScreen = ({
   // The card goes away on its own; a refresh keeps an allowed origin.
   const handleAllowed = () => {};
 
+  const hasSections = (state?.progress?.sections?.length ?? 0) > 0;
+  // A review with every section still at zero and none done: the agent
+  // stopped without a final report, so the numbers say nothing.
+  const staleProgress =
+    hasSections &&
+    (state?.progress?.sections ?? []).every(
+      (sec) => sec.filled === 0 && sec.status !== 'done',
+    );
   const stopping = state?.stopping === true;
   const questions =
     !ended && state?.phase === 'needs_you'
@@ -195,6 +217,7 @@ export const RunningScreen = ({
       <p className="text-sm">
         Elapsed: {formatElapsed(now - startedAt.current)}
       </p>
+      {summary ? <RunSummaryCard summary={summary} /> : null}
       {ended && state?.endedReason ? (
         <div role="status" aria-live="polite" className="flex flex-col gap-2">
           <p className="text-sm">{ENDED_TEXT[state.endedReason]}</p>
@@ -255,13 +278,29 @@ export const RunningScreen = ({
       {!ended && (state?.phase ?? 'working') === 'working' ? (
         <ThinkingLine latest={state?.actions?.at(-1)} />
       ) : null}
-      {!ended ? (
+      {!ended && !hasSections ? (
+        // Before the agent's first report there is nothing to compare yet.
+        <p className="text-sm text-muted-foreground">{BEFORE_PROGRESS_TEXT}</p>
+      ) : null}
+      {ended && hasSections ? (
+        // A run that ended (an error, a stop, a lost tab) keeps what it
+        // filled on screen so the caseworker can finish by hand.
+        <p role="status" className="text-sm">
+          {KEPT_PROGRESS_TEXT}
+        </p>
+      ) : null}
+      {!ended || hasSections ? (
         <ProgressView
           model={buildProgressView(
             state?.progress ?? null,
             state?.actions ?? [],
           )}
         />
+      ) : null}
+      {showReview && staleProgress ? (
+        <p role="status" className="text-sm">
+          {STALE_PROGRESS_TEXT}
+        </p>
       ) : null}
       {showReview ? (
         <ReviewPanel

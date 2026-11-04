@@ -2,12 +2,21 @@ import { z } from 'zod';
 
 export type SectionStatus = 'waiting' | 'filling' | 'done' | 'needs_you';
 
+/** A field's state inside a section. The label names the field, never a value. */
+export type FieldState = 'waiting' | 'filled' | 'needs_you' | 'skipped';
+
+export interface FieldProgress {
+  label: string;
+  state: FieldState;
+}
+
 export interface RunProgress {
   sections: {
     name: string;
     status: SectionStatus;
     filled: number;
     total?: number;
+    fields?: FieldProgress[];
   }[];
   current?: string;
   actions?: string[];
@@ -25,6 +34,18 @@ export const runProgressSchema: z.ZodType<RunProgress> = z.object({
         status: z.enum(['waiting', 'filling', 'done', 'needs_you']),
         filled: count,
         total: count.optional(),
+        // Field labels only (First name, Street address): the same rule as
+        // section names. The panel shows them so the caseworker can compare
+        // the page against the record as the agent works.
+        fields: z
+          .array(
+            z.object({
+              label: z.string().min(1).max(80),
+              state: z.enum(['waiting', 'filled', 'needs_you', 'skipped']),
+            }),
+          )
+          .max(30)
+          .optional(),
       }),
     )
     .max(40),

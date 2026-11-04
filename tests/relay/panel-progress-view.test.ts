@@ -273,4 +273,35 @@ describe('buildProgressView', () => {
     );
     expect(lone.sections[0].name).toBe('a'.repeat(80));
   });
+
+  it('carries cleaned field labels onto each section', () => {
+    const v = buildProgressView(
+      prog([
+        sec({
+          status: 'filling',
+          filled: 1,
+          total: 3,
+          fields: [
+            { label: '  First name  ', state: 'filled' },
+            { label: '   ', state: 'filled' },
+            { label: 'x'.repeat(100), state: 'needs_you' },
+            { label: 'Phone', state: 'bogus' as never },
+          ],
+        }),
+        sec({ name: 'Address' }),
+      ]),
+      [],
+    );
+    expect(v.sections[0].fields).toEqual([
+      { label: 'First name', state: 'filled' },
+      { label: 'x'.repeat(80), state: 'needs_you' },
+      { label: 'Phone', state: 'waiting' },
+    ]);
+    expect(v.sections[1].fields).toEqual([]);
+  });
+
+  it('never throws on a malformed fields value', () => {
+    const bad = { ...sec(), fields: 'nope' } as never;
+    expect(buildProgressView(prog([bad]), []).sections[0].fields).toEqual([]);
+  });
 });

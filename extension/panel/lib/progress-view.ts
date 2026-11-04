@@ -1,4 +1,9 @@
-import type { RunProgress, SectionStatus } from '../../../lib/relay/progress';
+import type {
+  FieldProgress,
+  FieldState,
+  RunProgress,
+  SectionStatus,
+} from '../../../lib/relay/progress';
 
 // Pure view model for the Running screen's progress. Everything here is
 // untrusted text from the agent: it is trimmed and capped, never interpreted.
@@ -13,6 +18,8 @@ export type SectionView = {
   open: boolean;
   /** "3 of 8" when the total is known, else "3". */
   count: string;
+  /** Field labels the agent reported for this section, in order. */
+  fields: FieldProgress[];
   /** The last actions; only on the active section (the log is global). */
   recent?: string[];
 };
@@ -32,6 +39,14 @@ const MAX_NAME = 80;
 const MAX_ACTION = 120;
 const MAX_STEPS = 8;
 const MAX_RECENT = 5;
+const MAX_FIELDS = 30;
+const MAX_LABEL = 80;
+const FIELD_STATES: readonly FieldState[] = [
+  'waiting',
+  'filled',
+  'needs_you',
+  'skipped',
+];
 const STATUSES: readonly SectionStatus[] = [
   'waiting',
   'filling',
@@ -68,6 +83,26 @@ export type Clean = {
   status: SectionStatus;
   filled: number;
   total?: number;
+  fields: FieldProgress[];
+};
+
+// Labels are untrusted agent text: trimmed, cut by code points, blanks and
+// unknown states dropped. Never throws.
+const toFields = (v: unknown): FieldProgress[] => {
+  if (!Array.isArray(v)) return [];
+  const out: FieldProgress[] = [];
+  for (const raw of v.slice(0, MAX_FIELDS)) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const f = raw as Record<string, unknown>;
+    const label =
+      typeof f.label === 'string' ? cut(f.label.trim(), MAX_LABEL).trim() : '';
+    if (label === '') continue;
+    const state = FIELD_STATES.includes(f.state as FieldState)
+      ? (f.state as FieldState)
+      : 'waiting';
+    out.push({ label, state });
+  }
+  return out;
 };
 
 export const cleanSection = (raw: unknown): Clean => {
@@ -86,6 +121,7 @@ export const cleanSection = (raw: unknown): Clean => {
     status,
     filled: total === undefined ? filled : Math.min(filled, total),
     ...(total === undefined ? {} : { total }),
+    fields: toFields(s.fields),
   };
 };
 
