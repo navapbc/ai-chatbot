@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -130,7 +130,24 @@ describe('the source manifest', () => {
       'alarms',
     ]);
     expect(source.side_panel).toEqual({ default_path: 'panel.html' });
-    expect(source.action).toEqual({ default_title: 'Labs ASP' });
+    expect(source.action).toEqual({
+      default_title: 'Labs ASP',
+      default_icon: {
+        '16': 'icon-16.png',
+        '32': 'icon-32.png',
+        '48': 'icon-48.png',
+        '128': 'icon-128.png',
+      },
+    });
+    expect(source.icons).toEqual({
+      '16': 'icon-16.png',
+      '32': 'icon-32.png',
+      '48': 'icon-48.png',
+      '128': 'icon-128.png',
+    });
+    for (const file of Object.values(source.icons as Record<string, string>)) {
+      expect(existsSync(path.join(ROOT, 'extension/icons', file))).toBe(true);
+    }
     const built = buildManifest(source, 'https://app.example.org');
     expect(built.side_panel).toEqual(source.side_panel);
     expect(built.action).toEqual(source.action);

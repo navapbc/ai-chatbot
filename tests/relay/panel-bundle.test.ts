@@ -137,7 +137,21 @@ describe('the panel bundle', () => {
     const manifest = JSON.parse(read(plain.out, 'manifest.json'));
     expect(manifest.key).toBe(PINNED_KEY);
     expect(manifest.side_panel).toEqual({ default_path: 'panel.html' });
-    expect(manifest.action).toEqual({ default_title: 'Labs ASP' });
+    expect(manifest.action).toEqual({
+      default_title: 'Labs ASP',
+      default_icon: {
+        '16': 'icon-16.png',
+        '32': 'icon-32.png',
+        '48': 'icon-48.png',
+        '128': 'icon-128.png',
+      },
+    });
+    expect(manifest.icons).toEqual({
+      '16': 'icon-16.png',
+      '32': 'icon-32.png',
+      '48': 'icon-48.png',
+      '128': 'icon-128.png',
+    });
     expect(manifest.permissions).toEqual(
       expect.arrayContaining(['sidePanel', 'alarms']),
     );

@@ -18,6 +18,10 @@ export const RELEASE_FILES = [
   'panel.html',
   'panel.js',
   'panel.css',
+  'icon-16.png',
+  'icon-32.png',
+  'icon-48.png',
+  'icon-128.png',
 ] as const;
 
 /**

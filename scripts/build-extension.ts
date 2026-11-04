@@ -99,6 +99,8 @@ function buildPanel(
   copyFileSync(path.join(panel, 'index.html'), path.join(out, 'panel.html'));
 }
 
+const ICON_SIZES = [16, 32, 48, 128] as const;
+
 try {
   const appOrigin = resolveAppOrigin(process.env);
   const testHooks = resolveTestHooks(process.env, process.argv.slice(2));
@@ -118,6 +120,14 @@ try {
     { cwd: ROOT, stdio: 'inherit' },
   );
   buildPanel(out, metafile, appOrigin, originHoldMs);
+  // The toolbar and extensions-page icons the manifest names, flat beside the
+  // worker (a release ships a flat file list). The source SVG stays out.
+  for (const size of ICON_SIZES) {
+    copyFileSync(
+      path.join(ROOT, `extension/icons/icon-${size}.png`),
+      path.join(out, `icon-${size}.png`),
+    );
+  }
   const source = JSON.parse(
     readFileSync(path.join(ROOT, 'extension/manifest.json'), 'utf8'),
   );
