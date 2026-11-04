@@ -1,5 +1,6 @@
-import { Check } from 'lucide-react';
+import { Check, CircleAlert, Minus } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
+import type { FieldProgress } from '../../../lib/relay/progress';
 import type { ProgressViewModel, SectionView } from '../lib/progress-view';
 
 type Props = {
@@ -11,16 +12,77 @@ type Props = {
 
 const cardClass = 'rounded-xl border border-accent bg-background p-3';
 
+const FIELD_TEXT: Record<FieldProgress['state'], string> = {
+  waiting: 'Waiting',
+  filled: 'Filled',
+  needs_you: 'Needs you',
+  skipped: 'Skipped',
+};
+
+/** Field labels with a state each; labels only, never values. */
+const FieldList = ({ fields }: { fields: FieldProgress[] }) => {
+  if (fields.length === 0) return null;
+  return (
+    <ul aria-label="Fields" className="flex flex-col gap-1">
+      {fields.map((field, i) => (
+        <li
+          // Labels can repeat within a section; order is stable.
+          key={`${i}-${field.label}`}
+          className="flex items-center gap-2 text-xs"
+        >
+          {field.state === 'filled' ? (
+            <Check aria-hidden="true" className="size-3.5 shrink-0" />
+          ) : field.state === 'needs_you' ? (
+            <CircleAlert aria-hidden="true" className="size-3.5 shrink-0" />
+          ) : field.state === 'skipped' ? (
+            <Minus aria-hidden="true" className="size-3.5 shrink-0" />
+          ) : (
+            <span aria-hidden="true" className="size-3.5 shrink-0" />
+          )}
+          <span
+            className={`min-w-0 flex-1 break-words ${
+              field.state === 'waiting' ? 'text-muted-foreground' : ''
+            }`}
+          >
+            {field.label}
+          </span>
+          <span className="shrink-0 text-muted-foreground">
+            {FIELD_TEXT[field.state]}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+};
+
+/** A collapsed card with its field list; the active section opens itself. */
+const FieldsDisclosure = ({ section }: { section: SectionView }) => {
+  if (section.fields.length === 0) return null;
+  return (
+    <details open={section.open} className="text-xs">
+      <summary className="cursor-pointer text-muted-foreground">
+        Fields ({section.fields.length})
+      </summary>
+      <div className="pt-1">
+        <FieldList fields={section.fields} />
+      </div>
+    </details>
+  );
+};
+
 const SectionCard = ({ section }: { section: SectionView }) => {
   if (section.status === 'done') {
     return (
-      <li className={`${cardClass} flex items-center gap-2 text-sm`}>
-        <Check aria-hidden="true" className="size-4 shrink-0" />
-        <span className="min-w-0 flex-1 break-words">{section.name}</span>
-        <span className="shrink-0 text-muted-foreground">
-          {section.count}
-          <span className="sr-only"> fields, done</span>
-        </span>
+      <li className={`${cardClass} flex flex-col gap-2 text-sm`}>
+        <div className="flex items-center gap-2">
+          <Check aria-hidden="true" className="size-4 shrink-0" />
+          <span className="min-w-0 flex-1 break-words">{section.name}</span>
+          <span className="shrink-0 text-muted-foreground">
+            {section.count}
+            <span className="sr-only"> fields, done</span>
+          </span>
+        </div>
+        <FieldsDisclosure section={section} />
       </li>
     );
   }
@@ -41,6 +103,7 @@ const SectionCard = ({ section }: { section: SectionView }) => {
             {section.count}
           </span>
         </div>
+        <FieldsDisclosure section={section} />
         {section.recent && section.recent.length > 0 ? (
           <ul className="flex flex-col gap-1">
             {section.recent.map((action, i) => (
@@ -59,13 +122,18 @@ const SectionCard = ({ section }: { section: SectionView }) => {
   }
   return (
     <li
-      className={`${cardClass} flex items-center gap-2 text-sm text-muted-foreground`}
+      className={`${cardClass} flex flex-col gap-2 text-sm text-muted-foreground`}
     >
-      <span className="min-w-0 flex-1 break-words">{section.name}</span>
-      {section.status === 'needs_you' ? (
-        <span className="shrink-0 font-medium text-foreground">Needs you</span>
-      ) : null}
-      <span className="shrink-0">{section.count}</span>
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 break-words">{section.name}</span>
+        {section.status === 'needs_you' ? (
+          <span className="shrink-0 font-medium text-foreground">
+            Needs you
+          </span>
+        ) : null}
+        <span className="shrink-0">{section.count}</span>
+      </div>
+      <FieldsDisclosure section={section} />
     </li>
   );
 };

@@ -63,7 +63,11 @@ When the form is filled, call `form_summary` once with every field you filled or
 
 ## Progress
 
-Call `report_progress` after each form section. Send `sections` (up to 40; each has a `name` of 1 to 80 characters, a `status` that is one of `waiting`, `filling`, `done`, or `needs_you`, a `filled` count, and an optional `total` count), an optional `current` section name (up to 120 characters), and optional `actions` (up to 5 items, each up to 120 characters). An invalid payload is silently dropped, so keep to these limits. Never put a field value in a label, name, or detail: no names, dates, numbers, or addresses of the applicant. The whole progress stream is treated as sensitive.
+`report_progress` is required, not optional: the caseworker reads the panel to see what you filled, and a panel that still shows every field as `waiting` after you filled the form is wrong. Call it after every batch of fills (at least once per section), changing each field you just filled to `filled`, `needs_you`, or `skipped` and updating `filled`, `status`, and `current`. Make one last call with the final state of every field immediately before you end your turn, including when you stop to ask a question or stop at the review page. Never end a turn without it.
+
+Call `report_progress` early and often. Make the first call as soon as you have read the page and the record, before you fill anything: list every section with status `waiting` and a `total`, and list its fields with state `waiting`. The caseworker sees nothing else until then. Call it again after each section, and whenever a field's state changes.
+
+Send `sections` (up to 40; each has a `name` of 1 to 80 characters, a `status` that is one of `waiting`, `filling`, `done`, or `needs_you`, a `filled` count, an optional `total` count, and an optional `fields` list of up to 30 entries), an optional `current` section name (up to 120 characters), and optional `actions` (up to 5 items, each up to 120 characters). Each field entry has a `label` of 1 to 80 characters (the label the form shows, such as `First name` or `Street address`) and a `state` that is one of `waiting`, `filled`, `needs_you`, or `skipped`. An invalid payload is silently dropped, so keep to these limits. Never put a field value in a label, name, or detail: no names, dates, numbers, or addresses of the applicant. The whole progress stream is treated as sensitive.
 
 ## Re-Opening The Page
 

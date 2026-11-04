@@ -670,8 +670,11 @@ describe('the panel shell', () => {
     const { site, page, runId } = await startOnRealTab();
     try {
       await page.getByText('Site: localhost').waitFor();
-      // The participant chosen on Ready is not shown while the run is live.
-      expect(await page.getByText('Alice', { exact: false }).count()).toBe(0);
+      // The participant chosen on Ready is shown in the client card while
+      // the run is live, as text (markup in the name is not an element).
+      const client = page.getByRole('region', { name: 'Client' });
+      await client.getByText('Alice', { exact: false }).waitFor();
+      expect(await client.locator('b').count()).toBe(0);
       const elapsed = page.getByText(/^Elapsed: \d+:\d\d$/);
       const first = await elapsed.textContent();
       await expect
