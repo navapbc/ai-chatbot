@@ -101,7 +101,9 @@ export const PolicyNotice = ({ state }: { state: RunSessionState | null }) => {
  * The run in progress: site, elapsed time, notices, Stop. There is no way
  * off this screen while the run is live except Stop; once it ended, Back to
  * Home. The session is built in the effect (a StrictMode remount gets a fresh
- * one) and disposed on unmount. Applicant values never reach this screen.
+ * one) and disposed on unmount. The client card shows only what the
+ * caseworker chose or typed in this panel; values the agent fills never reach
+ * it.
  */
 export const RunningScreen = ({
   siteName,
