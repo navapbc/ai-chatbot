@@ -347,10 +347,10 @@ jobs:
             USE_GUEST="true"
           fi
 
-          # Jev (TypeSafe) features: preview only while the integration is
-          # being evaluated. This job passes the value explicitly for every
-          # environment, so dev/prod get "" (off) from here rather than from a
-          # default. promote.yml passes no jev_features at all and so takes
+          # Jev (TypeSafe) features: preview and dev only while the
+          # integration is being evaluated. This job passes the value
+          # explicitly for every environment, so prod gets "" (off) from here
+          # rather than from a default. promote.yml passes no jev_features at all and so takes
           # terraform's default, which is "" for the same reason — promoting a
           # preview image to prod must not carry Jev with it. Keep both in
           # step: if that default is ever made non-empty, promotions turn Jev
@@ -362,7 +362,7 @@ jobs:
           # only thing gating Jev. (lib/jev/client.ts still treats a missing
           # TYPESAFE_API_KEY as "off", but do not rely on absence here.)
           JEV_FEATURES=""
-          if [[ "${{ needs.setup.outputs.environment }}" == preview-pr-* ]]; then
+          if [[ "${{ needs.setup.outputs.environment }}" == preview-pr-* ]] || [[ "${{ needs.setup.outputs.environment }}" == "dev" ]]; then
             JEV_FEATURES="all"
           fi
 
