@@ -2,6 +2,7 @@ import { BraintrustExporter } from '@braintrust/otel';
 import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { registerOTel } from '@vercel/otel';
 import { defineInstrumentation } from 'eve/instrumentation';
+import { DedupeAgentUsageExporter } from '@/lib/observability/dedupe-agent-usage';
 import { ScrubbingSpanExporter } from '@/lib/observability/scrubbing-exporter';
 import { TRACER_NAME as BROWSER_TRACER } from '@/lib/observability/browser-telemetry';
 import { TRACER_NAME as JEV_TRACER } from '@/lib/jev/telemetry';
@@ -65,19 +66,25 @@ export default defineInstrumentation({
       spanProcessors: [
         new BatchSpanProcessor(
           new ScrubbingSpanExporter(
-            new BraintrustExporter({
-              // Destination is BRAINTRUST_PARENT. Do not fall back to `agentName`:
-              // Eve resolves it from the package name (`ai-chatbot`), which is not a
-              // project anyone looks at. Unset, the exporter uses a project literally
-              // named "default-otel-project".
-              //
-              // Keep the AI spans, plus the scopes named in KEEP_SCOPES.
-              filterAISpans: true,
-              customFilter: (span) =>
-                KEEP_SCOPES.has(span.instrumentationScope?.name ?? '')
-                  ? true
-                  : undefined,
-            }),
+            // The root agent's `invoke_agent` spans repeat each `chat` span's
+            // tokens, which doubled Braintrust's summed cost; they leave
+            // without usage. See lib/observability/dedupe-agent-usage.ts.
+            new DedupeAgentUsageExporter(
+              new BraintrustExporter({
+                // Destination is BRAINTRUST_PARENT. Do not fall back to `agentName`:
+                // Eve resolves it from the package name (`ai-chatbot`), which is not a
+                // project anyone looks at. Unset, the exporter uses a project literally
+                // named "default-otel-project".
+                //
+                // Keep the AI spans, plus the scopes named in KEEP_SCOPES.
+                filterAISpans: true,
+                customFilter: (span) =>
+                  KEEP_SCOPES.has(span.instrumentationScope?.name ?? '')
+                    ? true
+                    : undefined,
+              }),
+              agentName,
+            ),
             // RELAY_RUNS_ENABLED is read on every export, not at startup, so
             // flipping it takes effect without a restart. It is process-wide:
             // extension relay runs and web chats share this Eve process and spans
