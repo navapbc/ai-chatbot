@@ -3,6 +3,7 @@ import type { RunProgress } from '../../../lib/relay/progress';
 import type { AppApi, RunPhase, RunState } from '../../src/app-api';
 import type { RunStatus } from '../../src/bridge';
 import { createActionLog } from './action-log';
+import type { ResumeResult } from './resume-client';
 import type { Target } from './state';
 import {
   type Confirmation,
@@ -40,6 +41,17 @@ import {
 //   cannot be undone): the caseworker is asked at once, with the number the
 //   page showed once the worker read one, and only "Yes, I did" or "I
 //   submitted it" stops it.
+//
+// - pause() / resume() (the caseworker's Pause and Resume): pause cuts the
+//   agent off at the worker first (its commands are refused), then asks the
+//   server to cancel the agent's turn; a server failure puts the worker back,
+//   so a pause either holds on both sides or not at all. resume() reopens the
+//   worker, then sends the agent one fixed follow-up turn telling it to read
+//   the page again; a failed send pauses the worker again. While paused the
+//   submit watch is disarmed and the server's phase is not shown (the cancel
+//   makes it read `review`). The worker's own `paused` flag, reported in its
+//   status, decides after a reopen; a poll issued before a pause or resume
+//   settled never overrides it.
 //
 // Nothing here ever sees an applicant value: only ids, origins and counts.
 // No I/O runs at creation (only timers), so a StrictMode mount, dispose and
@@ -156,6 +168,14 @@ export type RunSessionState = {
   jevFailures?: number;
   /** The browser's policy blocks the extension on this site (a flag). */
   policyRestricted?: boolean;
+  /** The caseworker paused the run: the agent cannot see or touch the page. */
+  paused?: boolean;
+  /** A pause or resume is in flight. */
+  pausing?: boolean;
+  resuming?: boolean;
+  /** The last pause or resume did not take; the state is as it was. */
+  pauseFailed?: boolean;
+  resumeFailed?: boolean;
   refreshFailed?: boolean;
   expiresAtEstimated?: boolean;
   /** The run's live expiry, Unix time in SECONDS (a refresh moves it). */
@@ -177,7 +197,10 @@ export type RunSessionState = {
 type Timer = ReturnType<typeof setTimeout>;
 
 export type RunSessionDeps = {
-  api: Pick<AppApi, 'getRunState' | 'stopRun' | 'getExtensionToken'>;
+  api: Pick<
+    AppApi,
+    'getRunState' | 'stopRun' | 'getExtensionToken' | 'pauseRun'
+  >;
   worker: Pick<
     WorkerApi,
     | 'getRunStatus'
@@ -186,7 +209,11 @@ export type RunSessionDeps = {
     | 'registrationComplete'
     | 'armSubmitWatch'
     | 'disarmSubmitWatch'
+    | 'pauseAgent'
+    | 'resumeAgent'
   >;
+  /** Sends the agent the fixed resume turn (see resume-client.ts). */
+  sendResume: (runId: string) => Promise<ResumeResult>;
   /** Milliseconds. */
   now: () => number;
   setInterval: (fn: () => void, ms: number) => Timer;
@@ -204,6 +231,10 @@ export type RunSession = {
   confirmSubmission(): Promise<void>;
   /** "No": forgets the submission and watches for the next one. */
   dismissSubmission(): void;
+  /** Pauses the agent (see the top of this file). */
+  pause(): Promise<void>;
+  /** Resumes the agent after a pause. */
+  resume(): Promise<void>;
   dispose(): void;
 };
 
@@ -251,6 +282,14 @@ export const createRunSession = (
   let hold:
     | { origin: string; seenAt: number; chainSeenAt: number; known: boolean }
     | undefined;
+
+  // Pause and resume (see the top of this file).
+  let paused = false;
+  let transition: 'pausing' | 'resuming' | undefined;
+  let pauseFailed = false;
+  let resumeFailed = false;
+  // Worker polls issued at or after this may set `paused` from the worker.
+  let pausedFrom = 0;
 
   let workerInFlight = false;
   let serverInFlight = false;
@@ -318,6 +357,13 @@ export const createRunSession = (
       if (typeof lastWorker.jevFailures === 'number') {
         state.jevFailures = lastWorker.jevFailures;
       }
+    }
+    if (!ended) {
+      if (paused) state.paused = true;
+      if (transition === 'pausing') state.pausing = true;
+      if (transition === 'resuming') state.resuming = true;
+      if (pauseFailed) state.pauseFailed = true;
+      if (resumeFailed) state.resumeFailed = true;
     }
     if (refreshFailed && !ended) state.refreshFailed = true;
     if (estimated && !ended) state.expiresAtEstimated = true;
@@ -439,7 +485,9 @@ export const createRunSession = (
       wantArmed = false;
       return;
     }
-    const want = serverPhase === 'review';
+    // Paused: the caseworker is editing, and the cancelled turn reads as
+    // review. Nothing is watched until the agent works again.
+    const want = serverPhase === 'review' && !paused;
     if (want === wantArmed) return;
     wantArmed = want;
     clearSubmission();
@@ -632,6 +680,13 @@ export const createRunSession = (
         registering = false;
       });
     }
+    if (!transition && seq >= pausedFrom) {
+      const workerPaused = status.paused === true;
+      if (workerPaused !== paused) {
+        paused = workerPaused;
+        syncWatch();
+      }
+    }
     if (refreshDue()) refreshPromise = refresh();
     if (
       wantArmed &&
@@ -717,7 +772,81 @@ export const createRunSession = (
     finish(reason);
   };
 
+  /** Pauses the worker, then the agent's turn; both or neither. */
+  const pauseNow = async () => {
+    if (done() || paused || transition) return;
+    transition = 'pausing';
+    pauseFailed = false;
+    resumeFailed = false;
+    emit();
+    const workerOk = await ignore(() => deps.worker.pauseAgent(runId));
+    if (!workerOk) {
+      transition = undefined;
+      pauseFailed = true;
+      emit();
+      return;
+    }
+    const serverOk = await ignore(() => deps.api.pauseRun(runId));
+    if (!serverOk) {
+      // The turn is still running: do not leave it refused and retrying.
+      await ignore(() => deps.worker.resumeAgent(runId));
+      transition = undefined;
+      pauseFailed = true;
+      pausedFrom = pollSeq + 1;
+      emit();
+      return;
+    }
+    transition = undefined;
+    pausedFrom = pollSeq + 1;
+    // A stop that landed meanwhile owns the run.
+    if (done()) return;
+    paused = true;
+    syncWatch();
+    emit();
+  };
+
+  /** Reopens the worker, then tells the agent to read the page again. */
+  const resumeNow = async () => {
+    if (done() || !paused || transition) return;
+    transition = 'resuming';
+    resumeFailed = false;
+    pauseFailed = false;
+    emit();
+    const workerOk = await ignore(() => deps.worker.resumeAgent(runId));
+    if (!workerOk) {
+      transition = undefined;
+      resumeFailed = true;
+      emit();
+      return;
+    }
+    let sent = false;
+    try {
+      sent = (await deps.sendResume(runId)).ok;
+    } catch {
+      sent = false;
+    }
+    if (done()) return;
+    if (!sent) {
+      // Nothing started the agent: keep the page cut off from it.
+      await ignore(() => deps.worker.pauseAgent(runId));
+      transition = undefined;
+      resumeFailed = true;
+      pausedFrom = pollSeq + 1;
+      emit();
+      return;
+    }
+    transition = undefined;
+    paused = false;
+    pausedFrom = pollSeq + 1;
+    // The agent works again; the row may still read review for a poll.
+    serverPhase = 'working';
+    syncWatch();
+    emit();
+  };
+
   return {
+    pause: pauseNow,
+    resume: resumeNow,
     subscribe(cb) {
       if (disposed) return () => {};
       listeners.add(cb);

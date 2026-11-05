@@ -80,6 +80,8 @@ export interface AppApi {
   getConfig(): Promise<RelayConfig>;
   getRunState(runId: string): Promise<RunState>;
   stopRun(runId: string): Promise<{ ended: boolean; alreadyEnded: boolean }>;
+  /** Cancels the agent's turn without ending the run (the Pause button). */
+  pauseRun(runId: string): Promise<{ paused: boolean }>;
   getExtensionToken(runId: string): Promise<ExtensionToken>;
   classifyFields(
     runId: string,
@@ -141,6 +143,9 @@ const isRunState = (v: unknown): v is RunState =>
   (v.endedAt === null || isStr(v.endedAt)) &&
   (v.progress === null || isRecord(v.progress)) &&
   Array.isArray(v.pending);
+
+const isPause = (v: unknown): v is { paused: boolean } =>
+  isRecord(v) && typeof v.paused === 'boolean';
 
 const isStop = (v: unknown): v is { ended: boolean; alreadyEnded: boolean } =>
   isRecord(v) &&
@@ -287,6 +292,13 @@ export const createAppApi = (opts: {
       parsed(isRunState, 'GET', `/api/relay/runs/${requireRunId(runId)}`),
     stopRun: async (runId) =>
       parsed(isStop, 'POST', `/api/relay/runs/${requireRunId(runId)}/stop`, {}),
+    pauseRun: async (runId) =>
+      parsed(
+        isPause,
+        'POST',
+        `/api/relay/runs/${requireRunId(runId)}/pause`,
+        {},
+      ),
     getExtensionToken: async (runId) =>
       parsed(isToken, 'POST', '/api/relay/token', {
         runId: requireRunId(runId),

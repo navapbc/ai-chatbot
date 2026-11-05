@@ -81,6 +81,15 @@ export const KEPT_PROGRESS_TEXT =
 export const STALE_PROGRESS_TEXT =
   'The agent did not report what it filled, so the counts above may be out of date. Check the page.';
 
+export const PAUSED_TEXT =
+  'The agent is paused and cannot see or change the page. Fill in what you need, then press Resume. The agent reads the page again before it goes on.';
+
+export const PAUSE_FAILED_TEXT =
+  'We could not pause the run. The agent is still working. Try again.';
+
+export const RESUME_FAILED_TEXT =
+  'We could not resume the run. It is still paused. Try again.';
+
 const endsInText = (secondsLeft: number): string => {
   const minutes = Math.max(1, Math.ceil(secondsLeft / 60));
   const unit = minutes === 1 ? 'minute' : 'minutes';
@@ -182,6 +191,12 @@ export const RunningScreen = ({
   const handleDismissSubmission = () => {
     session.current?.dismissSubmission();
   };
+  const handlePause = () => {
+    void session.current?.pause();
+  };
+  const handleResume = () => {
+    void session.current?.resume();
+  };
   const handleHome = () => onHome();
   // The card goes away on its own; a refresh keeps an allowed origin.
   const handleAllowed = () => {};
@@ -204,8 +219,22 @@ export const RunningScreen = ({
   // Only for an agent that stopped with nothing pending, and never during a
   // hold (the allow-site card comes first). A stale review has no follow-up
   // input anywhere in the panel.
+  const paused = state?.paused === true;
+  const transitioning = state?.pausing === true || state?.resuming === true;
   const showReview =
-    !ended && state?.phase === 'review' && !state.pendingOrigin && !heldOn;
+    !ended &&
+    !paused &&
+    state?.phase === 'review' &&
+    !state.pendingOrigin &&
+    !heldOn;
+  // Only while the agent works: a question or a review is already waiting on
+  // the caseworker, who can use the page then.
+  const canPause =
+    !ended &&
+    !paused &&
+    !stopping &&
+    !heldOn &&
+    (state?.phase ?? 'working') === 'working';
 
   // Confirmed follows at once; nothing to show in between.
   if (isConfirming(state)) return null;
@@ -213,7 +242,7 @@ export const RunningScreen = ({
   return (
     <section className="flex flex-col gap-4" aria-label="Running">
       <h2 className="text-base font-semibold">
-        {ended ? 'Run ended' : 'Running'}
+        {ended ? 'Run ended' : paused ? 'Paused' : 'Running'}
       </h2>
       <p className="text-sm">Site: {siteName}</p>
       <p className="text-sm">
@@ -266,6 +295,22 @@ export const RunningScreen = ({
           onStop={handleStop}
         />
       ) : null}
+      {paused ? (
+        <div role="status" aria-live="polite" className="flex flex-col gap-2">
+          <p className="text-sm font-semibold">{PAUSED_TEXT}</p>
+          <p className="text-sm">The run still ends at its time limit.</p>
+        </div>
+      ) : null}
+      {state?.pauseFailed ? (
+        <p role="alert" className="text-sm">
+          {PAUSE_FAILED_TEXT}
+        </p>
+      ) : null}
+      {state?.resumeFailed ? (
+        <p role="alert" className="text-sm">
+          {RESUME_FAILED_TEXT}
+        </p>
+      ) : null}
       {questions.length > 0 ? (
         // Answers are offered only while the agent waits on them: never
         // while it works or after it stopped (a replayed turn can briefly
@@ -277,7 +322,7 @@ export const RunningScreen = ({
           sendAnswers={send}
         />
       ) : null}
-      {!ended && (state?.phase ?? 'working') === 'working' ? (
+      {!ended && !paused && (state?.phase ?? 'working') === 'working' ? (
         <ThinkingLine latest={state?.actions?.at(-1)} />
       ) : null}
       {!ended && !hasSections ? (
@@ -317,6 +362,27 @@ export const RunningScreen = ({
           onConfirmSubmission={handleConfirmSubmission}
           onDismissSubmission={handleDismissSubmission}
         />
+      ) : null}
+      {canPause ? (
+        <Button
+          type="button"
+          variant="outline"
+          onClick={handlePause}
+          disabled={transitioning}
+          aria-busy={transitioning}
+        >
+          {state?.pausing ? 'Pausing...' : 'Pause'}
+        </Button>
+      ) : null}
+      {paused ? (
+        <Button
+          type="button"
+          onClick={handleResume}
+          disabled={transitioning || stopping}
+          aria-busy={transitioning}
+        >
+          {state?.resuming ? 'Resuming...' : 'Resume'}
+        </Button>
       ) : null}
       {!ended ? (
         <Button

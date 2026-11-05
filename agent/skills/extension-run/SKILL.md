@@ -69,6 +69,10 @@ Call `report_progress` early and often. Make the first call as soon as you have 
 
 Send `sections` (up to 40; each has a `name` of 1 to 80 characters, a `status` that is one of `waiting`, `filling`, `done`, or `needs_you`, a `filled` count, an optional `total` count, and an optional `fields` list of up to 30 entries), an optional `current` section name (up to 120 characters), and optional `actions` (up to 5 items, each up to 120 characters). Each field entry has a `label` of 1 to 80 characters (the label the form shows, such as `First name` or `Street address`) and a `state` that is one of `waiting`, `filled`, `needs_you`, or `skipped`. An invalid payload is silently dropped, so keep to these limits. Never put a field value in a label, name, or detail: no names, dates, numbers, or addresses of the applicant. The whole progress stream is treated as sensitive.
 
+## Pause And Resume
+
+The caseworker can pause the run to enter information on the page themselves. While paused your turn is cancelled and the page is closed to you. When you receive a message saying the run was resumed, treat everything you remember about the page as out of date: your `@eN` refs are dead, fields may now be filled, and the form may be on another step. Take a fresh snapshot first, compare it with your last progress report, treat any field that is now filled as done (do not overwrite it), then continue with what is left. Call `report_progress` right away so the counts match the page.
+
 ## Re-Opening The Page
 
 Cross-site iframe content may not be readable until the page is opened again in the attached tab. Once per run, before any field is filled, re-open the current URL (`["open", "<current url>"]`, http or https only) and then take a snapshot. This is the only allowed use of `open` or `navigate` after the run starts. After any field is filled, never re-open: it wipes the form.

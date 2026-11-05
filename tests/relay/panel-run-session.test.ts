@@ -95,6 +95,14 @@ const setup = (run: Partial<SessionRun> = {}) => {
       reset?: boolean;
     }): Promise<SubmitWatchResult> => ({ ok: true }),
     disarm: async (): Promise<SubmitWatchResult> => ({ ok: true }),
+    serverPause: async () => ({ paused: true }),
+    workerPause: async (): Promise<void> => {},
+    workerResume: async (): Promise<void> => {},
+    resume: async (): Promise<
+      { ok: true } | { ok: false; error: unknown }
+    > => ({
+      ok: true,
+    }),
   };
   const api = {
     getRunState: vi.fn(async (id: string) => {
@@ -108,6 +116,10 @@ const setup = (run: Partial<SessionRun> = {}) => {
     getExtensionToken: vi.fn(async (id: string) => {
       calls.push(`token:${id}`);
       return plan.token();
+    }),
+    pauseRun: vi.fn(async (id: string) => {
+      calls.push(`serverPause:${id}`);
+      return plan.serverPause();
     }),
   };
   const worker = {
@@ -135,13 +147,26 @@ const setup = (run: Partial<SessionRun> = {}) => {
       calls.push(`disarm:${id}`);
       return plan.disarm();
     }),
+    pauseAgent: vi.fn(async (id: string) => {
+      calls.push(`workerPause:${id}`);
+      return plan.workerPause();
+    }),
+    resumeAgent: vi.fn(async (id: string) => {
+      calls.push(`workerResume:${id}`);
+      return plan.workerResume();
+    }),
   };
+  const sendResume = vi.fn(async (id: string) => {
+    calls.push(`sendResume:${id}`);
+    return plan.resume();
+  });
   const markRecentEnded = vi.fn(async (id: string, reason: string) => {
     calls.push(`recent:${id}:${reason}`);
   });
   const deps: RunSessionDeps = {
     api,
     worker,
+    sendResume,
     now: () => Date.now(),
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: (id) => clearInterval(id),
@@ -164,6 +189,7 @@ const setup = (run: Partial<SessionRun> = {}) => {
     api,
     worker,
     markRecentEnded,
+    sendResume,
     session,
     states,
     last,
@@ -1436,6 +1462,7 @@ describe('run session: dispose', () => {
     const deps = {
       api: t.api,
       worker: t.worker,
+      sendResume: t.sendResume,
       now: () => Date.now(),
       setInterval: (fn: () => void, ms: number) => setInterval(fn, ms),
       clearInterval: (id: ReturnType<typeof setInterval>) => clearInterval(id),
@@ -2197,5 +2224,123 @@ describe('run session: the submit watch', () => {
     expect(after).toEqual([ARM]);
     expect(w.armed).toBe(true);
     t.session.dispose();
+  });
+});
+
+describe('run session: pause and resume', () => {
+  it('pauses the worker first, then the server, and shows paused', async () => {
+    const t = setup();
+    await t.session.pause();
+    expect(t.calls.filter((c) => /Pause|pause/.test(c))).toEqual([
+      `workerPause:${RUN_ID}`,
+      `serverPause:${RUN_ID}`,
+    ]);
+    expect(t.last().paused).toBe(true);
+    expect(t.last().pauseFailed).toBeUndefined();
+    expect(t.last().pausing).toBeUndefined();
+  });
+
+  it('shows pausing while the calls are in flight', async () => {
+    const gate = deferred<void>();
+    const t = setup();
+    t.plan.workerPause = () => gate.promise;
+    const pending = t.session.pause();
+    expect(t.last().pausing).toBe(true);
+    expect(t.last().paused).toBeUndefined();
+    gate.resolve();
+    await pending;
+    expect(t.last().pausing).toBeUndefined();
+    expect(t.last().paused).toBe(true);
+  });
+
+  it('puts the worker back when the server cannot cancel the turn', async () => {
+    const t = setup();
+    t.plan.serverPause = async () => {
+      throw new AppApiError('server_error', 500);
+    };
+    await t.session.pause();
+    expect(t.calls.filter((c) => /orker(Pause|Resume)/.test(c))).toEqual([
+      `workerPause:${RUN_ID}`,
+      `workerResume:${RUN_ID}`,
+    ]);
+    expect(t.last().paused).toBeUndefined();
+    expect(t.last().pauseFailed).toBe(true);
+  });
+
+  it('does not ask the server when the worker refuses', async () => {
+    const t = setup();
+    t.plan.workerPause = async () => {
+      throw new WorkerError('no_active_run');
+    };
+    await t.session.pause();
+    expect(count(t.calls, 'serverPause')).toBe(0);
+    expect(t.last().pauseFailed).toBe(true);
+    expect(t.last().paused).toBeUndefined();
+  });
+
+  it('resumes the worker, then sends the agent its turn', async () => {
+    const t = setup();
+    await t.session.pause();
+    t.calls.length = 0;
+    await t.session.resume();
+    expect(t.calls.filter((c) => /Resume|resume/.test(c))).toEqual([
+      `workerResume:${RUN_ID}`,
+      `sendResume:${RUN_ID}`,
+    ]);
+    expect(t.last().paused).toBeUndefined();
+    expect(t.last().phase).toBe('working');
+  });
+
+  it('stays paused and re-pauses the worker when the resume turn fails', async () => {
+    const t = setup();
+    await t.session.pause();
+    t.calls.length = 0;
+    t.plan.resume = async () => ({ ok: false, error: new Error('x') });
+    await t.session.resume();
+    expect(t.calls.filter((c) => /orker(Pause|Resume)/.test(c))).toEqual([
+      `workerResume:${RUN_ID}`,
+      `workerPause:${RUN_ID}`,
+    ]);
+    expect(t.last().paused).toBe(true);
+    expect(t.last().resumeFailed).toBe(true);
+  });
+
+  it('ignores a second pause and a resume when not paused', async () => {
+    const t = setup();
+    await t.session.resume();
+    expect(count(t.calls, 'workerResume')).toBe(0);
+    await t.session.pause();
+    await t.session.pause();
+    expect(count(t.calls, 'workerPause')).toBe(1);
+  });
+
+  it("does not arm the submit watch in a cancelled turn's review while paused", async () => {
+    const t = setup();
+    await t.session.pause();
+    // The worker reports the flag it was given, as the real one does.
+    t.plan.status = async () => ours({ paused: true });
+    t.plan.row = async () => liveRow({ phase: 'review' } as Partial<RunState>);
+    await tick(SERVER_POLL_MS + 10);
+    expect(count(t.calls, 'arm')).toBe(0);
+    expect(t.last().paused).toBe(true);
+  });
+
+  it("follows the worker's flag after a reopen", async () => {
+    const t = setup();
+    t.plan.status = async () => ours({ paused: true });
+    await tick(WORKER_POLL_MS + 10);
+    expect(t.last().paused).toBe(true);
+    t.plan.status = async () => ours();
+    await tick(WORKER_POLL_MS);
+    expect(t.last().paused).toBeUndefined();
+  });
+
+  it('a stop while paused still stops the run', async () => {
+    const t = setup();
+    await t.session.pause();
+    await t.session.stop();
+    expect(t.last().status).toBe('ended');
+    expect(t.last().paused).toBeUndefined();
+    expect(t.calls).toContain(`serverStop:${RUN_ID}`);
   });
 });

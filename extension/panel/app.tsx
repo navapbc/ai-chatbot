@@ -4,6 +4,7 @@ import { createAppApi } from '../src/app-api';
 import { NotConnectedError } from './lib/copy';
 import { sweepStaleRecents } from './lib/orphan-sweep';
 import { loadRecents, markRecentEnded } from './lib/recents';
+import { createResumeSender } from './lib/resume-client';
 import {
   createRunSession,
   rebuildRun,
@@ -129,6 +130,7 @@ export const App = ({ onStart }: { onStart?: OnStart }) => {
         {
           api,
           worker: createWorkerApi(),
+          sendResume: createResumeSender(APP_ORIGIN),
           now: () => Date.now(),
           setInterval: (fn, ms) => setInterval(fn, ms),
           clearInterval: (id) => clearInterval(id),

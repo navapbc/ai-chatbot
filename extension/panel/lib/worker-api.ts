@@ -228,6 +228,13 @@ export interface WorkerApi {
   ): Promise<SubmitWatchResult>;
   /** Disarms the submit watch and forgets what it saw. A code only. */
   disarmSubmitWatch(runId: string): Promise<SubmitWatchResult>;
+  /**
+   * Pauses the agent's access to the page (its commands are refused, the
+   * page's events are not forwarded). Throws a WorkerError on a refusal.
+   */
+  pauseAgent(runId: string): Promise<void>;
+  /** Lets the agent's commands through again. */
+  resumeAgent(runId: string): Promise<void>;
 }
 
 export const createWorkerApi = (sendMessage: Send = chromeSend): WorkerApi => {
@@ -334,6 +341,7 @@ export const createWorkerApi = (sendMessage: Send = chromeSend): WorkerApi => {
     const {
       armed: _armed,
       policyRestricted: rawPolicy,
+      paused: rawPaused,
       submitted: rawSubmitted,
       ...rest
     } = reply;
@@ -341,6 +349,7 @@ export const createWorkerApi = (sendMessage: Send = chromeSend): WorkerApi => {
     if (reply.active === true) status.armed = reply.armed === true;
     // A flag too: true only when the worker says exactly true.
     if (rawPolicy === true) status.policyRestricted = true;
+    if (rawPaused === true) status.paused = true;
     const submitted = reduceSubmitted(rawSubmitted);
     if (submitted) status.submitted = submitted;
     return status;
@@ -357,6 +366,8 @@ export const createWorkerApi = (sendMessage: Send = chromeSend): WorkerApi => {
       ),
     disarmSubmitWatch: (runId) =>
       watchCall({ type: 'disarmSubmitWatch', runId }),
+    pauseAgent: (runId) => send({ type: 'pauseAgent', runId }),
+    resumeAgent: (runId) => send({ type: 'resumeAgent', runId }),
     startRun: (args) => send({ type: 'startRun', ...args }),
     stopRun: (runId) =>
       send(

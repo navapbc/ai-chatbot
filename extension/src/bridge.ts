@@ -116,7 +116,15 @@ export type BridgeMessage =
    */
   | { type: 'armSubmitWatch'; runId: string; reset?: boolean }
   /** Stops the watch and forgets what it saw (see disarmSubmitWatch). */
-  | { type: 'disarmSubmitWatch'; runId: string };
+  | { type: 'disarmSubmitWatch'; runId: string }
+  /**
+   * The caseworker paused the run (see pauseAgent): the agent's commands are
+   * refused and the page's events are not forwarded until `resumeAgent`.
+   * Answers `{ ok: true }`; a run that is not this id answers an error.
+   */
+  | { type: 'pauseAgent'; runId: string }
+  /** Lets the agent's commands through again (see resumeAgent). */
+  | { type: 'resumeAgent'; runId: string };
 
 /**
  * showUnfilledField's answer: whether a field was highlighted, how many
@@ -157,6 +165,8 @@ export interface RunStatus {
   jevFailures?: number;
   /** Requests made to the app's classify-field route; absent without Jev. */
   jevRequests?: number;
+  /** True while the caseworker has paused the run (see pauseAgent). */
+  paused?: boolean;
   /**
    * The https origin (origin only: never a path or query) the tab went to
    * outside the run's origins, while the run is held waiting for
@@ -349,6 +359,13 @@ interface Run extends RunConfig {
    * await must compare `scopeEpoch` too (see requireSameScope).
    */
   blocked: boolean;
+  /**
+   * The caseworker paused the run: every agent CDP command is refused with
+   * PAUSED_REFUSED and no event is forwarded. Memory only; carried across a
+   * same-run token refresh, lost with the worker (a restarted run starts
+   * unpaused, and its agent turn was cancelled by the server's pause).
+   */
+  paused: boolean;
   /** Bumped every time a hold starts or moves to another origin. */
   scopeEpoch: number;
   /**
@@ -450,6 +467,12 @@ const DETACH_GRACE_MS = 5_000;
 // agent may need longer to attach again than after any other detach.
 const TARGET_CLOSED_GRACE_MS = 20_000;
 const REGISTRATION_REFUSED = 'registration required';
+/**
+ * The agent's refusal while the caseworker has the run paused. Fixed text:
+ * the agent's turn is cancelled by the pause, so this only reaches a command
+ * already on its way.
+ */
+const PAUSED_REFUSED = 'run is paused';
 const ORIGIN_NOT_PENDING = 'origin not pending';
 // esbuild defines this only in a test-hooks build given
 // EXTENSION_TEST_ORIGIN_HOLD_MS (scripts/extension-build-config.ts), so the
@@ -735,6 +758,7 @@ async function startRunNow(
   const previous = run;
   const sameRun = previous !== undefined && previous.runId === claims.runId;
   const carried = sameRun ? previous.knownValues.slice() : [];
+  const carriedPaused = sameRun && previous.paused;
   const valuesLost = sameRun
     ? previous.needsRegistration
     : begun.includes(claims.runId);
@@ -769,6 +793,7 @@ async function startRunNow(
     begin(config, socket.url, claims, false, valuesLost);
     carryKnownValues(carried);
     carryExtraOrigins(carriedOrigins);
+    if (carriedPaused && run) run.paused = true;
     return { ok: true };
   } finally {
     if (sameRun) {
@@ -1096,6 +1121,7 @@ function begin(
     typingNow: false,
     scanNow: false,
     blocked: false,
+    paused: false,
     scopeEpoch: 0,
     extraOrigins: [],
     pendingOrigin: null,
@@ -1185,6 +1211,9 @@ function connect(current: Run) {
     if (!isObject(msg) || typeof msg.id !== 'string') return;
     try {
       const result = await handleCommand(current, msg);
+      // A pause that landed while this command ran: its result never goes
+      // up (every command path ends here, so no await inside can leak it).
+      if (current.paused) throw new Error(PAUSED_REFUSED);
       send(current, { type: 'reply', id: msg.id, result });
     } catch (error) {
       send(current, {
@@ -1688,6 +1717,8 @@ async function forwardCdp(
   // Held (or ending): refused before the frame lookups below, which would
   // otherwise talk to the held page (DOM.resolveNode, context discovery).
   if (current.blocked) throw new Error(OUT_OF_SCOPE);
+  // Paused by the caseworker: nothing of the page goes to the agent.
+  if (current.paused) throw new Error(PAUSED_REFUSED);
   // Before any lookup below talks to the page: a typing attach (see
   // typeSensitive) holds the debugger without the agent having attached,
   // and none of it is the agent's. Checked again after every await.
@@ -3112,6 +3143,8 @@ export function onDebuggerEvent(
   const bridgeWorldEvent = isMaskWorldEvent(source.sessionId, method, params);
   // Held (or torn down): tracked above, never forwarded.
   if (current.blocked) return;
+  // Paused: the caseworker is editing the page; none of it is forwarded.
+  if (current.paused) return;
 
   const lifecycle = LIFECYCLE_EVENTS.has(method);
   let forwarded: unknown = params;
@@ -4347,6 +4380,22 @@ function vetConfirmation(
 }
 
 /**
+ * Pauses or resumes the agent's access to the run's tab (the caseworker's
+ * Pause and Resume). Only for the live run of this id. Synchronous, so the
+ * flag flips before any later command is checked. Resuming also forgets
+ * nothing: the agent re-reads the page itself (its snapshot refs are stale).
+ */
+function setPaused(runId: unknown, paused: boolean): BridgeResponse {
+  const current = run;
+  if (!current || current.stopped || typeof runId !== 'string') {
+    return { ok: false, error: 'no active run' };
+  }
+  if (current.runId !== runId) return { ok: false, error: 'wrong run' };
+  current.paused = paused;
+  return { ok: true };
+}
+
+/**
  * Lets the run go on at the origin it is held on (plan 4c's panel asks the
  * caseworker). Only an exact https origin equal to `pendingOrigin`, with the
  * tab still on it (or back in scope), at most MAX_EXTRA_ORIGINS per run; it
@@ -4420,6 +4469,7 @@ function getRunStatus(): RunStatus {
     status.jevRequests = current.jev.requests();
   }
   if (current.policyRestricted) status.policyRestricted = true;
+  if (current.paused) status.paused = true;
   if (current.pendingOrigin !== null) {
     status.pendingOrigin = current.pendingOrigin;
   }
@@ -4486,5 +4536,7 @@ export async function handleMessage(message: unknown): Promise<BridgeResponse> {
   if (message.type === 'disarmSubmitWatch') {
     return disarmSubmitWatch(message.runId);
   }
+  if (message.type === 'pauseAgent') return setPaused(message.runId, true);
+  if (message.type === 'resumeAgent') return setPaused(message.runId, false);
   return { ok: false, error: 'unknown message type' };
 }

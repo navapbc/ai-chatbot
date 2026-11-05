@@ -481,3 +481,11 @@ P21. A registered value in page text refuses the screenshot instead of masking i
 P22. The screenshot mask is frozen after round 5; the residuals listed under Known Limits are accepted; cost: those page shapes can leak in pixels while values are registered.
 P23. Coordinate and key input into out-of-scope same-site frames is refused conservatively, and the screenshot is refused while such a frame exists; cost: legitimate input near such a frame can be refused.
 P24. Frame scope is frozen after three review rounds; cost: a later finding in `lib/relay/frames.ts` needs a new task.
+
+## Pause And Resume Follow-ups
+
+- [ ] A worker restart while paused clears the flag (memory only). The agent's turn was cancelled by the pause, so nothing runs, but the panel shows the run unpaused until the caseworker presses Pause again or Stop.
+- [ ] Pause is offered only while the agent is working. During a question or review the caseworker can already use the page.
+- [ ] Values the caseworker types straight into the page while paused are masked only by the field classifier (sensitive fields), not by the registered-value scrubber, which learns values only through `typeSensitive`. Same as typing during review.
+- [ ] The resume follow-up is a normal relay turn, so it counts toward nothing but the turn itself; there is no per-run cap on pauses.
+- [ ] Not exercised on a real run yet: whether Eve folds the resume turn cleanly after a cancel, and whether the agent re-snapshots as instructed.
