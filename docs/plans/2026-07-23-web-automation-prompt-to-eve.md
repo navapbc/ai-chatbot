@@ -328,7 +328,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ### Task 4: Three subagents
 
 **Files:**
-- Create `agent/subagents/database_verification/`: `agent.ts`, `instructions.md`, `tools/get_apricot_record.ts`, `tools/get_apricot_form_fields.ts`
+- Create `agent/subagents/database_verification/`: `agent.ts`, `instructions.md`, `tools/get_legacy_record.ts`, `tools/get_legacy_form_fields.ts`
 - Create `agent/subagents/requirements_research/`: `agent.ts`, `instructions.md`, `tools/web_search.ts`
 - Create `agent/subagents/form_review/`: `agent.ts`, `instructions.md`, `tools/form_summary.ts`
 
@@ -344,7 +344,7 @@ import { defineAgent } from 'eve';
 
 export default defineAgent({
   description:
-    'Retrieve a participant\'s Apricot records and resolve every field_NNNN to its confirmed label before any value is trusted. Returns source-tagged, verified data. Delegate here before reasoning about participant data.',
+    'Retrieve a participant\'s legacy client-database records and resolve every field_NNNN to its confirmed label before any value is trusted. Returns source-tagged, verified data. Delegate here before reasoning about participant data.',
   model: 'anthropic/claude-sonnet-4.6',
 });
 ```
@@ -352,32 +352,32 @@ export default defineAgent({
 
 - [ ] **Step 2: `database_verification` tools (examples)**
 
-`agent/subagents/database_verification/tools/get_apricot_record.ts`:
+`agent/subagents/database_verification/tools/get_legacy_record.ts`:
 ```ts
 import { defineTool } from 'eve/tools';
 import { z } from 'zod';
 
-// Example tool. Production logic: lib/ai/tools/apricot/.
+// Example tool. Production logic: lib/ai/tools/legacy/.
 export default defineTool({
-  description: 'Fetch a participant record (and linked records) from Apricot by participant ID.',
+  description: 'Fetch a participant record (and linked records) from legacy client-database by participant ID.',
   inputSchema: z.object({ participantId: z.string() }),
   async execute({ participantId }) {
-    // Demonstrative stub: production calls the Apricot API (lib/apricot-api.ts).
-    return { participantId, fields: {}, note: 'stub — see lib/ai/tools/apricot' };
+    // Demonstrative stub: production calls the legacy client-database API (lib/legacy-api.ts).
+    return { participantId, fields: {}, note: 'stub — see lib/ai/tools/legacy' };
   },
 });
 ```
-`agent/subagents/database_verification/tools/get_apricot_form_fields.ts`:
+`agent/subagents/database_verification/tools/get_legacy_form_fields.ts`:
 ```ts
 import { defineTool } from 'eve/tools';
 import { z } from 'zod';
 
-// Example tool. Production logic: lib/ai/tools/apricot/. Resolves field_NNNN -> label.
+// Example tool. Production logic: lib/ai/tools/legacy/. Resolves field_NNNN -> label.
 export default defineTool({
-  description: 'Resolve the field_NNNN -> label map for an Apricot form, so raw field IDs can be trusted.',
+  description: 'Resolve the field_NNNN -> label map for an legacy client-database form, so raw field IDs can be trusted.',
   inputSchema: z.object({ formId: z.string() }),
   async execute({ formId }) {
-    return { formId, labels: {}, note: 'stub — see lib/ai/tools/apricot' };
+    return { formId, labels: {}, note: 'stub — see lib/ai/tools/legacy' };
   },
 });
 ```
@@ -551,4 +551,4 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - **Spec coverage:** instructions.md always-on core → Task 1; dynamic date → Task 1; browser-automation + benefits-application skills (incl. 3 reference sibling files) → Task 2; example tools + readReference-superseded annotation → Task 3; three subagents with own instructions+tools → Task 4; sandbox + compaction → Task 5; readReference→skills story surfaced in Tasks 2/3/6; additive-only + lib untouched → Global Constraints + Task 6 Step 2; demonstrative-stub honesty → comments in every tool.
 - **Content-placement consistency:** `## Forbidden Actions` is in Task 1 (always-on) and explicitly excluded from the Task 2 browser skill; `## Review Screen` + `## Form Completion Summary` appear in BOTH the `benefits-application` skill (Task 2) and the `form_review` subagent instructions (Task 4) — intentional, because a declared subagent inherits no skills and needs its own copy (per subagents.mdx "duplicate anything the child needs"). `form_summary` tool exists at top-level (Task 3) and duplicated under `form_review` (Task 4) for the same isolation reason.
 - **Beta-verify points (not placeholders):** the `instructions/` dir + dynamic shape, skill frontmatter/packaging, subagent directory layout, and the `compaction` key shape are each confirmed against `node_modules/eve/docs/*` and re-checked at author time; every task's boot step is the catch-net.
-- **Type/name consistency:** tool file slugs are snake_case (`action_label`, `gap_analysis`, `form_summary`, `check_submit_gate`, `get_apricot_record`, `get_apricot_form_fields`, `web_search`); subagent dirs are `database_verification`, `requirements_research`, `form_review`; model slug `anthropic/claude-sonnet-4.6` throughout; imports: `eve/instructions` (defineInstructions, defineDynamic), `eve/tools` (defineTool), `eve/sandbox` (defineSandbox), `eve` (defineAgent).
+- **Type/name consistency:** tool file slugs are snake_case (`action_label`, `gap_analysis`, `form_summary`, `check_submit_gate`, `get_legacy_record`, `get_legacy_form_fields`, `web_search`); subagent dirs are `database_verification`, `requirements_research`, `form_review`; model slug `anthropic/claude-sonnet-4.6` throughout; imports: `eve/instructions` (defineInstructions, defineDynamic), `eve/tools` (defineTool), `eve/sandbox` (defineSandbox), `eve` (defineAgent).

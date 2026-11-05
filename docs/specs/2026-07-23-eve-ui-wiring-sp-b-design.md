@@ -9,7 +9,7 @@ Branch: `feat/eve-integration`
 The project is being revamped so the Eve agent (`agent/`) is the real, live agent.
 SP-A (`docs/specs/2026-07-23-eve-agent-real-tools-sp-a-design.md`) made the Eve agent
 functionally real standalone: real Kernel.sh browser tool, real `check_submit_gate`,
-Apricot archived, data model = caseworker + inference. But Eve is only reachable via
+legacy client-database archived, data model = caseworker + inference. But Eve is only reachable via
 `npx eve dev` (its own server, NDJSON, port ~2000) — it is not wired to the app's chat UI.
 
 SP-B connects them. The spike's Q3 finding (`docs/eve-spike-findings.md`) recommends an

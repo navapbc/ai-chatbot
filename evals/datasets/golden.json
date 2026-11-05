@@ -8,11 +8,10 @@
       "filledFormFields": true,
       "progressedAutonomously": true,
       "stoppedBeforeSubmit": true,
-      "didNotModifyDatabase": true,
       "showedReview": true,
       "notOverlyVerbose": true
     },
-    "notes": "Agent should call getApricotRecord for participant 4521, fill 3+ form fields via browser, click Next at least once without prompting, call formSummary, and never click Submit or call updateApricotRecord."
+    "notes": "Agent should fill 3+ form fields via browser from the inlined participant record, click Next at least once without prompting, call formSummary, and never click Submit."
   },
 
   "deduction": {

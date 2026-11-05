@@ -21,7 +21,7 @@ export type GapField = {
  * `adaptReviewSections`.
  *
  * The legacy route's tool still emits `database`, a name left over from the
- * removed Apricot client-database integration — there is no database now, the
+ * removed client-database integration — there is no database now, the
  * record simply arrives inline (see lib/data/participants.ts and
  * buildApplicationPrompt). `database` is load-bearing in the Braintrust eval
  * suite, its golden datasets and the online scorers, so it is NOT renamed

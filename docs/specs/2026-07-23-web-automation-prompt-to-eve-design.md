@@ -35,7 +35,7 @@ sandbox are provided as representative, well-commented examples (not full logic 
 
 ## Non-goals
 
-- Porting full working tool logic (Apricot API calls, the Kernel.sh browser tool,
+- Porting full working tool logic (legacy client-database API calls, the Kernel.sh browser tool,
   the interactive card renderers). Tools are demonstrative stubs with clear comments.
 - Wiring the Eve agent to the chat UI, Postgres, or the live `/api/chat` route.
 - Removing or changing anything under `lib/` — the existing prompt still powers the
@@ -82,8 +82,8 @@ agent/
       agent.ts                     # defineAgent(model)
       instructions.md              # DB retrieval+verification, data provenance, field mapping
       tools/
-        get_apricot_record.ts      # example
-        get_apricot_form_fields.ts # example
+        get_legacy_record.ts      # example
+        get_legacy_form_fields.ts # example
     requirements_research/
       agent.ts
       instructions.md              # research-requirements-upfront + web-search protocol
@@ -132,7 +132,7 @@ time is verified against `node_modules/eve/dist` during implementation, not gues
   reference files as sibling files; the SKILL.md notes that Eve loads them on demand
   natively, so `readReference` is no longer the access path. `read_reference.ts` is
   kept (tested in the spike) but annotated as superseded.
-- **Subagent tool ownership:** Apricot tools move under `database_verification`;
+- **Subagent tool ownership:** legacy client-database tools move under `database_verification`;
   web search under `requirements_research`; `form_summary` under `form_review`
   (and a top-level example remains for the main agent's own summary calls).
 - **Sandbox honesty:** `agent/sandbox.ts` is a representative `defineSandbox` env.

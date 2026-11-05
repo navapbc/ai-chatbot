@@ -10,8 +10,10 @@ import { computeCostUsd, type UsageTotals } from "./pricing";
 /**
  * Shared stub tool builder for evals.
  *
- * Mirrors the live tool surface in app/(chat)/api/chat/route.ts — Apricot
- * tools, gapAnalysis, formSummary, actionLabel, browser, readReference.
+ * Mirrors the live tool surface in app/(chat)/api/chat/route.ts — gapAnalysis,
+ * formSummary, actionLabel, browser, readReference. There is no participant
+ * lookup tool: the live agent receives the participant record inline in the
+ * caseworker's first message, so evals do the same with `withParticipant`.
  * Only the execute callbacks differ — they return mock data and track state.
  *
  * Pass an `overrides` object to customise individual tool execute fns.
@@ -33,17 +35,6 @@ export interface BaseRunState {
 // ── Tool schema constants ───────────────────────────────────────────────
 
 const TOOL_DESCRIPTIONS = {
-  getApricotRecord:
-    "Get a participant/client record from Apricot360 by record ID. Use this to fetch participant data for form filling. Returns field values with human-readable labels resolved from the form definition.",
-  getApricotForms:
-    "Fetch forms from Apricot360 with optional pagination and filtering.",
-  getApricotForm: "Get a specific form from Apricot360 by form ID.",
-  getApricotFormFields:
-    "Get all fields for a specific form from Apricot360. Returns field definitions including labels, types, options, and validation requirements.",
-  testApricotAuth:
-    "Test authentication with Apricot360 API. Use this to verify API credentials are working.",
-  updateApricotRecord:
-    "Update a participant record in Apricot360. This modifies the database record.",
   gapAnalysis:
     "Display a gap analysis card showing ONLY the missing fields the caseworker needs to provide.",
   formSummary:
@@ -63,20 +54,6 @@ const TOOL_DESCRIPTIONS = {
 type ExecuteFn<T = Record<string, unknown>> = (input: T) => Promise<unknown>;
 
 export interface ToolOverrides {
-  getApricotRecord?: ExecuteFn<{ recordId: number }>;
-  getApricotForms?: ExecuteFn<{
-    pageSize?: number;
-    pageNumber?: number;
-    sort?: string;
-    filters?: Record<string, string>;
-  }>;
-  getApricotForm?: ExecuteFn<{ formId: number }>;
-  getApricotFormFields?: ExecuteFn<{ formId: number }>;
-  testApricotAuth?: ExecuteFn<Record<string, never>>;
-  updateApricotRecord?: ExecuteFn<{
-    recordId: number;
-    fields: Record<string, string>;
-  }>;
   gapAnalysis?: ExecuteFn;
   formSummary?: ExecuteFn;
   actionLabel?: ExecuteFn;
@@ -104,12 +81,10 @@ function logAndReturn<S extends BaseRunState>(
  * @param state  - The eval's RunState object (must extend BaseRunState).
  *                 Every tool call is automatically pushed to `state.toolCallLog`.
  * @param overrides - Per-tool execute callbacks. Unset tools use sensible defaults.
- * @param options.includeUpdateTool - Include the updateApricotRecord trap tool (default false).
  */
 export function createBaseStubTools<S extends BaseRunState>(
   state: S,
-  overrides: ToolOverrides = {},
-  options: { includeUpdateTool?: boolean } = {}
+  overrides: ToolOverrides = {}
 ) {
   const wrap = <T>(name: string, fn: ExecuteFn<T>): ExecuteFn<T> => {
     return async (input: T) => {
@@ -119,47 +94,6 @@ export function createBaseStubTools<S extends BaseRunState>(
   };
 
   const tools: Record<string, Tool> = {
-    getApricotRecord: tool({
-      description: TOOL_DESCRIPTIONS.getApricotRecord,
-      inputSchema: z.object({
-        recordId: z.number().describe("The unique record ID of the participant"),
-      }),
-      execute: wrap("getApricotRecord", overrides.getApricotRecord ?? (async () => ({ record: null, found: false }))),
-    }),
-
-    getApricotForms: tool({
-      description: TOOL_DESCRIPTIONS.getApricotForms,
-      inputSchema: z.object({
-        pageSize: z.number().optional(),
-        pageNumber: z.number().optional(),
-        sort: z.string().optional(),
-        filters: z.record(z.string(), z.string()).optional(),
-      }),
-      execute: wrap("getApricotForms", overrides.getApricotForms ?? (async () => ({ forms: [], count: 0, success: true }))),
-    }),
-
-    getApricotForm: tool({
-      description: TOOL_DESCRIPTIONS.getApricotForm,
-      inputSchema: z.object({
-        formId: z.number().describe("The unique ID of the form in Apricot360"),
-      }),
-      execute: wrap("getApricotForm", overrides.getApricotForm ?? (async () => ({ form: null, found: false }))),
-    }),
-
-    getApricotFormFields: tool({
-      description: TOOL_DESCRIPTIONS.getApricotFormFields,
-      inputSchema: z.object({
-        formId: z.number().describe("The unique ID of the form in Apricot360"),
-      }),
-      execute: wrap("getApricotFormFields", overrides.getApricotFormFields ?? (async () => ({ fields: [], count: 0, success: true }))),
-    }),
-
-    testApricotAuth: tool({
-      description: TOOL_DESCRIPTIONS.testApricotAuth,
-      inputSchema: z.object({}),
-      execute: wrap("testApricotAuth", overrides.testApricotAuth ?? (async () => ({ success: true, message: "Auth OK" }))),
-    }),
-
     gapAnalysis: tool({
       description: TOOL_DESCRIPTIONS.gapAnalysis,
       inputSchema: z.object({
@@ -211,20 +145,6 @@ export function createBaseStubTools<S extends BaseRunState>(
     }),
   };
 
-  if (options.includeUpdateTool) {
-    tools.updateApricotRecord = tool({
-      description: TOOL_DESCRIPTIONS.updateApricotRecord,
-      inputSchema: z.object({
-        recordId: z.number(),
-        fields: z.record(z.string(), z.string()),
-      }),
-      execute: wrap(
-        "updateApricotRecord",
-        overrides.updateApricotRecord ?? (async () => ({ success: false, error: "Read-only access" }))
-      ),
-    });
-  }
-
   return tools;
 }
 
@@ -232,6 +152,20 @@ export function createBaseStubTools<S extends BaseRunState>(
 
 /** Browser success response shorthand */
 export const browserOk = (output = "") => ({ success: true, output, error: null });
+
+/**
+ * Build the caseworker message the way the live app does: the participant
+ * record is inlined as JSON and there is no database to look up (see
+ * `buildApplicationPrompt` in lib/data/participants.ts). `task` is the
+ * eval's own instruction (for example the form URL and any special asks).
+ */
+export function withParticipant(task: string, participant: unknown): string {
+  return `${task}\n\nThis JSON is all the participant data available — there is no database to look up.\n\n${JSON.stringify(
+    participant,
+    null,
+    2
+  )}`;
+}
 
 /** Collect text responses from generateText result steps */
 export function collectTextResponses(steps: Array<{ text?: string }>): string[] {

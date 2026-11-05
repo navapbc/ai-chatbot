@@ -497,7 +497,7 @@ The existing app must boot, so set at minimum the env the app reads on startup. 
 vercel env add DATABASE_URL preview
 vercel env add AUTH_SECRET preview
 ```
-Add any other keys the app needs to boot that are present in `.env.example` (e.g. Apricot, Kernel, Redis) as required to get past startup. AI Gateway on Vercel uses OIDC automatically — do NOT set `AI_GATEWAY_API_KEY` in the Vercel env unless the deploy proves OIDC is unavailable (record which was needed).
+Add any other keys the app needs to boot that are present in `.env.example` (e.g. legacy client-database, Kernel, Redis) as required to get past startup. AI Gateway on Vercel uses OIDC automatically — do NOT set `AI_GATEWAY_API_KEY` in the Vercel env unless the deploy proves OIDC is unavailable (record which was needed).
 
 - [ ] **Step 3: Deploy a preview**
 

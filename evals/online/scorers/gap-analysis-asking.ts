@@ -56,7 +56,6 @@ You are grading ONE thing: the quality of the agent's \`gapAnalysis\` calls — 
 
 The trace gives you:
 - The caseworker's opening message, which usually embeds the participant record as JSON (this is the ground truth for what the agent already knows)
-- Any \`getApricotRecord\` tool result (additional ground truth; note it sometimes fails, in which case the JSON in the prompt is the only source)
 - The agent's reasoning and its \`gapAnalysis\` calls listing \`missingFields\`
 
 ## What good asking looks like
