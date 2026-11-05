@@ -1211,6 +1211,9 @@ function connect(current: Run) {
     if (!isObject(msg) || typeof msg.id !== 'string') return;
     try {
       const result = await handleCommand(current, msg);
+      // A pause that landed while this command ran: its result never goes
+      // up (every command path ends here, so no await inside can leak it).
+      if (current.paused) throw new Error(PAUSED_REFUSED);
       send(current, { type: 'reply', id: msg.id, result });
     } catch (error) {
       send(current, {

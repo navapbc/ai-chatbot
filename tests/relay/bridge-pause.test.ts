@@ -254,6 +254,20 @@ describe('pause and resume', () => {
     expect((await evaluate(socket)).error).toBeUndefined();
   });
 
+  it('drops the result of a command still running when the pause lands', async () => {
+    const socket = await attachedRun();
+    let release!: () => void;
+    fake.axGate = new Promise<void>((r) => {
+      release = r;
+    });
+    const inFlight = cdp(socket, 'Accessibility.getFullAXTree');
+    await pause();
+    release();
+    const reply = await inFlight;
+    expect(reply.error).toBe(PAUSED);
+    expect(reply.result).toBeUndefined();
+  });
+
   it('forwards no page event while paused, and forwards again after', async () => {
     const socket = await attachedRun();
     await pause();
