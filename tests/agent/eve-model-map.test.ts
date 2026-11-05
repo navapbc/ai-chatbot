@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   OPENAI_CONTEXT_WINDOW_TOKENS,
@@ -84,12 +86,44 @@ describe('isOpenAIModelId', () => {
 
 describe('contextWindowTokensFor', () => {
   it('gives the gpt-5.4 family the 1.05M window and Claude ids the 200K window', () => {
-    expect(contextWindowTokensFor('gpt-5.4')).toBe(OPENAI_CONTEXT_WINDOW_TOKENS);
+    expect(contextWindowTokensFor('gpt-5.4')).toBe(
+      OPENAI_CONTEXT_WINDOW_TOKENS,
+    );
     expect(contextWindowTokensFor('gpt-5.4-nano')).toBe(
       OPENAI_CONTEXT_WINDOW_TOKENS,
     );
     expect(contextWindowTokensFor('claude-opus-5')).toBe(
       VERTEX_CONTEXT_WINDOW_TOKENS,
+    );
+  });
+});
+
+describe('the Eve agent defaults', () => {
+  const agentSource = readFileSync(
+    path.join(process.cwd(), 'agent/agent.ts'),
+    'utf8',
+  );
+
+  it('falls back to the relay default model, so a run that sends no model gets it', async () => {
+    const { DEFAULT_RELAY_MODEL, allowedRelayModels } = await import(
+      '@/lib/ai/eve/model-map'
+    );
+    expect(agentSource).toContain(
+      `const DEFAULT_MODEL_ID = '${DEFAULT_RELAY_MODEL}';`,
+    );
+    expect(allowedRelayModels({})[0]).toBe(DEFAULT_RELAY_MODEL);
+  });
+
+  it("caps a session's input tokens well under Eve's 40M default", () => {
+    const match = agentSource.match(
+      /const MAX_INPUT_TOKENS_PER_SESSION = ([0-9_]+);/,
+    );
+    expect(match).not.toBeNull();
+    const limit = Number((match?.[1] ?? '').replaceAll('_', ''));
+    expect(limit).toBeGreaterThanOrEqual(3_000_000);
+    expect(limit).toBeLessThanOrEqual(10_000_000);
+    expect(agentSource).toContain(
+      'maxInputTokensPerSession: MAX_INPUT_TOKENS_PER_SESSION',
     );
   });
 });

@@ -616,7 +616,7 @@ describe('POST /api/eve-chat relay runs', () => {
       buildExtensionRunMessage(
         buildRelayOpeningMessage({ origin: ORIGIN, participant: RECORD }),
       ),
-      'claude-opus-5',
+      'claude-sonnet-5-5',
       REF,
     );
     expect((await store.get(USER, RELAY_CHAT))?.relayOrigin).toBe(ORIGIN);
@@ -866,7 +866,7 @@ describe('POST /api/eve-chat relay runs', () => {
     await drain(
       await startRun(start(), RELAY_CHAT, { modelOverride: 'gpt-5.4' }),
     );
-    expect(eve.createEveSession.mock.calls[0][1]).toBe('claude-opus-5');
+    expect(eve.createEveSession.mock.calls[0][1]).toBe('claude-sonnet-5-5');
   });
 
   it('uses the first env-allowed model when the start names none', async () => {
@@ -886,7 +886,7 @@ describe('POST /api/eve-chat relay runs', () => {
       buildExtensionRunMessage(
         buildRelayOpeningMessage({ origin: ORIGIN, participant: details }),
       ),
-      'claude-opus-5',
+      'claude-sonnet-5-5',
       REF,
     );
   });
@@ -2652,7 +2652,7 @@ describe('POST /api/eve-chat turn status (relay runs)', () => {
     expect(await phase()).toBe('needs_you');
   });
 
-  it('records idle only after the turn\'s pending list is persisted', async () => {
+  it("records idle only after the turn's pending list is persisted", async () => {
     const order: string[] = [];
     const realSetPending = store.setPending.bind(store);
     store.setPending = vi.fn(

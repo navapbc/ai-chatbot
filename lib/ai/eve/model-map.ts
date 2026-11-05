@@ -89,12 +89,18 @@ export function isVertexModelId(value: unknown): value is string {
 }
 
 /**
+ * The relay default: the first entry of `DEFAULT_RELAY_MODELS`, and the
+ * fallback model in `agent/agent.ts` (a run that picks it sends no model).
+ */
+export const DEFAULT_RELAY_MODEL = 'claude-sonnet-5-5';
+
+/**
  * Models a relay run may use when `RELAY_ALLOWED_MODELS` names none we know:
- * every picker model, with `claude-opus-5` first (the default selection).
+ * every picker model, with `DEFAULT_RELAY_MODEL` first (the default selection).
  */
 const DEFAULT_RELAY_MODELS: readonly string[] = [
-  'claude-opus-5',
-  ...Object.keys(MODEL_MAP).filter((id) => id !== 'claude-opus-5'),
+  DEFAULT_RELAY_MODEL,
+  ...Object.keys(MODEL_MAP).filter((id) => id !== DEFAULT_RELAY_MODEL),
 ];
 
 type Env = Record<string, string | undefined>;
