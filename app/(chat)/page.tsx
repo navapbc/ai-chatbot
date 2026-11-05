@@ -14,16 +14,12 @@ export default async function Page() {
   const id = generateUUID();
   const modelIdFromCookie = cookieStore.get('chat-model');
 
-  // Check for shared link content from cookie (set by /link/[token] route)
-  const sharedLinkCookie = cookieStore.get('shared_link_content');
-  const initialQuery = sharedLinkCookie?.value || undefined;
-
   // Check if this is the first load of the app (no referrer)
-  // If no referrer and no shared link cookie, redirect to home
+  // If no referrer, redirect to home
   const headersList = await headers();
   const referer = headersList.get('referer');
 
-  if (!referer && !initialQuery) {
+  if (!referer) {
     redirect('/home');
   }
 
@@ -39,7 +35,6 @@ export default async function Page() {
           isReadonly={false}
           session={session}
           autoResume={false}
-          initialQuery={initialQuery}
         />
         <DataStreamHandler />
       </>
@@ -57,7 +52,6 @@ export default async function Page() {
         isReadonly={false}
         session={session}
         autoResume={false}
-        initialQuery={initialQuery}
       />
       <DataStreamHandler />
     </>

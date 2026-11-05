@@ -14,7 +14,6 @@ A guide for developers and technical contributors working with the ASP Form-Fill
 - [The Eve Agent (Opt-In)](#the-eve-agent-opt-in)
 - [AI Tools](#ai-tools)
 - [Database & Schema](#database--schema)
-- [Shared Links & Redis](#shared-links--redis)
 - [Feature Flags](#feature-flags)
 - [Evals & Observability](#evals--observability)
 - [Deployment](#deployment)
@@ -55,9 +54,6 @@ Next.js App (App Router)
   |
   +-- Database (Neon Serverless Postgres / Drizzle ORM)
   |     Users, Chats, Messages, Votes
-  |
-  +-- Shared Links (Upstash Redis)
-        AES-256-GCM encrypted, TTL-based expiration
 ```
 
 ---
@@ -75,7 +71,6 @@ Next.js App (App Router)
 | Authentication | [Auth.js](https://authjs.dev) (NextAuth v5) |
 | Database | [Neon](https://neon.tech) Serverless Postgres |
 | ORM | [Drizzle ORM](https://orm.drizzle.team) |
-| Cache / Links | [Upstash Redis](https://upstash.com) |
 | Browser Automation | [Kernel.sh](https://onkernel.com) + [agent-browser](https://www.npmjs.com/package/agent-browser) |
 | Evals / tracing | [Braintrust](https://www.braintrust.dev) |
 | Package Manager | pnpm |
@@ -253,31 +248,6 @@ Schema definitions live in `lib/db/schema.ts`. Query functions are in `lib/db/qu
 
 ---
 
-## Shared Links & Redis
-
-Shared links allow users to send pre-populated session content to others.
-
-### How it works
-
-1. Content is serialized to JSON
-2. Encrypted with AES-256-GCM using a key derived from `AUTH_SECRET`
-3. Stored in Upstash Redis with a TTL (time-to-live)
-4. A short 8-character token is generated as the link ID
-5. Recipients access `/link/[token]`, which decrypts and loads the content
-
-### Configuration
-
-```env
-UPSTASH_REDIS_REST_URL=https://your-instance.upstash.io
-UPSTASH_REDIS_REST_TOKEN=your-token
-```
-
-**Key files:**
-- `app/api/link/route.ts` — Link creation endpoint
-- `app/link/[token]/route.ts` — Link resolution route
-
----
-
 ## Feature Flags
 
 The app's own feature-flag system (`lib/feature-flags.ts`) — env-aware defaults, overridable per-browser via `localStorage` (`ff:` prefix) through a dev-only menu:
@@ -401,13 +371,6 @@ To adjust limits, modify the entitlement configuration in `lib/ai/entitlements.t
 | `KERNEL_API_KEY` | Kernel.sh API key for browser automation |
 | `WORKFLOW_POSTGRES_URL` | Optional. Backs Eve's durable session state with Postgres; unset means Eve uses its local file world (fine for local dev, not for a multi-instance deployment). Must be a direct connection, not a pooled one — Eve's workflow schema needs `LISTEN`/`NOTIFY` and session-scoped advisory locks. |
 
-### Storage & Services
-
-| Variable | Description |
-| --- | --- |
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis URL for shared links |
-| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis auth token |
-
 ### Optional
 
 | Variable | Description |
@@ -449,12 +412,6 @@ Check `GOOGLE_VERTEX_LOCATION` first — it needs to be `global`. The opus model
 1. Verify `DATABASE_URL` is correct and the database is accessible
 2. Run `pnpm db:migrate` to apply any pending migrations
 3. For Neon, ensure the database hasn't been suspended due to inactivity
-
-### Shared links not working
-
-1. Verify `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are set
-2. Check that `AUTH_SECRET` is consistent across deployments (it's used for encryption)
-3. Links expire — the recipient may need a fresh link
 
 ### Eve agent turn fails or won't respond (`useEveAgent` flag on)
 

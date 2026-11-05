@@ -65,7 +65,6 @@
     "@radix-ui/react-tooltip": "^1.1.8",
     "@types/pg": "^8.15.5",
     "@typesafe-ai/sdk": "^0.6.0",
-    "@upstash/redis": "^1.36.0",
     "@vercel/functions": "^2.0.0",
     "@vercel/otel": "^2.1.2",
     "@vercel/postgres": "^0.10.0",
