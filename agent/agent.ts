@@ -5,6 +5,7 @@ import {
   isVertexModelId,
   toVertexModelId,
 } from '@/lib/ai/eve/model-map';
+import { withPromptHashLogging } from '@/lib/ai/eve/prompt-hash-log';
 import { defineAgent, defineDynamic } from 'eve';
 
 import { openai } from '@ai-sdk/openai';
@@ -15,8 +16,13 @@ import { vertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
 // as vertexAnthropic below: it avoids the gateway tier this project moved off
 // of, at the cost of needing an explicit modelContextWindowTokens override
 // (see contextWindowTokensFor in model-map.ts).
+//
+// Every model passes through withPromptHashLogging, which is a no-op unless
+// EVE_LOG_PROMPT_HASHES=1 (a prompt-cache diagnostic; see that module).
 const resolveDirectModel = (modelId: string) =>
-  isOpenAIModelId(modelId) ? openai(modelId) : vertexAnthropic(modelId);
+  withPromptHashLogging(
+    isOpenAIModelId(modelId) ? openai(modelId) : vertexAnthropic(modelId),
+  );
 
 // Models are called directly on Vertex AI, not routed through the Vercel AI
 // Gateway: `vertexAnthropic(...)` is an AI SDK `LanguageModel`, which Eve
@@ -82,7 +88,7 @@ const resolveModelId = (value: unknown): string | null => {
 
 export default defineAgent({
   model: defineDynamic({
-    fallback: vertexAnthropic(DEFAULT_MODEL_ID),
+    fallback: withPromptHashLogging(vertexAnthropic(DEFAULT_MODEL_ID)),
     events: {
       'step.started': (_event, ctx) => {
         const modelId = resolveModelId(
