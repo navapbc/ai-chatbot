@@ -17,23 +17,23 @@ Getting from "demonstrative" to "real, live" is decomposed into sub-projects:
 - **SP-A — make the Eve agent functionally real (standalone)** ← this document
 - SP-B — wire the Eve runtime into the app UI (Q3 adapter route)
 - SP-C — context (`defineState`) + Postgres history + cutover (remove legacy
-  route/prompt/Mastra/Redis; finish archiving Apricot; add browser replay + session
+  route/prompt/Mastra/Redis; finish archiving legacy client-database; add browser replay + session
   mapping back)
 - SP-D — deploy to Vercel
 
 Stakeholder constraints for the revamp: **keep Kernel.sh browser automation** (it is
-the core capability), **drop Apricot** (archive it), and make Eve the definite harness.
+the core capability), **drop legacy client-database** (archive it), and make Eve the definite harness.
 
 ## Purpose
 
 Replace the demonstrative stub tools so `npx eve dev` can drive a **real browser via
-Kernel.sh end-to-end**, with an **Apricot-free** agent whose data model is retargeted
+Kernel.sh end-to-end**, with an **legacy client-database-free** agent whose data model is retargeted
 to caseworker-message + inference. Validated standalone (`eve dev` + a live turn) — no
 app-UI wiring, no persistence/replay, no legacy-route removal (those are SP-B/SP-C).
 
 ## Goals (exit criteria)
 
-1. `npx eve dev` boots clean with **zero Apricot references** remaining in `agent/`
+1. `npx eve dev` boots clean with **zero legacy client-database references** remaining in `agent/`
    (grep-verified) and no missing-subagent error.
 2. The `browser` tool executes **real Kernel.sh commands** — a live turn navigates a
    real URL, returns a real DOM snapshot, and fills a field — resolving the Kernel
@@ -41,9 +41,9 @@ app-UI wiring, no persistence/replay, no legacy-route removal (those are SP-B/SP
    reliance on a persistent in-process Playwright handle).
 3. `check_submit_gate` runs the **real** DOM-probe / force-enable-submit logic against
    the same Kernel session (and still never clicks submit).
-4. The agent is coherent Apricot-free: the anti-fabrication data-provenance rule is
+4. The agent is coherent legacy client-database-free: the anti-fabrication data-provenance rule is
    retained but retargeted to **caseworker + inference + missing** (no "database"
-   source, no `getApricotFormFields`).
+   source, no `getLegacyFormFields`).
 
 ## Non-goals (deferred)
 
@@ -62,7 +62,7 @@ app-UI wiring, no persistence/replay, no legacy-route removal (those are SP-B/SP
 - **Tool realness:** browser + `check_submit_gate` fully real via Kernel now; card
   tools return structured data (render in SP-B); `action_label` is a lightweight real
   signal.
-- **Apricot:** remove the code AND retarget the prose to caseworker + inference; keep
+- **legacy client-database:** remove the code AND retarget the prose to caseworker + inference; keep
   the anti-fabrication framework.
 - **Browser scope:** core commands only; defer replay + DB session-mapping to SP-C.
 - **Provenance location:** the retargeted "Data Provenance (No Fabrication)" rule moves
@@ -103,33 +103,33 @@ Returns whether it enabled the button; never clicks submit.
 data; comments updated to note rendering lands in SP-B. Remove "stub" framing where the
 tool's real standalone behavior is simply returning validated data.
 
-### 4. Archive Apricot
+### 4. Archive legacy client-database
 - Delete `agent/subagents/database_verification/` in full (agent.ts, instructions.md,
-  tools/get_apricot_record.ts, tools/get_apricot_form_fields.ts).
+  tools/get_legacy_record.ts, tools/get_legacy_form_fields.ts).
 - `agent/instructions.md`: retarget the Applicant Identity line that says to confirm
-  age/DOB via `getApricotFormFields` — age/DOB now comes from a caseworker message or is
+  age/DOB via `getLegacyFormFields` — age/DOB now comes from a caseworker message or is
   clarified with the caseworker. Update the subagent-delegation note to list only
   `requirements_research` and `form_review`.
 - `agent/skills/benefits-application/SKILL.md`: drop the `database` source and
-  `getApricotFormFields` references throughout (gap-analysis + form-summary specs); the
+  `getLegacyFormFields` references throughout (gap-analysis + form-summary specs); the
   `source` enum becomes `caseworker | inferred | missing`. Add a retargeted
   **Data Provenance (No Fabrication)** section: every filled/summarized value must trace
   to a caseworker message or an inference from one, else it is `missing`; shape is not
   identity; no fabrication.
-- Note: SP-A archives Apricot within `agent/` only. Apricot code under `lib/` and its use
+- Note: SP-A archives legacy client-database within `agent/` only. legacy client-database code under `lib/` and its use
   by the legacy `route.ts` are removed in the SP-C cutover (removing them now breaks the
   live build).
 
 ### 5. Untouched in SP-A
 `agent/subagents/requirements_research/` and `agent/subagents/form_review/`,
 `agent/sandbox.ts`, `agent/agent.ts` compaction, `agent/instructions/date.ts`, the two
-skills' non-Apricot content, and all of `lib/`.
+skills' non-legacy client-database content, and all of `lib/`.
 
 ## Data / control flow (SP-A, standalone)
 
 ```
 POST /eve/v1/session {message: "apply for X for <person>, here is their data ..."}
-  main agent (instructions + skills, Apricot-free)
+  main agent (instructions + skills, legacy client-database-free)
     -> browser tool: navigate -> Kernel session (resolved by Eve session id) -> real DOM snapshot
     -> browser tool: fill/click/... (re-attach by id each call)
     -> check_submit_gate on a Turnstile page (real DOM probe; no submit)
@@ -139,7 +139,7 @@ POST /eve/v1/session {message: "apply for X for <person>, here is their data ...
 
 ## Validation
 
-- `npx eve dev` boots clean; `grep -ri apricot agent/` returns nothing.
+- `npx eve dev` boots clean; `grep -ri legacy agent/` returns nothing.
 - A live turn drives a real Kernel browser: navigate to a real URL, snapshot returns
   real page content, fill a field succeeds. Recorded as evidence.
 - `check_submit_gate` exercised on a Turnstile page (or its real DOM-probe path
@@ -159,5 +159,5 @@ POST /eve/v1/session {message: "apply for X for <person>, here is their data ...
 - **Kernel availability from `eve dev`.** `KERNEL_API_KEY` is in `.env.local`; Kernel
   owns the remote browser lifecycle. Live browsing depends on Kernel being reachable.
 - **Provenance rewrite is safety-relevant.** Retargeting the anti-fabrication rule must
-  preserve its strictness (no invented SSNs/DOBs/etc.) while removing Apricot specifics —
+  preserve its strictness (no invented SSNs/DOBs/etc.) while removing legacy client-database specifics —
   reviewed for fidelity, not just mechanically de-referenced.

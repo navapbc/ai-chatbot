@@ -1,11 +1,10 @@
 # Braintrust Mock Dataset
 
 Mock participant data and starter inputs for exercising the web-automation agent prompt. Pair this
-with the system prompt in [`web-automation-system-prompt.md`](./web-automation-system-prompt.md) and
-the tool schemas in [`braintrust-tool-schemas.md`](./braintrust-tool-schemas.md).
+with the system prompt composed in [`lib/ai/prompts/web-automation.ts`](../lib/ai/prompts/web-automation.ts).
 
 Every input **inlines the participant data directly in the caseworker message**, so the model never
-needs a live `getApricotRecord` result to have data to fill. The participants are fictional and
+needs a lookup tool to have data to fill. The participants are fictional and
 self-contained — they do not overlap with the eval fixtures in
 [`evals/datasets/participants.json`](../evals/datasets/participants.json).
 
@@ -116,13 +115,11 @@ Steps:
    [`braintrust-mock-dataset.json`](./braintrust-mock-dataset.json). Each row exposes `input` (the
    full caseworker message) and `expected` (`scenario` / `behavior` / `checks`).
 2. **Open a Playground** and pick a model.
-3. **System message** — paste [`web-automation-system-prompt.md`](./web-automation-system-prompt.md).
+3. **System message** — paste the prompt composed by [`lib/ai/prompts/web-automation.ts`](../lib/ai/prompts/web-automation.ts).
 4. **User message** — `{{input}}` (Mustache templating pulls each row's `input` column).
-5. **(Optional) Add tools** from [`braintrust-tool-schemas.md`](./braintrust-tool-schemas.md) to see
-   tool-selection.
-6. **Link the dataset** — the playground builds a matrix, one run per row.
-7. **(Optional) + Scorer** — Autoevals, LLM-as-judge, or custom code.
-8. **Run.**
+5. **Link the dataset** — the playground builds a matrix, one run per row.
+6. **(Optional) + Scorer** — Autoevals, LLM-as-judge, or custom code.
+7. **Run.**
 
 What the playground is actually good for here:
 

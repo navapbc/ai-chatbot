@@ -94,7 +94,7 @@ export const summaryFieldQuestions = (
     source_accurate: noul(
       // The two trees spell the record-derived label differently — the Eve
       // tools emit "record", the legacy tool still emits "database" (a name
-      // left over from the removed Apricot integration; there is no database,
+      // left over from a removed client-database integration; there is no database,
       // the record arrives inline in the caseworker's opening message). Both
       // must be described here, or Jev judges one of them against the wrong
       // definition.

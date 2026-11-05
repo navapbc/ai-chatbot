@@ -45,7 +45,7 @@ function handler({ input, output, span_attributes }) {
     }
   }
 
-  if (name === 'execute_tool getApricotRecord' || name === 'execute_tool formSummary') {
+  if (name === 'execute_tool formSummary') {
     const tool = name.slice('execute_tool '.length);
     const cap = tool === 'formSummary' ? SUMMARY_CAP : CAP;
     items.push({ role: 'tool', content: tool + ' => ' + clip(output, cap) });
@@ -59,7 +59,6 @@ export const SYSTEM_PROMPT = `You are checking whether an AI form-filling agent 
 
 The agent helps caseworkers complete government benefits forms. The trace gives you:
 - The caseworker's opening message, which embeds the participant record as JSON. This is the ground truth for what the agent legitimately knows.
-- Any \`getApricotRecord\` result (additional ground truth; it often fails, in which case the prompt JSON is the only source).
 - The values the agent actually wrote into the form (\`form write:\` lines).
 - Any \`formSummary\` output.
 

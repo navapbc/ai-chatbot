@@ -2,18 +2,11 @@
   "toolSelection": {
     "description": "Tool selection test cases — verifies the agent picks the correct tool for a given user request.",
     "cases": [
-      { "input": "Look up participant 12345 in Apricot", "expected": ["getApricotRecord"] },
-      { "input": "Can you pull the record for client ID 9876?", "expected": ["getApricotRecord"] },
-      { "input": "Get me the data for participant number 5555", "expected": ["getApricotRecord"] },
       { "input": "Go to the WIC application at https://wic.example.gov/apply", "expected": ["browser", "actionLabel"] },
       { "input": "Navigate to the SNAP benefits portal", "expected": ["browser", "actionLabel"] },
       { "input": "Fill in the first name field with Maria and the last name field with Garcia", "expected": ["browser", "actionLabel"] },
       { "input": "I don't have the SSN or date of birth for this client. Show me what's missing.", "expected": ["gapAnalysis"] },
-      { "input": "Show me a summary of everything we filled in on this application", "expected": ["formSummary"] },
-      { "input": "What fields are on form 42 in Apricot?", "expected": ["getApricotFormFields"] },
-      { "input": "List all available forms in Apricot", "expected": ["getApricotForms"] },
-      { "input": "Look up participant 7777 and help me apply for WIC benefits for them", "expected": ["getApricotRecord"] },
-      { "input": "Check if the Apricot API connection is working", "expected": ["testApricotAuth"] }
+      { "input": "Show me a summary of everything we filled in on this application", "expected": ["formSummary"] }
     ]
   },
 
@@ -22,38 +15,38 @@
     "cases": [
       {
         "name": "full_form_flow",
-        "input": "Help me fill out a WIC application for participant 4521. The application is at https://wic.example.gov/apply",
+        "input": "Help me fill out a WIC application for the participant below. The application is at https://wic.example.gov/apply",
         "maxSteps": 20
       },
       {
         "name": "form_flow_no_url",
-        "input": "I need to complete the WIC benefits application for participant 4521 in Riverside County.",
+        "input": "I need to complete the WIC benefits application for the participant below in Riverside County.",
         "maxSteps": 20
       },
       {
         "name": "data_driven_fill",
-        "input": "Look up participant 4521 and fill out the WIC application at https://wic.example.gov/apply using their data.",
+        "input": "Fill out the WIC application at https://wic.example.gov/apply using their data.",
         "maxSteps": 20
       }
     ]
   },
 
   "deduction": {
-    "description": "Deduction test cases — agent should infer values (age, address, ethnicity, household) from database data.",
+    "description": "Deduction test cases — agent should infer values (age, address, ethnicity, household) from the participant record.",
     "cases": [
       {
         "name": "age_from_dob",
-        "input": "Help me fill out a CalFresh application for participant 3310. The application is at https://calfresh.example.gov/apply",
+        "input": "Help me fill out a CalFresh application for the participant below. The application is at https://calfresh.example.gov/apply",
         "maxSteps": 20
       },
       {
         "name": "household_composition",
-        "input": "Look up participant 3310 and apply for CalFresh benefits at https://calfresh.example.gov/apply. Make sure to include the household members.",
+        "input": "Apply for CalFresh benefits at https://calfresh.example.gov/apply. Make sure to include the household members.",
         "maxSteps": 20
       },
       {
         "name": "field_mapping_and_inference",
-        "input": "Participant 3310 needs a CalFresh application filled out at https://calfresh.example.gov/apply. Use whatever data is available in the database.",
+        "input": "The participant below needs a CalFresh application filled out at https://calfresh.example.gov/apply. Use whatever data is available in the record.",
         "maxSteps": 20
       }
     ]
@@ -64,17 +57,17 @@
     "cases": [
       {
         "name": "sparse_record_calworks",
-        "input": "Help me fill out a CalWorks application for participant 7890. The application is at https://calworks.example.gov/apply",
+        "input": "Help me fill out a CalWorks application for the participant below. The application is at https://calworks.example.gov/apply",
         "maxSteps": 20
       },
       {
         "name": "explicit_data_use",
-        "input": "Look up participant 7890 and fill out the CalWorks application at https://calworks.example.gov/apply. Only use data that's actually in the database.",
+        "input": "Fill out the CalWorks application at https://calworks.example.gov/apply. Only use data that's actually in the record.",
         "maxSteps": 20
       },
       {
         "name": "sensitive_fields_focus",
-        "input": "I need to complete a CalWorks application for participant 7890 at https://calworks.example.gov/apply. This participant's record may be incomplete — make sure to ask me for anything you can't find.",
+        "input": "I need to complete a CalWorks application for the participant below at https://calworks.example.gov/apply. This participant's record may be incomplete — make sure to ask me for anything you can't find.",
         "maxSteps": 20
       }
     ]
@@ -85,17 +78,17 @@
     "cases": [
       {
         "name": "full_form_tricky_ui",
-        "input": "Help me fill out a SNAP benefits application for participant 5500. The application is at https://snap.example.gov/apply",
+        "input": "Help me fill out a SNAP benefits application for the participant below. The application is at https://snap.example.gov/apply",
         "maxSteps": 30
       },
       {
         "name": "masked_fields_emphasis",
-        "input": "Look up participant 5500 and fill out the SNAP application at https://snap.example.gov/apply. Be careful with the date and phone fields — they have input masks.",
+        "input": "Fill out the SNAP application at https://snap.example.gov/apply. Be careful with the date and phone fields — they have input masks.",
         "maxSteps": 30
       },
       {
         "name": "complete_all_sections",
-        "input": "Fill out the SNAP application at https://snap.example.gov/apply for participant 5500. Make sure to expand any collapsed sections and fill everything available.",
+        "input": "Fill out the SNAP application at https://snap.example.gov/apply for the participant below. Make sure to expand any collapsed sections and fill everything available.",
         "maxSteps": 30
       }
     ]
@@ -106,17 +99,17 @@
     "cases": [
       {
         "name": "full_flow_with_modals",
-        "input": "Help me fill out a CalFresh application for participant 6100 at https://benefitscal.example.gov/apply",
+        "input": "Help me fill out a CalFresh application for the participant below at https://benefitscal.example.gov/apply",
         "maxSteps": 35
       },
       {
         "name": "landing_page_navigation",
-        "input": "I need to apply for CalFresh benefits for participant 6100. Go to https://benefitscal.example.gov/apply and start the application.",
+        "input": "I need to apply for CalFresh benefits for the participant below. Go to https://benefitscal.example.gov/apply and start the application.",
         "maxSteps": 35
       },
       {
         "name": "modal_recovery",
-        "input": "Look up participant 6100 and fill out the CalFresh application at https://benefitscal.example.gov/apply. The site may have some popups for county selection — handle those.",
+        "input": "Fill out the CalFresh application at https://benefitscal.example.gov/apply. The site may have some popups for county selection — handle those.",
         "maxSteps": 35
       }
     ]
@@ -127,17 +120,17 @@
     "cases": [
       {
         "name": "standard_form_fill",
-        "input": "Help me fill out a WIC application for participant 8200. The application is at https://wic.example.gov/apply",
+        "input": "Help me fill out a WIC application for the participant below. The application is at https://wic.example.gov/apply",
         "maxSteps": 25
       },
       {
         "name": "explicit_brevity_not_mentioned",
-        "input": "Look up participant 8200 and complete the WIC application at https://wic.example.gov/apply using their database info.",
+        "input": "Complete the WIC application at https://wic.example.gov/apply using their data.",
         "maxSteps": 25
       },
       {
         "name": "large_household",
-        "input": "Participant 8200 has a family of 4. Fill out the WIC application at https://wic.example.gov/apply for them.",
+        "input": "The participant below has a family of 4. Fill out the WIC application at https://wic.example.gov/apply for them.",
         "maxSteps": 25
       }
     ]
@@ -148,17 +141,17 @@
     "cases": [
       {
         "name": "single_parent_household",
-        "input": "Help me fill out a CalFresh application for participant 9400 at https://calfresh.example.gov/apply",
+        "input": "Help me fill out a CalFresh application for the participant below at https://calfresh.example.gov/apply",
         "maxSteps": 25
       },
       {
         "name": "explicit_household_focus",
-        "input": "Look up participant 9400 and fill out the CalFresh application at https://calfresh.example.gov/apply. Pay close attention to the household section.",
+        "input": "Fill out the CalFresh application at https://calfresh.example.gov/apply. Pay close attention to the household section.",
         "maxSteps": 25
       },
       {
         "name": "summary_accuracy",
-        "input": "Fill out the CalFresh application at https://calfresh.example.gov/apply for participant 9400. Make sure to show me a summary of what you filled in.",
+        "input": "Fill out the CalFresh application at https://calfresh.example.gov/apply for the participant below. Make sure to show me a summary of what you filled in.",
         "maxSteps": 25
       }
     ]
@@ -168,65 +161,65 @@
     "description": "AI-Evaluations multi-turn rubric — agent must persist the same participant across sequential user messages (no re-asking who) and answer cross-context Q&A correctly. Covers steps 9, 10, 25, 38, 46, 52.",
     "cases": [
       {
-        "name": "rosa_qa_age",
+        "name": "marisol_qa_age",
         "scenario": "qa_age",
-        "participantId": 339688,
+        "participantId": 90001,
         "expectedAnswer": "37",
         "turns": [
-          "Retrieve 339688 and fill out the WIC form at https://wic.example.gov/apply",
-          "How old is Rosa?"
+          "Fill out the WIC form at https://wic.example.gov/apply",
+          "How old is Marisol?"
         ],
         "maxStepsPerTurn": 15
       },
       {
-        "name": "rosa_same_user_ihss",
+        "name": "marisol_same_user_ihss",
         "scenario": "same_user_carryover",
-        "participantId": 339688,
+        "participantId": 90001,
         "turns": [
-          "Retrieve 339688 and fill out the WIC form at https://wic.example.gov/apply",
+          "Fill out the WIC form at https://wic.example.gov/apply",
           "now fill out IHSS at https://ihss.example.gov/apply"
         ],
         "maxStepsPerTurn": 15
       },
       {
-        "name": "rosa_same_user_benefitscal",
+        "name": "marisol_same_user_benefitscal",
         "scenario": "same_user_carryover",
-        "participantId": 339688,
+        "participantId": 90001,
         "turns": [
-          "Retrieve 339688 and fill out the WIC form at https://wic.example.gov/apply",
+          "Fill out the WIC form at https://wic.example.gov/apply",
           "now fill out IHSS at https://ihss.example.gov/apply",
           "ok now fill out BenefitsCal at https://benefitscal.example.gov/apply"
         ],
         "maxStepsPerTurn": 15
       },
       {
-        "name": "rosa_qa_last_name_cross_context",
+        "name": "marisol_qa_last_name_cross_context",
         "scenario": "qa_last_name",
-        "participantId": 339688,
-        "expectedAnswer": "Flores",
+        "participantId": 90001,
+        "expectedAnswer": "Ibarra",
         "turns": [
-          "Retrieve 339688 and fill out the WIC form at https://wic.example.gov/apply",
+          "Fill out the WIC form at https://wic.example.gov/apply",
           "now fill out IHSS at https://ihss.example.gov/apply",
-          "What's Rosa's last name?"
+          "What's Marisol's last name?"
         ],
         "maxStepsPerTurn": 15
       },
       {
-        "name": "carolina_same_user_ihss",
+        "name": "helen_same_user_ihss",
         "scenario": "same_user_carryover",
-        "participantId": 339702,
+        "participantId": 90002,
         "turns": [
-          "Retrieve 339702 and fill out the WIC form at https://wic.example.gov/apply",
+          "Fill out the WIC form at https://wic.example.gov/apply",
           "now fill out IHSS at https://ihss.example.gov/apply"
         ],
         "maxStepsPerTurn": 15
       },
       {
-        "name": "carolina_same_user_benefitscal",
+        "name": "helen_same_user_benefitscal",
         "scenario": "same_user_carryover",
-        "participantId": 339702,
+        "participantId": 90002,
         "turns": [
-          "Retrieve 339702 and fill out the WIC form at https://wic.example.gov/apply",
+          "Fill out the WIC form at https://wic.example.gov/apply",
           "ok now fill out BenefitsCal at https://benefitscal.example.gov/apply"
         ],
         "maxStepsPerTurn": 15
@@ -235,38 +228,38 @@
   },
 
   "regressionScenarios": {
-    "description": "AI-Evaluations cross-walk — Rosa Flores (339688) and Carolina Delgado (339702) against WIC + IHSS forms. Each case targets a specific gap-coverage scorer (auth checkbox, applying-for-self, gender→sex, mother eligibility ask, blind from special-needs flag).",
+    "description": "AI-Evaluations cross-walk — Marisol Ibarra (90001) and Helen Park (90002) against WIC + IHSS forms. Each case targets a specific gap-coverage scorer (auth checkbox, applying-for-self, gender→sex, mother eligibility ask, blind from special-needs flag).",
     "cases": [
       {
-        "name": "rosa_wic",
-        "input": "Retrieve 339688 and fill out the WIC form at https://www.ruhealth.org/appointments/apply-4-wic-form",
+        "name": "marisol_wic",
+        "input": "Fill out the WIC form at https://www.ruhealth.org/appointments/apply-4-wic-form",
         "maxSteps": 25,
         "scenario": "wic_auth",
-        "participantId": 339688,
+        "participantId": 90001,
         "form": "wic"
       },
       {
-        "name": "rosa_ihss",
-        "input": "Look up participant 339688 and fill out the IHSS application at https://riversideihss.org/Home/IHSSApply",
+        "name": "marisol_ihss",
+        "input": "Fill out the IHSS application at https://riversideihss.org/Home/IHSSApply",
         "maxSteps": 25,
         "scenario": "applying_for_self_and_gender_to_sex",
-        "participantId": 339688,
+        "participantId": 90001,
         "form": "ihss"
       },
       {
-        "name": "carolina_wic",
-        "input": "Retrieve 339702 and fill out the WIC form at https://www.ruhealth.org/appointments/apply-4-wic-form",
+        "name": "helen_wic",
+        "input": "Fill out the WIC form at https://www.ruhealth.org/appointments/apply-4-wic-form",
         "maxSteps": 25,
         "scenario": "mother_eligibility",
-        "participantId": 339702,
+        "participantId": 90002,
         "form": "wic"
       },
       {
-        "name": "carolina_ihss",
-        "input": "Look up participant 339702 and fill out the IHSS application at https://riversideihss.org/Home/IHSSApply",
+        "name": "helen_ihss",
+        "input": "Fill out the IHSS application at https://riversideihss.org/Home/IHSSApply",
         "maxSteps": 25,
         "scenario": "blind_from_flag",
-        "participantId": 339702,
+        "participantId": 90002,
         "form": "ihss"
       }
     ]

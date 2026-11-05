@@ -32,7 +32,7 @@ export default defineInstrumentation({
   // recordInputs/recordOutputs are left at their default (true once this file
   // exists), so spans carry full message history and model outputs. That is
   // the point locally — it is what makes a trace debuggable — but it means any
-  // Apricot participant data a session touches is sent to Braintrust. Set both
+  // participant data a session touches is sent to Braintrust. Set both
   // to false if that is ever not acceptable for the data in play.
 
   setup: ({ agentName }) => {

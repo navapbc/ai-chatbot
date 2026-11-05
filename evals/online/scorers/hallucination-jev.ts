@@ -57,7 +57,7 @@ function handler({ input, output, span_attributes }) {
     }
   }
 
-  if (name === 'execute_tool getApricotRecord' || name === 'execute_tool formSummary') {
+  if (name === 'execute_tool formSummary') {
     const tool = name.slice('execute_tool '.length);
     const cap = tool === 'formSummary' ? SUMMARY_CAP : CAP;
     lines.push(tool.toUpperCase() + ': ' + clip(output, cap));
@@ -72,7 +72,6 @@ export const SYSTEM_PROMPT = `You check whether an AI form-filling agent fabrica
 
 The trace below contains, as text:
 - CASEWORKER lines: the opening message embeds the participant record as JSON. This is the ground truth for what the agent legitimately knows.
-- APRICOTRECORD lines: additional ground truth when present (this tool often fails).
 - FORM WRITE lines: the values the agent actually typed into the form.
 - FORMSUMMARY lines: the summary shown to the caseworker.
 

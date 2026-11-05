@@ -3,10 +3,10 @@ import { generateText, isStepCount, type ModelMessage } from "ai";
 import { getWebAutomationSystemPrompt } from "@/lib/ai/prompts/web-automation";
 import participants from "./datasets/participants.json";
 import snapshots from "./datasets/snapshots.json";
-import formFields from "./datasets/form-fields.json";
 import testCaseData from "./datasets/test-cases.json";
 import {
   createBaseStubTools,
+  withParticipant,
   browserOk,
   collectTextResponses,
   evalExperimentName,
@@ -23,7 +23,7 @@ import {
  * require form-specific fields (WIC auth checkbox, IHSS applying-for-self radio,
  * gender→sex mapping, mother-eligibility ask, blind-from-special-needs flag).
  *
- * Each test case targets one Rosa/Carolina + WIC/IHSS combination. Scorers
+ * Each test case targets one Marisol/Helen + WIC/IHSS combination. Scorers
  * return `null` for scenarios they don't apply to, so Braintrust skips them
  * in the per-experiment aggregate.
  */
@@ -31,8 +31,8 @@ import {
 // ── Participant lookup ──────────────────────────────────────────────────
 
 const PARTICIPANTS_BY_ID = {
-  339688: participants.rosaFlores,
-  339702: participants.carolinaDelgado,
+  90001: participants.marisolIbarra,
+  90002: participants.helenPark,
 } as const;
 
 function lookupParticipant(recordId: number) {
@@ -51,23 +51,11 @@ function detectFormFromUrl(url: string | undefined): FormType | null {
   return null;
 }
 
-const FORM_IDS: Record<FormType, number> = { wic: 501, ihss: 502 };
-const FORM_NAMES: Record<FormType, string> = {
-  wic: "WIC Application",
-  ihss: "IHSS Application",
-};
-
-function formByFormId(formId: number): FormType | null {
-  if (formId === FORM_IDS.wic) return "wic";
-  if (formId === FORM_IDS.ihss) return "ihss";
-  return null;
-}
-
 // ── State ───────────────────────────────────────────────────────────────
 
 interface RunState extends BaseRunState {
   scenario: string;
-  participantId: number | null;
+  participantId: number;
   currentForm: FormType | null;
   currentPage: number;
   browserFills: Array<{ selector: string; value: string }>;
@@ -79,32 +67,6 @@ interface RunState extends BaseRunState {
 
 function createStubTools(state: RunState) {
   return createBaseStubTools(state, {
-    getApricotRecord: async ({ recordId }) => {
-      state.participantId = recordId;
-      return lookupParticipant(recordId);
-    },
-
-    getApricotForms: async () => ({
-      forms: [
-        { id: FORM_IDS.wic, name: FORM_NAMES.wic },
-        { id: FORM_IDS.ihss, name: FORM_NAMES.ihss },
-      ],
-      count: 2,
-      success: true,
-    }),
-
-    getApricotForm: async ({ formId }) => {
-      const form = formByFormId(formId);
-      if (!form) return { form: null, found: false };
-      return { form: { id: formId, name: FORM_NAMES[form] }, found: true };
-    },
-
-    getApricotFormFields: async ({ formId }) => {
-      const form = formByFormId(formId);
-      if (!form) return { fields: [], count: 0, success: false };
-      return formFields[form];
-    },
-
     gapAnalysis: async (input) => {
       const missingFields = (input.missingFields as Array<{ field: string }>) ?? [];
       state.gapAnalysisFields.push(...missingFields.map((f) => f.field.toLowerCase()));
@@ -206,7 +168,7 @@ function selectedApplyingForSelf(state: RunState): number | null {
 
 function mappedGenderToSex(state: RunState): number | null {
   if (state.scenario !== "applying_for_self_and_gender_to_sex") return null;
-  // Rosa's DB gender is Female → agent should set sex=Female on IHSS.
+  // Marisol's record gender is Female → agent should set sex=Female on IHSS.
   const femalePattern = /female/i;
   if (hasCheckOrFill(state, /^sex$|sex_|"sex"/i, femalePattern)) return 1;
   for (const c of state.browserChecks) {
@@ -217,7 +179,7 @@ function mappedGenderToSex(state: RunState): number | null {
 
 function askedMotherEligibility(state: RunState): number | null {
   if (state.scenario !== "mother_eligibility") return null;
-  // Carolina has no child 0-5 — agent should ask about pregnancy / child age.
+  // Helen has no child 0-5 — agent should ask about pregnancy / child age.
   const text = evidenceText(state);
   const eligibilityKeywords = /pregnant|pregnancy|postpartum|breastfeed|child.*age|0.?5|how old|do you have a child|are you a mother/i;
   return eligibilityKeywords.test(text) ? 1 : 0;
@@ -225,7 +187,7 @@ function askedMotherEligibility(state: RunState): number | null {
 
 function selectedBlindFromFlag(state: RunState): number | null {
   if (state.scenario !== "blind_from_flag") return null;
-  // Carolina has specialNeeds=Yes, specialNeedsNotes=Blind → agent should check
+  // Helen has specialNeeds=Yes, specialNeedsNotes=Blind → agent should check
   // the "Applicant is blind" box without being told.
   if (hasCheckOrFill(state, /applicant_blind|blind|visually.*impair/i)) return 1;
   for (const c of state.browserChecks) {
@@ -263,7 +225,7 @@ Eval("labs-asp", {
 
     const state: RunState = {
       scenario: meta.scenario,
-      participantId: null,
+      participantId: meta.participantId,
       currentForm: null,
       currentPage: 0,
       toolCallLog: [],
@@ -275,7 +237,7 @@ Eval("labs-asp", {
     };
 
     const tools = createStubTools(state);
-    const messages: ModelMessage[] = [{ role: "user", content: input }];
+    const messages: ModelMessage[] = [{ role: "user", content: withParticipant(input, lookupParticipant(meta.participantId).record) }];
 
     const result = await generateText({
       model,

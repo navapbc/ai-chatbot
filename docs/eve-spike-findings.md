@@ -701,7 +701,7 @@ to Eve's compaction as a full replacement.
   v3→v4.4.3 specifically to unblock this, so `defineTool({ inputSchema: z.object(...) })`
   now works as documented (no more plain-JSON-Schema workaround; `read_reference`
   was reverted back to a zod schema after the migration). Tools run in the app
-  runtime with full `process.env`, so existing tool logic (Apricot calls, DB
+  runtime with full `process.env`, so existing tool logic (legacy client-database calls, DB
   queries) ports largely unchanged — the porting work is mechanically
   rewriting each `lib/ai/tools/*.ts` factory into a `defineTool` module under
   `agent/tools/`, not rewriting the tools' internals. Watch the still-open

@@ -52,8 +52,6 @@ function createStubTools(state: RunState) {
   return createBaseStubTools(state, {
     // Data is inline in the message, so the agent shouldn't need a lookup; keep
     // this from hanging if it tries one anyway.
-    getApricotRecord: async () => ({ record: null, found: false }),
-
     browser: async (input) => {
       const b = input as BrowserAction;
       state.browserActions.push(b);

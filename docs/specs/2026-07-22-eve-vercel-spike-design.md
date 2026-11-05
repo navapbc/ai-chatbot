@@ -61,7 +61,7 @@ The spike is complete when all three questions are answered, each with a documen
 
 ## Non-goals (explicitly deferred)
 
-- Porting the full tool set (`apricotTools`, `gapAnalysis`, `formSummary`, `actionLabel`,
+- Porting the full tool set (`legacyTools`, `gapAnalysis`, `formSummary`, `actionLabel`,
   `checkSubmitGate`, `browser`) — sub-project 2.
 - Re-architecting the browser tool / Kernel.sh session handling — sub-project 3.
 - Building the real context/working-memory system — sub-project 4 (this spike only prototypes

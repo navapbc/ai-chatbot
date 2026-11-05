@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `npx eve dev` drive a real Kernel.sh browser end-to-end and archive Apricot (retargeting the agent's data model to caseworker + inference), so the Eve agent is functionally real standalone.
+**Goal:** Make `npx eve dev` drive a real Kernel.sh browser end-to-end and archive legacy client-database (retargeting the agent's data model to caseworker + inference), so the Eve agent is functionally real standalone.
 
-**Architecture:** Replace the demonstrative stub `browser` and `check_submit_gate` tools with real ones that reuse the existing `@onkernel/sdk` + `agent-browser` path (`getOrCreateBrowser` + `executeCommand`) via a new additive shared helper `lib/kernel/eve-browser.ts`. Eve tools run in the app runtime, so `KERNEL_API_KEY`/`DATABASE_URL` are available and the browser session is resolved per call from `ctx.session.id`. `lib/` legacy code is untouched (the live app keeps building). Apricot is removed from `agent/` only.
+**Architecture:** Replace the demonstrative stub `browser` and `check_submit_gate` tools with real ones that reuse the existing `@onkernel/sdk` + `agent-browser` path (`getOrCreateBrowser` + `executeCommand`) via a new additive shared helper `lib/kernel/eve-browser.ts`. Eve tools run in the app runtime, so `KERNEL_API_KEY`/`DATABASE_URL` are available and the browser session is resolved per call from `ctx.session.id`. `lib/` legacy code is untouched (the live app keeps building). legacy client-database is removed from `agent/` only.
 
 **Tech Stack:** Eve `0.27.0` · `@onkernel/sdk` + `agent-browser` (Kernel.sh) · zod 4.4.3 · TypeScript · pnpm · Node 24.
 
@@ -13,8 +13,8 @@
 - **Node 24 for every command.** Shell defaults to v20.15.0; state does NOT persist between Bash calls. Prefix EVERY node/npx/pnpm command with `export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"`; verify `node -v`=v24.
 - **Secrets** live in `.env.local` (gitignored — never print/commit): `AI_GATEWAY_API_KEY`, `KERNEL_API_KEY`, `DATABASE_URL`. `npx eve dev` does NOT auto-load `.env.local`; export the needed vars first, e.g. `set -a; . ./.env.local; set +a` (or export individually).
 - **pnpm only.** Never commit `node_modules`, `package-lock.json`, or `.eve/`.
-- **Additive to `lib/`; changes to `agent/` only otherwise.** Create `lib/kernel/eve-browser.ts` (new); do NOT modify `lib/kernel/browser.ts`, `lib/ai/tools/*`, `app/`, `route.ts`, or `package.json`. The legacy build must still compile. Do NOT touch `lib/apricot-api.ts` / `lib/ai/tools/apricot/*` (those are removed in the SP-C cutover, not here).
-- **Apricot is archived within `agent/` only.** Delete `agent/subagents/database_verification/`; retarget prose in `agent/instructions.md` and `agent/skills/benefits-application/SKILL.md` to caseworker + inference. Keep the anti-fabrication provenance framework, just without Apricot.
+- **Additive to `lib/`; changes to `agent/` only otherwise.** Create `lib/kernel/eve-browser.ts` (new); do NOT modify `lib/kernel/browser.ts`, `lib/ai/tools/*`, `app/`, `route.ts`, or `package.json`. The legacy build must still compile. Do NOT touch `lib/legacy-api.ts` / `lib/ai/tools/legacy/*` (those are removed in the SP-C cutover, not here).
+- **legacy client-database is archived within `agent/` only.** Delete `agent/subagents/database_verification/`; retarget prose in `agent/instructions.md` and `agent/skills/benefits-application/SKILL.md` to caseworker + inference. Keep the anti-fabrication provenance framework, just without legacy client-database.
 - **Never click submit.** `check_submit_gate` force-enables but never clicks; the never-submit rule in `agent/instructions.md` stays intact.
 - Eve tool `execute(input, ctx)` — `ctx.session.id` is the stable session id; `ctx.session.auth.current` is `SessionAuthContext | null`. Confirm the principal field on `SessionAuthContext` at implementation (`grep -rEn "interface SessionAuthContext" node_modules/eve/dist`); use a `'eve-local'` fallback for standalone.
 - Boot check each task: `npx eve dev` starts without registration/schema errors.
@@ -285,15 +285,15 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
-### Task 4: Archive Apricot; retarget data model to caseworker + inference
+### Task 4: Archive legacy client-database; retarget data model to caseworker + inference
 
 **Files:**
-- Delete: `agent/subagents/database_verification/` (agent.ts, instructions.md, tools/get_apricot_record.ts, tools/get_apricot_form_fields.ts)
+- Delete: `agent/subagents/database_verification/` (agent.ts, instructions.md, tools/get_legacy_record.ts, tools/get_legacy_form_fields.ts)
 - Modify: `agent/instructions.md`, `agent/skills/benefits-application/SKILL.md`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: an Apricot-free agent whose remaining subagents are `requirements_research` and `form_review`, and whose data-provenance rule is sourced to caseworker + inference + missing.
+- Produces: a legacy-integration-free agent whose remaining subagents are `requirements_research` and `form_review`, and whose data-provenance rule is sourced to caseworker + inference + missing.
 
 - [ ] **Step 1: Delete the database_verification subagent**
 
@@ -304,15 +304,15 @@ git rm -r agent/subagents/database_verification
 - [ ] **Step 2: Retarget `agent/instructions.md`**
 
 Two edits (leave everything else, including the never-submit block, unchanged):
-1. In the Applicant Identity section, the "Applicant's age unknown" line references confirming DOB via `getApricotFormFields`. Replace that clause so age/DOB comes from the caseworker: change "Check the database for date of birth (confirm the field via `getApricotFormFields` — see Data Provenance). If still unknown, clarify with the caseworker before choosing an option." to "Ask the caseworker for the date of birth. If still unknown, clarify with the caseworker before choosing an option."
-2. In the top "on-demand procedures / delegation" note, the subagent list must read only `requirements_research` and `form_review` (remove any mention of database verification / Apricot).
+1. In the Applicant Identity section, the "Applicant's age unknown" line references confirming DOB via `getLegacyFormFields`. Replace that clause so age/DOB comes from the caseworker: change "Check the database for date of birth (confirm the field via `getLegacyFormFields` — see Data Provenance). If still unknown, clarify with the caseworker before choosing an option." to "Ask the caseworker for the date of birth. If still unknown, clarify with the caseworker before choosing an option."
+2. In the top "on-demand procedures / delegation" note, the subagent list must read only `requirements_research` and `form_review` (remove any mention of database verification / legacy client-database).
 
 - [ ] **Step 3: Retarget `agent/skills/benefits-application/SKILL.md`**
 
-Edits (preserve all non-Apricot procedure text):
-1. **Gap Analysis Protocol** — anywhere it says data must be "traceable to a confirmed Apricot field or a caseworker message," drop the Apricot half: data is traceable to a caseworker message or a valid inference. Remove the sentence about a "`field_NNNN` value whose label you have NOT verified via `getApricotFormFields`."
-2. **Form Completion Summary** — the `source` enum becomes `caseworker | inferred | missing` (delete the `database` bullet entirely). Remove the phrase "only valid if you've confirmed the field label via `getApricotFormFields`" and any other `getApricotFormFields` / Apricot mention.
-3. **Add a retargeted Data Provenance section** near the top of the skill (adapted from the deleted subagent's version, Apricot removed):
+Edits (preserve all non-legacy client-database procedure text):
+1. **Gap Analysis Protocol** — anywhere it says data must be "traceable to a confirmed legacy client-database field or a caseworker message," drop the legacy client-database half: data is traceable to a caseworker message or a valid inference. Remove the sentence about a "`field_NNNN` value whose label you have NOT verified via `getLegacyFormFields`."
+2. **Form Completion Summary** — the `source` enum becomes `caseworker | inferred | missing` (delete the `database` bullet entirely). Remove the phrase "only valid if you've confirmed the field label via `getLegacyFormFields`" and any other `getLegacyFormFields` / legacy client-database mention.
+3. **Add a retargeted Data Provenance section** near the top of the skill (adapted from the deleted subagent's version, legacy client-database removed):
 ```md
 ## Data Provenance (No Fabrication)
 
@@ -323,23 +323,23 @@ Every value you fill into a form, exclude from a gap analysis, or mark as filled
 
 If a value does not trace to one of these, it does not exist. Do not type it into the form and mark the field missing (`source: "missing"`, no value). This applies to every field. **Shape is not identity**: a 9-digit number is not an SSN, a date in the right range is not a DOB, "this is probably what it would be" is fabrication. Before every gap-analysis, form-fill, and `formSummary` call, name each value's source — which caseworker message, or which inference from one. If you cannot name one, the field is missing.
 ```
-4. Confirm no other Apricot/`getApricotRecord`/`getApricotFormFields`/"database source" references remain in the skill.
+4. Confirm no other legacy client-database/`getLegacyRecord`/`getLegacyFormFields`/"database source" references remain in the skill.
 
-- [ ] **Step 4: Boot-verify no Apricot remains**
+- [ ] **Step 4: Boot-verify no legacy client-database remains**
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"
-grep -rni "apricot\|getApricotFormFields\|getApricotRecord\|database_verification" agent/ && echo "!! apricot refs remain (fix)" || echo "OK: no apricot refs"
+grep -rni "legacy\|getLegacyFormFields\|getLegacyRecord\|database_verification" agent/ && echo "!! legacy refs remain (fix)" || echo "OK: no legacy refs"
 set -a; . ./.env.local; set +a
 npx eve dev --no-ui --port 2010   # confirm clean boot, now 2 subagents; kill after
 ```
-Expected: the grep prints "OK: no apricot refs"; the server boots with `requirements_research` + `form_review` only, no missing-subagent error. (The `data-*`/`source` enum note in the benefits skill now lists caseworker/inferred/missing.) Record evidence.
+Expected: the grep prints "OK: no legacy refs"; the server boots with `requirements_research` + `form_review` only, no missing-subagent error. (The `data-*`/`source` enum note in the benefits skill now lists caseworker/inferred/missing.) Record evidence.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add -A agent/
-git commit -m "feat(eve-agent): archive Apricot; retarget data model to caseworker + inference
+git commit -m "feat(eve-agent): archive legacy client-database; retarget data model to caseworker + inference
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -349,7 +349,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ### Task 5: End-to-end verification
 
 **Files:**
-- Modify: `agent/README.md` (update to reflect real tools + Apricot removal)
+- Modify: `agent/README.md` (update to reflect real tools + legacy client-database removal)
 
 **Interfaces:**
 - Consumes: the whole SP-A agent.
@@ -357,7 +357,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Full real-browser turn**
 
-`npx eve dev` (Node 24, env loaded). One session: `{"message":"Go to https://example.com and read me the main heading and the first paragraph."}`. Confirm the `browser` tool did a real navigate + snapshot and the reply quotes the real page text. Record evidence. This is SP-A's headline proof (real automation, no Apricot).
+`npx eve dev` (Node 24, env loaded). One session: `{"message":"Go to https://example.com and read me the main heading and the first paragraph."}`. Confirm the `browser` tool did a real navigate + snapshot and the reply quotes the real page text. Record evidence. This is SP-A's headline proof (real automation, no legacy client-database).
 
 - [ ] **Step 2: Regression + additive checks**
 
@@ -371,13 +371,13 @@ Confirm: 4/4; `app/` + `package.json` untouched by SP-A; legacy `lib/kernel/brow
 
 - [ ] **Step 3: Update `agent/README.md`**
 
-Update the tool section: `browser` and `check_submit_gate` are now REAL (Kernel.sh via `lib/kernel/eve-browser.ts`, session resolved from `ctx.session.id`); `gap_analysis`/`form_summary` return data (render in SP-B); the `database_verification` subagent and all Apricot references are removed and the data model is caseworker + inference. Remove now-stale Apricot rows from the tool-name map. Keep it accurate to what shipped.
+Update the tool section: `browser` and `check_submit_gate` are now REAL (Kernel.sh via `lib/kernel/eve-browser.ts`, session resolved from `ctx.session.id`); `gap_analysis`/`form_summary` return data (render in SP-B); the `database_verification` subagent and all legacy client-database references are removed and the data model is caseworker + inference. Remove now-stale legacy client-database rows from the tool-name map. Keep it accurate to what shipped.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add agent/README.md
-git commit -m "docs(eve-agent): README — real browser/submit-gate, Apricot removed (SP-A)
+git commit -m "docs(eve-agent): README — real browser/submit-gate, legacy client-database removed (SP-A)
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -386,7 +386,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ## Self-Review notes
 
-- **Spec coverage:** real Kernel browser → Task 1; durable-safe per-call session resolution + the stateful-crux mini-spike → Task 1 Step 4 (gating BLOCKED path included); real check_submit_gate → Task 2; card tools return data → Task 3; archive Apricot + retarget provenance to caseworker+inference (relocated into benefits skill) → Task 4; standalone validation + additive-to-lib + spike test green → Task 5; non-goals (no UI render, no replay/DB-mapping build, no legacy removal, no web-search port, no Vercel) respected — no task touches `route.ts`/`lib/apricot-api.ts`/`app/`/`package.json` or builds card rendering.
+- **Spec coverage:** real Kernel browser → Task 1; durable-safe per-call session resolution + the stateful-crux mini-spike → Task 1 Step 4 (gating BLOCKED path included); real check_submit_gate → Task 2; card tools return data → Task 3; archive legacy client-database + retarget provenance to caseworker+inference (relocated into benefits skill) → Task 4; standalone validation + additive-to-lib + spike test green → Task 5; non-goals (no UI render, no replay/DB-mapping build, no legacy removal, no web-search port, no Vercel) respected — no task touches `route.ts`/`lib/legacy-api.ts`/`app/`/`package.json` or builds card rendering.
 - **Grounded vs verify-at-impl:** the browser/submit-gate reuse (`getOrCreateBrowser` + `executeCommand`), `ctx.session.id`/`ctx.session.auth`, and `defineTool(execute(input, ctx))` are confirmed against the installed package and legacy code. The one verify-at-impl item is the exact `SessionAuthContext` principal field (Task 1 Step 1) — covered by the `'eve-local'` fallback regardless.
 - **Type/name consistency:** `browserIdentity(ctx)` and `runBrowserCommand(ctx, params)` defined in Task 1 and consumed verbatim by Task 2; tool file slugs stay snake_case; the `source` enum is `caseworker | inferred | missing` consistently in Task 4; model/env constraints match SP-A spec.
 - **Primary risk front-loaded:** if Task 1's ref-survival crux fails, execution stops before Tasks 2–5 build on a broken browser assumption — exactly as the spec requires.

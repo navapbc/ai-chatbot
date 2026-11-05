@@ -3,10 +3,10 @@ import { generateText, isStepCount, type ModelMessage } from "ai";
 import { join as pathJoin } from "node:path";
 import { getWebAutomationSystemPrompt } from "@/lib/ai/prompts/web-automation";
 import participants from "./datasets/participants.json";
-import formFields from "./datasets/form-fields.json";
 import testCaseData from "./datasets/test-cases.json";
 import {
   createBaseStubTools,
+  withParticipant,
   collectTextResponses,
   evalExperimentName,
   getEvalModel,
@@ -36,20 +36,6 @@ interface RunState extends BaseRunState {
 
 function createStubTools(state: RunState) {
   return createBaseStubTools(state, {
-    getApricotRecord: async () => mockParticipantWithHousehold,
-
-    getApricotForms: async () => ({
-      forms: [{ id: 201, name: "Family Profile" }],
-      count: 1,
-      success: true,
-    }),
-
-    getApricotForm: async () => ({
-      form: { id: 201, name: "Family Profile" },
-      found: true,
-    }),
-
-    getApricotFormFields: async () => formFields.deduction,
   });
 }
 
@@ -131,7 +117,7 @@ Eval("labs-asp", {
 
     try {
       const tools = { ...createStubTools(state), browser: session.browserTool };
-      const messages: ModelMessage[] = [{ role: "user", content: input }];
+      const messages: ModelMessage[] = [{ role: "user", content: withParticipant(input, mockParticipantWithHousehold.record) }];
 
       const result = await generateText({
         model,

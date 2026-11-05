@@ -29,14 +29,14 @@ Both `eval` and `eval:ci` run the suite files **one at a time** (a shell loop), 
 | Suite | What it measures | Heuristic scorers | LLM-as-judge |
 |-------|------------------|-------------------|--------------|
 | **tool-selection** | Agent picks the right tool for each user request (one-step) | first-tool-correct, all-expected-tools-called, no-hallucinated-tools | — |
-| **autonomous-progression** | Agent moves through a multi-page form without being nudged | used-database-data, filled-form-fields, progressed-autonomously, stopped-before-submit, did-not-modify-database, showed-review, not-overly-verbose | — |
+| **autonomous-progression** | Agent moves through a multi-page form without being nudged | filled-form-fields, progressed-autonomously, stopped-before-submit, showed-review, not-overly-verbose | — |
 | **navigation** | Agent handles modals, county pickers, income popups; doesn't open new tabs or hit Back | navigated-past-landing, avoided-external-links, handled-county-modal, handled-income-modal, did-not-use-back, did-not-open-new-tab, stayed-on-site, reached-review, stopped-at-review | — |
 | **clicking-ui-interaction** | Agent handles date masks, phone formats, native + select2 dropdowns, collapsible sections | handled-date-field, handled-phone-field, handled-native-dropdown, handled-select2-dropdown, expanded-collapsible-section, verified-masked-fields, filled-collapsible-fields | — |
 | **ask-questions** | Agent asks for genuinely missing fields, in plain English, without overstepping into sensitive territory | called-gap-analysis, missing-field-coverage, did-not-assume-sensitive-fields, did-not-ask-for-known-fields, filled-known-fields | **ask-questions-judge** |
 | **deduction** | Agent infers age from DOB, mailing from physical, ethnicity mapping, language carry-over, household composition | inferred-age-from-dob, inferred-mailing-address, mapped-ethnicity, carried-language, correct-household-size, included-household-members, inferred-nearest-office, no-false-gaps | — |
 | **hallucination** | Agent doesn't invent household members, fabricate SSNs/emails, or attribute invented data to "database" | did-not-invent-spouse, correct-household-size, correct-household-member, no-fabricated-names, accurate-data-values, did-not-fabricate-marital-status, form-summary-sources-accurate, did-not-fabricate-email | **hallucination-judge**, **summary-attribution-judge** |
 | **verbosity** | Agent communicates concisely, no play-by-play, no technical jargon, no wall-of-text | responses-are-concise, does-not-narrate-every-action, no-technical-jargon, provides-updates, text-is-infrequent, no-play-by-play | **verbosity-judge** |
-| **regression-scenarios** | Cross-walked from [cwilkes-npbc/AI-Evaluations](https://github.com/cwilkes-npbc/AI-Evaluations) (Rosa 339688 × WIC/IHSS, Carolina 339702 × WIC/IHSS). Form-specific gap behaviors not exercised by the per-category suites. Scorers return `null` for non-applicable scenarios. | checked-wic-auth, selected-applying-for-self, mapped-gender-to-sex, asked-mother-eligibility, selected-blind-from-flag | — |
+| **regression-scenarios** | Cross-walked from [cwilkes-npbc/AI-Evaluations](https://github.com/cwilkes-npbc/AI-Evaluations) (synthetic stand-ins: Marisol 90001 × WIC/IHSS, Helen 90002 × WIC/IHSS). Form-specific gap behaviors not exercised by the per-category suites. Scorers return `null` for non-applicable scenarios. | checked-wic-auth, selected-applying-for-self, mapped-gender-to-sex, asked-mother-eligibility, selected-blind-from-flag | — |
 | **session-carryover** | Multi-turn sessions — agent must persist the participant identity across sequential user messages (WIC → IHSS → BenefitsCal) and answer cross-context Q&A from existing context. | same-user-across-turns, did-not-reask-for-user, answered-age, answered-last-name | — |
 | **jev-questions** | The Jev questions themselves (`lib/jev/questions.ts`), not the agent. Fixed hand-adjudicated cases over one participant record + caseworker transcript. | verdict_correct, expected_verdict_probability, noul_direction_correct | — (Jev *is* the system under test) |
 
@@ -111,9 +111,9 @@ The `Eval()` calls invoke registered scorers via `initFunction({ projectName: "l
 
 | File | Contents |
 |------|----------|
-| `datasets/participants.json` | Synthetic participant database records — names, addresses, household composition, income, ethnicity, language. Each suite picks a participant whose data shape matches the scenario (sparse for ask-questions, household for hallucination/deduction, etc). Includes `rosaFlores` (339688) and `carolinaDelgado` (339702), which mirror the real A360 PREVIEW_JSON payloads from the AI-Evaluations manual harness — used by `regression-scenarios` and `session-carryover`. |
+| `datasets/participants.json` | Synthetic participant database records — names, addresses, household composition, income, ethnicity, language. Each suite picks a participant whose data shape matches the scenario (sparse for ask-questions, household for hallucination/deduction, etc). Includes `marisolIbarra` (90001) and `helenPark` (90002), fully synthetic records shaped like the AI-Evaluations regression cases (married parent with a child 0-5; older blind adult with a CalWorks ID) — used by `regression-scenarios` and `session-carryover`. Do not paste real participant data into this file. |
 | `datasets/snapshots.json` | Browser DOM snapshots for each page of each mock form. The stub `browser` tool returns these when the agent calls `action: "snapshot"`. Snapshots are keyed by suite → page name. |
-| `datasets/form-fields.json` | Form-field definitions returned by the stubbed `getApricotFormFields` tool. |
+| `datasets/form-fields.json` | The CalWorks form-field list the ask-questions judge sees as context. |
 | `datasets/test-cases.json` | Per-suite test case lists — input prompts, expected outputs (for tool-selection), max step counts. |
 | `datasets/golden.json` | Forbidden-term lists and ideal-behavior references for the hallucination suite. |
 
@@ -121,12 +121,12 @@ When you change a participant's data, also update any heuristic scorer that hard
 
 ## AI-Evaluations cross-walk
 
-The `regression-scenarios` and `session-carryover` suites cover the 57-step regression rubric from the manual harness at [cwilkes-npbc/AI-Evaluations](https://github.com/cwilkes-npbc/AI-Evaluations) (TC1 Rosa + TC2 Carolina). Coverage status:
+The `regression-scenarios` and `session-carryover` suites cover the 57-step regression rubric from the manual harness at [cwilkes-npbc/AI-Evaluations](https://github.com/cwilkes-npbc/AI-Evaluations) (TC1 Marisol + TC2 Helen, synthetic stand-ins). Coverage status:
 
 | Status | Steps | Where |
 |--------|-------|-------|
 | Fully covered | 40 | Existing per-category suites (autonomous-progression, deduction, ask-questions, navigation, clicking-ui-interaction, verbosity, hallucination) |
-| Generic scorer applies, scenario-specific fixture missing | 8 | Existing suites — could be tightened by adding Rosa/Carolina rows |
+| Generic scorer applies, scenario-specific fixture missing | 8 | Existing suites — could be tightened by adding Marisol/Helen rows |
 | Form-specific gaps | 5 | `regression-scenarios.eval.ts` — WIC auth (#4), applying-for-self (#13), gender→sex (#15), mother eligibility (#43), blind-from-special-needs-flag (#49) |
 | Multi-turn carryover gaps | 6 | `session-carryover.eval.ts` — Q&A age (#9), same-user transitions (#10, #25, #46, #52), cross-context last name (#38) |
 | Manual-only (UI-bound) | 1 | Step #23 — agent force-enabling a disabled submit DOM button. No offline equivalent; remains a manual check in the AI-Evaluations SOP. |
