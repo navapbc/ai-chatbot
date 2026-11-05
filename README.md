@@ -48,7 +48,6 @@ graph LR
     Agent --> Browser["Kernel.sh<br/>Remote Browser"]
     Agent --> Data["Participant Data<br/>(bundled demo records)"]
     Routes --> DB["Neon Postgres"]
-    Routes --> Redis["Upstash Redis"]
     Browser -.->|live stream| UI
 ```
 
@@ -298,7 +297,6 @@ KERNEL_API_KEY=your-kernel-api-key
 | `ANTHROPIC_API_KEY` | Optional | Anthropic Claude models |
 | `XAI_API_KEY` | Optional | xAI Grok models |
 | `KERNEL_API_KEY` | For web automation | Kernel.sh remote browser API key |
-| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | For shared links | Redis-backed link sharing |
 | `ENVIRONMENT` | Optional | `dev`, `prod`, or `preview-*` |
 
 See [`.env.example`](.env.example) for the full list of configurable variables.

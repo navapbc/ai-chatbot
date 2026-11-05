@@ -260,27 +260,6 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         value = local.storage_bucket_name
       }
 
-      # Upstash Redis for shared links
-      env {
-        name = "UPSTASH_REDIS_REST_URL"
-        value_source {
-          secret_key_ref {
-            secret  = var.environment == "prod" ? "upstash-redis-rest-url-prod" : "upstash-redis-rest-url-dev"
-            version = "latest"
-          }
-        }
-      }
-
-      env {
-        name = "UPSTASH_REDIS_REST_TOKEN"
-        value_source {
-          secret_key_ref {
-            secret  = var.environment == "prod" ? "upstash-redis-rest-token-prod" : "upstash-redis-rest-token-dev"
-            version = "latest"
-          }
-        }
-      }
-
       # Allowed email domains for OAuth sign-in (comma-separated)
       env {
         name = "ALLOWED_EMAIL_DOMAINS"
