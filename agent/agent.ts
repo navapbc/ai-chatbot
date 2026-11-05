@@ -37,7 +37,18 @@ const resolveDirectModel = (modelId: string) =>
 // it" on every turn — it is not a valid id. Keep this in sync with the
 // allowlist in lib/ai/eve/model-map.ts, which is the set this project can
 // actually reach.
-const DEFAULT_MODEL_ID = 'claude-opus-5';
+//
+// Sonnet 5.5, not Opus: the agent makes many small tool steps over a long
+// context, so cost scales with steps x context. Sonnet 5.5 is $2/$10 per
+// million tokens against Opus 5's $5/$25, and a cache write costs $2.50 per
+// million against $6.25, which matters when the prompt cache misses (a dev run
+// on 2026-11-04 wrote 8.9M cache tokens, $55 on Opus). The picker still offers
+// every model in lib/ai/eve/model-map.ts. Keep this equal to the first entry of
+// DEFAULT_RELAY_MODELS there: a relay run that picks the server's default sends
+// no model, and this fallback serves it.
+const DEFAULT_MODEL_ID = 'claude-sonnet-5-5';
+
+const MAX_INPUT_TOKENS_PER_SESSION = 8_000_000;
 
 // Postgres-backed durability only where a session-mode Postgres is explicitly
 // configured; `undefined` leaves Eve on its built-in local file world. See the
@@ -94,6 +105,14 @@ export default defineAgent({
   compaction: {
     // Compact when context passes this fraction of the window (default 0.9).
     thresholdPercent: 0.75,
+  },
+  limits: {
+    // A cost guard, not a budget: when a session's provider-reported input
+    // tokens (cached ones included) reach this, Eve pauses before the next
+    // model call and asks the caseworker to approve another window or stop.
+    // Healthy dev runs use 1M to 3M; the runaway on 2026-11-04 used 22M
+    // against Eve's 40M default. Output tokens stay uncapped.
+    maxInputTokensPerSession: MAX_INPUT_TOKENS_PER_SESSION,
   },
   experimental: {
     workflow: {

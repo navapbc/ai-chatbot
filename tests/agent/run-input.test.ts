@@ -218,9 +218,9 @@ describe('buildRelayOpeningMessage', () => {
 });
 
 describe('relay model allowlist', () => {
-  it('defaults to every picker model, claude-opus-5 first', () => {
+  it('defaults to every picker model, claude-sonnet-5-5 first', () => {
     const all = allowedRelayModels({});
-    expect(all[0]).toBe('claude-opus-5');
+    expect(all[0]).toBe('claude-sonnet-5-5');
     expect(all).toContain('gpt-5.4');
     expect(all).toContain('claude-haiku-4-5');
     expect(allowedRelayModels({ RELAY_ALLOWED_MODELS: '  ' })).toEqual(all);

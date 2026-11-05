@@ -72,8 +72,8 @@ describe('getRelayConfig models', () => {
     for (const env of [{}, { RELAY_ALLOWED_MODELS: '' }]) {
       const cfg = getRelayConfig(env);
       expect(cfg.models.length).toBeGreaterThan(1);
-      expect(cfg.models[0]).toEqual({ id: 'claude-opus-5' });
-      expect(cfg.defaultModel).toBe('claude-opus-5');
+      expect(cfg.models[0]).toEqual({ id: 'claude-sonnet-5-5' });
+      expect(cfg.defaultModel).toBe('claude-sonnet-5-5');
     }
   });
 
@@ -87,7 +87,7 @@ describe('getRelayConfig models', () => {
   it('falls back to the default when only unknown models are named', () => {
     const cfg = getRelayConfig({ RELAY_ALLOWED_MODELS: 'nope,nada' });
     expect(cfg.models).toEqual(getRelayConfig({}).models);
-    expect(cfg.defaultModel).toBe('claude-opus-5');
+    expect(cfg.defaultModel).toBe('claude-sonnet-5-5');
   });
 
   it('keeps order for two known models and defaults to the first', async () => {
