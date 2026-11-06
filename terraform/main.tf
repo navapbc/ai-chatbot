@@ -48,18 +48,21 @@ locals {
   environments = {
     dev = {
       chatbot_service_name = "ai-chatbot-dev"
+      relay_service_name   = "labs-asp-relay-dev"
       sql_instance_name    = "nava-db-dev"      # dev database
       storage_bucket_name  = "nava-storage-dev" # dev storage bucket
       domain_prefix        = "dev"
     }
     preview = {
       chatbot_service_name = "ai-chatbot-${var.environment}"
+      relay_service_name   = "labs-asp-relay-${var.environment}"
       sql_instance_name    = "nava-db-dev"      # ALL preview environments use dev database
       storage_bucket_name  = "nava-storage-dev" # ALL preview environments use dev storage bucket
       domain_prefix        = var.environment    # preview-pr-123 gets preview-pr-123.labs-asp.com
     }
     prod = {
       chatbot_service_name = "ai-chatbot-prod"
+      relay_service_name   = "labs-asp-relay-prod"
       sql_instance_name    = "nava-db-prod"      # prod database
       storage_bucket_name  = "nava-storage-prod" # prod storage bucket
       domain_prefix        = "app"

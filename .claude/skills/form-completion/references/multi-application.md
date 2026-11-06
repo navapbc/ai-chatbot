@@ -194,15 +194,37 @@ model choice controls most of the run cost.
 
 | Agent | Model parameter | Reason |
 |---|---|---|
-| Fill agent with a playbook (warm path) | `haiku` | The playbook gives the exact selectors and methods. The fill is checklist work. |
+| Fill agent with a playbook (warm path) | `sonnet` | The playbook gives the exact selectors and methods, but a `haiku` agent measured worse (see below). Use `haiku` only once the site's sequence is a script, not prose to interpret. |
 | Fill agent with no playbook (cold start) | `sonnet` | Discovery needs judgment: label mapping, gate polarity. |
 | Scout | `sonnet` | It must find the real form behind menus and interstitial pages. |
 | Scribe | `sonnet` | It writes the knowledge files that later runs depend on. |
 
-A small-model fill agent stays safe because of the BLOCKED rule: when the playbook
-does not cover a situation, the agent returns BLOCKED and does not improvise. The
-orchestrator supplies the judgment. If a small-model agent returns wrong fills or
-invented values, record it and use `sonnet` for that path.
+**Why the warm path defaults to `sonnet`, not `haiku`.** Measured on 2026-09-02, one
+warm fill with a `sonnet` orchestrator:
+
+| Configuration | Cost |
+|---|---|
+| Single `sonnet` agent does the whole job | $1.54 |
+| `sonnet` orchestrator + `haiku` fill agent | $2.34 |
+
+The `haiku` fill agent issued 135 browser commands (126 of them verification, 56 of
+those whole-page snapshots) and re-opened the form 6 times. It read more DOM than the
+`sonnet` run, so the lower rate per token did not pay for it. The orchestrator's own
+cost barely moved ($1.24 against $1.54), because intake, the freshness probe,
+provenance, and supervision do not shrink when the filling is handed off.
+
+Caveats: n=1 for each configuration, and two identical cold runs cost $1.59 and
+$3.04, so treat the figures as order-of-magnitude. This design is for parallel
+multi-application runs. Applied to one form you pay for two contexts and get no
+parallelism. The figures do not show the design is wrong: its value is throughput and
+isolation, not unit cost.
+
+The BLOCKED rule (the agent returns BLOCKED when the playbook does not cover a
+situation, and does not improvise) limits what a small-model agent can get wrong. The
+measurement shows it does not limit what the agent costs. If a `haiku` agent returns
+wrong fills or invented values, record it and use `sonnet` for that path. Moving the
+warm path back to `haiku` depends on site scripts landing; if they do not, keep
+`sonnet`.
 
 Start all the ready fill agents in ONE message (parallel tool calls). Each fill
 agent prompt contains:

@@ -4,14 +4,16 @@ import { google } from "@ai-sdk/google";
 import { openai } from "@ai-sdk/openai";
 import type { Span } from "braintrust";
 import { z } from "zod";
-import { browserInputSchema } from "@/lib/ai/tools/browser";
+import { browserInputSchema } from "@/lib/ai/tools/browser-schema";
 import { computeCostUsd, type UsageTotals } from "./pricing";
 
 /**
  * Shared stub tool builder for evals.
  *
- * Mirrors the live tool surface in app/(chat)/api/chat/route.ts — Apricot
- * tools, gapAnalysis, formSummary, actionLabel, browser, readReference.
+ * Mirrors the live tool surface in app/(chat)/api/chat/route.ts — gapAnalysis,
+ * formSummary, actionLabel, browser, readReference. There is no participant
+ * lookup tool: the live agent receives the participant record inline in the
+ * caseworker's first message, so evals do the same with `withParticipant`.
  * Only the execute callbacks differ — they return mock data and track state.
  *
  * Pass an `overrides` object to customise individual tool execute fns.
@@ -33,17 +35,6 @@ export interface BaseRunState {
 // ── Tool schema constants ───────────────────────────────────────────────
 
 const TOOL_DESCRIPTIONS = {
-  getApricotRecord:
-    "Get a participant/client record from Apricot360 by record ID. Use this to fetch participant data for form filling. Returns field values with human-readable labels resolved from the form definition.",
-  getApricotForms:
-    "Fetch forms from Apricot360 with optional pagination and filtering.",
-  getApricotForm: "Get a specific form from Apricot360 by form ID.",
-  getApricotFormFields:
-    "Get all fields for a specific form from Apricot360. Returns field definitions including labels, types, options, and validation requirements.",
-  testApricotAuth:
-    "Test authentication with Apricot360 API. Use this to verify API credentials are working.",
-  updateApricotRecord:
-    "Update a participant record in Apricot360. This modifies the database record.",
   gapAnalysis:
     "Display a gap analysis card showing ONLY the missing fields the caseworker needs to provide.",
   formSummary:
@@ -63,20 +54,6 @@ const TOOL_DESCRIPTIONS = {
 type ExecuteFn<T = Record<string, unknown>> = (input: T) => Promise<unknown>;
 
 export interface ToolOverrides {
-  getApricotRecord?: ExecuteFn<{ recordId: number }>;
-  getApricotForms?: ExecuteFn<{
-    pageSize?: number;
-    pageNumber?: number;
-    sort?: string;
-    filters?: Record<string, string>;
-  }>;
-  getApricotForm?: ExecuteFn<{ formId: number }>;
-  getApricotFormFields?: ExecuteFn<{ formId: number }>;
-  testApricotAuth?: ExecuteFn<Record<string, never>>;
-  updateApricotRecord?: ExecuteFn<{
-    recordId: number;
-    fields: Record<string, string>;
-  }>;
   gapAnalysis?: ExecuteFn;
   formSummary?: ExecuteFn;
   actionLabel?: ExecuteFn;
@@ -104,12 +81,10 @@ function logAndReturn<S extends BaseRunState>(
  * @param state  - The eval's RunState object (must extend BaseRunState).
  *                 Every tool call is automatically pushed to `state.toolCallLog`.
  * @param overrides - Per-tool execute callbacks. Unset tools use sensible defaults.
- * @param options.includeUpdateTool - Include the updateApricotRecord trap tool (default false).
  */
 export function createBaseStubTools<S extends BaseRunState>(
   state: S,
-  overrides: ToolOverrides = {},
-  options: { includeUpdateTool?: boolean } = {}
+  overrides: ToolOverrides = {}
 ) {
   const wrap = <T>(name: string, fn: ExecuteFn<T>): ExecuteFn<T> => {
     return async (input: T) => {
@@ -119,47 +94,6 @@ export function createBaseStubTools<S extends BaseRunState>(
   };
 
   const tools: Record<string, Tool> = {
-    getApricotRecord: tool({
-      description: TOOL_DESCRIPTIONS.getApricotRecord,
-      inputSchema: z.object({
-        recordId: z.number().describe("The unique record ID of the participant"),
-      }),
-      execute: wrap("getApricotRecord", overrides.getApricotRecord ?? (async () => ({ record: null, found: false }))),
-    }),
-
-    getApricotForms: tool({
-      description: TOOL_DESCRIPTIONS.getApricotForms,
-      inputSchema: z.object({
-        pageSize: z.number().optional(),
-        pageNumber: z.number().optional(),
-        sort: z.string().optional(),
-        filters: z.record(z.string()).optional(),
-      }),
-      execute: wrap("getApricotForms", overrides.getApricotForms ?? (async () => ({ forms: [], count: 0, success: true }))),
-    }),
-
-    getApricotForm: tool({
-      description: TOOL_DESCRIPTIONS.getApricotForm,
-      inputSchema: z.object({
-        formId: z.number().describe("The unique ID of the form in Apricot360"),
-      }),
-      execute: wrap("getApricotForm", overrides.getApricotForm ?? (async () => ({ form: null, found: false }))),
-    }),
-
-    getApricotFormFields: tool({
-      description: TOOL_DESCRIPTIONS.getApricotFormFields,
-      inputSchema: z.object({
-        formId: z.number().describe("The unique ID of the form in Apricot360"),
-      }),
-      execute: wrap("getApricotFormFields", overrides.getApricotFormFields ?? (async () => ({ fields: [], count: 0, success: true }))),
-    }),
-
-    testApricotAuth: tool({
-      description: TOOL_DESCRIPTIONS.testApricotAuth,
-      inputSchema: z.object({}),
-      execute: wrap("testApricotAuth", overrides.testApricotAuth ?? (async () => ({ success: true, message: "Auth OK" }))),
-    }),
-
     gapAnalysis: tool({
       description: TOOL_DESCRIPTIONS.gapAnalysis,
       inputSchema: z.object({
@@ -211,20 +145,6 @@ export function createBaseStubTools<S extends BaseRunState>(
     }),
   };
 
-  if (options.includeUpdateTool) {
-    tools.updateApricotRecord = tool({
-      description: TOOL_DESCRIPTIONS.updateApricotRecord,
-      inputSchema: z.object({
-        recordId: z.number(),
-        fields: z.record(z.string()),
-      }),
-      execute: wrap(
-        "updateApricotRecord",
-        overrides.updateApricotRecord ?? (async () => ({ success: false, error: "Read-only access" }))
-      ),
-    });
-  }
-
   return tools;
 }
 
@@ -232,6 +152,20 @@ export function createBaseStubTools<S extends BaseRunState>(
 
 /** Browser success response shorthand */
 export const browserOk = (output = "") => ({ success: true, output, error: null });
+
+/**
+ * Build the caseworker message the way the live app does: the participant
+ * record is inlined as JSON and there is no database to look up (see
+ * `buildApplicationPrompt` in lib/data/participants.ts). `task` is the
+ * eval's own instruction (for example the form URL and any special asks).
+ */
+export function withParticipant(task: string, participant: unknown): string {
+  return `${task}\n\nThis JSON is all the participant data available — there is no database to look up.\n\n${JSON.stringify(
+    participant,
+    null,
+    2
+  )}`;
+}
 
 /** Collect text responses from generateText result steps */
 export function collectTextResponses(steps: Array<{ text?: string }>): string[] {
@@ -308,9 +242,10 @@ interface HasTotalUsage {
     inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
-    // AI SDK v7 moved cache-read tokens under inputTokenDetails.
+    // AI SDK v7 moved cache-read/cache-write tokens under inputTokenDetails.
     inputTokenDetails?: {
       cacheReadTokens?: number;
+      cacheWriteTokens?: number;
     };
   };
 }
@@ -322,6 +257,7 @@ export function emptyUsage(): UsageTotals {
     outputTokens: 0,
     totalTokens: 0,
     cachedInputTokens: 0,
+    cachedWriteTokens: 0,
   };
 }
 
@@ -337,6 +273,7 @@ export function addUsage(acc: UsageTotals, result: HasTotalUsage): UsageTotals {
   acc.totalTokens +=
     u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
   acc.cachedInputTokens += u.inputTokenDetails?.cacheReadTokens ?? 0;
+  acc.cachedWriteTokens += u.inputTokenDetails?.cacheWriteTokens ?? 0;
   return acc;
 }
 
@@ -357,6 +294,7 @@ export function logUsageAndCost(span: Span, usage: UsageTotals): void {
     prompt_tokens: usage.inputTokens,
     completion_tokens: usage.outputTokens,
     prompt_cached_tokens: usage.cachedInputTokens,
+    prompt_cache_write_tokens: usage.cachedWriteTokens,
   };
   // estimated_cost_usd is a custom metric (Braintrust's native cost needs its
   // own pricing table, which won't know these models). Omit the key entirely
@@ -378,4 +316,61 @@ export function logUsageAndCost(span: Span, usage: UsageTotals): void {
 /** Convenience: log usage/cost for a single generateText result. */
 export function logResultUsage(span: Span, result: HasTotalUsage): void {
   logUsageAndCost(span, addUsage(emptyUsage(), result));
+}
+
+/**
+ * Log token usage and estimated cost for a Jev (TypeSafe) call.
+ *
+ * Deliberately separate from logUsageAndCost, which hardcodes the model id to
+ * getEvalModelId(). Jev is never the EVAL_MODEL — it is a second provider
+ * called *alongside* whichever model is under test — so routing its tokens
+ * through that helper would price them at EVAL_MODEL's rate (gpt-5-mini by
+ * default, ~6x Jev's input rate) and quietly inflate the figure.
+ *
+ * The metrics are namespaced `jev_*` rather than folded into
+ * `estimated_cost_usd` so the agent's inference cost and Jev's annotation cost
+ * stay separable in Braintrust; summing them is the reader's choice.
+ */
+export function logJevUsageAndCost(
+  span: Span,
+  modelId: string,
+  usage: { inputTokens: number; outputTokens: number },
+): void {
+  const totals: UsageTotals = {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.inputTokens + usage.outputTokens,
+    // Jev exposes no cache tier, so these are structurally zero rather than
+    // unknown — computeCostUsd prices every input token at the plain rate.
+    cachedInputTokens: 0,
+    cachedWriteTokens: 0,
+  };
+  const { costUsd, pricingKnown } = computeCostUsd(modelId, totals);
+  const metrics: Record<string, number> = {
+    jev_prompt_tokens: usage.inputTokens,
+    jev_completion_tokens: usage.outputTokens,
+  };
+  // Same contract as logUsageAndCost: omit the key rather than log a null, and
+  // flag the gap in metadata. A new Jev release ships a new model id, so an
+  // unpriced Jev model is an expected state, not a broken one.
+  if (costUsd != null) {
+    metrics.jev_estimated_cost_usd = costUsd;
+  } else {
+    // Loud on purpose. The SDK sends `jev-latest` by default and the service
+    // resolves it to a concrete version, so a Jev release ships a model id this
+    // table has never seen. Silently omitting the cost there would recreate the
+    // exact "costUsd disappears and nobody notices" gap this work set out to
+    // close, so say which id is missing and make it greppable in CI logs.
+    console.warn(
+      `::warning::no pricing row for Jev model "${modelId}" — jev_estimated_cost_usd omitted. Add it to evals/pricing.ts.`,
+    );
+  }
+  span.log({
+    metrics,
+    metadata: {
+      jev_model: modelId,
+      jev_pricing_known: pricingKnown,
+      jev_token_usage: usage,
+    },
+  });
 }

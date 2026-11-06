@@ -6,6 +6,7 @@ import snapshots from "./datasets/snapshots.json";
 import testCaseData from "./datasets/test-cases.json";
 import {
   createBaseStubTools,
+  withParticipant,
   browserOk,
   collectIndexedTextResponses,
   evalExperimentName,
@@ -47,8 +48,6 @@ interface RunState extends BaseRunState {
 
 function createStubTools(state: RunState) {
   return createBaseStubTools(state, {
-    getApricotRecord: async () => mockParticipant,
-
     browser: async (input: Record<string, unknown>) => {
       state.browserActions.push(input as RunState["browserActions"][0]);
 
@@ -219,7 +218,7 @@ Eval("labs-asp", {
     };
 
     const tools = createStubTools(state);
-    const messages: ModelMessage[] = [{ role: "user", content: input }];
+    const messages: ModelMessage[] = [{ role: "user", content: withParticipant(input, mockParticipant.record) }];
 
     const result = await generateText({
       model,

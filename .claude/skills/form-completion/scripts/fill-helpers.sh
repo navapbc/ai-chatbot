@@ -6,7 +6,7 @@
 #   source .claude/skills/form-completion/scripts/fill-helpers.sh
 #   SESSION=localchrome
 #   S fill "#firstName" "Maria"
-#   K "#birthDate" "MMDDYYYY"           # Masked field: one key for each character
+#   K "#birthDate" "MMDDYYYY"           # Masked field: real key events, spaces kept
 #   C "#agreeYes"                       # Idempotent check
 #   V firstName birthDate               # Readback. Always do this.
 #
@@ -23,18 +23,19 @@ SESSION="${SESSION:-form-fill}"
 # One command, with the output removed
 S() { "$AB" --session "$SESSION" "$@" >/dev/null 2>&1; }
 
-# Fill a masked field with one keypress for each character: K "#selector" "chars"
-# Use fold, not `read -n1`. The `read -n1` option fails in zsh.
-# The first three keys clear the field with real keystrokes. The `fill ""` command
-# can put the mask buffer in a bad state. Then the field ignores keys, or the caret
-# stops at the end. The keyboard clear corrects this. It causes no damage on a clean
-# field. Always keep these three keys.
-case "$(uname)" in Darwin) _SELALL="Meta+a";; *) _SELALL="Control+a";; esac
+# Fill a masked field with real per-character key events: K "#selector" "chars"
+# `keyboard type` sends keydown/keypress/keyup for each character, which is what
+# keydown-listening masks need. It keeps spaces. A shell loop over the characters
+# loses them, because the unquoted $(...) is word-split.
+# `fill ""` empties the field. A keyboard select-all (Meta+a) does not apply in
+# every browser, so the old clear left stale text and the new value was
+# prepended to it. If `fill ""` leaves a mask buffer in a bad state on your
+# agent-browser version, read the field back with V and report it.
 K() {
-  local sel="$1" chars="$2" c
+  local sel="$1" chars="$2"
   S click "$sel"
-  S key "$_SELALL"; S key "Backspace"; S key "Home"
-  for c in $(printf '%s' "$chars" | fold -w1); do S key "$c"; done
+  S fill "$sel" ""
+  S keyboard type "$chars"
 }
 
 # Set a checkbox (idempotent)

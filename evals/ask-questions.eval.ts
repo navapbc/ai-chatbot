@@ -7,6 +7,7 @@ import formFields from "./datasets/form-fields.json";
 import testCaseData from "./datasets/test-cases.json";
 import {
   createBaseStubTools,
+  withParticipant,
   browserOk,
   collectTextResponses,
   evalExperimentName,
@@ -42,21 +43,6 @@ interface RunState extends BaseRunState {
 
 function createStubTools(state: RunState) {
   return createBaseStubTools(state, {
-    getApricotRecord: async () => mockSparseParticipant,
-
-    getApricotForms: async () => ({
-      forms: [{ id: 301, name: "CalWorks Application" }],
-      count: 1,
-      success: true,
-    }),
-
-    getApricotForm: async () => ({
-      form: { id: 301, name: "CalWorks Application" },
-      found: true,
-    }),
-
-    getApricotFormFields: async () => formFields.askQuestions,
-
     gapAnalysis: async (input: Record<string, unknown>) => {
       const missingFields = (input.missingFields as Array<{ field: string }>) ?? [];
       const fields = missingFields.map((f) => f.field.toLowerCase());
@@ -237,7 +223,7 @@ const askQuestionsJudge = initFunction({
 function serializeForAskQuestionsJudge(state: RunState): string {
   const parts: string[] = [];
 
-  parts.push("## Participant Database Record (ground truth)");
+  parts.push("## Participant Record (ground truth)");
   parts.push(JSON.stringify(mockSparseParticipant.record, null, 2));
 
   parts.push("\n## Form Fields the agent had to fill");
@@ -290,7 +276,7 @@ Eval("labs-asp", {
     };
 
     const tools = createStubTools(state);
-    const messages: ModelMessage[] = [{ role: "user", content: input }];
+    const messages: ModelMessage[] = [{ role: "user", content: withParticipant(input, mockSparseParticipant.record) }];
 
     const result = await generateText({
       model,

@@ -4,7 +4,7 @@ import { isProductionEnvironment } from './constants';
 // environment-aware default and can be overridden per-browser via localStorage
 // (flipped by the dev-only feature-flags menu) so QA can preview features in
 // dev/preview without a redeploy.
-export type FeatureFlagKey = 'declutterToolCalls';
+export type FeatureFlagKey = 'declutterToolCalls' | 'useEveAgent';
 
 export interface FeatureFlagDef {
   key: FeatureFlagKey;
@@ -19,6 +19,13 @@ export const FEATURE_FLAGS: Record<FeatureFlagKey, FeatureFlagDef> = {
     label: 'Declutter tool calls',
     description: 'Show only value-bearing tool calls (production behavior).',
     defaultValue: isProductionEnvironment,
+  },
+  useEveAgent: {
+    key: 'useEveAgent',
+    label: 'Use Eve agent',
+    description:
+      'Route chat turns through the Eve agent (adapter route) instead of the legacy loop.',
+    defaultValue: false,
   },
 };
 

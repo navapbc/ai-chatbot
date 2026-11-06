@@ -1,0 +1,168 @@
+import {
+  VERTEX_CONTEXT_WINDOW_TOKENS,
+  contextWindowTokensFor,
+  isOpenAIModelId,
+  isVertexModelId,
+  toVertexModelId,
+} from '@/lib/ai/eve/model-map';
+import { withPromptHashLogging } from '@/lib/ai/eve/prompt-hash-log';
+import { defineAgent, defineDynamic } from 'eve';
+
+import { openai } from '@ai-sdk/openai';
+import { vertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
+
+// GPT goes straight to OpenAI's own API (OPENAI_API_KEY), not Vertex — there
+// is no OpenAI-on-Vertex path. Same "direct provider, not gateway" reasoning
+// as vertexAnthropic below: it avoids the gateway tier this project moved off
+// of, at the cost of needing an explicit modelContextWindowTokens override
+// (see contextWindowTokensFor in model-map.ts).
+//
+// Every model passes through withPromptHashLogging, which is a no-op unless
+// EVE_LOG_PROMPT_HASHES=1 (a prompt-cache diagnostic; see that module).
+const resolveDirectModel = (modelId: string) =>
+  withPromptHashLogging(
+    isOpenAIModelId(modelId) ? openai(modelId) : vertexAnthropic(modelId),
+  );
+
+// Models are called directly on Vertex AI, not routed through the Vercel AI
+// Gateway: `vertexAnthropic(...)` is an AI SDK `LanguageModel`, which Eve
+// classifies as `external` routing and hands straight to the provider. This is
+// the same credential path the legacy chat route already uses in production
+// (lib/ai/providers.ts), and it avoids the gateway tier that 403s opus/haiku on
+// this account. Auth comes from GOOGLE_APPLICATION_CREDENTIALS +
+// GOOGLE_VERTEX_PROJECT/GOOGLE_VERTEX_LOCATION — start the server with
+// `pnpm eve:dev`, which loads .env.local (bare `eve dev` does not).
+// GOOGLE_VERTEX_LOCATION must be `global` for the opus models; see
+// agent/README.md "Vertex region". AI_GATEWAY_API_KEY is no longer needed.
+//
+// Eve manages context compaction internally (there is no prepareStep hook) —
+// configure it here rather than porting lib/ai/context-compression.ts. See
+// docs/eve-spike-findings.md Q2.
+// Vertex publisher model ids use DASHES, not dots. 'claude-opus-4.8' 404s with
+// "Publisher model ... was not found or your project does not have access to
+// it" on every turn — it is not a valid id. Keep this in sync with the
+// allowlist in lib/ai/eve/model-map.ts, which is the set this project can
+// actually reach.
+//
+// Sonnet 5.5, not Opus: the agent makes many small tool steps over a long
+// context, so cost scales with steps x context. Sonnet 5.5 is $2/$10 per
+// million tokens against Opus 5's $5/$25, and a cache write costs $2.50 per
+// million against $6.25, which matters when the prompt cache misses (a dev run
+// on 2026-11-04 wrote 8.9M cache tokens, $55 on Opus). The picker still offers
+// every model in lib/ai/eve/model-map.ts. Keep this equal to the first entry of
+// DEFAULT_RELAY_MODELS there: a relay run that picks the server's default sends
+// no model, and this fallback serves it.
+const DEFAULT_MODEL_ID = 'claude-sonnet-5-5';
+
+const MAX_INPUT_TOKENS_PER_SESSION = 8_000_000;
+
+// Postgres-backed durability only where a session-mode Postgres is explicitly
+// configured; `undefined` leaves Eve on its built-in local file world. See the
+// `experimental.workflow` comment below for why this is opt-in.
+const WORKFLOW_WORLD =
+  process.env.WORKFLOW_POSTGRES_URL !== undefined &&
+  process.env.WORKFLOW_POSTGRES_URL !== ''
+    ? '@workflow/world-postgres'
+    : undefined;
+
+// The dev model picker can override the model per session via the x-eve-model
+// header, which agent/channels/eve.ts surfaces as auth attribute `eveModel`
+// (dev/eval only, loopback-gated). The header carries a Vertex model id already
+// mapped by lib/ai/eve/model-map.ts; it is untrusted input, so it is validated
+// against that module's allowlist before being turned into a provider instance.
+//
+// This resolves on `step.started` rather than `session.started` because Eve only
+// accepts live `LanguageModel` objects at step scope — session- and turn-scoped
+// selections must be serializable model id strings, which would mean gateway
+// routing. The selection is re-derived every step from session-scoped auth
+// attributes, so it stays stable for the life of the session.
+const resolveModelId = (value: unknown): string | null => {
+  const requested = Array.isArray(value) ? (value[0] ?? null) : value;
+  if (isVertexModelId(requested)) return requested;
+  // Accept a raw picker id too, so a hand-rolled curl against `eve dev` does
+  // not have to know the app-side mapping. Still allowlist-gated: an id with no
+  // MODEL_MAP entry returns undefined and falls through to the fallback.
+  if (typeof requested !== 'string') return null;
+  return toVertexModelId(requested) ?? null;
+};
+
+export default defineAgent({
+  model: defineDynamic({
+    fallback: withPromptHashLogging(vertexAnthropic(DEFAULT_MODEL_ID)),
+    events: {
+      'step.started': (_event, ctx) => {
+        const modelId = resolveModelId(
+          ctx.session.auth.initiator?.attributes?.eveModel ??
+            ctx.session.auth.current?.attributes?.eveModel ??
+            null,
+        );
+        if (modelId === null || modelId === DEFAULT_MODEL_ID) return null;
+        return {
+          model: resolveDirectModel(modelId),
+          modelContextWindowTokens: contextWindowTokensFor(modelId),
+        };
+      },
+    },
+  }),
+  // Required: Eve cannot resolve a direct Vertex model's context window from the
+  // AI Gateway catalog and refuses to compile without this. See
+  // VERTEX_CONTEXT_WINDOW_TOKENS for why it is 200K and not 1M.
+  modelContextWindowTokens: VERTEX_CONTEXT_WINDOW_TOKENS,
+  compaction: {
+    // Compact when context passes this fraction of the window (default 0.9).
+    thresholdPercent: 0.75,
+  },
+  limits: {
+    // A cost guard, not a budget: when a session's provider-reported input
+    // tokens (cached ones included) reach this, Eve pauses before the next
+    // model call and asks the caseworker to approve another window or stop.
+    // Healthy dev runs use 1M to 3M; the runaway on 2026-11-04 used 22M
+    // against Eve's 40M default. Output tokens stay uncapped.
+    maxInputTokensPerSession: MAX_INPUT_TOKENS_PER_SESSION,
+  },
+  experimental: {
+    workflow: {
+      // Durable session state lives in Postgres when WORKFLOW_POSTGRES_URL is
+      // set, and on local disk otherwise.
+      //
+      // Eve's default Workflow world persists runs to `.eve/.workflow-data`.
+      // That is per-instance and, on Cloud Run, in-memory tmpfs — so a session
+      // dies with the instance that served it. This service runs at
+      // min_instance_count = 2 / max 20 with best-effort session affinity
+      // (terraform/cloud_run.tf), which means instance churn is routine and
+      // durable sessions would silently vanish. Hence Postgres in deployment,
+      // where terraform sets WORKFLOW_POSTGRES_URL.
+      //
+      // Opt-in rather than unconditional, for two reasons found the hard way:
+      //   1. This config applies to `eve dev` too. Selecting Postgres always
+      //      means `pnpm dev` dies at boot ("Development worker failed before
+      //      readiness") on any machine that has not bootstrapped the workflow
+      //      schema. Local dev keeps the zero-setup file world.
+      //   2. Falling back to DATABASE_URL would be actively wrong locally: a
+      //      developer's DATABASE_URL is typically a *pooled* endpoint (Neon
+      //      `-pooler`), and graphile-worker needs LISTEN/NOTIFY on a
+      //      session-mode connection. Requiring an explicit variable keeps that
+      //      choice deliberate.
+      //
+      // The schema is created by scripts/bootstrap-workflow-db.ts.
+      //
+      // PINNED to @workflow/world-postgres@5.0.0-beta.33 — do not bump without
+      // re-checking. Compatibility is by World *spec version*, not by npm
+      // version, and the two have diverged:
+      //
+      //   eve 0.27.13 vendors world-local at spec 5 and hard-fails a World
+      //   declaring anything else ("requires a World with matching spec
+      //   version 5, but the configured World declares spec version 7").
+      //
+      //   world-postgres takes its spec from its @workflow/world dep:
+      //     beta.33 -> world beta.26 -> SPEC_VERSION_CURRENT = 5   ✅
+      //     beta.34 -> world beta.27 -> SLOT_IDENTITY        = 6   ❌
+      //     beta.38 -> world beta.31 -> mintedSpecVersion()  = 7   ❌
+      //
+      // So beta.33 is the newest usable release, and "latest" is broken. The
+      // env kill switch on the newer packages only drops 7 to 6, never to 5.
+      // Revisit when eve itself moves off spec 5.
+      world: WORKFLOW_WORLD,
+    },
+  },
+});

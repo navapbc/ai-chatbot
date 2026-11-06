@@ -71,7 +71,8 @@ Snapshots return refs in this format:
 - **\`type\` can also scramble masked fields.** Masks that reposition the caret on each keystroke reverse the input — typing \`92595\` into a zip mask yields \`59529\`. \`fill\` sets the value in one operation and is immune.
 - **Only reach for \`type\`** when \`fill\` leaves the field empty or unformatted — some widgets ignore programmatic value sets and need real keystrokes. Clear the field first: \`["fill","#f",""]\` then \`["type","#f","..."]\`.
 - **Respect \`maxlength\`**: Strip dashes/slashes/spaces. SSN → 9 digits, date → 8 digits, phone → 10 digits, state → 2 chars.
-- **Always verify**: After filling a masked field, use \`["get","value","#f"]\` to confirm. If the value is wrong or reversed, \`fill\` with \`""\` and retry.
+- **Always verify**: After filling a masked field, use \`["get","value","#f"]\` to confirm. If the value is wrong or reversed, \`fill\` with \`""\` and retry ONCE.
+- **If that retry also fails, escalate once, then stop.** Some masks reformat asynchronously and drop keys, so neither \`fill\` nor \`type\` takes and repeating either loops forever. Escalate to a single batched per-character sequence with \`wait 150\` between keys — one tool call: \`["batch","--bail","click #f","press Control+a","press Delete","press 1","wait 150","press 2","wait 150","press 3","get value #f"]\`. Read the last array element for the value; if keys still drop, retry once with \`wait 300\`. After that, leave the field, record the value \`get value\` actually returned (not the one you intended), and report it for caseworker review. A value whose characters are right but whose case differs (\`ca\` vs \`CA\`) is the mask normalising input — report it, do not keep fighting it.
 
 ## Field Type Patterns
 

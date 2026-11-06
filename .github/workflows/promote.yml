@@ -36,6 +36,20 @@ jobs:
         with:
           ref: ${{ github.event.inputs.version }}
 
+      # The tag above may predate scripts/relay-terraform-vars.sh, so take the
+      # script from the commit this workflow file runs from (github.sha), the
+      # same commit whose step below maps the variables. It must come after
+      # the tag checkout, which cleans the workspace. Terraform at an older tag
+      # ignores any TF_VAR_ it does not declare, so old tags still plan.
+      - name: Checkout relay variable script from the workflow ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: workflow-ref
+          persist-credentials: false
+          sparse-checkout: scripts/relay-terraform-vars.sh
+          sparse-checkout-cone-mode: false
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
@@ -61,11 +75,24 @@ jobs:
         run: |
           TAG=${{ steps.sha.outputs.short_sha }}
           echo "chatbot_image=${ARTIFACT_REGISTRY}/ai-chatbot:${TAG}" >> $GITHUB_OUTPUT
+          echo "relay_image=${ARTIFACT_REGISTRY}/labs-asp-relay:${TAG}" >> $GITHUB_OUTPUT
 
+      # With the relay enabled, a missing relay image fails here rather than
+      # planning a relay revision that cannot start. Do not unset RELAY_ENABLED
+      # to get past it: that plans a destroy of the deployed relay. Promote a
+      # version whose commit deploy.yml built with the relay instead.
       - name: Verify images exist
         run: |
           echo "Verifying images exist in Artifact Registry..."
           gcloud artifacts docker images describe ${{ steps.images.outputs.chatbot_image }} || echo "Warning: chatbot image not found"
+          if [[ "${{ vars.RELAY_ENABLED }}" == "true" ]]; then
+            if ! gcloud artifacts docker images describe ${{ steps.images.outputs.relay_image }}; then
+              echo "::error::Relay image labs-asp-relay:${{ steps.sha.outputs.short_sha }} not found, and the relay is enabled for this environment. Promote a version built with the relay (do not unset RELAY_ENABLED: that plans a destroy of the relay)."
+              exit 1
+            fi
+          else
+            echo "Relay not enabled for this environment; relay image not checked."
+          fi
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -78,8 +105,39 @@ jobs:
           terraform init \
             -backend-config="prefix=terraform/state/${{ github.event.inputs.environment }}"
 
+      # Relay pilot settings: GitHub ENVIRONMENT-level variables (dev, prod),
+      # read through this job's `environment:`; unlike the repository-level
+      # RELAY_ENABLED, which must never be set per environment. Same script
+      # and mapping as deploy.yml's "Relay Terraform variables" step, so a
+      # promote cannot plan these back to their defaults. Unset variables
+      # print nothing (Terraform default); an invalid value fails here without
+      # being printed.
+      - name: Relay Terraform variables
+        env:
+          RELAY_RUNS_ENABLED: ${{ vars.RELAY_RUNS_ENABLED }}
+          RELAY_TOKEN_ENDPOINT_ENABLED: ${{ vars.RELAY_TOKEN_ENDPOINT_ENABLED }}
+          RELAY_EXTENSION_ORIGIN: ${{ vars.RELAY_EXTENSION_ORIGIN }}
+          RELAY_ALLOWED_MODELS: ${{ vars.RELAY_ALLOWED_MODELS }}
+          RELAY_ALLOWED_HOSTS: ${{ vars.RELAY_ALLOWED_HOSTS }}
+          RELAY_ALLOWED_HOST_SUFFIXES: ${{ vars.RELAY_ALLOWED_HOST_SUFFIXES }}
+          RELAY_MIN_INSTANCES: ${{ vars.RELAY_MIN_INSTANCES }}
+          RELAY_COMMAND_DURATION_METRIC_ENABLED: ${{ vars.RELAY_COMMAND_DURATION_METRIC_ENABLED }}
+          RELAY_EXCLUDE_REQUEST_LOGS: ${{ vars.RELAY_EXCLUDE_REQUEST_LOGS }}
+        run: bash workflow-ref/scripts/relay-terraform-vars.sh >> "$GITHUB_ENV"
+
+      # relay_image_url defaults to "" (no relay), so leaving it out would plan
+      # to DESTROY an already-deployed relay. Pass the relay image deploy.yml
+      # built for this same commit instead, but only when the repository
+      # variable RELAY_ENABLED is 'true' (same opt-in as deploy.yml); otherwise
+      # "" keeps the relay and its secrets out of the plan entirely. It goes through TF_VAR_ rather than
+      # -var because this workflow runs from the default branch against
+      # Terraform checked out at the tag: a tag that predates the relay does
+      # not declare the variable, and Terraform rejects an undeclared -var but
+      # ignores an undeclared TF_VAR_.
       - name: Terraform Plan
         working-directory: ./terraform
+        env:
+          TF_VAR_relay_image_url: ${{ vars.RELAY_ENABLED == 'true' && steps.images.outputs.relay_image || '' }}
         run: |
           terraform plan \
             -var="environment=${{ github.event.inputs.environment }}" \

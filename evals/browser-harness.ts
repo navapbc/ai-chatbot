@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 import { tool, type Tool } from "ai";
-import { browserInputSchema } from "@/lib/ai/tools/browser";
+import { browserInputSchema } from "@/lib/ai/tools/browser-schema";
 import { ACTION_TIMEOUT_MS, executeCliCommand } from "./browser-commands";
 
 // Mirrors the eval-facing description the agent already sees (helpers.ts).

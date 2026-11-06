@@ -1,8 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import {
-  adaptGapSections,
-  adaptReviewSections,
-} from '@/lib/types/form-cards';
+import { adaptGapSections, adaptReviewSections } from '@/lib/types/form-cards';
 
 describe('adaptGapSections', () => {
   test('returns empty array when input is undefined', () => {
@@ -15,7 +12,9 @@ describe('adaptGapSections', () => {
   });
 
   test('chunks a flat missingFields list into pages of 5 in order', () => {
-    const fields = Array.from({ length: 14 }, (_, i) => ({ field: `f${i + 1}` }));
+    const fields = Array.from({ length: 14 }, (_, i) => ({
+      field: `f${i + 1}`,
+    }));
     const pages = adaptGapSections({ missingFields: fields });
     expect(pages).toHaveLength(3);
     expect(pages[0]).toEqual({
@@ -38,12 +37,31 @@ describe('adaptGapSections', () => {
   test('flattens legacy sections shape preserving order, then chunks by 5', () => {
     const pages = adaptGapSections({
       sections: [
-        { id: 's1', title: 'Identity', fields: [{ field: 'a' }, { field: 'b' }, { field: 'c' }] },
-        { id: 's2', title: 'Income', fields: [{ field: 'd' }, { field: 'e' }, { field: 'f' }, { field: 'g' }] },
+        {
+          id: 's1',
+          title: 'Identity',
+          fields: [{ field: 'a' }, { field: 'b' }, { field: 'c' }],
+        },
+        {
+          id: 's2',
+          title: 'Income',
+          fields: [
+            { field: 'd' },
+            { field: 'e' },
+            { field: 'f' },
+            { field: 'g' },
+          ],
+        },
       ],
     });
     expect(pages).toHaveLength(2);
-    expect(pages[0].fields.map((f) => f.field)).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(pages[0].fields.map((f) => f.field)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+      'e',
+    ]);
     expect(pages[1].fields.map((f) => f.field)).toEqual(['f', 'g']);
     // Original section titles are discarded; pages have empty titles.
     expect(pages.every((p) => p.title === '')).toBe(true);
@@ -53,6 +71,43 @@ describe('adaptGapSections', () => {
 describe('adaptReviewSections', () => {
   test('returns empty array when input is undefined', () => {
     expect(adaptReviewSections(undefined)).toEqual([]);
+  });
+
+  test('normalises the legacy `database` source to `record`', () => {
+    // The legacy route's tool still emits `database`; the Eve tools emit
+    // `record`. Everything downstream of this adapter must see one token —
+    // FieldSourceBadge falls through to "Manual / Entered by you" for any
+    // value it does not recognise, so a missed alias mislabels every
+    // record-derived row silently rather than failing.
+    const pages = adaptReviewSections({
+      fields: [
+        { field: 'Full name', value: 'Rosa', source: 'database' as const },
+        { field: 'SSN', value: '123', source: 'record' as const },
+        { field: 'Phone', value: '555', source: 'caseworker' as const },
+        { field: 'Blind', value: 'No', source: 'inferred' as const },
+        { field: 'Veteran', source: 'missing' as const },
+      ],
+    });
+    expect(pages[0].fields.map((f) => f.source)).toEqual([
+      'record',
+      'record',
+      'caseworker',
+      'inferred',
+      'missing',
+    ]);
+  });
+
+  test('normalises `database` inside the legacy sections shape too', () => {
+    const pages = adaptReviewSections({
+      sections: [
+        {
+          id: 's1',
+          title: 'One',
+          fields: [{ field: 'a', source: 'database' as const }],
+        },
+      ],
+    });
+    expect(pages[0].fields[0].source).toBe('record');
   });
 
   test('chunks a flat fields list into pages of 5 in order', () => {
@@ -91,7 +146,13 @@ describe('adaptReviewSections', () => {
       ],
     });
     expect(pages).toHaveLength(2);
-    expect(pages[0].fields.map((f) => f.field)).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(pages[0].fields.map((f) => f.field)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+      'e',
+    ]);
     expect(pages[1].fields.map((f) => f.field)).toEqual(['f']);
   });
 });

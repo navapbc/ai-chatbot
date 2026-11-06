@@ -141,3 +141,17 @@ test('cliEnv leaves the provider in place when there is no CDP url', () => {
   const env = cliEnv({}, base);
   expect(env.AGENT_BROWSER_PROVIDER).toBe('kernel');
 });
+
+test('cdpViaEnv keeps the CDP url out of argv and in AGENT_BROWSER_CDP', () => {
+  const opts = {
+    session: 's',
+    cdpUrl: 'wss://relay.example/cdp?token=secret',
+    cdpViaEnv: true,
+  };
+  const args = buildArgs(['snapshot'], opts);
+  expect(args).toEqual(['--session', 's', '--json', 'snapshot']);
+  expect(args.join(' ')).not.toContain('secret');
+  const env = cliEnv(opts, { PATH: '/usr/bin', AGENT_BROWSER_PROVIDER: 'x' });
+  expect(env.AGENT_BROWSER_CDP).toBe(opts.cdpUrl);
+  expect(env.AGENT_BROWSER_PROVIDER).toBeUndefined();
+});

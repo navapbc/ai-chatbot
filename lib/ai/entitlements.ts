@@ -1,5 +1,5 @@
 import type { UserType } from '@/app/(auth)/auth';
-import type { ChatModel } from './models';
+import { selectableChatModelIds, type ChatModel } from './models';
 
 interface Entitlements {
   maxMessagesPerDay: number;
@@ -12,7 +12,10 @@ export const entitlementsByUserType: Record<UserType, Entitlements> = {
    */
   regular: {
     maxMessagesPerDay: 500,
-    availableChatModelIds: ['web-automation-model'],
+    // Derived from `chatModels` rather than listed by hand, so adding a model
+    // to the picker can't silently leave it filtered out here. `chatModels`
+    // already excludes the dev-only overrides in production.
+    availableChatModelIds: selectableChatModelIds,
   },
 
   /*

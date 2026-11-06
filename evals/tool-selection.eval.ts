@@ -11,51 +11,6 @@ import { evalExperimentName, getEvalModel, logResultUsage } from "./helpers";
  * not what it returns.
  */
 const stubTools = {
-  getApricotRecord: tool({
-    description:
-      "Get a participant/client record from Apricot360 by record ID. Use this to fetch participant data for form filling. Returns field values with human-readable labels resolved from the form definition.",
-    inputSchema: z.object({
-      recordId: z.number().describe("The unique record ID of the participant"),
-    }),
-    execute: async () => ({ record: null, found: false }),
-  }),
-
-  getApricotForms: tool({
-    description:
-      "Fetch forms from Apricot360 with optional pagination and filtering.",
-    inputSchema: z.object({
-      pageSize: z.number().optional(),
-      pageNumber: z.number().optional(),
-      sort: z.string().optional(),
-      filters: z.record(z.string()).optional(),
-    }),
-    execute: async () => ({ forms: [], count: 0, success: true }),
-  }),
-
-  getApricotForm: tool({
-    description: "Get a specific form from Apricot360 by form ID.",
-    inputSchema: z.object({
-      formId: z.number().describe("The unique ID of the form in Apricot360"),
-    }),
-    execute: async () => ({ form: null, found: false }),
-  }),
-
-  getApricotFormFields: tool({
-    description:
-      "Get all fields for a specific form from Apricot360. Returns field definitions including labels, types, options, and validation requirements.",
-    inputSchema: z.object({
-      formId: z.number().describe("The unique ID of the form in Apricot360"),
-    }),
-    execute: async () => ({ fields: [], count: 0, success: true }),
-  }),
-
-  testApricotAuth: tool({
-    description:
-      "Test authentication with Apricot360 API. Use this to verify API credentials are working.",
-    inputSchema: z.object({}),
-    execute: async () => ({ success: true, message: "Auth OK" }),
-  }),
-
   gapAnalysis: tool({
     description:
       "Display a gap analysis card showing ONLY the missing fields the caseworker needs to provide.",

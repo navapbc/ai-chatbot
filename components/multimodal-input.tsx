@@ -261,8 +261,7 @@ function PureMultimodalInput({
       {messages.length === 0 &&
         attachments.length === 0 &&
         uploadQueue.length === 0 &&
-        isLoggedIn &&
-        !isProductionEnvironment && (
+        isLoggedIn && (
           <SuggestedActions
             sendMessage={sendMessage}
             chatId={chatId}

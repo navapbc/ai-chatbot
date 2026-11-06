@@ -43,6 +43,57 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         }
       }
 
+      # Eve durable-workflow state (@workflow/world-postgres). Same Cloud SQL
+      # instance as the app — the secrets in cloud_sql.tf are direct private-IP
+      # URLs, which matters: graphile-worker needs LISTEN/NOTIFY and
+      # pg_advisory_lock is session-scoped, so neither survives a
+      # transaction-mode pooler.
+      #
+      # Set explicitly rather than relying on the package's DATABASE_URL
+      # fallback, because agent/agent.ts keys the whole world selection off this
+      # variable's presence: unset means Eve stays on its local file world (the
+      # zero-setup path for `pnpm dev`), set means Postgres. Removing this makes
+      # the deployment silently non-durable.
+      #
+      # Pool and concurrency are set together because they trade off against
+      # each other, and the defaults are wrong here in both directions.
+      #
+      # Connections are the scarce resource: max_connections is 100 (dev) /
+      # 200 (prod) while this service scales to max_instance_count = 20. The
+      # library's defaults (pool 10, concurrency 50) also log
+      # "having maxPoolSize (10) smaller than concurrency (50) may lead to
+      # non-optimal performance" on every boot — observed locally.
+      #
+      # 10/10 keeps the pool at least as large as the concurrency graphile-worker
+      # wants, while leaving concurrency far above this agent's subagent nesting
+      # depth (a parent awaiting a child holds a worker slot until the child
+      # terminates, so a low value risks deadlock — see agent/subagents/).
+      #
+      # NOTE for review: at max_instance_count = 20 the app's own postgres.js
+      # pool (default 10) already reaches the 200-connection prod ceiling before
+      # the workflow world is counted. This configuration does not fix that;
+      # either the instance ceiling or the app pool size needs revisiting before
+      # the service actually scales out.
+      env {
+        name = "WORKFLOW_POSTGRES_URL"
+        value_source {
+          secret_key_ref {
+            secret  = var.environment == "prod" ? "database-url-production" : (startswith(var.environment, "preview") ? "database-url-preview" : "database-url-dev")
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name  = "WORKFLOW_POSTGRES_MAX_POOL_SIZE"
+        value = "10"
+      }
+
+      env {
+        name  = "WORKFLOW_POSTGRES_WORKER_CONCURRENCY"
+        value = "10"
+      }
+
       # AI API Keys
       env {
         name = "OPENAI_API_KEY"
@@ -89,33 +140,6 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         value_source {
           secret_key_ref {
             secret  = "xai-api-key"
-            version = "latest"
-          }
-        }
-      }
-
-      # Apricot API Configuration
-      # Prod uses /api/ endpoint with prod credentials, all others use /sandbox/ with sandbox credentials
-      env {
-        name  = "APRICOT_API_BASE_URL"
-        value = "https://f5r-api.iws.sidekick.solutions/apricot"
-      }
-
-      env {
-        name = "APRICOT_CLIENT_ID"
-        value_source {
-          secret_key_ref {
-            secret  = var.environment == "prod" ? "apricot-client-id-prod" : "apricot-client-id-sandbox"
-            version = "latest"
-          }
-        }
-      }
-
-      env {
-        name = "APRICOT_CLIENT_SECRET"
-        value_source {
-          secret_key_ref {
-            secret  = var.environment == "prod" ? "apricot-client-secret-prod" : "apricot-client-secret-sandbox"
             version = "latest"
           }
         }
@@ -236,27 +260,6 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         value = local.storage_bucket_name
       }
 
-      # Upstash Redis for shared links
-      env {
-        name = "UPSTASH_REDIS_REST_URL"
-        value_source {
-          secret_key_ref {
-            secret  = var.environment == "prod" ? "upstash-redis-rest-url-prod" : "upstash-redis-rest-url-dev"
-            version = "latest"
-          }
-        }
-      }
-
-      env {
-        name = "UPSTASH_REDIS_REST_TOKEN"
-        value_source {
-          secret_key_ref {
-            secret  = var.environment == "prod" ? "upstash-redis-rest-token-prod" : "upstash-redis-rest-token-dev"
-            version = "latest"
-          }
-        }
-      }
-
       # Allowed email domains for OAuth sign-in (comma-separated)
       env {
         name = "ALLOWED_EMAIL_DOMAINS"
@@ -301,6 +304,28 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         }
       }
 
+      # TypeSafe (Jev) API key. Every Jev feature treats a missing key as
+      # "off", so an unset secret degrades to pre-Jev behavior rather than
+      # failing a form run.
+      env {
+        name = "TYPESAFE_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = "typesafe-api-key"
+            version = "latest"
+          }
+        }
+      }
+
+      # Which Jev features run in the agent loop (see lib/jev/client.ts).
+      # Empty means no Jev call is made. This gates both processes: the Eve
+      # sibling is started as a plain child by scripts/start-container.sh and
+      # inherits this env, and its tools call the same lib/jev/ code.
+      env {
+        name  = "JEV_FEATURES"
+        value = var.jev_features
+      }
+
       # Braintrust API key. instrumentation.ts exports no traces without it, so
       # leaving it unset silently disables OpenTelemetry in the deployed app.
       env {
@@ -318,6 +343,87 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
       env {
         name  = "BRAINTRUST_PARENT"
         value = "project_name:labs-asp-${local.base_environment}"
+      }
+
+      # Browser relay (relay.tf). Present only when the relay is deployed, so an
+      # environment without it (relay_image_url empty, e.g. a promote of a
+      # pre-relay tag) neither references the relay service nor needs the
+      # owner-created secrets below to exist.
+      #
+      # RELAY_RUNS_ENABLED and RELAY_TOKEN_ENDPOINT_ENABLED (ruling R25) stay
+      # unset unless relay_runs_enabled / relay_token_endpoint_enabled are
+      # true (both default false). The side panel that calls /api/relay/token
+      # exists now; the owner turns both on per environment following the
+      # pilot runbook, in an apply after the relay itself is verified.
+      dynamic "env" {
+        for_each = local.relay_enabled ? [1] : []
+        content {
+          name = "RELAY_TOKEN_SECRET"
+          value_source {
+            secret_key_ref {
+              secret  = local.relay_token_secret_name
+              version = "latest"
+            }
+          }
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.relay_enabled ? [1] : []
+        content {
+          name  = "RELAY_PUBLIC_URL"
+          value = one(google_cloud_run_v2_service.relay[*].uri)
+        }
+      }
+
+      # Shared by Next and the Eve sibling (same container env): Eve grants
+      # relay credentials from loopback headers only with this secret
+      # (agent/channels/eve.ts).
+      dynamic "env" {
+        for_each = local.relay_enabled ? [1] : []
+        content {
+          name = "EVE_INTERNAL_SECRET"
+          value_source {
+            secret_key_ref {
+              secret  = local.eve_internal_secret_name
+              version = "latest"
+            }
+          }
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.relay_enabled && var.relay_runs_enabled ? [1] : []
+        content {
+          name  = "RELAY_RUNS_ENABLED"
+          value = "1"
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.relay_enabled && var.relay_token_endpoint_enabled ? [1] : []
+        content {
+          name  = "RELAY_TOKEN_ENDPOINT_ENABLED"
+          value = "1"
+        }
+      }
+
+      # Unset (no Origin check) while relay_extension_origin is empty.
+      dynamic "env" {
+        for_each = local.relay_enabled && var.relay_extension_origin != "" ? [1] : []
+        content {
+          name  = "RELAY_EXTENSION_ORIGIN"
+          value = var.relay_extension_origin
+        }
+      }
+
+      # Unset while relay_allowed_models is empty: the app's default applies.
+      dynamic "env" {
+        for_each = local.relay_enabled && var.relay_allowed_models != "" ? [1] : []
+        content {
+          name  = "RELAY_ALLOWED_MODELS"
+          value = var.relay_allowed_models
+        }
       }
 
       # Runtime configuration

@@ -1,5 +1,5 @@
 import { tool } from 'ai';
-import { z } from 'zod';
+import { browserInputSchema } from './browser-schema';
 import { getOrCreateBrowser } from '@/lib/kernel/browser';
 import { runCommand } from '@/lib/kernel/cli';
 import { kernelTimelineCollector } from '@/lib/kernel/telemetry';
@@ -13,16 +13,7 @@ const COMMAND_TIMEOUT_MS = 120_000; // 2 minutes
  * Exported so the eval harness drives the agent through the identical schema
  * rather than a hand-copied duplicate that can drift.
  */
-export const browserInputSchema = z
-  .object({
-    command: z
-      .array(z.string())
-      .min(1)
-      .describe(
-        'agent-browser CLI argv, e.g. ["click", "@e1"] or ["fill", "@e1", "John"]. One argument per array element; do not quote or escape values.',
-      ),
-  })
-  .describe('An agent-browser CLI command as an argv array');
+export { browserInputSchema };
 
 /**
  * Per-session mutex to serialize browser commands.
@@ -90,11 +81,20 @@ Common commands:
 - ["get", "text", "@e1"] / ["get", "value", "@e1"] / ["get", "url"] / ["get", "title"]
 - ["scroll", "down", "500"] - Scroll down 500px
 - ["screenshot"] - Take screenshot
+- ["batch", "--bail", "click @e1", "press 1", "wait 150", "press 2"] - Run several commands in ONE round trip (see Batching below)
 - ["back"] / ["forward"] - Browser navigation (AVOID during form filling — may wipe state)
 - ["eval", "document.title"] - Run JavaScript (ONLY for reading simple values — NEVER to find/click elements)
 - ["tab"] / ["tab", "t2"] / ["tab", "new"] / ["tab", "close"] - Tab management (ids look like t1, t2)
 - ["dialog", "accept"] / ["dialog", "dismiss"] - Handle browser dialogs
 - ["frame", "#iframe"] / ["frame", "main"] - Switch between frames
+
+Batching: "batch" runs a sequence in one call and is the fix for anything that would otherwise be dozens of single commands (per-character entry into a masked field, or a run of independent fills). Rules, all verified against agent-browser 0.33.2:
+- Each argument after "batch" is ONE WHOLE COMMAND as a single space-separated string: ["batch", "click @e1", "press 1"]. Do NOT pass a JSON array per argument — that form appears in the CLI's own docs but errors with "Unknown command".
+- Inside a batch string, wrap any value containing a space or an apostrophe in double quotes: fill @e3 "Ann O'Brien". Unquoted, a bare apostrophe is SILENTLY DROPPED (O'Brien becomes OBrien). This is the opposite of the top-level rule above, which still applies to every non-batch command.
+- Interleave "wait 150" between keystrokes. Masks that reformat asynchronously drop keys that arrive mid-reformat, so a batch with no waits lands only the first character — exactly like a too-fast "type".
+- The result is an ARRAY of per-command results, and the tool reports overall success even when individual steps failed. Check each element's own success, and prefer --bail so the sequence stops at the first failure.
+- Never put an @eN step after a step that changes the DOM in the same batch — the refs go stale. Re-snapshot instead.
+- The whole batch shares one 120s timeout, so keep a batch to one field or one short phase.
 
 NEVER navigate away from the target application domain. Do NOT click social media links, share buttons, or external links.`,
     inputSchema: browserInputSchema,

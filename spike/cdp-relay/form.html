@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Spike Form</title>
+<h1>Benefit Application</h1>
+<form id="f" onsubmit="return false">
+  <label for="first">First name</label> <input id="first" name="first"><br>
+  <label for="last">Last name</label> <input id="last" name="last"><br>
+  <label for="dob">Date of birth</label> <input id="dob" name="dob" placeholder="MM/DD/YYYY"><br>
+  <label for="state">State</label>
+  <select id="state" name="state"><option value="">--</option><option>CA</option><option>NY</option></select><br>
+  <label><input type="checkbox" id="agree"> I agree</label><br>
+  <button type="button" id="save" onclick="document.getElementById('out').textContent=JSON.stringify({first:first.value,last:last.value,dob:dob.value,state:state.value,agree:agree.checked})">Save</button>
+</form>
+<pre id="out"></pre>
+<iframe id="child" title="child" srcdoc="<label for=c>Child field</label><input id=c name=c>"></iframe>
+<iframe id="xo" title="cross" src="http://localhost:9333/oopif.html"></iframe>
+<button id="dlg" onclick="alert('hi');document.title='dialog-closed'">Dialog</button>

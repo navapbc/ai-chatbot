@@ -1,18 +1,17 @@
 import { Eval } from "braintrust";
 import { generateText, isStepCount, type ModelMessage } from "ai";
 import { getWebAutomationSystemPrompt } from "@/lib/ai/prompts/web-automation";
-import { createBaseStubTools, browserOk, collectTextResponses, evalExperimentName, getEvalModel, logResultUsage, type BaseRunState } from "./helpers";
+import { createBaseStubTools, withParticipant, browserOk, collectTextResponses, evalExperimentName, getEvalModel, logResultUsage, type BaseRunState } from "./helpers";
 import participants from "./datasets/participants.json";
 import snapshots from "./datasets/snapshots.json";
-import formFields from "./datasets/form-fields.json";
 import testCaseData from "./datasets/test-cases.json";
 
 /**
  * Autonomous Progression Eval
  *
  * Tests that the agent independently navigates and completes form steps
- * without being nudged. It should use database data autonomously, stop
- * before submitting, and avoid modifying read-only records.
+ * without being nudged. It should use the participant data autonomously
+ * and stop before submitting.
  */
 
 // ── Dataset references ───────────────────────────────────────────────────
@@ -31,10 +30,6 @@ function createStubTools(state: RunState) {
   return createBaseStubTools(
     state,
     {
-      getApricotRecord: async () => participant,
-      getApricotForms: async () => ({ forms: [{ id: 101, name: "WIC Application" }], count: 1, success: true }),
-      getApricotForm: async () => ({ form: { id: 101, name: "WIC Application" }, found: true }),
-      getApricotFormFields: async () => formFields.autonomousProgression,
       browser: async (input) => {
         if (input.action === "snapshot") {
           if (state.currentPage === 1) return browserOk(pages.page1);
@@ -49,8 +44,7 @@ function createStubTools(state: RunState) {
         }
         return browserOk();
       },
-    },
-    { includeUpdateTool: true }
+    }
   );
 }
 
@@ -59,10 +53,6 @@ function createStubTools(state: RunState) {
 const testCases = testCaseData.autonomousProgression.cases;
 
 // ── Scoring helpers ──────────────────────────────────────────────────────
-
-function usedDatabaseData(state: RunState): boolean {
-  return state.toolCallLog.some((c) => c.tool === "getApricotRecord");
-}
 
 function filledFormFields(state: RunState): boolean {
   const fillActions = state.toolCallLog.filter(
@@ -89,10 +79,6 @@ function stoppedBeforeSubmit(state: RunState): boolean {
       typeof c.args.selector === "string" &&
       /submit/i.test(c.args.selector as string)
   );
-}
-
-function didNotModifyDatabase(state: RunState): boolean {
-  return !state.toolCallLog.some((c) => c.tool === "updateApricotRecord");
 }
 
 function showedReview(state: RunState): boolean {
@@ -125,7 +111,7 @@ Eval("labs-asp", {
     };
 
     const tools = createStubTools(state);
-    const messages: ModelMessage[] = [{ role: "user", content: input }];
+    const messages: ModelMessage[] = [{ role: "user", content: withParticipant(input, participant.record) }];
 
     const result = await generateText({
       model,
@@ -141,11 +127,9 @@ Eval("labs-asp", {
   },
 
   scores: [
-    ({ output }) => ({ name: "used_database_data", score: usedDatabaseData(output as RunState) ? 1 : 0 }),
     ({ output }) => ({ name: "filled_form_fields", score: filledFormFields(output as RunState) ? 1 : 0 }),
     ({ output }) => ({ name: "progressed_autonomously", score: progressedAutonomously(output as RunState) ? 1 : 0 }),
     ({ output }) => ({ name: "stopped_before_submit", score: stoppedBeforeSubmit(output as RunState) ? 1 : 0 }),
-    ({ output }) => ({ name: "did_not_modify_database", score: didNotModifyDatabase(output as RunState) ? 1 : 0 }),
     ({ output }) => ({ name: "showed_review", score: showedReview(output as RunState) ? 1 : 0 }),
     ({ output }) => ({ name: "not_overly_verbose", score: notOverlyVerbose(output as RunState) ? 1 : 0 }),
   ],
