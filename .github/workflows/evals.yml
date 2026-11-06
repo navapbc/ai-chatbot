@@ -40,13 +40,14 @@ jobs:
           # deliberately small — every id here is a full suite run on every PR
           # that touches lib/ai/**, evals/** or the chat route.
           #
-          # These are the three models the ASP-1005 cost & quality comparison is
-          # being decided on, so they are what PRs should be measured against.
+          # These are the two models PRs are measured against. claude-opus-5 is
+          # left out of the PR set (still available from the Actions tab via the
+          # models input) to cut cost and wall-clock on every eval-touching PR.
           # Note the tradeoff: the previous set spanned three providers, and this
           # one is Anthropic-only, so an OpenAI- or Google-specific regression
           # will no longer show up on a PR. Run those from the Actions tab when
           # that matters — `gpt-5.1,gemini-3-pro` in the models input.
-          MODELS: ${{ inputs.models || 'claude-opus-5,claude-sonnet-5,claude-haiku-4-5' }}
+          MODELS: ${{ inputs.models || 'claude-sonnet-5,claude-haiku-4-5' }}
         run: |
           set -euo pipefail
           legs='[]'
