@@ -77,3 +77,56 @@ describe('signed GSN preparation route', () => {
     expect(finish).toHaveBeenCalledOnce();
   });
 });
+
+it('returns a completed preparation even when cancellation of the held-open event stream never settles', async () => {
+  const req = request();
+  const input = await req.clone().json();
+  let releaseCancellation = () => {};
+  const heldOpen = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(
+        new TextEncoder().encode(
+          `${JSON.stringify({
+            type: 'action.result',
+            data: {
+              result: {
+                kind: 'tool-result',
+                toolName: 'review_section',
+                output: {
+                  format: 'gsn-eve-jev-preparation-v1',
+                  requestId: input.requestId,
+                  data: input.data,
+                  jev: { mode: 'live', model: 'mock-only' },
+                },
+              },
+            },
+          })}\n`,
+        ),
+      );
+    },
+    cancel() {
+      return new Promise<void>((resolve) => {
+        releaseCancellation = resolve;
+      });
+    },
+  });
+  vi.mocked(fetch)
+    .mockResolvedValueOnce(
+      Response.json({}, { headers: { 'x-eve-session-id': 'wrun_mock' } }),
+    )
+    .mockResolvedValueOnce(new Response(heldOpen))
+    .mockResolvedValueOnce(Response.json({ status: 'accepted' }));
+  const pending = POST(req);
+  const outcome = await Promise.race([
+    pending,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+  ]);
+  releaseCancellation();
+  const response = await pending;
+  expect(
+    outcome,
+    'completed provider work must not wait for stream cancellation',
+  ).not.toBeNull();
+  expect(response.status).toBe(200);
+  expect(finish).toHaveBeenCalledOnce();
+});

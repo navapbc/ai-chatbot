@@ -112,7 +112,9 @@ export async function POST(req: Request) {
       { status: 502 },
     );
   } finally {
-    await stream?.body?.cancel().catch(() => {});
+    // Closing a held-open NDJSON response can remain pending until the fetch
+    // deadline. The result is already recorded: do not delay it on cleanup.
+    void stream?.body?.cancel().catch(() => {});
     if (sessionId && /^[A-Za-z0-9_-]{1,200}$/.test(sessionId)) {
       await fetch(`${runtime}/eve/v1/session/${sessionId}/cancel`, {
         method: 'POST',
