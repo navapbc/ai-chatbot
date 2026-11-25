@@ -133,6 +133,16 @@ variable "braintrust_wif_enabled" {
   default     = true
 }
 
+variable "gsn_bridge_public_key" {
+  description = "Ed25519 SPKI base64url public key for the fictional GSN preparation bridge; dev only."
+  type = string
+  default = ""
+  validation {
+    condition = var.gsn_bridge_public_key == "" || can(regex("^[A-Za-z0-9_-]{40,200}$", var.gsn_bridge_public_key))
+    error_message = "Use a base64url encoded Ed25519 SPKI public key."
+  }
+}
+
 variable "jev_features" {
   description = "Comma-separated Jev features to enable in the agent loop (gap-triage, summary-check, field-value), or \"all\". Empty disables every Jev call. See lib/jev/client.ts."
   type        = string

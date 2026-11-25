@@ -92,6 +92,13 @@
       "when": 1793133291091,
       "tag": "0011_majestic_moonstone",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1795550000000,
+      "tag": "0012_gsn_bridge_requests",
+      "breakpoints": true
     }
   ]
 }

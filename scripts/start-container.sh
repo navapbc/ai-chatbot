@@ -20,6 +20,15 @@ set -euo pipefail
 EVE_PORT="${EVE_NEXT_PRODUCTION_PORT:-4274}"
 EVE_ENTRY=".output/server/index.mjs"
 SHUTDOWN_REQUESTED=0
+GSN_PID=""
+
+# A separate, restricted agent: no public rewrite, browser, shell or submission
+# tools. The signed dev-only bridge is its sole caller. This process-local
+# secret authenticates internal hops; it is never persisted or returned.
+if [[ -n "${GSN_BRIDGE_PUBLIC_KEY:-}" && -z "${EVE_INTERNAL_SECRET:-}" ]]; then
+  EVE_INTERNAL_SECRET="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))')"
+  export EVE_INTERNAL_SECRET
+fi
 
 if [[ ! -f "${EVE_ENTRY}" ]]; then
   echo "[start] FATAL: ${EVE_ENTRY} missing — 'pnpm eve build' did not run in the image build." >&2
@@ -51,6 +60,12 @@ HOST=127.0.0.1 NITRO_HOST=127.0.0.1 NITRO_PORT="${EVE_PORT}" PORT="${EVE_PORT}" 
   node "${EVE_ENTRY}" &
 EVE_PID=$!
 
+if [[ -n "${GSN_BRIDGE_PUBLIC_KEY:-}" ]]; then
+  echo "[start] starting restricted GSN Eve runtime on loopback:4275"
+  (cd gsn-runtime && exec env WORKFLOW_QUEUE_NAMESPACE=gsn-preparation WORKFLOW_POSTGRES_JOB_PREFIX=gsn-preparation WORKFLOW_POSTGRES_MAX_POOL_SIZE=2 WORKFLOW_POSTGRES_WORKER_CONCURRENCY=2 HOST=127.0.0.1 NITRO_HOST=127.0.0.1 NITRO_PORT=4275 PORT=4275 node .output/server/index.mjs) &
+  GSN_PID=$!
+fi
+
 # Invoked directly rather than through `pnpm start`: pnpm would be the process
 # we hold a PID for, while the actual server runs as its grandchild, so the
 # shutdown path below would signal the wrapper and leave Next serving. Verified:
@@ -65,6 +80,7 @@ NEXT_PID=$!
 terminate() {
   trap - TERM INT
   kill "${EVE_PID}" "${NEXT_PID}" 2>/dev/null || true
+  if [[ -n "${GSN_PID}" ]]; then kill "${GSN_PID}" 2>/dev/null || true; fi
   # Escalate rather than `wait` indefinitely: a wedged child would otherwise
   # hold the container open with a half-dead service behind it.
   for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -72,6 +88,7 @@ terminate() {
     sleep 1
   done
   kill -9 "${EVE_PID}" "${NEXT_PID}" 2>/dev/null || true
+  if [[ -n "${GSN_PID}" ]]; then kill -9 "${GSN_PID}" 2>/dev/null || true; fi
 }
 on_signal() {
   echo "[start] received shutdown signal" >&2
@@ -87,6 +104,7 @@ trap on_signal TERM INT
 # supervisor silently stops supervising. A poll behaves identically on both, so
 # this logic is actually testable before it ships.
 while kill -0 "${EVE_PID}" 2>/dev/null && kill -0 "${NEXT_PID}" 2>/dev/null; do
+  if [[ -n "${GSN_PID}" ]] && ! kill -0 "${GSN_PID}" 2>/dev/null; then break; fi
   sleep 2
 done
 

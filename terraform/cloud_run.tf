@@ -317,6 +317,12 @@ resource "google_cloud_run_v2_service" "ai_chatbot" {
         }
       }
 
+      # Only dev accepts GSN service-signed preparation requests.
+      env {
+        name = "GSN_BRIDGE_PUBLIC_KEY"
+        value = var.environment == "dev" ? var.gsn_bridge_public_key : ""
+      }
+
       # Which Jev features run in the agent loop (see lib/jev/client.ts).
       # Empty means no Jev call is made. This gates both processes: the Eve
       # sibling is started as a plain child by scripts/start-container.sh and

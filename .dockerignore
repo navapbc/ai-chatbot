@@ -7,6 +7,8 @@ node_modules
 # local build in would ship a host-built Nitro bundle, and `.eve/` also carries
 # local dev workflow state (.eve/.workflow-data) that must never reach an image.
 .eve
+gsn-runtime/.eve
+gsn-runtime/.output
 .output
 terraform
 test-results
@@ -19,3 +21,7 @@ artifacts/session_*
 .env.*
 Dockerfile
 .dockerignore
+
+# Isolated GSN agent artifacts are also built in the image.
+gsn-runtime/.eve
+gsn-runtime/.output
