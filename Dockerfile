@@ -56,6 +56,7 @@ ENV NEXT_PUBLIC_ENVIRONMENT=${ENVIRONMENT}
 # empty environment) and is the faster of the two, so a broken agent tree fails
 # the image early.
 RUN pnpm eve build
+RUN cd gsn-runtime && ../node_modules/.bin/eve build
 
 # Build Next.js client only (migrations run at container startup)
 RUN pnpm next build
